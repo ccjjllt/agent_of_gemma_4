@@ -199,7 +199,14 @@ assert MODEL_PATH.exists(), f'模型未挂载：{MODEL_PATH}'
 t0 = time.time()
 declared_model = validate_single_declared_model(AGENT_DIR)
 adapters = discover_adapters(str(AGENT_DIR), adapter_extensions=ALLOWED_ADAPTER_EXTENSIONS)
-assert len(adapters) == 0, f'001 应无 adapter：{adapters}'
+# adk_submission 0.2.11 起 discover_adapters 返回 AdapterManifest（无 __len__），取其内部映射计数
+manifest_inner = getattr(adapters, 'adapters', getattr(adapters, 'manifest', None))
+if manifest_inner is None:
+    manifest_inner = getattr(adapters, '__dict__', None) or {}
+n_adapters = len(manifest_inner) if hasattr(manifest_inner, '__len__') else 0
+print(f'adapter_manifest_type={type(adapters).__name__} n_adapters={n_adapters}',
+      flush=True)
+assert n_adapters == 0, f'001 应无 adapter：{adapters!r}'
 print(f'declared_model={declared_model} adapters={adapters}', flush=True)
 gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 1
 tp_size = 4 if gpu_count >= 4 else (2 if gpu_count >= 2 else 1)

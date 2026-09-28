@@ -48,7 +48,11 @@
 - GPU 消耗共 30.19s（失败均在 10~16 秒内），剩余额度约 30h。残留 private 探针本 5 个（`probe-text-field/input-mounts/mounts-v2/v3/v4`）+ 2 个 smoke 本，无删除接口，保留不动。
 - 注意：MCP 提交版内嵌的是精简 system.md（2238B），与仓库正式版（2555B）不一致；正式 smoke 以仓库版为准，即 `notebooks/001-smoke-single-cell.py`（已校验四段内嵌与仓库逐字节一致）。
 
-## 浏览器跑法（待用户执行）
+## 浏览器首跑（2026-09-28，用户执行 smoke，MCP 只读）
+
+- 实测环境（首跑日志）：`python 3.12.13 / Linux / torch 2.10.0+cu128 / cuda=True / gpus=4（4×L4，各 22GiB）`，`swegemma 0.2.7 / adk_submission 0.2.11 / vllm 0.19.1`，`tasks.jsonl` 指纹与计划一致，129 题，smoke 选取与预算校验通过。注意这是 4×L4 评分级环境，tp=4。
+- 首个代码错误（已修，未重跑）：`adk_submission 0.2.11` 的 `discover_adapters` 返回 `AdapterManifest` 对象（无 `__len__`），`assert len(adapters) == 0` 报 `TypeError`。改为取 `adapters.adapters（或 manifest/__dict__）` 内部映射计数；`EvalConfig(adapter_manifest=…)` 传参保持官方类型不变。同步修了 `notebooks/001-smoke-single-cell.py` 与 `notebooks/001-baseline.ipynb`。
+- MCP 读不到浏览器交互式运行的 cell 日志（session 输出接口返回空），报错仍需用户贴 traceback（只需最后的 `Error` 段）。
 
 1. 官方 Getting Started → Copy and Edit（fork 继承比赛数据 + wheelhouse + 模型）。
 2. Accelerator 选 GPU L4；新建空 cell，粘贴 `notebooks/001-smoke-single-cell.py` 全文运行（约 30~45 分钟）。
