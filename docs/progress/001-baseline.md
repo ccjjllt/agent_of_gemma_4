@@ -40,8 +40,23 @@
 - 主办方 9-26/9-27 答复（embedding 已修 / async 缺失 / subprocess 沙箱）仍以重下载后实测为准；`EventsCompactionConfig(15/2/14336/5)` 为 Notebook 侧配置，不宣称为正式评分压缩。
 - 12h 触顶、隐藏任务顺序/数量、token 统计口径待运行日志确认。
 
+## MCP 代跑经过（2026-09-28，均失败，未产生有效结果）
+
+- v1（`ccjjllt/001-baseline-smoke-private-run`）：提交时多传 `textNullable: null`，落盘为空 Notebook，papermill 报 `NotJSONError: ''`。教训：该 MCP 通道里 `has*=true` 表示取 `*Nullable` 值，`text` 与 `textNullable: null` 同传会清空内容（CPU 探针 `probe-text-field` 反证：只传 `text` 则内容正常）。
+- v2（`ccjjllt/baseline-001-smoke-private-run`，内容已验证完整、GPU=L4）：cell1 写基线成功；cell2 `Installing 0 wheels` 后 pip 空参数报错。根因是比赛/wheelhouse/模型三个数据源都没挂载（`/kaggle/input` 为空）。
+- 数据源挂载试过 4 种组合（单数字段+Setter+has*、仅Setter、仅单数、id 更新通道）均失败，notebook 元数据始终无 sources。结论：`kaggle_save_notebook` MCP 通道不支持挂数据源，GPU 代跑走不通。slug 更新通道也拒收（`Invalid slug`），只能建新本。
+- GPU 消耗共 30.19s（失败均在 10~16 秒内），剩余额度约 30h。残留 private 探针本 5 个（`probe-text-field/input-mounts/mounts-v2/v3/v4`）+ 2 个 smoke 本，无删除接口，保留不动。
+- 注意：MCP 提交版内嵌的是精简 system.md（2238B），与仓库正式版（2555B）不一致；正式 smoke 以仓库版为准，即 `notebooks/001-smoke-single-cell.py`（已校验四段内嵌与仓库逐字节一致）。
+
+## 浏览器跑法（待用户执行）
+
+1. 官方 Getting Started → Copy and Edit（fork 继承比赛数据 + wheelhouse + 模型）。
+2. Accelerator 选 GPU L4；新建空 cell，粘贴 `notebooks/001-smoke-single-cell.py` 全文运行（约 30~45 分钟）。
+3. 把输出（`ROWS/RESOLVED`、`EVAL_WALL_MIN`、逐题行、环境版本行）贴回；产物（`results/`、`analysis_001_smoke.csv`、`submission.zip`）保留在 Kaggle working。
+4. 用户告知 fork 的 slug 后，用 MCP 只读轮询运行状态与输出，不再经 MCP 提交运行。
+
 ## 下一步
 
-1. Kaggle 上传 `agent/` 到 `/kaggle/working/agent`，按 notebook `smoke → dev_panel` 跑，保留 `results/` 原始产物。
-2. 人工填失败分类表（环境/定位/修改/工具/截断/预算/提交/待定），回答 001 四问：主要失败阶段、准备与推理耗时、环境影响、优先改定位还是生成。
+1. 用户在浏览器跑通 smoke 3 题，贴回输出。
+2. 按 001 计划填失败分类表（环境/定位/修改/工具/截断/预算/提交/待定），回答四问：主要失败阶段、准备与推理耗时、环境影响、优先改定位还是生成。
 3. 002/003 复用本轮划分、环境和日志；004 目标等失败分布出来再定。
