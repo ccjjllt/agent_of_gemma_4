@@ -44,7 +44,7 @@
 
 - v1（`ccjjllt/001-baseline-smoke-private-run`）：提交时多传 `textNullable: null`，落盘为空 Notebook，papermill 报 `NotJSONError: ''`。教训：该 MCP 通道里 `has*=true` 表示取 `*Nullable` 值，`text` 与 `textNullable: null` 同传会清空内容（CPU 探针 `probe-text-field` 反证：只传 `text` 则内容正常）。
 - v2（`ccjjllt/baseline-001-smoke-private-run`，内容已验证完整、GPU=L4）：cell1 写基线成功；cell2 `Installing 0 wheels` 后 pip 空参数报错。根因是比赛/wheelhouse/模型三个数据源都没挂载（`/kaggle/input` 为空）。
-- 数据源挂载试过 4 种组合（单数字段+Setter+has*、仅Setter、仅单数、id 更新通道）均失败，notebook 元数据始终无 sources。结论：`kaggle_save_notebook` MCP 通道不支持挂数据源，GPU 代跑走不通。slug 更新通道也拒收（`Invalid slug`），只能建新本。
+- 数据源挂载试过 6 种组合（CPU 探针验证，notebook 元数据始终无 sources，运行时 `/kaggle/input` 为空）：单数字段+Setter+has*+Nullable、仅Setter+has*、仅Setter、仅单数、id更新通道+Setter、单数+has*（v5，含模型）。结论：`kaggle_save_notebook` MCP 通道不支持挂数据源（比赛/dataset/模型），GPU 代跑走不通；`list_mcp_resources` 为空，无替代接口。slug 更新通道也拒收（`Invalid slug`），只能建新本。
 - GPU 消耗共 30.19s（失败均在 10~16 秒内），剩余额度约 30h。残留 private 探针本 5 个（`probe-text-field/input-mounts/mounts-v2/v3/v4`）+ 2 个 smoke 本，无删除接口，保留不动。
 - 注意：MCP 提交版内嵌的是精简 system.md（2238B），与仓库正式版（2555B）不一致；正式 smoke 以仓库版为准，即 `notebooks/001-smoke-single-cell.py`（已校验四段内嵌与仓库逐字节一致）。
 
