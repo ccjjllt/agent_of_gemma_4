@@ -1,6 +1,6 @@
-# 001 进展：无微调基线实现（未运行）
+# 001 进展：无微调基线实现与三题初步运行
 
-日期：2026-09-28。状态：已实现可打包基线与运行载体，尚未在 Kaggle GPU 运行，无模型结果，不填预期分数。
+日期：2026-09-28。状态：已实现基线，并完成用户在 Kaggle 的三题初步运行，记录到 1 题 resolved。原始运行轨迹尚未在本地归档，逐题观察来自用户提供的日志记录；结果保存、验证超时与计时口径的问题已在文末复核。
 
 ## 本次修改文件
 
@@ -32,7 +32,7 @@
 - notebook JSON 解析通过 8 markdown + 7 code；打包单元格以 `AGENT_DIR` 为根，校验 `agent.yaml` 在根、无 `sub_agents/adapters`、扩展名与 3GiB。
 - 打包 dry-run（本地 `agent/` zip）：根见 `agent.yaml`，`!include` 两目标存在。
 
-## 未运行与未解决问题
+## 首次运行前的状态（历史记录，后续运行见下文）
 
 - 未在 Kaggle 执行：模型加载、工具调用完整性、补丁提取、轨迹↔验证对应、准备/Agent/验证分段耗时均未知。
 - 待 Kaggle 首跑 smoke 3 题后填：`run_id`、任务 ID、配置版本、执行环境（Python/CUDA/GPU/包版本）、分段耗时、补丁非空、退出原因、失败主因、证据路径。
@@ -63,24 +63,49 @@
 
 环境：4×L4（各22GiB，tp=4），vLLM 启动 346.4s；装包约1分钟；`EVAL_WALL_MIN=14.1`；`submission.zip` 打包校验通过。GPU 额度累计用 3858s（约1.07h）。
 
-| 任务 | resolved | exit | patch | calls | 时长 | 主因 |
+| 任务 | resolved | exit | patch | calls | 返回的整题时长 | 主因 |
 | --- | --- | --- | --- | --- | --- | --- |
 | fastapi_11194 | False | 1 | 2483（超时自动提取，未 submit） | 40/50 | 308s（超时） | 预算耗尽＋重复无效动作：同一 `reproduce_issue.py` 反复执行约25次、5 次 `read_file(params.py)` 无收敛、零源码修改；多次自判“已修复”却不收尾 |
-| rich_2725 | **True** | 0 | 2936（超时自动提取） | 35/50 | 304.6s（超时） | 定位＋修改正确（270s 改 `table.py:869 box_segments` 索引），超时前没调用 submit，靠自动提取通过；`read_file` 两次无视指定行范围返回 1~150（harness 侧观察） |
-| requests_6592 | False | **124（验证超时）** | 579（`submit_patch` 正常提交，1 文件） | 33/50 | 162s 完成＋验证超时 | Agent 行为满分（定位→修改→验证→提交），失败在验证阶段超时，非 agent 失败 |
+| rich_2725 | **True** | 0 | 2936（超时自动提取） | 35/50 | 304.6s（返回的整题时长） | 本题修复通过，记录称约270s修改 `table.py:869 box_segments` 索引，随后自动提取；读取范围异常的归因仍需原始工具参数与响应 |
+| requests_6592 | False | **124（验证超时）** | 579（`submit_patch` 正常提交，1 文件） | 33/50 | 162s（返回的整题时长） | 已生成并提交补丁，最终验证未完成；补丁正确性、验证预算与环境影响尚不能确定 |
 
-环境观察：每题沙箱 `ensurepip unavailable` 警告（venv 无 pip，非致命，不影响执行）；subprocess 沙箱可用；`get_status` 被正确调用（rich 272s、requests 162s），但 fastapi/rich 均未预留收尾时间。
-工具观察：`task_results.jsonl`/`summary.json` 在此 harness 版本未生成（仅空 `logs/` + `traces/*.json`），结果汇总 cell 记 `ROWS=0`——后续改从 `traces/trace_<id>.json` 提数。原始轨迹存于 Kaggle `001-baseline-smoke` 运行的 working 区（`trace_fastapi_11194.json` 159KB、`trace_rich_2725.json` 171KB、`trace_requests_6592.json` 94KB）；MCP 对该旧本子持续 `kernels.get denied`（新本子 `001-baseline` 可读），traces 暂无法经 MCP 拉取，001 分类以粘贴日志为准（逐题 resolved/exit/patch/calls/duration 均有），traces 仅作存档引用。
+环境观察：每题沙箱有`ensurepip unavailable`警告，未阻止运行启动；这不证明依赖和导入一致性已经验证。日志记录出现get_status调用，但状态的具体时间字段及提交过程仍需原始trace核对，不能把最后一次状态时间视为完整Agent时长。
+工具观察：本次逐题调用后未生成task_results.jsonl/summary.json，汇总显示ROWS=0。后续源码已确认是载体遗漏显式持久化；先前“只改从trace提数”的建议已被替代，应调用官方append_task_result并读取正确字段。原始轨迹存于Kaggle `001-baseline-smoke`的working区（fastapi约159KB、rich约171KB、requests约94KB），MCP读取旧本子持续kernels.get denied；目前分类仍依据用户粘贴日志，未独立复核原始文件。
 
 ## 001 四问回答
 
-1. 主要失败阶段：预算耗尽 2/3（fastapi、rich 超时），验证超时 1/3（requests）。无环境/依赖失败。
-2. 时间：准备约 7 分钟（模型启动 346s 占大头）＋推理约 5/5/2.8 分钟。12h 总预算下午后可跑约 100 题量级，单题 5 分钟偏紧（rich 修完不够提交）。
-3. 环境影响：无。失败均可解释为 agent 行为或预算，无需剔题。
-4. 下一步优先改**生成行为**而非定位：rich 证明定位能力足够；fastapi 死于重复执行同一脚本、无进展不停止、无收尾。候选：重复动作抑制、无进展停止条件、收尾时间预留（003 做对照；002 图工具暂不优先）。
+1. 主要观察：3 题中 1 题验证成功；FastAPI 有重复动作与预算耗尽，Rich 虽超时仍通过自动回收获得成功，Requests 验证超时。退出事件与修复失败应分别统计。
+2. 时间：模型启动约346s、批次墙钟约14.1分钟；返回的308/304.6/162秒包含准备、Agent和验证，不能直接称为推理时长，也不能据此预测12小时吞吐量。具体阶段仍需原始时间线。
+3. 环境影响：未见明确致命初始化失败；验证时限、源码导入路径及读取范围异常的影响尚未排除。保留3题原始分母，不能把Requests计为已修复，也不静默剔题。
+4. 下一步优先研究**固定预算下的无进展识别与收尾**。这是针对已观察行为的优先级选择；Rich单题成功不能证明定位已不构成瓶颈，扩大开发面板后再决定是否启动002。
 
 ## 下一步
 
 1. （可选）MCP 对旧本子读取恢复后，拉 `traces/*.json` 存档核对；不阻塞 002/003。
-2. 修结果汇总 cell（读 traces 而非 task_results.jsonl）——随 002/003 的运行载体一起改。
-3. 002/003 复用本轮划分、环境和日志；004 目标候选：重复无效搜索抑制（fastapi 有完整反例）。
+2. 修结果持久化与汇总：逐题返回后调用官方保存函数，读取正确的补丁长度字段；traces用于补充行为时间线，不能替代裁判结果。具体见下文及003计划。
+3. 002/003复用本轮划分、环境和日志；004目标候选为重复无效动作抑制，仍需多任务证据和完整轨迹归档。
+
+## 2026-09-28 后续研究复核
+
+本次只读检查仓库实现、官方最新讨论及官方 wheel 源码，未重跑模型或验证。旧 Notebook `ccjjllt/001-baseline-smoke` 的读取仍返回 `kernels.get` 权限错误，因此没有独立复核原始补丁和轨迹。
+
+以下结论来自当前取得的 `swegemma 0.2.7` 源码，SHA-256 为 `2b74d402dc95a615f3b36c56fd3f9ba11ddbfb7db8a5a32ec259369a0f559d98`；后续运行应记录实际安装文件版本，避免同版本重打包造成差异。
+
+- `evaluate.py` 的 `Evaluator.evaluate_task()` 返回 `TaskResult`，本身不写结果汇总；批量 `run()` 才调用 `swegemma.results.append_task_result`。当前逐题入口只打印结果，是 `ROWS=0` 的直接实现原因，不是没有运行结果。
+- `append_task_result(result, output_dir, running_results)` 可保存 JSONL、补丁、裁判输出与累计汇总。官方 JSONL 用 `agent_patch_size` 表示补丁字符数，没有 `agent_patch` 正文字段。现有汇总读取 `agent_patch`，即使文件生成也会误报空补丁。
+- `EvalConfig.timeout_seconds` 被传给 `harness.command_timeout_seconds`；`tools/execution.py` 的命令执行和 `harness/verification.py` 的最终 pytest 共用它。本轮60秒配置也限制了最终裁判，必须先对冻结补丁诊断，不能只加Agent时间。
+- `TaskResult.duration_seconds` 从 `evaluate_task` 进入时开始，在验证后计算，包含准备、Agent与验证，不含外部模型服务启动。若表中数字来自其他日志，应保留原始出处，否则按整题时长解释。
+- `tools/workspace.py` 的核心 `read_file` 及注册 wrapper 都传递并支持 `start_line/end_line`。目前无法认定是harness忽略正确行范围，应先查看模型实际传入的参数、工具schema与响应。
+- FastAPI“无生产源码修改”与“补丁非空”可以同时成立；补丁可能包含复现脚本等文件，具体内容尚未取得。后续按实际diff区分生产代码、测试、临时文件，不把字符数当有效修复证据。
+
+主办方在[9月28日澄清](https://www.kaggle.com/competitions/gemma-4-developer-agent/discussion/743964)中确认：12小时超限整次报错仍未修复，不支持并行模型调用，LoRA加载已修复，允许用Gemma-4-31B自身生成数据训练；其他模型输出仍待答复。这进一步支持先改善串行运行效率，暂不增加多Agent或训练复杂度。
+
+下一轮按[003更新计划](../plan/003-budget-and-context.md)推进；本节是研究复核，不代表003已经实现或获得效果。
+
+## 进一步的运行链复核
+
+本次追加只读检查adk-submission 0.2.11、google-adk 1.36.1与两个运行载体，补充了安装前导入、旧wheel/缓存、缺失清单自动换题、scope误触发、输出覆盖、服务释放、异常恢复、模型身份、实际工具schema、字符截断和提交语义等问题。详见[003运行载体补充](../plan/003-runtime-reliability.md)的R01–R19。
+
+已确认公有SwegemmaContext可用于记录完整Agent阶段时长；read_file字符截断时返回end_line可能超出实际显示内容；免费状态/提交工具仍受时限限制；成功提交后的新修改不会自动替换已提交补丁。上述源码事实尚不等于已定位001每个异常的唯一根因。
+
+研究设计也相应修正：共同提示消除强制制造修改的要求，预算观察节奏在各组一致；检测非相邻短循环；平衡组别执行次序；保留28题不提前用尽。当前只更新交接文档，功能代码与远程运行状态未改变。

@@ -4,7 +4,7 @@
 
 建立一个符合比赛接口的单 Agent、无 LoRA 基线，观察指定模型从问题描述到补丁提交的实际行为。首先区分运行环境故障、代码定位失败、错误修改、工具调用失败和预算耗尽，再决定后续改进方向。
 
-本轮尚未实现或运行。资料依据是 2026-09-28 取得的官方说明、Getting Started Notebook v2 和公开任务文件；文件指纹见[计划索引](README.md)。
+本文件保留001的原始研究设计；实现和三题初步运行已完成，实际状态见[001进展](../progress/001-baseline.md)。后续已发现的接口、记录和运行载体问题，以[003修正交接](003-runtime-reliability.md)为准。原始资料依据为2026-09-28取得的官方说明、Getting Started v2和公开任务文件，指纹见[计划索引](README.md)。
 
 ## 已确认的实验条件
 
@@ -96,6 +96,8 @@ Notebook 记录 Python、CUDA、GPU 名称/数量/显存、`swegemma`、`adk-sub
 
 本轮小批开发的拟定起点：单命令 60 秒、50 次计费工具调用、每题 Agent 阶段 5 分钟、最多 80 个模型轮次。这是待观察的研究配置，不是官方默认，也未证明适合全量提交。模型服务启动时间单独记录。
 
+后续源码复核补充：当前0.2.7的timeout_seconds同时限制Agent命令与最终pytest，不只作用于单命令；更改此值应重新固定所有对照组，详见003。
+
 官方 README 与早期主办方答复关于省略字段时的默认值不完全一致，因此始终显式填写并核对实际运行记录。单题 Agent 计时不含准备，12 小时总预算含准备，不能用 `题数 × 5 分钟` 代替总耗时测量。
 
 ### 4. 复用模型服务与 Evaluator
@@ -115,6 +117,8 @@ Notebook 记录 Python、CUDA、GPU 名称/数量/显存、`swegemma`、`adk-sub
 ### 5. 保留原始结果并分析失败
 
 官方结果目录包含 `summary.json`、`task_results.jsonl`、`patches/<instance_id>.patch`、`test_outputs/<instance_id>.log`、`traces/trace_<instance_id>.json`、`logs/<instance_id>.log`。
+
+后续实现复核补充：手动逐题evaluate_task不会自动生成上述全部汇总，须显式调用append_task_result；JSONL中保存agent_patch_size而不是agent_patch正文。完整改动见003补充R08–R09，不能仅改成从trace猜测裁判结果。
 
 官方 v2 实际读取的结果属性包括 `resolved`、`test_exit_code`、`agent_patch`、`tool_calls`、`duration_seconds`。原始返回与轨迹先保留，再生成分析视图；缺失字段记为空，不能用推测补值。
 

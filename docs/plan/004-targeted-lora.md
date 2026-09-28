@@ -1,5 +1,7 @@
 # 004：针对单一失败行为的 LoRA 微调
 
+优先级更新（2026-09-28）：001三题结果已提供无进展循环的候选训练目标，但缺少多任务归因与完整落盘产物。先完成[003](003-budget-and-context.md)的记录修复和行为对照，再判断需要学习的剩余错误；本轮尚不开始训练。
+
 ## 研究背景与目标
 
 本轮承接 [001：无 LoRA 基线](001-baseline.md)，从真实失败轨迹中选择一个可学习的行为开展 SFT。
@@ -22,7 +24,7 @@
 `agent.yaml` 的 `adapter` 引用 `adapters/` 下的名称；首轮只使用一个 adapter。
 官方服务支持最多 8 个 LoRA、最大 rank 128，解压后的整个提交必须小于 3 GiB。
 上述数量与 rank 是上限，不是首轮推荐规模；大小必须测量实际导出文件，不能只依赖估算。
-官方 4×L4 是评分环境；账号当前每周 30 小时 GPU 配额尚未使用，可分配型号仍未确定。
+官方4×L4是评分环境，001已在4×L4上完成推理运行；这不证明同一配置足以微调。账号此前显示每周30小时额度，001记录累计使用3858秒，后续训练前重新读取当前剩余额度。
 M5 32GB 可用于资料整理、数据筛选和轨迹分析；不预设它能复现 CUDA 训练与比赛推理。
 训练显存取决于基座格式、序列长度、目标层、优化器及批量，不能由量化权重大小直接推算。
 
@@ -40,6 +42,8 @@ M5 32GB 可用于资料整理、数据筛选和轨迹分析；不预设它能复
 按仓库报告结果；httpx 只有 1 题，不能据此声称具备该仓库的普遍修复能力。
 数据不足时优先缩小研究问题，不通过挪用保留任务扩大训练集。
 
+本轮具体清单约定：尚未用于策略选择的dev_future及其未暴露组为训练候选；dev_panel和003新增探索题用于选择与诊断，不再同时充当独立训练效果评估。训练清单、选择清单和最终保留清单按任务、同commit组及已发现近重复组互斥，003从future抽出的题须登记暴露后移出首批训练候选。heldout不参与训练、样本筛选或目标行为标注；若先前已经根据其结果选择方向，后续只能称已暴露评估，不能重新获得独立性。
+
 ## 数据来源与样本选择
 
 首轮优先使用指定 Gemma 基座在研究训练任务上的轨迹，以及可追溯的人工整理示例。
@@ -47,8 +51,8 @@ M5 32GB 可用于资料整理、数据筛选和轨迹分析；不预设它能复
 局部示例若来自整题失败轨迹，应单独复核局部动作，不能把所有失败轨迹一律当负例。
 公开参考补丁或验证信息只用于训练侧标注与离线分析，不能进入保留任务的 Agent 输入。
 SWE-Gym、SWE-smith 等外部数据可作为后续来源，需记录许可、来源、工具转换和任务去重情况。
-截至 2026-09-28，讨论 742807 的主办方回复仍表示正在讨论，尚未明确回答外部教师蒸馏问题。
-因此本轮不以专有 API 教师生成的数据为必要条件，也不把通用外部数据条款写成蒸馏已获许可。
+2026-09-28，主办方在讨论743964中明确允许使用Gemma-4-31B自身生成的数据训练，并表示其他模型输出仍待进一步答复；同时确认前一日已修复LoRA加载。加载修复公告不等于本项目adapter兼容性已经实测。
+讨论742807关于外部教师的问题尚未取得明确许可，因此本轮可围绕指定基座自身生成并筛选的轨迹设计，不以专有API教师为必要条件，也不把一般外部数据条款扩展为所有蒸馏方式已获许可。
 
 ## 项目自定义数据字段
 
@@ -129,5 +133,6 @@ SWE-Gym、SWE-smith 等外部数据可作为后续来源，需记录许可、来
 - [比赛 Data：本轮已读取 HARNESS_README.md](https://www.kaggle.com/competitions/gemma-4-developer-agent/data)
 - [比赛 Rules：外部数据、工具与获奖成果要求](https://www.kaggle.com/competitions/gemma-4-developer-agent/rules)
 - [外部教师蒸馏讨论 742807：截至本轮仍待主办方明确答复](https://www.kaggle.com/competitions/gemma-4-developer-agent/discussion/742807)
+- [主办方9月28日确认自生成数据许可与LoRA加载修复](https://www.kaggle.com/competitions/gemma-4-developer-agent/discussion/743964)
 - [Google 指定 QAT 模型](https://huggingface.co/google/gemma-4-31B-it-qat-w4a16-ct)；[Google 通用 QLoRA 教程](https://ai.google.dev/gemma/docs/core/huggingface_text_finetune_qlora)
 - [vLLM Gemma 4 配方](https://github.com/vllm-project/recipes/blob/main/Google/Gemma4.md)；[SWE-Gym](https://github.com/SWE-Gym/SWE-Gym)；[SWE-smith](https://github.com/SWE-bench/SWE-smith)
