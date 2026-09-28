@@ -70,7 +70,7 @@
 | requests_6592 | False | **124（验证超时）** | 579（`submit_patch` 正常提交，1 文件） | 33/50 | 162s 完成＋验证超时 | Agent 行为满分（定位→修改→验证→提交），失败在验证阶段超时，非 agent 失败 |
 
 环境观察：每题沙箱 `ensurepip unavailable` 警告（venv 无 pip，非致命，不影响执行）；subprocess 沙箱可用；`get_status` 被正确调用（rich 272s、requests 162s），但 fastapi/rich 均未预留收尾时间。
-工具观察：`task_results.jsonl`/`summary.json` 在此 harness 版本未生成（仅空 `logs/` + `traces/*.json`），结果汇总 cell 记 `ROWS=0`——后续改从 `traces/trace_<id>.json` 提数（待 MCP 读取权限恢复后拉取核对）。
+工具观察：`task_results.jsonl`/`summary.json` 在此 harness 版本未生成（仅空 `logs/` + `traces/*.json`），结果汇总 cell 记 `ROWS=0`——后续改从 `traces/trace_<id>.json` 提数。原始轨迹存于 Kaggle `001-baseline-smoke` 运行的 working 区（`trace_fastapi_11194.json` 159KB、`trace_rich_2725.json` 171KB、`trace_requests_6592.json` 94KB）；MCP 对该旧本子持续 `kernels.get denied`（新本子 `001-baseline` 可读），traces 暂无法经 MCP 拉取，001 分类以粘贴日志为准（逐题 resolved/exit/patch/calls/duration 均有），traces 仅作存档引用。
 
 ## 001 四问回答
 
@@ -81,6 +81,6 @@
 
 ## 下一步
 
-1. MCP 读取权限恢复后拉 `traces/*.json` 核对逐题数据（以轨迹为准，日志粘贴版为辅）。
-2. 修结果汇总 cell（读 traces 而非 task_results.jsonl）。
+1. （可选）MCP 对旧本子读取恢复后，拉 `traces/*.json` 存档核对；不阻塞 002/003。
+2. 修结果汇总 cell（读 traces 而非 task_results.jsonl）——随 002/003 的运行载体一起改。
 3. 002/003 复用本轮划分、环境和日志；004 目标候选：重复无效搜索抑制（fastapi 有完整反例）。
