@@ -59,8 +59,28 @@
 3. 把输出（`ROWS/RESOLVED`、`EVAL_WALL_MIN`、逐题行、环境版本行）贴回；产物（`results/`、`analysis_001_smoke.csv`、`submission.zip`）保留在 Kaggle working。
 4. 用户告知 fork 的 slug 后，用 MCP 只读轮询运行状态与输出，不再经 MCP 提交运行。
 
+## smoke 运行结果（2026-09-28，用户浏览器执行 `ccjjllt/001-baseline-smoke`，run_id 以 Kaggle 为准）
+
+环境：4×L4（各22GiB，tp=4），vLLM 启动 346.4s；装包约1分钟；`EVAL_WALL_MIN=14.1`；`submission.zip` 打包校验通过。GPU 额度累计用 3858s（约1.07h）。
+
+| 任务 | resolved | exit | patch | calls | 时长 | 主因 |
+| --- | --- | --- | --- | --- | --- | --- |
+| fastapi_11194 | False | 1 | 2483（超时自动提取，未 submit） | 40/50 | 308s（超时） | 预算耗尽＋重复无效动作：同一 `reproduce_issue.py` 反复执行约25次、5 次 `read_file(params.py)` 无收敛、零源码修改；多次自判“已修复”却不收尾 |
+| rich_2725 | **True** | 0 | 2936（超时自动提取） | 35/50 | 304.6s（超时） | 定位＋修改正确（270s 改 `table.py:869 box_segments` 索引），超时前没调用 submit，靠自动提取通过；`read_file` 两次无视指定行范围返回 1~150（harness 侧观察） |
+| requests_6592 | False | **124（验证超时）** | 579（`submit_patch` 正常提交，1 文件） | 33/50 | 162s 完成＋验证超时 | Agent 行为满分（定位→修改→验证→提交），失败在验证阶段超时，非 agent 失败 |
+
+环境观察：每题沙箱 `ensurepip unavailable` 警告（venv 无 pip，非致命，不影响执行）；subprocess 沙箱可用；`get_status` 被正确调用（rich 272s、requests 162s），但 fastapi/rich 均未预留收尾时间。
+工具观察：`task_results.jsonl`/`summary.json` 在此 harness 版本未生成（仅空 `logs/` + `traces/*.json`），结果汇总 cell 记 `ROWS=0`——后续改从 `traces/trace_<id>.json` 提数（待 MCP 读取权限恢复后拉取核对）。
+
+## 001 四问回答
+
+1. 主要失败阶段：预算耗尽 2/3（fastapi、rich 超时），验证超时 1/3（requests）。无环境/依赖失败。
+2. 时间：准备约 7 分钟（模型启动 346s 占大头）＋推理约 5/5/2.8 分钟。12h 总预算下午后可跑约 100 题量级，单题 5 分钟偏紧（rich 修完不够提交）。
+3. 环境影响：无。失败均可解释为 agent 行为或预算，无需剔题。
+4. 下一步优先改**生成行为**而非定位：rich 证明定位能力足够；fastapi 死于重复执行同一脚本、无进展不停止、无收尾。候选：重复动作抑制、无进展停止条件、收尾时间预留（003 做对照；002 图工具暂不优先）。
+
 ## 下一步
 
-1. 用户在浏览器跑通 smoke 3 题，贴回输出。
-2. 按 001 计划填失败分类表（环境/定位/修改/工具/截断/预算/提交/待定），回答四问：主要失败阶段、准备与推理耗时、环境影响、优先改定位还是生成。
-3. 002/003 复用本轮划分、环境和日志；004 目标等失败分布出来再定。
+1. MCP 读取权限恢复后拉 `traces/*.json` 核对逐题数据（以轨迹为准，日志粘贴版为辅）。
+2. 修结果汇总 cell（读 traces 而非 task_results.jsonl）。
+3. 002/003 复用本轮划分、环境和日志；004 目标候选：重复无效搜索抑制（fastapi 有完整反例）。
