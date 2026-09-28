@@ -17,7 +17,11 @@
 - 参赛：`user_has_entered=true`，截止 2026-12-02，每日 1 次，最多 2 最终提交。
 - GPU 额度：周 108000s（30h），已用 0、预留 0，刷新 2026-10-03T00:00Z；不证明 L4 可用。
 - 数据：`tasks.jsonl 1984455B sha256 e4b3fd60…f5f8f3c8ad6`，129 行，127 组（fastapi 67 / rich 48 / requests 13 / httpx 1），与计划指纹一致；`HARNESS_README.md 49356B` 一致；`.tgz129/.npz127/.json129/.whl124`。
-- 官方 Notebook：`ryanholbrook/getting-started… current_version_number=2`，本次读到 `last_run_time=2026-09-25T06:49:38Z`（计划记录 06:14:17Z，有漂移，见下）；模型资源 `google/gemma-4/Other/gemma-4-31b-it-qat-w4a16-ct/2`。
+- 官方 Notebook：`ryanholbrook/getting-started… current_version_number=2`，最新读到 `last_run_time=2026-09-25T07:06:36Z`（计划记录 06:14:17Z；中间曾观测 06:49:38Z，属重跑时间戳漂移）；模型资源 `google/gemma-4/Other/gemma-4-31b-it-qat-w4a16-ct/2`。
+- v1→v2 源码 diff（2026-09-28 实测，仅 3 处实质变更，其余为标题/时间戳）：
+  - 新增顶层标题 cell `827a919e`；删除 §5 下预算说明 cell `7e3c6acc`（“sample 约束极低、可自设，仅 12h 强制”）。
+  - `VllmConfig` 删除 `default_chat_template_kwargs={'enable_thinking': True}`；本轮 notebook 同 v2，不加该参数。
+  - §5 预算由 v1 硬编码（`max_tool_calls=100`、`max_time_minutes=5.0`，忽略 eval 文件）改为 v2 全部从 `eval_config.yaml` 读取（默认 `300/100/60.0/None`）；本轮 `60/50/5/80` 在 v2 下真实生效，在 v1 下调用与时间会被强制覆盖。显式填写四字段的理由不变。
 - 官方 sample：`agent.yaml` 9 工具 + 子 Agent + `main_lora`；`sampling` 与本轮一致；`eval_config 60/10/1/50`；`system.md 3888B` 快修约束已吸收；`code_analyzer.yaml` 确认 001 删除。
 - 本地：Mac M5 只做校验，未安装 `swegemma/adk/vllm` GPU 栈；`agent` YAML 与 notebook JSON 已过本地解析。
 
@@ -32,7 +36,7 @@
 
 - 未在 Kaggle 执行：模型加载、工具调用完整性、补丁提取、轨迹↔验证对应、准备/Agent/验证分段耗时均未知。
 - 待 Kaggle 首跑 smoke 3 题后填：`run_id`、任务 ID、配置版本、执行环境（Python/CUDA/GPU/包版本）、分段耗时、补丁非空、退出原因、失败主因、证据路径。
-- 版本漂移：官方 Notebook `last_run_time` 与计划差约 35 分钟；重跑前须重取源码确认接口未变。
+- 版本漂移已核对：v1→v2 仅上述 3 处实质变更，环境安装/数据拷贝/图函数/打包均一致；重跑前仍须重取源码确认（若出 v3，重点看预算与 VllmConfig 是否再变）。
 - 主办方 9-26/9-27 答复（embedding 已修 / async 缺失 / subprocess 沙箱）仍以重下载后实测为准；`EventsCompactionConfig(15/2/14336/5)` 为 Notebook 侧配置，不宣称为正式评分压缩。
 - 12h 触顶、隐藏任务顺序/数量、token 统计口径待运行日志确认。
 
