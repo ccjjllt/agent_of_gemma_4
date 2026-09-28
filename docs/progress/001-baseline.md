@@ -1,0 +1,43 @@
+# 001 进展：无微调基线实现（未运行）
+
+日期：2026-09-28。状态：已实现可打包基线与运行载体，尚未在 Kaggle GPU 运行，无模型结果，不填预期分数。
+
+## 本次修改文件
+
+- `agent/agent.yaml`：单 `LlmAgent`，模型 `gemma-4-31b-it-qat-w4a16-ct`，`!include prompts/system.md`，仅 6 工具（run_command/read_file/edit_file/write_file/get_status/submit_patch），无 `adapter`、无子 Agent。相对官方 sample（9 工具 + `agent_tool` + `adapter: main_lora`）做减法。
+- `agent/prompts/system.md`：定位→阅读→修改→检查→提交；仓库证据、小范围 `read_file`（1 起含两端，`is_truncated` 分段）、`run_command` 先查可用命令（不默认 `rg`）、`get_status` 收尾、`submit_patch`；不改测试、不全量 pytest；`hints` 仅会话存在非空时参考，不做缺失变量插值。
+- `agent/configs/sampling.yaml`：`temperature 0.2 / top_p 0.95 / max_output_tokens 16384 / thinking_budget 4096 / include_thoughts true`，省略 `thinking_level`。与官方 v2 采样一致，加版本注释。
+- `agent/eval_config.yaml`：`evaluation: timeout_seconds 60 / max_tool_calls 50 / max_time_minutes 5 / max_turns 80`。官方 sample 为 `60 / 10 / 1 / 50`；本轮放宽调用/时间/轮次作小批观察起点，不是官方默认，全量前按实测重定。
+- `notebooks/001-baseline.ipynb`：由官方 v2 改编；环境安装、清单校验、vLLM 服务、逐题顺序执行、结果读取、打包各独立单元格；显式用 `load_tasks / validate_single_declared_model / VllmConfig,VllmServer,discover_adapters / EvalConfig,build_submission_limits / Evaluator.evaluate_task(task,task_index,total_tasks)`，`tool_call_parser=gemma4, reasoning_parser=gemma4, max_model_len=32768, sandbox=subprocess`。
+- `research/task_splits.json`：种子 `20260928`，按 `(repo, base_commit)` 分组不拆组；`heldout 28 / dev_panel 24（含 smoke 3）/ dev_future 76 / explore_singleton 1`；仅 ID/仓库/commit/标签，无答案。smoke：`fastapi_11194, rich_2725, requests_6592`；单例：`httpx_3672`。
+- `results/001/`：空目录占位，运行后按 `<run_id>/` 存官方原始产物 + 环境配置快照。
+
+## 数据与环境版本（本次 MCP 实测）
+
+- 参赛：`user_has_entered=true`，截止 2026-12-02，每日 1 次，最多 2 最终提交。
+- GPU 额度：周 108000s（30h），已用 0、预留 0，刷新 2026-10-03T00:00Z；不证明 L4 可用。
+- 数据：`tasks.jsonl 1984455B sha256 e4b3fd60…f5f8f3c8ad6`，129 行，127 组（fastapi 67 / rich 48 / requests 13 / httpx 1），与计划指纹一致；`HARNESS_README.md 49356B` 一致；`.tgz129/.npz127/.json129/.whl124`。
+- 官方 Notebook：`ryanholbrook/getting-started… current_version_number=2`，本次读到 `last_run_time=2026-09-25T06:49:38Z`（计划记录 06:14:17Z，有漂移，见下）；模型资源 `google/gemma-4/Other/gemma-4-31b-it-qat-w4a16-ct/2`。
+- 官方 sample：`agent.yaml` 9 工具 + 子 Agent + `main_lora`；`sampling` 与本轮一致；`eval_config 60/10/1/50`；`system.md 3888B` 快修约束已吸收；`code_analyzer.yaml` 确认 001 删除。
+- 本地：Mac M5 只做校验，未安装 `swegemma/adk/vllm` GPU 栈；`agent` YAML 与 notebook JSON 已过本地解析。
+
+## 本地验证
+
+- `agent/*.yaml` YAML 解析通过；确认无 `adapter`、工具集合恰为 6、无 `thinking_level`、四预算字段齐全。
+- `task_splits` 无跨组分裂（125×1 + 2×2 组均完整），无答案字段（`patch/test_patch/problem_statement/hints_text` 均未进文件）。
+- notebook JSON 解析通过 8 markdown + 7 code；打包单元格以 `AGENT_DIR` 为根，校验 `agent.yaml` 在根、无 `sub_agents/adapters`、扩展名与 3GiB。
+- 打包 dry-run（本地 `agent/` zip）：根见 `agent.yaml`，`!include` 两目标存在。
+
+## 未运行与未解决问题
+
+- 未在 Kaggle 执行：模型加载、工具调用完整性、补丁提取、轨迹↔验证对应、准备/Agent/验证分段耗时均未知。
+- 待 Kaggle 首跑 smoke 3 题后填：`run_id`、任务 ID、配置版本、执行环境（Python/CUDA/GPU/包版本）、分段耗时、补丁非空、退出原因、失败主因、证据路径。
+- 版本漂移：官方 Notebook `last_run_time` 与计划差约 35 分钟；重跑前须重取源码确认接口未变。
+- 主办方 9-26/9-27 答复（embedding 已修 / async 缺失 / subprocess 沙箱）仍以重下载后实测为准；`EventsCompactionConfig(15/2/14336/5)` 为 Notebook 侧配置，不宣称为正式评分压缩。
+- 12h 触顶、隐藏任务顺序/数量、token 统计口径待运行日志确认。
+
+## 下一步
+
+1. Kaggle 上传 `agent/` 到 `/kaggle/working/agent`，按 notebook `smoke → dev_panel` 跑，保留 `results/` 原始产物。
+2. 人工填失败分类表（环境/定位/修改/工具/截断/预算/提交/待定），回答 001 四问：主要失败阶段、准备与推理耗时、环境影响、优先改定位还是生成。
+3. 002/003 复用本轮划分、环境和日志；004 目标等失败分布出来再定。
