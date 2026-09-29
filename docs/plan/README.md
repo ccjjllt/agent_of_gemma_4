@@ -42,6 +42,8 @@
 - 闭源教师模型蒸馏的专项讨论中，当前读取到的主办方答复仍是等待进一步说明；一般外部数据条款不能代替该具体问题的结论。[蒸馏讨论](https://www.kaggle.com/competitions/gemma-4-developer-agent/discussion/742807)
 - 主办方9月28日进一步确认：12小时超限整次报错尚未修复、不支持并行模型调用、LoRA加载已修复、允许使用Gemma-4-31B自身生成的数据训练；其他模型输出仍待说明。[最新澄清](https://www.kaggle.com/competitions/gemma-4-developer-agent/discussion/743964)
 - 当前wheelhouse依赖为正式环境依据，不支持ADK2.x；本地更换依赖不能改变正式评分服务。[版本说明](https://www.kaggle.com/competitions/gemma-4-developer-agent/discussion/743800)
+- 数据源挂载分三层验证（2026-09-29实测）：MCP的`save_notebook`通道挂不上数据源（6种组合元数据均无sources）；官方SDK SaveAndRunAll与CLI `kernels push`均可注册三项挂载（比赛/wheelhouse/模型v2，回读元数据确认）。元数据/页面显示挂载只证明“注册了挂什么”，不保证运行时布局。
+- `/kaggle/input`布局随worker而变：A0-smoke worker为嵌套布局（`competitions/…`、`datasets/metric/…`、`models/…`），joint v2/v3 worker为扁平布局（`/kaggle/input/<slug>/`直接放文件，v3日志 input_files 清单570+文件证实）。载体不得硬编码任一布局，应候选+marker文件双重解析，解析结果记入run_manifest；缺失即fail-fast（约13秒），不要按固定路径假设继续。
 
 ## 官方入口
 
