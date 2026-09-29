@@ -1,6 +1,6 @@
 # 003 进展：运行修正实现与 A0 基线首跑
 
-日期：2026-09-29。状态：R01–R19 代码修正已实现并经一次 A0 smoke 验证；B/C 对照尚未运行。
+日期：2026-09-29。状态：R01–R19 代码修正已实现并经一次 A0 smoke 验证；A0/B/C 联合探索载体已提交排队，尚无联合对照结果。
 
 ## 1. 本次运行事实
 
@@ -62,4 +62,27 @@
 
 ## 7. 下一步（待执行）
 
-B/C探索：6题（3 smoke + `fastapi_15280/rich_3905/requests_7315`）×3变体，ABC顺序轮换，约2.5小时GPU。注意requests系任务在该环境裁判失真，配对分析时验证超时/环境错误单列，不计入模型能力比较；24题面板同理。
+B/C探索：六题（3 smoke + `fastapi_15280/rich_3905/requests_7315`）×三变体。原单组载体仍保留，新增联合载体实现逐题ABC轮换并已提交，详见第8节。总耗时应包含准备和验证，不能把2.5小时作为已验证上界。
+
+已证实的环境问题范围是`requests_6592`在本次subprocess条件下的httpbin fixture错误，不直接推广到其他Requests任务。所有六题保留原始运行与裁判结果，验证超时/环境错误另列，并以各任务证据定义三组共用的有效验证子集，不能事后删题抬高成功率。
+
+后续组织见[003减少排队交接](../plan/003-queue-efficient-execution.md)：合并GPU资源申请并复用模型服务，独立CPU诊断与本地分析可在等待期间继续。
+
+## 8. 联合载体实现与队列迁移（2026-09-29）
+
+- 新增`notebooks/003-joint-explore-single-cell.py`和同代码的`notebooks/003-joint-explore.ipynb`。完整内嵌三组12份原配置与研究manifest，逐字节及SHA-256核对一致；保留模型、六题、预算60/50/5/80及采样设置。没有新增研究条件。
+- 六题顺序依次为`fastapi_11194`/ABC、`requests_6592`/ACB、`rich_2725`/BAC、`fastapi_15280`/BCA、`rich_3905`/CAB、`requests_7315`/CBA；A映射a0。默认18次，顺序调用，同一服务启动一次。已有A0 smoke不替代本批a0结果。
+- 每次新建Evaluator、SwegemmaContext和沙箱，独立attempt目录；分组维护官方结果列表与summary。逐次保存patch、trace、验证输出、上下文用量、异常、状态和产物哈希。服务停止前归档日志，包括启动失败内部清理路径；不自动重试。
+- 修正联合载体的ctx字段为`llm_calls_used`，调用前检查`evaluate_task`支持context参数，不再用捕获任意TypeError后重新执行的方式兼容接口。
+- 提交前仅作静态语法、配置原文及官方包接口核对；未运行本地评测、未新增测试文件。以上为实现事实，尚未证明远端18次全部成功运行。
+
+迁移时原A0/B版本1均为QUEUED且无输出，C查询为`No runs found for this kernel`。用户随后手动取消A0/B，接口确认两者为`CANCEL_ACKNOWLEDGED`；没有取消已完成smoke或CPU诊断。三份原源码及元数据保存到`research/003/queue-migration-20260929/`。
+
+合并Notebook：[003 Joint Explore A0 B C](https://www.kaggle.com/code/ccjjllt/003-joint-explore-a0-b-c)，kernel ID `136342691`。v1为QuickSave：MCP保存源码成功，但回读发现三个输入列表均丢失，因此没有作为实验运行。改用官方SDK完整设置来源并执行SaveAndRunAll，成功生成**v2**。MCP于2026-09-29 12:01（北京时间）回读确认：private、NvidiaL4、enable_gpu=true、enable_internet=false、版本2；比赛、wheelhouse、固定模型v2三个挂载齐全，代码单元与本地一致，状态为QUEUED。
+
+- Notebook SHA-256：`4f469acf05a0564dbdf2ab4e10501c173718b2d06993f415ff13437f4918e2ab`。
+- 远端回读代码SHA-256：`45dfd29d4b40dff489db569238dc9dbb04316b87aa1bff2430ce81282a6d41d7`。Kaggle规范化Notebook JSON，整文件不直接作远端逐字节比较。
+- 核对凭据：`research/003/queue-migration-20260929/joint-verified.json`；迁移记录见同目录`migration.json`。不含认证信息。
+- 当前是一条联合GPU运行申请；模型实际启动次数、完整结果和墙钟耗时待运行后读取。合并减少后续排队与重复启动，不能保证缩短本次平台分配GPU的等待。
+
+分析时以`joint_summary.json`中各组`planned=6`和完整状态表保留全部分母；官方分组summary只含实际返回的结果，不能在发生异常时直接把它当作六题成功率。共享服务可能保留前缀缓存，已记录执行顺序，但不宣称各次缓存完全等价。
