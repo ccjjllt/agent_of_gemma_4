@@ -68,6 +68,18 @@ def atomic_json(path, value):
     atomic_text(path, json.dumps(value, indent=2, ensure_ascii=False) + '\n')
 
 
+def input_snapshot(limit=50):
+    # Distinguish "no inputs attached" from "wrong path" within the fail-fast window.
+    root = Path('/kaggle/input')
+    try:
+        if not root.is_dir():
+            return ['/kaggle/input missing']
+        files = sorted(str(path.relative_to(root)) for path in root.rglob('*') if path.is_file())
+        return files[:limit] + ([f'...(+{len(files) - limit} more)'] if len(files) > limit else [])
+    except Exception as exc:
+        return [f'list-failed: {exc}']
+
+
 FROZEN_DIR = RUN_ROOT / 'frozen_bundle'
 FROZEN_DIR.mkdir()
 atomic_text(FROZEN_DIR / 'experiment_manifest.json', MANIFEST_TEXT)
@@ -125,7 +137,7 @@ for pattern in ('/usr/local/lib/python*/dist-packages/*cutlass*.pth',
             os.unlink(path)
         except OSError:
             pass
-assert WHEELHOUSE_DIR.is_dir(), f'Missing wheelhouse: {WHEELHOUSE_DIR}'
+assert WHEELHOUSE_DIR.is_dir(), f'Missing wheelhouse: {WHEELHOUSE_DIR} input_files={input_snapshot()}'
 source_wheels = [path for path in sorted(WHEELHOUSE_DIR.glob('*.whl')) if 'cutlass' not in path.name.lower()]
 assert source_wheels, 'Wheelhouse is empty'
 wheel_manifest = []
@@ -178,7 +190,8 @@ assert torch.cuda.is_available() and torch.cuda.device_count() >= 1, 'CUDA unava
 gpus = [{'index': i, 'name': torch.cuda.get_device_properties(i).name,
          'memory_bytes': torch.cuda.get_device_properties(i).total_memory}
         for i in range(torch.cuda.device_count())]
-assert TASKS_PATH.is_file() and MODEL_PATH.is_dir(), 'Competition data or pinned model is missing'
+assert TASKS_PATH.is_file() and MODEL_PATH.is_dir(), \
+    f'Competition data or pinned model is missing input_files={input_snapshot()}'
 raw_tasks = TASKS_PATH.read_bytes()
 tasks_sha = hashlib.sha256(raw_tasks).hexdigest()
 assert tasks_sha == EXPERIMENT['data']['source_sha256'], 'tasks.jsonl changed; stop before inference'
