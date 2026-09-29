@@ -51,8 +51,15 @@
 
 001只作历史参照，不作严格配对。A0在共同修正后仍得到1/3，但 resolve 任务互换、fastapi重复动作从约25次降至2次——提示词修正有行为效应，但收尾（两次顶满未提交）与补丁卫生（临时文件/自建测试入diff）未解决，正好是B（无进展识别）与C（软收尾）要对照的量。temperature 0.2随机性+小样本，不宣称显著。
 
-## 5. 下一步
+## 6. R16/R17 冻结诊断结果（2026-09-29，两次CPU kernel）
 
-1. R16冻结诊断：用本轮A0的`requests_6592`补丁（另名，非001原件）做60s/300s `verify_task`对照 + 未修改/参考环境对照（R17），无LLM、耗时短。
-2. B/C探索：6题（3 smoke + `fastapi_15280/rich_3905/requests_7315`）×3变体，ABC顺序轮换，约2.5小时GPU。
-3. 最多选一个候选上24题dev_panel配对；heldout保持冻结。
+- `run-003-diag-requests`（4臂）：A(A0补丁@60s)=124复现；B(A0补丁@300s)=exit 1（测试跑完，197KB输出）；C(空补丁@60s)=124；D(参考462字@60s)=124。结论：60s下金补丁同样超时，本地验证预算不足成立，但不能到此为止。
+- `run-003-diag-requests2`（2臂持久化输出）：B2(A0@300s)与D2(参考@300s)同为“135 passed, 1 skipped, 1 xfailed, **185 errors**”，输出除沙箱临时路径外一致。185个ERROR全是`test_requests.py`既有 Related Cases在setup期报错：`recursive dependency involving fixture 'httpbin'`（repo `conftest.py`的`def httpbin(httpbin)`包装与插件冲突，pytest新版判递归），与补丁无关。
+- 源码核对（`swegemma 0.2.7`，指纹与计划一致）：`resolved = test_res.exit_code == 0`（`verification.py:505`）。185个预存ERROR使exit恒为1，金补丁亦然——**requests_6592在此subprocess环境不可解**，A0的124不能判补丁好坏（R17：参考失败则不判模型能力）。
+- 60s超时另有独立证据：完整suite约65s+准备，60s对该题验证恒不够（A/C/D臂63/61/61s顶满）。
+- 缺口：B容器内pytest/pytest-httpbin确切版本未记录；`test_status_code_425`是否在135 passed内未按名确认（计数一致，名字只在失败/错误摘要出现）。
+- 001的requests_6592原件仍缺失，归因保留未知；本轮A0新补丁诊断另名存档，不冒充原件。
+
+## 7. 下一步（待执行）
+
+B/C探索：6题（3 smoke + `fastapi_15280/rich_3905/requests_7315`）×3变体，ABC顺序轮换，约2.5小时GPU。注意requests系任务在该环境裁判失真，配对分析时验证超时/环境错误单列，不计入模型能力比较；24题面板同理。
