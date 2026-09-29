@@ -33,10 +33,18 @@ EXPECTED_CONFIG_HASHES = {'a0': {'agent.yaml': 'dc61fe02ca6684a8f55deef1d6db6a76
 WORKING_DIR = Path('/kaggle/working')
 RUN_ROOT = WORKING_DIR / 'results' / '003' / RUN_ID
 AGENT_ROOT = WORKING_DIR / 'agent_exec' / RUN_ID
-DATA_DIR = Path('/kaggle/input/competitions/gemma-4-developer-agent')
+DATA_DIR = resolve_input(
+    [INPUT_ROOT / 'competitions/gemma-4-developer-agent', INPUT_ROOT / 'gemma-4-developer-agent'],
+    'tasks.jsonl')
 TASKS_PATH = DATA_DIR / 'tasks.jsonl'
-WHEELHOUSE_DIR = Path('/kaggle/input/datasets/metric/gemma-4-developer-agent-wheelhouse')
-MODEL_PATH = Path('/kaggle/input/models/google/gemma-4/other/gemma-4-31b-it-qat-w4a16-ct/2')
+WHEELHOUSE_DIR = resolve_input(
+    [INPUT_ROOT / 'datasets/metric/gemma-4-developer-agent-wheelhouse',
+     INPUT_ROOT / 'gemma-4-developer-agent-wheelhouse'],
+    'swegemma-0.2.7-py3-none-any.whl')
+MODEL_PATH = resolve_input(
+    [INPUT_ROOT / 'models/google/gemma-4/other/gemma-4-31b-it-qat-w4a16-ct/2',
+     INPUT_ROOT / 'gemma-4-31b-it-qat-w4a16-ct/2'],
+    'tokenizer.json', 'gemma-4-31b')
 TARGET_MODEL_NAME = 'gemma-4-31b-it-qat-w4a16-ct'
 assert SELECTED_VARIANTS and len(set(SELECTED_VARIANTS)) == len(SELECTED_VARIANTS)
 assert set(SELECTED_VARIANTS) <= {'a0', 'b', 'c'}, 'Unknown variant: stop, never substitute'
@@ -68,7 +76,7 @@ def atomic_json(path, value):
     atomic_text(path, json.dumps(value, indent=2, ensure_ascii=False) + '\n')
 
 
-def input_snapshot(limit=50):
+def input_snapshot(limit=120):
     # Distinguish "no inputs attached" from "wrong path" within the fail-fast window.
     root = Path('/kaggle/input')
     try:
@@ -78,6 +86,29 @@ def input_snapshot(limit=50):
         return files[:limit] + ([f'...(+{len(files) - limit} more)'] if len(files) > limit else [])
     except Exception as exc:
         return [f'list-failed: {exc}']
+
+
+INPUT_ROOT = Path('/kaggle/input')
+
+
+def resolve_input(candidates, marker, marker_substr=None):
+    # Mount layout varies by worker: nested (datasets/metric/…, competitions/…, models/…)
+    # or flat (<slug>/). Prefer known candidates, else locate by unique marker file.
+    for cand in candidates:
+        if cand.exists():
+            print(f'input resolved: {cand}', flush=True)
+            return cand
+    found = []
+    if INPUT_ROOT.is_dir():
+        for path in INPUT_ROOT.rglob(marker):
+            if marker_substr is None or marker_substr in str(path):
+                found.append(path.parent)
+    uniq = sorted(set(found))
+    assert len(uniq) == 1, (f'Input {marker} not found: '
+                            f'candidates={[str(c) for c in candidates]} scan={uniq[:5]} '
+                            f'input_files={input_snapshot()}')
+    print(f'input resolved by marker {marker}: {uniq[0]}', flush=True)
+    return uniq[0]
 
 
 FROZEN_DIR = RUN_ROOT / 'frozen_bundle'
@@ -240,8 +271,9 @@ run_manifest = {
     'tasks_sha256': tasks_sha, 'tasks_bytes': len(raw_tasks), 'versions': versions,
     'python': sys.version, 'executable': sys.executable, 'platform': platform.platform(),
     'gpus': gpus, 'tensor_parallel_size': tp_size, 'cuda_build': torch.version.cuda,
-    'budgets': budgets, 'sampling': common_sampling, 'sandbox': 'subprocess',
+    'budgets': budgets, 'sampling': common_sampling,     'sandbox': 'subprocess',
     'model_path': str(MODEL_PATH), 'model_alias': TARGET_MODEL_NAME,
+    'input_dirs': {'data': str(DATA_DIR), 'wheelhouse': str(WHEELHOUSE_DIR), 'model': str(MODEL_PATH)},
     'server_start_count': 0, 'model_requests': 'sequential',
     'context_cache': {'min_tokens': 2048, 'ttl_seconds': 1800, 'cache_intervals': 10},
     'events_compaction': {'compaction_interval': 15, 'overlap_size': 2,
