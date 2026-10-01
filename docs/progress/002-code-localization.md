@@ -141,3 +141,14 @@ TPU已有指定W4A16模型的新上游实现，但本项目未运行TPU；当前
 
 - BUNDLE 可解析（t0×4/t1×8）、12/12 哈希与磁盘一致；code 与 .ipynb 逐字节一致（60732B），`py_compile` 通过；调度 12 唯一（T0/T1 各 6，AB/BA 与 freeze 一致）；T1 采样与 T0 解析相等、预算一致（原始字符串仅注释头不同）；6 题与 heldout 28 无交集；skill 无 symlink、无答案读取（字面 grep 命中均为防护语/工具名，语义通过）。
 - 配额：GPU 余约 2.2h，名义够 Agent 部分但余量薄，判断刷新后可跑、当前不抢跑。可推送检查清单已备（push 当天重查配额/哈希/slug/L4/timeout/三源）。
+
+## CPU合同取证补记（2026-10-01，本地CPU，0A仍部分完成）
+
+- 取证包 `research/002/cpu_contract_20261001.json`（8项，每项含源码位置/实测输入输出/结论/边界）。未启动GPU/TPU，未装新推理栈，未改冻结文件。
+- A thought转发：`google/adk/models/lite_llm.py:879-940`（SHA `2f28c6af…`）thought仅进`reasoning_content`（`_NEW_LINE.join`，空则None；Anthropic另走`thinking_blocks`）。本地合成`引号/Unicode/换行` join保留，但“本地函数证据≠服务端渲染证据”，跨步留存需冻结服务最小请求验证。
+- B 双重转义全路径：`swegemma/tools/base.py:11-31`（`json.dumps`）→ `functions.py:1116-1117`（非dict包`{'result':str}`）→ `lite_llm.py:804-809`（`_safe_json_serialize`）。本地6类（含`SYNTH-REASONING-MARK--αβγ-"q"-\n-😀-END`）往返全ok；`_safe_json_serialize`确切参数不在摘录内，`ensure_ascii` True/False字节不同但均可逆。744272公告不当代部署证据。
+- C/D 采样实效：`lite_llm.py:1943-1970`白名单仅转`temperature/top_p/max_output_tokens→max_completion_tokens`等，`thinking_budget`数值与`seed`均丢弃；`generation.py:61-126`桥接`4096,true`与`1024,true`同为`enable_thinking:true`（本地复算），`minimal`仅开不设`reasoning_effort`，`0`桥接会关但schema `ge=1`禁止（`schema.py:155-175`）。T0=16384/c8192=8192单变量成立。
+- E 附带发现：`lite_llm.py:814`以`"gemma4" in model.lower()`选`tool_responses`，而`gemma-4-31b-it-qat-w4a16-ct`（含`openai/`前缀形态）均不含子串，静态走`role=tool`。实际传入model字符串形态待请求日志确认，不编造服务端兼容性。
+- F compaction：Starter/我方载体/manifest均为`interval=15, overlap=2, threshold=14336, retention=5`（Starter `official-starter-source.txt:253-258`，载体`283-284/383-384`），归档README正式描述为`5`（`HARNESS_README:553-563`，SHA `3d6e57a1…`）。仅记录差异，不泛化正式值；`interval`计`user-initiated invocations`语义本次无ADK行号证据，仍待补；压缩器属host App非YAML可提交参数。
+- H 指纹：三wheel与9-28解包零变更（`current-wheel-comparison.json`），tasks `e4b3fd60…`/1984455B、README `3d6e57a1…`/49356B一致；vLLM 433MB未下载。公开不变≠正式未修。
+- 遗留边界（仍部分完成，不闭环）：服务端渲染是否含合成标记、真实请求摘要（`max_completion_tokens/enable_thinking/tool`形态）、`EventsCompactionConfig`计数器源码、正式模板/服务版本、CPU mock压缩行为。0C保留16384结论不受影响。

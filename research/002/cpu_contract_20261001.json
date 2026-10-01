@@ -1,0 +1,330 @@
+{
+  "contract_id": "cpu-contract-20261001",
+  "date": "2026-10-01",
+  "timezone": "UTC (北京时间同日)",
+  "scope": "本地CPU取证；未启动GPU/TPU会话，未安装新推理栈，未改冻结文件（explore_freeze.json / T0-T1配置 / 原载体 / 0C结果）",
+  "basis": [
+    "docs/plan/002-tpu-feasibility.md §5 + §5末段0A部分完成说明",
+    "docs/plan/002-next-stage-handoff.md §0A",
+    "research/003/runtime-review-20260930/source-excerpts.md",
+    "research/003/runtime-review-20260930/cpu-contract-probes.json",
+    "research/003/runtime-review-20260930/current-wheel-comparison.json",
+    "research/002/preflight_evidence_run-002-preflight-20260930T022902Z-46739304.json"
+  ],
+  "status_0A": "部分完成（未闭环）。本地函数证据已取；服务端渲染/正式部署状态未知，仍列边界。",
+  "local_env": {
+    "python": "3.9.6 (本地取证机 darwin)",
+    "libs": "仅标准库 json/copy；未导入 google-adk/swegemma/vllm，未联网下载大文件",
+    "note": "与Kaggle preflight v2 (Python 3.12.13) 的stdlib往返结论一致，但字节细节需分别记录"
+  },
+  "items": [
+    {
+      "id": "A-thought-to-reasoning_content",
+      "requirement": "核对 lite_llm.py:879-940 thought→reasoning_content转发",
+      "sources": [
+        {
+          "file": "google/adk/models/lite_llm.py",
+          "sha256": "2f28c6afa110006e0fdec46c9ac7c6b614d74c81e0d0bf6fda2b0d6353111098",
+          "lines": "879-940",
+          "excerpt_ref": "research/003/runtime-review-20260930/source-excerpts.md:634-698"
+        }
+      ],
+      "code_path": "879: elif part.thought → 880 reasoning_parts.append；901-920 Anthropic thinking_blocks分支；922-934 reasoning_texts收集text/inline_data(text/*)并以_NEW_LINE join；934-940 return ChatCompletionAssistantMessage(content/tool_calls/reasoning_content or None)",
+      "local_probe": {
+        "function": "build_reasoning_content(texts)=NEW_LINE.join(t for t in texts if t)，NEW_LINE假设为\\n（源码未在摘录内定义，全字面为_NEW_LINE）",
+        "inputs": ["thought \"A\" 第一行", "thought B\\n第二行 😀", "", "thought C with \\\\ slash"],
+        "output_repr": "'thought \"A\" 第一行\\nthought B\\n第二行 😀\\nthought C with \\\\ slash'",
+        "output_len": 54,
+        "empty_case": "[] → None (对应 reasoning_content or None，939行)",
+        "message_shape": "{role:assistant, content:final_text, tool_calls:None, reasoning_content:<join或None>}"
+      },
+      "conclusion": "公开源码侧：thought与普通content分离，仅thought进入reasoning_content；空则为None；Anthropic另走thinking_blocks+signature分支（与本比赛gemma路径无关）。",
+      "boundary": [
+        "本地join证据≠服务端渲染证据：reasoning_content是否被vLLM chat_template保留、是否跨工具调用留存，需冻结模型服务最小请求验证；主办方744354公告不能当部署证据。",
+        "_NEW_LINE字面未在摘录内，本地按\\n复刻；若上游为其他分隔需以全文件核对。",
+        "仅看到请求中的reasoning_content或模型自述记得，不算留存证据（交接§0A验收）。"
+      ]
+    },
+    {
+      "id": "B-tool-double-json",
+      "requirement": "核对工具JSON双重转义完整路径",
+      "sources": [
+        {
+          "file": "swegemma/tools/base.py",
+          "sha256": "b430d48b6b32b9f886f8e4f07196a5e47a10d5307b827b19816a8d14f81b4ee2",
+          "lines": "11-31",
+          "detail": "ok_response/error_response均json.dumps(dict)->str"
+        },
+        {
+          "file": "google/adk/flows/llm_flows/functions.py",
+          "sha256": "551bf06d5e6bc0f257eef899deb431493d0b6c45e415f7731f5ed7bac4e95e06",
+          "lines": "1116-1117",
+          "detail": "if not isinstance(function_result, dict): function_result={'result': function_result}"
+        },
+        {
+          "file": "google/adk/models/lite_llm.py",
+          "sha256": "2f28c6afa110006e0fdec46c9ac7c6b614d74c81e0d0bf6fda2b0d6353111098",
+          "lines": "800-825",
+          "detail": "804-809 response若非str则_safe_json_serialize，否则直用；815-821装入ChatCompletionToolMessage"
+        }
+      ],
+      "local_probe": {
+        "replica": "ok_response(content=s) → {'result': inner_str} → json.dumps(wrapped)；_safe_json_serialize原实现不在摘录内，本地按json.dumps(ensure_ascii=False)复刻，已标假设",
+        "cases": [
+          {
+            "input": "quote \"hi\" with 'single'",
+            "inner_bytes": 57,
+            "outer_bytes": 83,
+            "outer_prefix": "{\"result\": \"{\\\"status\\\": \\\"ok\\\", \\\"content\\\": \\\"quote \\\\\\\"hi\\\\\\\" with 'single'\\\"}\"}",
+            "roundtrip_ok": true
+          },
+          {
+            "input": "backslash \\\\ path C:\\\\tmp",
+            "inner_bytes": 56,
+            "outer_bytes": 82,
+            "roundtrip_ok": true
+          },
+          {
+            "input": "newline\\nline2\\nline3",
+            "inner_bytes": 52,
+            "outer_bytes": 76,
+            "roundtrip_ok": true
+          },
+          {
+            "input": "unicode 中文 😀 café naïve",
+            "inner_bytes": 63,
+            "outer_bytes": 85,
+            "roundtrip_ok": true
+          },
+          {
+            "input": "{\"k\": \"v\\\\n\"} json-like",
+            "inner_bytes": 58,
+            "outer_bytes": 90,
+            "roundtrip_ok": true
+          },
+          {
+            "input": "SYNTH-REASONING-MARK--αβγ-\"q\"-\\n-😀-END",
+            "inner_bytes": 77,
+            "outer_bytes": 104,
+            "roundtrip_ok": true
+          }
+        ],
+        "ensure_ascii_note": "本地ensure_ascii=False保留原文；Kaggle preflight默认ensure_ascii=True时中文变\\uXXXX（如\\u4e2d），两者均往返ok但字节不同。服务端实际ensure_ascii与解码未知。",
+        "reference": "与cpu-contract-probes.json double_serialization_probe（outer 97B）及preflight_evidence escaping_roundtrip 5类全ok一致"
+      },
+      "conclusion": "公开源码链完整：工具str经functions.py包一层{'result':str}再经lite_llm序列化，换行/引号必然多层转义。stdlib往返本身不丢信息，但输入质量风险（模型看到转义后文本）仍存在，需真实渲染验证。",
+      "boundary": [
+        "_safe_json_serialize确切参数（ensure_ascii/indent/sort_keys/异常回退）未在摘录内，本地复刻≠字节级等价。",
+        "主办方744272双重编码公告不能当已修复证据；公开wheel未变≠私有服务未修，需请求级验证。",
+        "本地往返ok不证明模型能正确解析双重转义后的工具内容。"
+      ]
+    },
+    {
+      "id": "C-sampling-forwarding",
+      "requirement": "核对当前载体sampling参数哪些真正进请求（max_output_tokens/thinking/seed）",
+      "sources": [
+        {
+          "file": "google/adk/models/lite_llm.py",
+          "sha256": "2f28c6afa110006e0fdec46c9ac7c6b614d74c81e0d0bf6fda2b0d6353111098",
+          "lines": "1943-1970",
+          "detail": "白名单temperature/max_output_tokens/top_p/top_k/stop_sequences/presence_penalty/frequency_penalty；max_output_tokens→max_completion_tokens，stop_sequences→stop"
+        },
+        {
+          "file": "adk_submission/resolvers/generation.py",
+          "sha256": "e54d0995488e57011d6daeae327bd7ed0555c230703dfd29feb80da4bc7e5434",
+          "lines": "61-126",
+          "detail": "thinking桥接，见D项"
+        },
+        {
+          "file": "adk_submission/schema.py",
+          "sha256": "f58d205915065e3e4ffb83eff8d71aa094509105a3e048b15f5fa2f48b727c82",
+          "lines": "155-175",
+          "detail": "ThinkingConfig.thinking_budget ge=1，0不能作关闭方法"
+        },
+        {
+          "file": "research/002/variants/t0/agent/configs/sampling.yaml",
+          "lines": "6-11",
+          "content": "temperature:0.2 top_p:0.95 max_output_tokens:16384 thinking_config:{thinking_budget:4096, include_thoughts:true}"
+        },
+        {
+          "file": "research/002/variants/c8192对应sampling",
+          "detail": "与T0唯一差异max_output_tokens 8192，其余一致（capacity载体断言已验）"
+        }
+      ],
+      "local_probe": {
+        "map_function": "白名单映射复刻",
+        "input": {"temperature": 0.2, "top_p": 0.95, "max_output_tokens": 16384, "thinking_config": {"thinking_budget": 4096, "include_thoughts": true}, "seed": 123},
+        "output": {"temperature": 0.2, "max_completion_tokens": 16384, "top_p": 0.95},
+        "seed_forwarded": false,
+        "thinking_forwarded_as_numeric": false,
+        "note": "model_dump(exclude_none=True)保留seed/thinking_config但白名单丢弃；thinking数值仅经generation桥接变布尔，不进generation_params"
+      },
+      "conclusion": "真正进请求：temperature/top_p/max_output_tokens（改名max_completion_tokens）等白名单字段；include_thoughts:false确实可关thinking（经桥接→enable_thinking:false）。不进请求：thinking_budget数值、seed（填了也不构成确定性保证）、thinking_level原文（仅low/medium/high转reasoning_effort，见D）。",
+      "boundary": [
+        " lite_llm.drop_params等运行时开关、服务端是否忽略max_completion_tokens未知，需真实请求摘要验证。",
+        "temperature 0不等于全链路确定性；seed未转发已证，但随机性其他来源未排除。",
+        "当前结论基于公开wheel 1.36.1/0.2.11；正式服务版本未知。"
+      ]
+    },
+    {
+      "id": "D-thinking-bridge",
+      "requirement": "核对generation.py:61-126 thinking桥接细节",
+      "sources": [
+        {
+          "file": "adk_submission/resolvers/generation.py",
+          "sha256": "e54d0995488e57011d6daeae327bd7ed0555c230703dfd29feb80da4bc7e5434",
+          "lines": "61-126"
+        }
+      ],
+      "local_probe": {
+        "cases": [
+          {"in": {"thinking_budget": 4096, "include_thoughts": true}, "out": {"extra_body": {"chat_template_kwargs": {"enable_thinking": true}}}},
+          {"in": {"thinking_budget": 1024, "include_thoughts": true}, "out": {"extra_body": {"chat_template_kwargs": {"enable_thinking": true}}}, "note": "与4096输出完全相同，数值未传递"},
+          {"in": {"thinking_budget": 4096, "include_thoughts": false}, "out": {"extra_body": {"chat_template_kwargs": {"enable_thinking": false}}}},
+          {"in": {"thinking_budget": 4096, "thinking_level": "LOW"}, "out": {"extra_body": {"chat_template_kwargs": {"enable_thinking": true}}, "reasoning_effort": "low"}},
+          {"in": {"thinking_level": "minimal"}, "out": {"extra_body": {"chat_template_kwargs": {"enable_thinking": true}}}, "note": "minimal仅开thinking，不设reasoning_effort（源码120行仅low/medium/high设）"},
+          {"in": {"thinking_budget": null, "include_thoughts": null}, "out": null, "note": "直接返回原model，不克隆（对应else return model，106-107行）"},
+          {"in": {"thinking_budget": 0}, "out": {"extra_body": {"chat_template_kwargs": {"enable_thinking": false}}}, "note": "桥接会关，但schema ge=1禁止0，需用include_thoughts:false关闭"}
+        ]
+      },
+      "conclusion": "4096与1024在当前链均只形成enable_thinking:true，无数值预算语义；不要做4096-vs-1024消融。可辨别候选为thinking开/关与max_output_tokens。官方Starter采样与T0一致（temperature0.2/top_p0.95/16384/4096/true）。",
+      "boundary": [
+        "enable_thinking:true最终是否被chat_template/vLLM推理生效，需服务端渲染验证。",
+        "reasoning_effort仅low/medium/high设置，minimal行为本地已验但服务端解释未知。",
+        "notebooks/002-preflight-single-cell.py:95-108的简化bridge与源码逻辑一致，但缺level→reasoning_effort分支，全量以本探针为准。"
+      ]
+    },
+    {
+      "id": "E-tool-role-gemma4-substring",
+      "requirement": "附带发现：tool_role gemma4子串分支对当前别名的影响",
+      "sources": [
+        {
+          "file": "google/adk/models/lite_llm.py",
+          "sha256": "2f28c6afa110006e0fdec46c9ac7c6b614d74c81e0d0bf6fda2b0d6353111098",
+          "lines": "810-821",
+          "code": "tool_role = \"tool_responses\" if \"gemma4\" in model.lower() else \"tool\""
+        }
+      ],
+      "local_probe": {
+        "checks": [
+          {"model": "gemma-4-31b-it-qat-w4a16-ct", "contains_gemma4": false, "role": "tool"},
+          {"model": "openai/gemma-4-31b-it-qat-w4a16-ct", "contains_gemma4": false, "role": "tool"},
+          {"model": "gemma4", "contains_gemma4": true, "role": "tool_responses"},
+          {"model": "GEMMA4-x", "contains_gemma4": true, "role": "tool_responses"}
+        ],
+        "note": "连字符别名不含子串gemma4（gemma-4≠gemma4），静态判断走tool分支"
+      },
+      "conclusion": "按公开源码字面，当前比赛别名（含openai/前缀形态）均不触发tool_responses分支，将以role=tool发送。若服务端依赖tool_responses识别function_response，则存在协议错配风险；但实际传入model字符串形态需请求级确认，不在此下定论。",
+      "boundary": [
+        "传入_lite_llm转换的model参数是别名、带前缀还是解析后名，未在摘录内证实；需真实请求日志核对。",
+        "不编造服务端是否兼容tool角色；仅记录静态分支事实与待验请求。"
+      ]
+    },
+    {
+      "id": "F-compaction-interval",
+      "requirement": "核验compaction interval=15与README正式5的差异",
+      "sources": [
+        {
+          "file": "HARNESS_README.md (2026-09-28归档，非新下载)",
+          "sha256": "3d6e57a13234cb4e783ba24eaab486459af76e0923ea4c6607cd41cc8961bbbb",
+          "lines": "553-563",
+          "content": "EventsCompactionConfig: compaction_interval=5, overlap_size=2, token_threshold=14336, event_retention_size=5；另ContextCache min_tokens2048/ttl1800/intervals10"
+        },
+        {
+          "file": "official-starter-source.txt (Starter v2)",
+          "lines": "253-258",
+          "content": "EventsCompactionConfig(compaction_interval=15, overlap_size=2, token_threshold=14336, event_retention_size=5)"
+        },
+        {
+          "file": "notebooks/002-joint-explore-single-cell.py",
+          "lines": "283-284, 383-384",
+          "content": "run_manifest events_compaction 15 + EvalConfig events_compaction_config 15"
+        },
+        {
+          "file": "research/002/experiment_manifest.json",
+          "content": "compaction:{compaction_interval:15, overlap_size:2, token_threshold:14336, event_retention_size:5} + compaction_note已标差异"
+        },
+        {
+          "file": "research/003/runtime-review-20260930/source-excerpts.md:1192-1202",
+          "content": "同README 5的转录"
+        }
+      ],
+      "local_probe": {
+        "static_check": "我方载体/Starter/0C/探索模板均为15；归档README正式inference描述为5；两者overlap/threshold/retention一致，仅interval不同",
+        "semantic": "交接要求按ADK源码核实interval计user-initiated invocations而非每N次工具调用，token_threshold另有触发路径；本次无ADK EventsCompactionConfig源码摘录，未在本地复刻计数器"
+      },
+      "conclusion": "差异已记录：15（Starter/我方 notebook/实验manifest） vs 5（归档README正式inference示例）。不将我方15泛化为正式环境固定值；压缩器属host App配置，不属Agent YAML可提交参数，本地改动仅为诊断。",
+      "boundary": [
+        "README为9-28归档，9-30重下返回429，未取得当前评分入口字节；不能断言正式现值为5或15。",
+        "interval语义（user-initiated invocations）本次未取得ADK源码行号证据，仍待补；不解释为每N次工具调用。",
+        "实际Gemma摘要质量与时延需真实模型；CPU mock仅可验事件选择/触发/配对保留/长度控制，未在本轮执行mock模型。"
+      ]
+    },
+    {
+      "id": "G-synthetic-reasoning-mark",
+      "requirement": "同版本模板合成reasoning标记检查（引号/Unicode/换行往返）",
+      "sources": [
+        "B项三文件链 + A项reasoning_content join；模板字节未取得（433MB vLLM wheel未下载），以公开源码+stdlib复刻为限"
+      ],
+      "local_probe": {
+        "tool_chain_mark": {
+          "input": "SYNTH-REASONING-MARK--αβγ-\"q\"-\\n-😀-END",
+          "inner_bytes": 77,
+          "outer_bytes": 104,
+          "roundtrip_ok": true
+        },
+        "reasoning_content_mark": {
+          "inputs": ["SYNTH-α \"q\" 第一行", "第二行\\n换行 😀"],
+          "output_repr": "'SYNTH-α \"q\" 第一行\\n第二行\\n换行 😀'",
+          "roundtrip": "join可逆（按\\n split可分回，需注意内容本身含\\n时的歧义）"
+        },
+        "label": "本地函数证据≠服务端渲染证据"
+      },
+      "conclusion": "合成标记经本地转换函数往返无丢失（工具双层json loads可还原；reasoning join保留引号/Unicode/换行）。但这仅证明请求构造侧无损，不证明服务端chat_template会原样渲染或跨步保留。",
+      "boundary": [
+        "最终渲染未知：未取得服务端实际渲染/编码后prompt是否含合成标记；需冻结模型服务最小请求+服务端渲染检查（交接§0A探针3）。",
+        "同版本模板字节未取得；不用其他版本模板冒充同版本证据。",
+        "reasoning内容本身含换行时join/split存在边界歧义，检查标记应选不含\\n的唯一分隔或长度前缀，待真实探针设计时固定。"
+      ]
+    },
+    {
+      "id": "H-version-fingerprints",
+      "requirement": "固定真实执行版本指纹（0A验收：版本/请求/工具实际生效证据）",
+      "sources": [
+        {
+          "file": "research/003/runtime-review-20260930/current-wheel-comparison.json",
+          "content": "adk_submission 0.2.11 sha d14f7d31… (20文件一致)；google_adk 1.36.1 sha 1a2f6868… (542一致)；swegemma 0.2.7 sha 2b74d402… (36一致)；零变更"
+        },
+        {
+          "file": "research/002/preflight_evidence_run-002-preflight-20260930T022902Z-46739304.json",
+          "content": "tasks sha e4b3fd60… bytes1984455；HARNESS_README sha 3d6e57a1… bytes49356；wheels 41个；thinking_bridge 3映射；escaping 5类ok"
+        },
+        {
+          "file": "research/003/runtime-review-20260930/wheelhouse-file-metadata.json",
+          "content": "wheelhouse创建时间2026-09-27T11:49全批；vllm 433MB未下载"
+        }
+      ],
+      "local_probe": {
+        "note": "本次未重下大文件、未pip安装；仅复用已有指纹+摘录行号+本地stdlib复刻，未做Kaggle只读重下（无新增小文件需求）"
+      },
+      "conclusion": "公开wheel三件套与9-28解包逐字节一致；任务与README指纹与manifest一致。版本冻结证据齐，但正式评分服务部署版本仍未知，不能把公开不变写成已部署/未修复。",
+      "boundary": [
+        "未取得正式评分vLLM/模板字节、Stage2 metric.py、EventsCompactionConfig ADK源码行号；均列待确认。",
+        "Kaggle配额/机型本次未查询（CPU任务不需）；GPU余量以10-01既有记录为准，不在本报告更新。"
+      ]
+    }
+  ],
+  "not_done_kept_partial": [
+    "跨工具调用reasoning留存的服务端渲染验证（需冻结模型服务/GPU最小请求）",
+    "compaction事件选择/触发/配对保留的CPU mock模型检查（本轮仅静态记录，未跑mock）",
+    "真实请求参数摘要捕获（max_completion_tokens/enable_thinking/tool角色实际发送形态）",
+    "正式部署版本与模板字节核实"
+  ],
+  "frozen_untouched": [
+    "research/002/experiment_manifest.json",
+    "research/002/explore_freeze.json",
+    "research/002/variants/t0, c8192, t1",
+    "notebooks/*-single-cell.py",
+    "results/002/*, research/002/analysis_0c*"
+  ]
+}
