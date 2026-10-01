@@ -1,5 +1,7 @@
 # 002 进展：可提交的定位与有效编辑（先校准，再比较技能）
 
+2026-10-01最终资源决定：用户选择等待Kaggle的4×L4额度恢复，不再开启AMD实验或推进迁移；TPU路线继续停止。此前AMD只读硬件/软件取证保留在[备选交接](../plan/002-amd-gpu-handoff.md)，未加载模型或启动训练。当前先完成CPU合同、技能工作区映射核验及提交400的只读排查，不自动重试提交；L4恢复后做最小服务探针及冻结的12次T0/T1探索，有候选再做24题完整配对。0C已完成不重跑，既有成绩不变。
+
 更新：2026-10-01。当前状态：CPU预检、0B官方入口资格诊断、0C的24次GPU容量对照已完成，保留16384；T0/T1探索已冻结但未运行，未正式提交。0A的真实服务reasoning留存和compaction核验仍未完成。下文初次实现时的unknown/DRAFT/未运行描述保留为历史记录，以后续运行段落为准。TPU可行性及本次复核见[10月1日交接](../plan/002-tpu-feasibility.md)。
 
 执行顺序以[下一阶段交接](../plan/002-next-stage-handoff.md)为准：0A/0B 校准 → 0C 容量对照（8192候选）→ T0/T1 技能主实验 → 有依据才加图 → 有稳定目标才做 LoRA。
@@ -119,7 +121,7 @@
 - Kernel `ccjjllt/002-capacity-0c-24-2026-09-30` v2（L4）COMPLETE，RUN_ID `run-002-cap-20260930T082350Z-6dedcd65`，24/24 返回结果（v1 T4 `bf16` infra 失败属环境非变量）。产物 `results/002/run-002-cap-…/`（git 忽略）+ 分析 `research/002/analysis_0c_run-002-cap-20260930T082350Z-6dedcd65.json`。
 - 配对（12 对 = 6 题×2 重复，`analyze.py` 缺失不补零）：t0 7/12，c8192 6/12，净 -1（c 胜 `fastapi_14873@slot3`；负 `fastapi_14873@slot9`、`fastapi_9425@slot4`），discordant 二项 p=1.0（仅描述，无效力/等效断言）。
 - 上下文异常：t0 侧 1 次（`rich_3942-r1-t0` 仍 `ContextWindowExceededError`，即 8192 想修的原故障在对照组复现）；c8192 侧 0 次（rich_3942 两次均为 5min 超时 `exit -1`，非上下文崩溃）。方向符合预期，但样本为单题重复。
-- 生产修改：9 对双方皆有，t0-only 1 对，无 c-only；耗时均值 +4.7s（duration）/+4.6s（agent）、工具调用 -3.1（c8192 略少），均为描述性。
+- 生产修改（2026-10-01晚间按最终patch重审更正）：旧分析“9对双方皆有、t0-only 1、无c-only”口径过宽，将部分仅repro文件也算入生产修改。按本批仓库生产目录的最终patch路径重算为双方6对、t0-only 3对、c8192-only 1对、双方无2对；24份patch均在，不依赖缺失trace。此定义不计docs/examples与仅删除路径，不代表正确补丁。[复算证据](../../research/002/strategy-review-20261001/derived-metrics.json)。resolved及16384判定不变。耗时均值 +4.7s（duration）/+4.6s（agent）、工具调用 -3.1（c8192略少），均为描述性。
 - 截断证据（2026-10-01原件复核更正）：已恢复23/24条trace，缺`23-rich_3518-r2-t0`。已恢复的738个Agent步骤均有`metrics.completion_tokens`，逐条求和匹配final_metrics：c8192为12条/360步、最大2093、P95 937.3；t0为11条/378步、最大2239、P95 875.1。旧文“无单步计数”不成立。全部已恢复trace均缺finish_reason字段，因此只能说已记录输出远低于上限，不能用“没有length标记”证明无截断；缺失trace不影响已回收resolved配对，但影响过程审计完整性。
 - 晋升判定：**保留 16384，8192 不晋升**。冻结准则要求三者同时满足（异常减少 + 无新增截断 + 无修复退步）；异常方向虽好（1→0），但修复净 -1 且截断仅“无标记”（非证无），不满足 AND。6 题仅支持筛选，正式采用仍需扩大面板。
 
@@ -152,3 +154,15 @@ TPU已有指定W4A16模型的新上游实现，但本项目未运行TPU；当前
 - F compaction：Starter/我方载体/manifest均为`interval=15, overlap=2, threshold=14336, retention=5`（Starter `official-starter-source.txt:253-258`，载体`283-284/383-384`），归档README正式描述为`5`（`HARNESS_README:553-563`，SHA `3d6e57a1…`）。仅记录差异，不泛化正式值；`interval`计`user-initiated invocations`语义本次无ADK行号证据，仍待补；压缩器属host App非YAML可提交参数。
 - H 指纹：三wheel与9-28解包零变更（`current-wheel-comparison.json`），tasks `e4b3fd60…`/1984455B、README `3d6e57a1…`/49356B一致；vLLM 433MB未下载。公开不变≠正式未修。
 - 遗留边界（仍部分完成，不闭环）：服务端渲染是否含合成标记、真实请求摘要（`max_completion_tokens/enable_thinking/tool`形态）、`EventsCompactionConfig`计数器源码、正式模板/服务版本、CPU mock压缩行为。0C保留16384结论不受影响。
+
+## 2026-10-01晚间：等待算力期间的机制研究
+
+用户决定等待Kaggle L4额度，停止TPU、暂缓AMD；要求研究优先、大量实现交接。本轮没有远程模型运行、训练或正式提交。
+
+- 联合分析P003的69次运行与P002-0C的24次运行：93份结果、92条可读轨迹、27个已暴露task_id。67次raw失败中61次成功读取了参考补丁涉及的文件，涉及21个不同task_id；这只是文件接触，**不是91%正确定位**。61次中37次没有成功的直接生产`edit_file/write_file`，不含shell编辑。原结果与旧失败标签未覆盖。[研究说明与脚本](../../research/002/mechanism-study-20261001/README.md)
+- 完成9个机制案例，提炼精确小编辑、区分故障子条件、证据满足后收尾等假说；这些是同题/过程对照，不是新策略随机实验。病例包含工具/环境边界，不用unknown题报修复收益。[案例证据](../../research/002/mechanism-study-20261001/casebook.json)
+- 已暴露27题的参考补丁画像：18题单非测试文件，19题增删≤20行，中位12行；仅作编辑粒度先验。[画像](../../research/002/opportunity-profile-20261001/README.md)
+- 完成两组共10项论文/作者项目的机制与适用条件整理，核对官方页面及公开榜。隐藏题来自私有仓库，故优先通用代码交互与推理行为，不写公开题答案技能。[架构文献](../../research/002/literature-20261001/architecture.md)、[学习与计算文献](../../research/002/literature-20261001/learning-and-compute.md)
+- 已写[研究结论与实现交接](../plan/002-research-opportunities-20261001.md)：T2读取句柄与精确编辑优先；T3有效最小反例随后；T4分层上下文另立。T0/T1冻结12次探索保留，16384不变。新候选均未实现/运行，大量代码由用户按接口规格实现。
+
+等待期重心由环境核验转为机制证据与可实现算法。以上工作没有产生新的修复率；下一批L4用于现有T0/T1探索及单项候选的配对，再确认完整开发面板。

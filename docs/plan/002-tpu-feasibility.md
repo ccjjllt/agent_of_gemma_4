@@ -1,5 +1,7 @@
 # P002：TPU 可行性判断与有界验证交接
 
+2026-10-01状态更新：用户因排队成本决定停止TPU路线。本文仅保留历史取证和设计，不再申请TPU或推进兼容性探针。后续资源研究转向[AMD GPU交接](002-amd-gpu-handoff.md)。
+
 核对日期：2026-10-01（北京时间）。本次只读核对记录、代码、Kaggle MCP 与上游资料，未运行 TPU/GPU、未安装新推理栈。迁移代码由用户实现。
 
 ## 决策
@@ -117,4 +119,3 @@ BF16运算本身不是TPU障碍。真实障碍是GPU安装链、量化算子、�
 正式提交是另一条执行路径：已有Agent包的打包与上传准备不需要本地模型推理；正式评分由比赛服务执行。本次没有取得其是否扣个人Notebook GPU额度的明确证据，因此既不保证零配额可评分，也不应仅因本地CUDA不可用就断言正式提交必然不能进行。
 
 比赛TPU讨论[744589](https://www.kaggle.com/competitions/gemma-4-developer-agent/discussion/744589)截至本次回读没有回复，不能当作主办方兼容性认证。最新[744566](https://www.kaggle.com/competitions/gemma-4-developer-agent/discussion/744566)已获主办方“将修补thinking_budget/seed”的答复；公告仍不能代替实际请求验证。
-
