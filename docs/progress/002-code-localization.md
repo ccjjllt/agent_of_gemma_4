@@ -130,3 +130,14 @@
 TPU已有指定W4A16模型的新上游实现，但本项目未运行TPU；当前冻结载体依赖CUDA，迁移必须另立后端研究，不能将GPU T0与TPU T1拼接比较。见[TPU可行性与有界验证交接](../plan/002-tpu-feasibility.md)。
 
 当前preflight的RUN_MINIMAL_GPU_PROBE只有标志与打印，没有推理执行分支；其合成bridge与JSON往返只是静态/stdlib证据，不等于完整ADK→服务渲染验收。0A仍部分完成，旧交接允许将最终渲染未知列为边界继续当前冻结公开环境比较，故本次复核不将0C作废。实际消息转换、模板渲染和compaction机制的一部分可在CPU完成，不必全部等待GPU。
+
+## 受控正式提交（2026-10-01 subagent 执行，已 review）
+
+- 基线包 `research/002/formal_baseline_t0_2026-09-30.zip`（2850B，SHA `c25efb23…`）：T0 四文件与 manifest prefix16 一致，已验无 T1/c8192/P003 混入；根唯一 `agent.yaml`，无 symlink/`..`，扩展名仅 yaml/md。清单 `formal_baseline_manifest_2026-09-30.json`（status 如实记 `SUBMIT ATTEMPTED ONCE -> REJECTED 400, NO RETRY`）。
+- 提交 1 次被服务端拒绝：`400 Client Error: Bad Request .../CreateSubmission`，无 submission id、无公开分。`submission-limits` 仍 0/0/1，非次数耗尽。原因未明（本地校验通过），按纪律不重试；下个操作日先只读检查上传链/命名要求再定是否单次重交。
+- 环境快照：GPU 已用 98497/108000s（0C 消耗后），刷新 2026-10-03T00:00:00Z；正式推理走赛事算力，不耗本额度。
+
+## 探索运行前核对（2026-10-01 subagent 只读，已 review：全部通过）
+
+- BUNDLE 可解析（t0×4/t1×8）、12/12 哈希与磁盘一致；code 与 .ipynb 逐字节一致（60732B），`py_compile` 通过；调度 12 唯一（T0/T1 各 6，AB/BA 与 freeze 一致）；T1 采样与 T0 解析相等、预算一致（原始字符串仅注释头不同）；6 题与 heldout 28 无交集；skill 无 symlink、无答案读取（字面 grep 命中均为防护语/工具名，语义通过）。
+- 配额：GPU 余约 2.2h，名义够 Agent 部分但余量薄，判断刷新后可跑、当前不抢跑。可推送检查清单已备（push 当天重查配额/哈希/slug/L4/timeout/三源）。
