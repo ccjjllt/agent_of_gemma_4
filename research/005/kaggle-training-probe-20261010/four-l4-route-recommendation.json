@@ -1,0 +1,115 @@
+{
+  "date": "2026-10-10",
+  "scope": "Read-only diagnosis of recorded probe and official package implementations; no GPU jobs or trainer changes by this review.",
+  "decision": "Prefer four-rank DDP with one frozen NF4 replica per L4 after BF16 embedding preservation and genuinely memory-bounded selected-token loss. Use FSDP-QLoRA only if the required sequence length still does not fit, or measured useful-token throughput per quota-hour favors it.",
+  "status_boundary": "The recorded original-path probe failed. Parent agent is concurrently adding memory fixes, trusted NF4 cache loading and a DDP entry point; these new paths have no successful full-model optimizer step in the evidence reviewed here.",
+  "measured_baseline": {
+    "report": "research/005/kaggle-training-probe-20261010/gpu-output/gpu-worker-report.json",
+    "summary": "research/005/kaggle-training-probe-20261010/result-summary.json",
+    "trainer_sha256": "7c50f65f2db10291de84be5ea6ce0215b442866f360f7dccf2119112a5d92112",
+    "load_seconds": 839.301409151,
+    "allocated_bytes_after_nf4_load": 18280139264,
+    "device_capacity_bytes": 23659151360,
+    "verified_optimizer_steps": 0,
+    "failure": "PEFT prepare_model_for_kbit_training requested another 5.25 GiB while converting the shared BF16 embedding/lm_head parameter to FP32.",
+    "gpu_use": "Only GPU 0 was used; three other allocated L4s were idle. GPU 0 sampled utilization averaged 0.84 percent during the session.",
+    "input_weight_bytes": 62546338248,
+    "input_shard_bytes": [49784788364, 12761549884],
+    "progress_interpretation": "Loading progress counts 1188 tensors, not bytes. About 70 percent of tensor count took 13m34s, while 100 percent took 13m57s. This does not demonstrate that the first shard, network, or CUDA kernel alone is the bottleneck.",
+    "quota": "Recorded session ran about 885 seconds and account rounded usage increased 0.5 hours; remaining was 28.2 hours. Do not translate this directly into 28.2 wall-clock hours."
+  },
+  "analytical_estimates_not_measurements": {
+    "configuration_source": "/private/tmp/p005-gemma-tokenizer-source/config.json",
+    "nf4_resident_gib": 17.02470636367798,
+    "shared_embedding_parameters": 1409286144,
+    "shared_embedding_bf16_gib": 2.625,
+    "shared_embedding_fp32_gib": 5.25,
+    "rank8_text_q_o_and_three_mlp_adapter_parameters": 53043200,
+    "fp32_adapter_gradient_mib": 202.34375,
+    "fp32_adapter_parameter_gradient_and_two_adam_states_gib": 0.7904052734375,
+    "ddp_four_rank_ring_gradient_traffic_per_rank_per_optimizer_step_mib": 303.515625,
+    "ddp_traffic_assumptions": "FP32 gradients, one all-reduce at accumulation boundary; ring estimate 2*(world_size-1)/world_size times gradient bytes. Excludes constructor synchronization, NCCL overhead, and small count/loss collectives.",
+    "fsdp_full_shard_four_rank_traffic_order": "If roughly 17 GiB is sharded, two all-gathers cost roughly 25.5 GiB received per rank per microbatch, before additional effects from wrapping, tied weights, checkpointing and metadata. This is a scale estimate, not a measured throughput ratio.",
+    "fsdp_memory_order": "Ideal frozen-parameter storage falls toward one quarter; actual peak is higher because active layers, prefetch, buffers, quantization state and activations are not all quartered.",
+    "sequence_length_limit": "17 GiB base fitting does not prove 4096-token backward fits. At 4096 positions, full-vocabulary logits alone are 2 GiB in BF16 or 4 GiB in FP32. Checkpointed backbone activations and attention workspaces remain after selected-token loss."
+  },
+  "actionable_order": [
+    {
+      "step": 1,
+      "action": "Reuse an official-source NF4 cache if CPU preparation succeeds; keep frozen embedding/lm_head BF16 and only intended norms FP32. Preserve non-reentrant gradient checkpointing. Avoid repeated 14-minute original BF16-to-NF4 starts.",
+      "evidence": ["peft_prepare", "bnb_serialization", "bnb_cpu_quantization"]
+    },
+    {
+      "step": 2,
+      "action": "Run a small actual optimizer-step probe of the repaired single-rank path, including Adam state creation. If possible keep the loaded process alive while increasing sequence length. Prefer 2048-token DDP initially when 4096 is marginal; choose sequence length based on retained supervision, not only nominal context length.",
+      "caveat": "Merely accumulating CE chunk losses and calling backward once can retain every chunk's logits/softmax state. Checkpoint each lm_head -> Gemma softcap -> CE chunk with use_reentrant=False, or use a correct custom backward."
+    },
+    {
+      "step": 3,
+      "action": "Use torchrun with four ranks, rank-local CUDA placement, one NF4 replica per rank, sharded examples and approximately balanced token lengths. Wrap the model's loss-producing forward in DDP; do not bypass it by calling ddp.module for training. Suggested settings: broadcast_buffers=false, find_unused_parameters=false, gradient_as_bucket_view=true; retain safe initialization synchronization unless replica equivalence is explicitly handled.",
+      "normalization": "For exact global supervised-token mean with DDP gradient averaging, scale each rank's summed loss by world_size/global_supervised_token_count over the entire accumulation window. no_sync must cover forward and backward of non-final microbatches.",
+      "evidence": ["pytorch_ddp_source", "pytorch_ddp_docs"]
+    },
+    {
+      "step": 4,
+      "action": "Escalate to FULL_SHARD only when required length cannot fit DDP or a short measured comparison shows higher useful-token throughput per quota-hour. Use PEFT's frozen/trainable-aware wrapping, correct tied embedding handling, floating NF4 quant_storage matching BF16 model dtype, and a sharded state/export path. CPU offload should not be the first performance choice on L4 PCIe.",
+      "caveat": "A uint8-packed DDP cache is not directly FSDP-ready. Do not numerically cast packed bytes to BF16. Choose BF16 quant_storage at quantization time, or implement a deliberate storage reinterpretation with valid metadata. BF16 quant_storage stores the same packed 4-bit payload and does not mean BF16 model weights.",
+      "evidence": ["pytorch_fsdp", "bnb_fsdp", "peft_fsdp", "nvidia_l4"]
+    }
+  ],
+  "loading_choices": {
+    "preferred": "CPU-only prepare/save an untrained same-source NF4 cache with complete quant_state, tokenizer, quantization_config and source/version manifest; reload prequantized cache per rank. A successful tiny CPU save/reload is useful but does not establish full cache RAM use or GPU training success.",
+    "cpu_support": "bnb 0.50.2 default backend implements NF4 quantization with float32 conversion, block absmax, bucketize and packing. It can create several tensor-sized temporaries, so rely on serial streamed loading instead of materializing all BF16 weights first. Do not promise byte-identical CPU-vs-CUDA quantization without comparison.",
+    "cache_layout": "Use moderate 2-4 GB safetensors shards for the prequantized cache. A large tensor may exceed max_shard_size. Prefer staging outside a paid GPU session when possible; ensure the published cache has complete files before attaching it to a training session.",
+    "existing_load_concurrency": "Transformers 5.13.1 core_model_loading.py explicitly disables the thread pool for on-the-fly quantization. For other paths, GLOBAL_WORKERS defaults to min(4, CPU count). This version's source does not implement HF_ENABLE_PARALLEL_LOADING or HF_PARALLEL_LOADING_WORKERS. HF_DEACTIVATE_ASYNC_LOAD disables asynchronous loading; it is not an enable-speed knob.",
+    "reshard_only_limit": "Splitting the original BF16 file into more shards alone does not parallelize this version's on-the-fly quantization. Local staging may improve storage behavior but is not proven by the current telemetry, and copying 62.55 GB during a paid GPU session itself has a cost.",
+    "fallback": "If full CPU cache preparation fails, quantize once on GPU and save before PEFT's upcast or LoRA insertion, then reuse the cache for future sessions. Do not have four ranks independently reread and quantize the entire 62.55 GB BF16 source by default.",
+    "evidence": ["transformers_loader", "transformers_bnb", "bnb_serialization", "bnb_cpu_quantization"]
+  },
+  "sources": {
+    "peft_prepare": {
+      "url": "https://github.com/huggingface/peft/blob/v0.21.2/src/peft/utils/other.py#L158-L209",
+      "locator": "prepare_model_for_kbit_training; BF16/FP16 non-Params4bit parameters are cast to FP32"
+    },
+    "pytorch_ddp_source": {
+      "url": "https://github.com/pytorch/pytorch/blob/v2.11.0/torch/nn/parallel/distributed.py#L803-L817",
+      "locator": "init_sync broadcasts module states; gradient reducer construction separately uses trainable parameters"
+    },
+    "pytorch_ddp_docs": {
+      "url": "https://docs.pytorch.org/docs/2.11/generated/torch.nn.parallel.DistributedDataParallel.html",
+      "locator": "gradient_as_bucket_view, no_sync, gradient checkpointing with use_reentrant=False"
+    },
+    "pytorch_fsdp": {
+      "url": "https://docs.pytorch.org/docs/2.11/fsdp.html#torch.distributed.fsdp.ShardingStrategy",
+      "locator": "FULL_SHARD unshards before forward and before backward; BackwardPrefetch memory/overlap tradeoff"
+    },
+    "bnb_fsdp": {
+      "url": "https://huggingface.co/docs/bitsandbytes/main/en/fsdp_qlora",
+      "locator": "Quantized data storage: bnb_4bit_quant_storage floating dtype matching model dtype"
+    },
+    "peft_fsdp": {
+      "url": "https://huggingface.co/docs/peft/accelerate/fsdp",
+      "locator": "use_orig_params=false and PEFT fsdp_auto_wrap_policy separating frozen/trainable parameters"
+    },
+    "nvidia_l4": {
+      "url": "https://www.nvidia.com/en-us/data-center/l4/",
+      "locator": "Product specifications: PCIe Gen4 x16 interconnect; no measured Kaggle topology/bandwidth inferred"
+    },
+    "transformers_loader": {
+      "url": "https://github.com/huggingface/transformers/blob/v5.13.1/src/transformers/core_model_loading.py#L1510-L1543",
+      "locator": "GLOBAL_WORKERS at 1178; on-the-fly quantization serial condition around 1535"
+    },
+    "transformers_bnb": {
+      "url": "https://github.com/huggingface/transformers/blob/v5.13.1/src/transformers/integrations/bitsandbytes.py",
+      "locator": "Bnb4bitQuantize and Bnb4bitDeserialize distinguish original and prequantized checkpoint paths"
+    },
+    "bnb_serialization": {
+      "url": "https://github.com/bitsandbytes-foundation/bitsandbytes/blob/0.50.2/bitsandbytes/nn/modules.py#L329-L367",
+      "locator": "Params4bit.from_prequantized; Linear4bit._save_to_state_dict at 549-563 saves quant_state"
+    },
+    "bnb_cpu_quantization": {
+      "url": "https://github.com/bitsandbytes-foundation/bitsandbytes/blob/0.50.2/bitsandbytes/backends/default/ops.py#L215-L241",
+      "locator": "default quantize_4bit registration and float32 temporary tensors"
+    }
+  }
+}

@@ -1,6 +1,6 @@
 # 005：推理机制与LoRA实现交接
 
-日期：2026-10-10。配套[研究决策](005-medal-and-prize-research.md)。本文为用户/实现者准备，**下面新模块尚未实现**；现有T2/T4原型可复用。本轮只完成研究与文档，不启动模型、训练、提交或重做环境测试。
+日期：2026-10-10。配套[研究决策](005-medal-and-prize-research.md)。本文保留原始实现规格。后续已完成single_state载体、技能接线、真实编码/SFT/导出，以及31B四卡LoRA诊断训练；实际命令以[载体说明](../../notebooks/005-single-state.README.md)和[训练说明](../../training/README.md)为准，验证边界见[最新进展](../progress/005-medal-and-prize-research.md)。尚未完成真实修复语料SFT、CT adapter部署验证或比赛提交，DPO仍后置。
 
 ## 1. 先实现什么
 
@@ -272,3 +272,43 @@ manifest记录QAT来源、量化后端、目标模块、rank、模板/工具协�
 ## 7. 可直接转交的任务描述
 
 > 在不覆盖P002冻结变体与历史结果的前提下，实现P005两条研究线。推理线复用T2/T4，增加issue行为约束、最多两个带来源的修复假设、按需仓库执行路径观测及一次真实研究→执行交接；先交单Agent版，再交同工具同总预算的交接版。训练线将公开SWE轨迹统一为本项目工具协议，导出完整局部修复和真实错误恢复片段，使用官方同源QAT未压缩基座完成rank8 LoRA SFT与独立PEFT导出。所有新目录和接口按本文实现；大工程分包交付，优先可运行版本，不扩建门控/测试平台。训练、GPU运行和正式提交按用户后续资源安排执行；实现阶段如没有实测结果，明确记录未运行。
+
+## 8. 每周30小时配额下的训练资源交接（2026-10-10）
+
+用户已授权用Kaggle CLI做训练探查。私有CPU准备会话`ccjjllt/p005-training-cpu-stage`已完成：Python3.13.15、stock torch2.11.0+cpu，Transformers5.13.1/PEFT0.21.2/accelerate1.15.0/bitsandbytes0.50.2及官方tokenizer导入成功。官方QAT未量化v2的两个权重分片完整，权重文件合计62,546,338,248字节。训练需要的7个wheel已作为该CPU Notebook输出保存，后续用`kernel_sources`挂载。不要安装比赛推理用41个wheel，也不要在GPU会话重新下载torch或模型。
+
+现有`training/train_sft.py`仅支持单设备；默认BF16并不适合单L4，NF4路径也将全模型放到单GPU。普通DDP不会合并显存。官方4×L4会话按两倍额度扣费，因此30额度小时约对应15小时L4会话；实际账号余额以`kaggle quota --format json`为准，必须给推理实验留预算。
+
+GPU探针载体及完整证据保存在`research/005/kaggle-training-probe-20261010/`。只有服务器1200秒、训练子进程900秒的一次短探针，输入明确标为诊断合成数据，不能把产物当修复SFT模型。GPU是否成功及消耗以该目录最终report和配额快照为准，不以Notebook的COMPLETE状态代替模型训练成功。
+
+**实际结果已返回：原样单卡路径失败。** 4×L4中只有GPU0被使用，小型bnb反传通过；31B NF4加载839.30秒后，在PEFT将非4bit权重转FP32时申请5.25 GiB、但仅余4.63 GiB而OOM。尚未注入LoRA或执行31B训练更新，0步、无adapter。脚本885.34秒，账户净扣额0.50h，剩28.20h。不要原样重跑；先解决下述转换峰值和多卡利用。此次外层COMPLETE是wrapper未传播worker退出码导致，生成器已修正但未重新提交；已执行v1源码原样保留在gpu-probe/probe.py。详细记录见同目录result-summary.json。
+
+下一版正式训练实现需要解决的具体问题：
+
+1. **限制非量化权重的上转。** PEFT的kbit准备会将共享embedding/head从BF16转FP32；262144×5376参数使其由2.625 GiB增至5.25 GiB，另有转换峰值。研究保持共享权重BF16、norm FP32的路径，并保留实际数值结果；当前探针保持原实现以定位真实瓶颈。
+2. **减少无监督位置的词表投影。** 4096×262144的BF16 logits约2 GiB，默认CE的FP32 logits约4 GiB；`labels=-100`只屏蔽损失，不省这些分配。按下一token对齐选择有效监督位置，并分块计算词表投影/CE，保留Gemma的logit softcap和完整上下文。有效监督tokens/配额小时比输入tokens/秒更能比较当前稀疏监督数据的训练收益。
+3. **先四卡DDP，内存不足再考虑FSDP。** 后续已实现`training/train_ddp.py`：每rank固定一张GPU和一份NF4基座，正常DDP forward、全局监督token归一化、累积结束才同步LoRA梯度，rank0导出adapter，各rank保存恢复RNG。两进程真实CPU数值比较已通过，包括不等监督量、尾部空rank和恢复；真实31B四卡诊断也已通过2048长度，尚未验证更长上下文。约5304万LoRA的FP32梯度为202 MiB，通信远小于每microbatch重复收集约17 GiB基座的FSDP；这是通信量分析，不是DDP/FSDP的速度对照实测。更长上下文若每卡仍放不下，再实现FSDP-QLoRA；当前uint8 NF4缓存不能用普通数值转换冒充BF16 quant_storage，需按[官方FSDP-QLoRA文档](https://huggingface.co/docs/bitsandbytes/fsdp_qlora)处理。
+4. **把准备与计算分开。** 数据清洗、协议编码、长度统计、wheel缓存均在CPU完成；GPU只做模型加载、训练及必要推理。同一加载周期内顺序完成有限实验并及时退出，避免反复冷启动。只有短序列成功时，仍不能宣称4K/16K可行；先根据实际峰值与步耗时确定一个正式长度和步数。
+
+这些是资源利用改造，不增加大型门控或测试平台；现有本地诊断数据也不足以支持完整高质量SFT，应继续扩充真实修复/恢复片段。
+
+### 后续实现与运行入口
+
+**更新：新路径已通过真实31B四卡诊断。** 256、256、1024、2048四步全部完成，四rank adapter更新且一致，step4 adapter已存Kaggle；缓存加载每rank约181秒，2048更新15.89秒，每卡峰allocated20.398 GiB，脚本264.48秒，账号扣0.15h后剩28.05h。代码与缓存可以进入真实数据准备和小规模SFT阶段。当前只证明诊断容量与数值执行，没有4K/16K、真实修复质量或CT推理迁移结论。完整数据见`research/005/kaggle-training-probe-20261010/ddp-result-summary.json`。
+
+- `training/memory.py`已实现只提升norm及checkpoint分块监督位置CE，保持正常PEFT/DDP调用链。新单卡配方和DDP配方均显式选择`selected_chunked`；`reference_fp32`仅作为原实现对照选项。
+- `training/configs/sft_qat_nf4_ddp.yaml`为四卡候选配方，读取带manifest的同源NF4缓存。`train_ddp.py`拥有真实加载、优化、全局指标、断点恢复和导出，不是torchrun包裹旧单卡脚本的占位实现。
+- 私有CPU准备`ccjjllt/p005-cpu-nf4-cache`已在Kaggle Python3.13/torch2.11.0+cpu/bnb0.50.2验证微型Gemma4的22个4bit模块保存与重载，并完成完整官方31B的601个量化模块缓存。18.30GB缓存已归档可复用，训练GPU不再直接挂载62.5GB未压缩基座。
+- `research/005/kaggle-training-probe-20261010/build_ddp_probe.py`生成独立新载体，已实际执行成功；快照打包真实训练代码，只挂载CPU NF4缓存与7-wheel缓存。四步按256、256、1024、2048长度执行，每rank每步64个监督token，诊断合成数据明确禁止作为修复训练语料；每步保留adapter，后段失败保留最近完整产物。1200秒子进程硬上限、1500秒服务器上限，无自动重试。不要原样重跑已经证明的四步。
+- 本地数字证据在`followup-local-verification.json`：分块loss FP32误差0、adapter梯度最大误差8.20e-8；两rank对单进程全局batch的参数差3.54e-8，两rank参数一致、恢复后逐位一致。实际GPU结果必须另行归档，不能把这些CPU证据称为31B训练成功。
+
+下一轮真实SFT应先准备长度合适、上下文完整的真实修复样本，按长度组织批次以减少DDP进程等待；一次加载后连续执行有效训练步，摊薄当前仍约181秒的加载成本。诊断中的重复文本loss和两个100%利用率采样点均不能当作真实数据的质量或长期吞吐保证。
+
+### 下一轮研究顺序（四卡成功后的修订）
+
+1. 先在CPU准备与官方v30匹配的推理环境，解决已观察到的Python3.13/cp312 ABI差异；用现成诊断adapter完成一次指定CT基座上的加载、实际路由与工具调用验证。诊断adapter只用于兼容性，不用于修复收益或正式提交。vLLM通用LoRA支持不能代替比赛冻结版本的实际证据。
+2. 同时在CPU整理真实数据并统计完整模板后的长度。新增真实tokenizer测量：六工具schema增量332 tokens；T0 system加极短消息及工具共1158；再加入官方build_agent_prompt固定说明/预算、极短占位问题后1435（关闭sandbox testing时1483），尚无真实issue/目录树/源码/工具观察。2K只剩约565–613 tokens，因此不能将裸合成2K成功直接定成正式窗口。若代表性数据主要超限，再做一次针对4K的容量研究或与部署一致的协议精简；不截断历史观察来伪造短轨迹。
+3. 数据和CT执行均可用后，做一个rank8小规模真实SFT候选，先一个epoch以内、最多50–100个更新作为候选上限，实际按样本量和耗时调整。保持prompt、工具协议和基座固定，沿用已生成NF4缓存，按长度分桶。
+4. 在同一版本服务中，对8–12个已暴露开发任务做base/adapter配对；核心记录新增修复、原有修复回退及耗时，再决定是否扩大验证。推理机制候选另作独立比较，避免同时换prompt和adapter造成归因混淆。
+
+建议第一轮研究包先控制在6个GPU额度小时以内（资源上限建议，不是运行时长承诺），多数预算用于真实修复对照；CPU数据整理与依赖准备不占GPU配额。最近一次余额28.05h仅为已记录快照，启动前重新读取。上述计划尚未启动新GPU运行。

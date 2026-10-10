@@ -1,0 +1,57 @@
+# P005 first real SFT recipe. This is a starting point, not a measured result.
+# Default: no downloads. Pass --model /absolute/local/QAT-directory.
+# A cached HF ID also needs model_revision set to an actual HF commit/tag.
+# To fetch weights intentionally, additionally pass --allow-download.
+# Kaggle Transformers v2 is provenance metadata, NEVER an HF revision.
+#
+# Example:
+# python training/train_sft.py --config training/configs/sft_qat_r8.yaml \
+#   --model /models/gemma4-qat-unquantized --data /data/encoded.jsonl --out /runs/r8
+# --dry-run validates config/optional JSONL using only the standard library.
+# BF16: train W_QAT+dW; NF4: train Q_NF4(W_QAT)+dW.
+# Both deploy as dequant(Q_CT(W_QAT))+dW; transfer is not proven by training loss.
+# Requirements: torch, Gemma4-capable transformers, peft, safetensors.
+# NF4 additionally needs bitsandbytes and accelerate. Nothing is auto-installed.
+# Single device only; no inference device_map=auto or unverified multi-GPU sharding.
+
+model_name_or_path: null
+model_revision: null
+tokenizer_name_or_path: null
+tokenizer_revision: null
+chat_template_path: null
+tool_schema_path: training/configs/harness_tools.json
+base_family: gemma-4-31b-it-qat-q4_0-unquantized
+source_version_note: Kaggle Transformers version 2
+is_fallback_reference: false
+local_files_only: true
+quant_backend: bf16
+compute_dtype: bfloat16
+device: cuda
+attn_implementation: sdpa
+target_text_modules:
+  - q_proj
+  - o_proj
+  - gate_proj
+  - up_proj
+  - down_proj
+rank: 8
+alpha: 16
+dropout: 0.0
+bias: none
+learning_rate: 0.00005
+max_sequence_length: 4096
+micro_batch_size: 1
+gradient_accumulation_steps: 8
+epochs: 1
+warmup_ratio: 0.03
+max_grad_norm: 1.0
+gradient_checkpointing: true
+weight_decay: 0.0
+loss: selected_assistant_tokens
+loss_backend: selected_chunked
+loss_chunk_size: 32
+kbit_prepare: norms_fp32
+protocol_id: p005-harness-tools-v1
+checkpoint_every_n_steps: 100
+max_steps: 0
+seed: 0
