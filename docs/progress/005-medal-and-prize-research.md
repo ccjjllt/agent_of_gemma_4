@@ -2,7 +2,15 @@
 
 日期：2026-10-10，Asia/Shanghai。用户要求围绕金牌与奖金继续深度研究，优先机制研究；大量实现写成交接，不纠结门控和测试。
 
-## 2026-10-11 CPU offload 合并审查：纠正训练模式后再做有效对照（最新）
+## 2026-10-11 训练态 6032 对照已测：有效比较，无首步 Adam（最新）
+
+私有 4×L4 `ccjjllt/p005-save-on-cpu-6032-train-mode` v1 **COMPLETE**（metadata id `ccjjllt/p005-save-on-cpu-6032-tm`）。同一 6,032-token 交易，两臂都在 `model.train()` 下跑，decoder checkpoint **实际调用** > 0，对照对 checkpoint 训练有效。
+
+baseline 前向 CUDA OOM 在层 47 的 SDPA（申请 378 MiB，占用 21.69/22.03 GiB，调用 48/60）。save_on_cpu 前向完成（15.38s，loss 0.0603，末层 59，峰值 18.988 GiB，调用 60/60）后反向 CUDA OOM 在层 53（申请 124 MiB，占用 21.91 GiB）。两臂 `optimizer_reached=false`，无 adam_state。主机 `oom_kill=0`，MemAvailable 仍约 166 GiB，不是 SIGKILL。Wrapper `success=true` 只表示两臂记录了 oom/completed。
+
+offload 完成了 baseline 未完成的前向，仍无 Adam；不能承诺 9841/12832 或训练省显存。9841/12832、真实 SFT、八题配对均未启动。Task 2 仍是 0 个新独立问题、0 个新恢复事件。下一刀是 checkpoint 下的 live 算子（层 47 SDPA / 反向层 53），不是 FSDP，也不是 16K。已撤回的 v1 根因表述不再使用。历史 20261010 `result.json` 状态保持 `invalid_checkpointed_training_comparison`。配额 Δ 612.944s = 0.170262h。证据：[`result.json`](../../research/005/save-on-cpu-6032-trainmode-20261011/result.json)。
+
+## 2026-10-11 CPU offload 合并审查：纠正训练模式后再做有效对照（历史阶段）
 
 `p005-save-on-cpu` 四个提交新增 backbone CPU 保存开关、两臂显存诊断及本地数据扫描。审查发现关键实验缺陷：worker 漏设 `model.train()`，backbone/decoder 留在 eval，decoder checkpoint 未执行。不能用此次 layer-1 OOM 判定正常训练态 MLP workspace 是根因，也不能从 SIGKILL 确认主机 pinned-memory OOM。原始 Kaggle 日志保留，派生结论已更正，见[审查记录](../../research/005/save-on-cpu-6032-20261010/review-20261011.json)。
 

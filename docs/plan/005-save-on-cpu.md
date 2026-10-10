@@ -101,3 +101,19 @@ SFT：rank8/alpha16、LR 5e-5、≤1 epoch、`norms_fp32`、`selected_chunked`�
 ### 清理时保留的材料
 
 旧 worktree 的 17 项非缓存忽略文件已逐项校验，存于 `training/artifacts/worktree-archives/p005-save-on-cpu-3cde33a-20261011/ignored-files.tar.gz`，旁边 `manifest.json` 记录哈希。5 个容量输入/日志/遥测文件已复制到主目录原相对路径。归档不进 Git，删除旧 worktree 后仍可恢复过程材料。
+
+## 2026-10-11 本次实测（训练态 6032 对照）
+
+私有 4×L4 kernel **COMPLETE** v1。**Live URL slug** 为 `ccjjllt/p005-save-on-cpu-6032-train-mode`；metadata id 仍为 `ccjjllt/p005-save-on-cpu-6032-tm`。同一交易 `fastapi_11194-3f51fb716edd-tx01`（6032 tokens）。证据目录 `research/005/save-on-cpu-6032-trainmode-20261011/`。
+
+对照对 checkpoint 训练有效：两臂 `outer_training=true`、`base_training=true`，60 层 `decoder_checkpointing_active=true`；实际调用 baseline 48/60（前向中途失败）、offload 60/60（前向完成）。
+
+**baseline：** 前向 CUDA OOM，层 47，`sdpa_attention_forward` / `scaled_dot_product_attention`，申请 378 MiB，进程占用 21.69 GiB / 22.03。`optimizer_reached=false`。主机 cgroup `oom_kill=0`。
+
+**save_on_cpu：** 已安装。前向完成（15.38s，loss 0.0603，末层 59，峰值 allocated 18.988 GiB，调用 60/60），随后反向 CUDA OOM，层 53，申请 124 MiB，占用 21.91 GiB。`optimizer_reached=false`，无 adam_state。主机 RSS 约 6.29 GiB，MemAvailable 约 166 GiB，`oom_kill=0`，不是 SIGKILL。
+
+实测差异：offload 完成了 baseline 未完成的前向，两臂都没有完成第一次 Adam。不能据此承诺 9841/12832 或训练可节省若干 GiB。Wrapper `success=true` 只表示两臂都记录了 oom/completed，不是训练成功。3.62 GiB 激活估算不作结论。
+
+9841/12832 **BLOCKED**（`did_not_push_9841` / `did_not_push_12832` / `did_not_retry_16k` / `did_not_rewrite_fsdp`，`gpu_launched=false`）。真实 SFT 与八题 T0 配对跳过：没有完整 train 长度反传，也没有新的独立非预留样本。诊断 adapter 不是修复收益臂。未比赛提交。
+
+下一刀按实际失败阶段：checkpoint 下的 live 算子是层 47 的 SDPA；offload 失败在反向层 53 的 CUDA，不是主机 OOM。已撤回的 v1 表述（“Live MLP/dequant 已定位”“host pin_memory 导致 SIGKILL”）仍不成立。历史 `research/005/save-on-cpu-6032-20261010/result.json` 状态保持 `invalid_checkpointed_training_comparison`。配额 Δ 612.944s = 0.170262h（<0.6h）。后续轮询用 live slug `p005-save-on-cpu-6032-train-mode`。
