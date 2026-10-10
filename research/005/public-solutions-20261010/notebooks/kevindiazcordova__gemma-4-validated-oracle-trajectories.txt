@@ -1,0 +1,464 @@
+# CELL 0: markdown
+# Validated Oracle Trajectories for the Gemma 4 Developer Agent Harness
+
+This notebook generates **supervised fine-tuning (SFT) trajectories** for the competition's `swegemma` harness:
+multi-turn agent traces where every tool call is executed by the **real harness tools** (same prompt, same JSON
+outputs, same truncation limits) and every trajectory is **verified by the official Phase-2 test run**.
+
+**How it works**
+1. An *oracle agent* replaces the LLM inside the official `swegemma.Evaluator` (we override `_run_agent_sandbox`).
+2. The oracle follows the reference patch like a careful engineer would: graph search → `get_code_neighbors` →
+   `read_file` around each hunk → `edit_file` per hunk (context widened until `old_string` is unique) →
+   import check → `submit_patch`.
+3. The official Phase 2 applies `test_patch` and runs pytest. A **gold control** (reference patch injected
+   directly) tells you which tasks are resolvable in this environment at all.
+
+**Harness gap fixed here.** In `sandbox='subprocess'` (the only option on Kaggle without Docker),
+`install_test_dependencies()` returns immediately, so tests run with the host Python. The Kaggle image lacks
+test-only packages such as `inline-snapshot` and `dirty-equals`, which makes **31 of 129** training tasks
+unresolvable *even with the reference patch*. Installing them (while pinning the libraries the repos depend on)
+recovers them.
+
+| | Gold patch resolves | Oracle trajectory resolves |
+|---|---|---|
+| Without the fix | 74 / 129 | 74 / 74 resolvable |
+| **With the fix** | **105 / 129** | **103 / 105** (1 trajectory of 138k tokens; 1 flaky pygments test) |
+
+**Output:** `trajectories.jsonl` (one task per line: `messages` in chat format with `tool_calls`, plus
+`resolved` / `gold_resolved` flags) and `tool_schemas.json` (the harness tool declarations).
+This notebook does not redistribute competition data: it regenerates everything from the competition files.
+
+Runs on CPU in about 1 hour (both gold and oracle verification for all 129 tasks). License: Apache 2.0.
+
+# CELL 1: markdown
+## 1. Install the official harness and fix the missing test dependencies
+
+# CELL 2: code
+import glob, os, re, subprocess, sys
+from pathlib import Path
+
+wheels = []
+for name in ["swegemma-", "adk_eval_core-", "adk_submission-", "google_adk-", "google_genai-"]:
+    hits = glob.glob(f"/kaggle/input/**/{name}*.whl", recursive=True)
+    assert hits, f"wheel not found: {name} (attach the gemma-4-developer-agent-wheelhouse dataset)"
+    wheels.append(hits[0])
+subprocess.run([sys.executable, "-m", "pip", "install", "-q", *wheels], check=True)
+
+# In subprocess mode the harness does NOT install test dependencies: tests use the host Python.
+# Add the missing test-only packages, pinning the libraries the repositories depend on.
+freeze = subprocess.run([sys.executable, "-m", "pip", "freeze"], capture_output=True, text=True).stdout
+pinned = [l for l in freeze.splitlines()
+          if re.split(r"[=<>@ ]", l.lower())[0] in {"pydantic", "pydantic-core", "starlette", "httpx",
+                                                     "httpcore", "anyio", "pygments", "urllib3"}]
+Path("/tmp/constraints.txt").write_text("\n".join(pinned) + "\n")
+TEST_DEPS = ["inline-snapshot", "dirty-equals", "pytest-httpbin", "trustme", "pysocks", "flask", "pyjwt",
+             "passlib[bcrypt]", "pwdlib", "orjson", "ujson", "email-validator", "python-multipart",
+             "sqlmodel", "trio"]
+r = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-c", "/tmp/constraints.txt", *TEST_DEPS],
+                   capture_output=True, text=True)
+print("test deps:", "OK" if r.returncode == 0 else r.stderr[-1500:])
+print("pinned:", pinned)
+
+# CELL 3: markdown
+## 2. Configuration
+
+# CELL 4: code
+import asyncio, json, time, traceback
+from adk_eval_core.tracing import SessionTrace
+from swegemma.config import EvalConfig
+from swegemma.context import SwegemmaContext
+from swegemma.evaluate import Evaluator
+from swegemma.harness.agent_runner import build_agent_prompt
+from swegemma.harness.container_setup import (extract_snapshot, install_editable_package, install_test_dependencies,
+                                              setup_baseline_commit, setup_container_wheels, setup_git_exclude,
+                                              setup_workspace_test_config)
+from swegemma.models import load_tasks
+from swegemma.sandbox import sandbox_exec, sandbox_start, sandbox_stop
+
+DATA = Path(os.path.dirname(glob.glob("/kaggle/input/**/tasks.jsonl", recursive=True)[0]))
+WORK = Path("/kaggle/working")
+MAX_TASKS = None          # e.g. 10 for a quick try
+# Budgets shown to the model in the prompt. Match them to the eval_config.yaml you will submit.
+BUDGET = dict(timeout_seconds=300, max_time_minutes=30, max_tool_calls=60, max_turns=120)
+
+# CELL 5: markdown
+## 3. Patch parsing and graph localization
+
+Note: in these patches new files appear as `--- a/path` + `@@ -0,0 ...` (not `/dev/null`).
+Localization maps each hunk to the most specific graph node (function/method/class) whose source text
+contains the hunk's removed/context lines; it succeeds for 119/129 tasks (the rest only create new files).
+
+# CELL 6: code
+HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@ ?(.*)$")
+
+
+def parse_patch(patch):
+    files, cur, hunk = [], None, None
+    lines = patch.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.startswith("--- ") and i + 1 < len(lines) and lines[i + 1].startswith("+++ "):
+            old = line[4:].split("\t")[0].strip()
+            new = lines[i + 1][4:].split("\t")[0].strip()
+            strip = lambda p: p[2:] if p.startswith(("a/", "b/")) else p
+            cur = {"old": None if old == "/dev/null" else strip(old),
+                   "new": None if new == "/dev/null" else strip(new), "hunks": [], "binary": False}
+            cur["path"] = cur["new"] or cur["old"]
+            files.append(cur)
+            hunk = None
+            i += 2
+            continue
+        if line.startswith(("GIT binary patch", "Binary files")) and files:
+            files[-1]["binary"] = True
+        m = HUNK.match(line)
+        if m and cur is not None:
+            hunk = {"old_start": int(m.group(1)), "old_len": int(m.group(2) or 1), "header": m.group(5).strip(),
+                    "lines": [], "no_nl_new": False}
+            cur["hunks"].append(hunk)
+        elif hunk is not None and line[:1] in (" ", "-", "+"):
+            hunk["lines"].append((line[0], line[1:]))
+        elif hunk is not None and line.startswith("\\ No newline") and hunk["lines"] and hunk["lines"][-1][0] == "+":
+            hunk["no_nl_new"] = True
+        i += 1
+    for f in files:
+        if f["old"] and f["hunks"] and all(h["old_start"] == 0 and h["old_len"] == 0 for h in f["hunks"]):
+            f["old"] = None
+    return files
+
+
+def apply_hunks(orig, hunks):
+    src = orig.splitlines(keepends=True)
+    out, pos = [], 0
+    for h in sorted(hunks, key=lambda x: x["old_start"]):
+        start = h["old_start"] - 1 if h["old_len"] > 0 else h["old_start"]
+        out.extend(src[pos:start])
+        j = start
+        for tag, text in h["lines"]:
+            if tag in " -":
+                if j >= len(src) or src[j].rstrip("\r\n") != text:
+                    return None
+                j += 1
+            if tag in " +":
+                out.append(text + "\n")
+        if h["no_nl_new"] and out:
+            out[-1] = out[-1].rstrip("\n")
+        pos = j
+    out.extend(src[pos:])
+    return "".join(out)
+
+
+def unique_edit(cur, h):
+    """old/new strings for a hunk, widening context until old_string is unique in the current text."""
+    old_lines = [t for tag, t in h["lines"] if tag in " -"]
+    new_lines = [t for tag, t in h["lines"] if tag in " +"]
+    src = cur.splitlines()
+    block = "\n".join(old_lines)
+    if old_lines and cur.count(block) == 1:
+        return block, "\n".join(new_lines)
+    anchor = None
+    if old_lines:
+        for k in range(len(src) - len(old_lines) + 1):
+            if src[k:k + len(old_lines)] == old_lines:
+                anchor = k
+                break
+    else:
+        anchor = min(max(h["old_start"], 0), len(src))
+    if anchor is None:
+        return None
+    a, b = anchor, anchor + len(old_lines)
+    for _ in range(12):
+        a, b = max(0, a - 1), min(len(src), b + 1)
+        pre, post = src[a:anchor], src[anchor + len(old_lines):b]
+        cand = "\n".join(pre + old_lines + post)
+        if cand.strip() and cur.count(cand) == 1:
+            return cand, "\n".join(pre + new_lines + post)
+    return None
+
+
+def module_of(path):
+    p = path[:-3] if path.endswith(".py") else path
+    p = p[4:] if p.startswith("src/") else p
+    p = p.replace("/", ".")
+    return p[:-9] if p.endswith(".__init__") else p
+
+
+def localize(task):
+    """Graph nodes touched by the reference patch (most specific node containing each hunk)."""
+    gpath = DATA / "graphs" / f"{task.instance_id.rsplit('_', 1)[0]}_{task.base_commit}.json"
+    if not gpath.exists():
+        return []
+    g = json.load(open(gpath, encoding="utf-8"))
+    text = {n["id"]: (n.get("text") or "") for n in g["nodes"]}
+    loc = set()
+    for f in parse_patch(task.patch):
+        if not f["path"].endswith(".py"):
+            continue
+        mod = module_of(f["path"])
+        cands = [nid for nid in text if nid == mod or nid.startswith(mod + ".")]
+        for h in f["hunks"]:
+            probe = [t.strip() for tag, t in h["lines"] if tag in " -" and len(t.strip()) >= 12]
+            best = None
+            for line in probe:
+                hits = [nid for nid in cands if line in text[nid]]
+                if hits:
+                    c = min(hits, key=lambda n: len(text[n]))
+                    if best is None or len(text[c]) < len(text[best]):
+                        best = c
+            if best is None:
+                m = re.search(r"(?:def|class)\s+(\w+)", h["header"])
+                if m:
+                    hits = [nid for nid in cands if nid.split(".")[-1] == m.group(1)]
+                    best = min(hits, key=lambda n: len(text[n])) if hits else None
+            if best:
+                loc.add(best)
+    return sorted(loc)
+
+
+IDENT = re.compile(r"`([A-Za-z_][\w.]*)`|\b([A-Za-z_]+[A-Z_][A-Za-z0-9_]*|[a-z]+_[a-z0-9_]+)\b")
+
+
+def mentioned_symbols(problem, candidates):
+    found = {(m.group(1) or m.group(2) or "").split(".")[-1] for m in IDENT.finditer(problem)}
+    return [c for c in candidates if c in found]
+
+# CELL 7: markdown
+## 4. The oracle agent
+
+Thoughts are short templates; note that the Gemma 4 chat template drops assistant reasoning from the history,
+so for SFT only the tool calls themselves end up as training targets.
+
+# CELL 8: code
+class OracleRun:
+    def __init__(self, task, ctx, tools, loc):
+        self.task, self.ctx, self.tools, self.loc = task, ctx, tools, loc
+        self.messages, self.stats = [], {"fallback_write": 0, "expanded_edits": 0, "calls": 0}
+
+    def call(self, thought, name, **args):
+        result = self.tools[name](**args)
+        # Depending on the image, harness tools return a JSON string or an already-parsed dict.
+        if isinstance(result, dict):
+            parsed, text = result, json.dumps(result, ensure_ascii=False)
+        else:
+            text = str(result)
+            parsed = json.loads(text) if text.strip().startswith("{") else {"raw": text}
+        self.messages.append({"role": "assistant", "content": thought, "tool_calls": [{"name": name, "arguments": args}]})
+        self.messages.append({"role": "tool", "name": name, "content": text})
+        self.stats["calls"] += 1
+        return parsed
+
+    def sh(self, cmd):
+        return self.ctx.docker.exec(self.ctx.container_id, cmd)
+
+    def run(self):
+        t = self.task
+        files = parse_patch(t.patch)
+        if any(f["binary"] for f in files):
+            raise RuntimeError("binary patch")
+        loc = [n for n in self.loc if not n.startswith(("tests", "docs_src"))]
+        primary = loc[0] if loc else None
+        short = []
+        for n in loc:
+            parts = n.split(".")
+            short += [parts[-1]] + ([parts[-2]] if len(parts) > 2 and parts[-2][:1].isupper() else [])
+        ment = mentioned_symbols(t.problem_statement, list(dict.fromkeys(short)))
+        if ment:
+            self.call(f"The issue mentions `{ment[0]}`. I'll locate it with the code search tool.",
+                      "search_similar_code", query=ment[0], k=5)
+        if primary:
+            self.call(f"The relevant logic appears to be in `{primary}`. Let me check its callers and callees "
+                      f"in the code graph before editing.", "get_code_neighbors", node=primary)
+        for f in sorted(files, key=lambda f: (not f["path"].endswith(".py"), f["path"])):
+            path = f["path"]
+            if f["new"] is None:
+                self.call(f"`{path}` is no longer needed. I'll remove it.", "run_command",
+                          command=f"cd /workspace && git rm -q {path}")
+                continue
+            if f["old"] is None:
+                content = "".join(tx + "\n" for h in f["hunks"] for tag, tx in h["lines"] if tag == "+")
+                self.call(f"I'll create `{path}` with the new implementation.", "write_file", filepath=path, content=content)
+                continue
+            res = self.sh(f"cat /workspace/{path}")
+            if res.exit_code != 0:
+                raise RuntimeError(f"cannot read {path}")
+            orig = res.stdout
+            target = apply_hunks(orig, f["hunks"])
+            if target is None:
+                raise RuntimeError(f"patch does not apply to {path}")
+            total = orig.count("\n") + 1
+            windows = []
+            for h in f["hunks"]:
+                a, b = max(1, h["old_start"] - 15), min(total, h["old_start"] + max(h["old_len"], 1) + 15)
+                if windows and a <= windows[-1][1] + 5:
+                    windows[-1][1] = max(windows[-1][1], b)
+                else:
+                    windows.append([a, b])
+            for a, b in windows[:3]:
+                b = min(b, a + 149)
+                self.call(f"Let me read `{path}` around lines {a}-{b} to understand the current implementation.",
+                          "read_file", filepath=path, start_line=a, end_line=b)
+            cur = orig
+            for h in f["hunks"]:
+                edit = unique_edit(cur, h)
+                fn = re.search(r"(?:def|class)\s+(\w+)", h["header"])
+                where = f" in `{fn.group(1)}`" if fn else ""
+                if edit is None:
+                    self.stats["fallback_write"] += 1
+                    self.call(f"The edits to `{path}` are extensive, so I'll rewrite the file with the fix.",
+                              "write_file", filepath=path, content=target)
+                    break
+                old_s, new_s = edit
+                if old_s != "\n".join(t_ for tag, t_ in h["lines"] if tag in " -"):
+                    self.stats["expanded_edits"] += 1
+                out = self.call(f"I'll apply the fix{where} in `{path}`.", "edit_file",
+                                filepath=path, old_string=old_s, new_string=new_s)
+                if out.get("status") != "ok":
+                    self.stats["fallback_write"] += 1
+                    self.messages = self.messages[:-2]
+                    self.call(f"I'll rewrite `{path}` with the complete fix.", "write_file", filepath=path, content=target)
+                    break
+                cur = cur.replace(old_s, new_s, 1)
+        mods = sorted({f["path"][:-3].removeprefix("src/").replace("/", ".").removesuffix(".__init__") for f in files
+                       if f["new"] and f["path"].endswith(".py") and not f["path"].startswith(("docs", "tests", "scripts"))})
+        if mods:
+            cmd = "cd /workspace && python3 -c " + json.dumps("import " + ", ".join(mods))
+            if self.sh(cmd).exit_code == 0:
+                self.call("Let me verify that the modified modules still import correctly.", "run_command", command=cmd)
+        self.call("The implementation is complete and verified. Submitting the patch.", "submit_patch")
+        touched = ", ".join(f"`{f['path']}`" for f in files)
+        self.messages.append({"role": "assistant", "content": f"I resolved the issue by updating {touched}. The patch has been submitted."})
+
+# CELL 9: markdown
+## 5. Hooking the oracle into the official Evaluator (Phase 1), with a gold-patch control
+
+# CELL 10: code
+class OracleEvaluator(Evaluator):
+    records, gold_mode = {}, False
+
+    async def _run_agent_sandbox(self, task, snapshot_path, task_index, total_tasks, slot_id=None,
+                                 dashboard=None, context=None, base_snapshot_path=None, patch_path=None):
+        trace = SessionTrace(); trace.start()
+        if self.gold_mode:                       # control: reference patch goes straight to Phase 2
+            return task.patch, None, trace
+        docker, config = self.docker, self.config
+        sid = await sandbox_start(docker)
+        rec, patch, err = {"instance_id": task.instance_id, "repo": task.repo}, "", None
+        try:
+            ctx = SwegemmaContext(docker_manager=docker, container_id=sid, task=task, repo=task.repo,
+                                  graph_dir=config.graph_dir, embeddings_dir=config.embeddings_dir,
+                                  budget=config.budget, harness=config.harness)
+            await asyncio.to_thread(setup_container_wheels, docker, sid, config)
+            await asyncio.to_thread(extract_snapshot, docker, sid, snapshot_path, patch_path=patch_path,
+                                    base_snapshot_path=base_snapshot_path)
+            await asyncio.to_thread(setup_git_exclude, docker, sid)
+            await asyncio.to_thread(install_editable_package, docker, sid)
+            await asyncio.to_thread(install_test_dependencies, docker, sid, task.repo, config=config)
+            await asyncio.to_thread(setup_workspace_test_config, docker, sid, repo=task.repo)
+            await asyncio.to_thread(setup_baseline_commit, docker, sid, "baseline")
+            tr = await sandbox_exec(docker, sid, 'cd /workspace && find . -maxdepth 3 -not -path "./.git/*" '
+                                                 '-not -name "*.pyc" -not -name "__pycache__" | sort | head -150')
+            tools = ctx.create_tools()
+            prompt = build_agent_prompt(task, config, workspace_tree=tr.stdout.strip() if tr.exit_code == 0 else "",
+                                        enable_sandbox_testing=True)
+            ctx.start_agent_session()
+            run = OracleRun(task, ctx, tools, localize(task))
+            await asyncio.to_thread(run.run)
+            ctx.stop_agent_session()
+            patch = ctx.submitted_patch or ""
+            rec.update(messages=[{"role": "user", "content": prompt}] + run.messages, stats=run.stats)
+            OracleEvaluator.records.setdefault("tool_schemas", tool_schemas(tools))
+        except Exception as e:
+            err = f"oracle error: {e}"
+            rec["error"] = err + "\n" + traceback.format_exc()[-1500:]
+        finally:
+            await sandbox_stop(docker, sid)
+        OracleEvaluator.records[task.instance_id] = rec
+        return patch, err, trace
+
+
+def tool_schemas(tools):
+    from google.adk.tools import FunctionTool
+    return [FunctionTool(func=fn)._get_declaration().model_dump(exclude_none=True, mode="json") for fn in tools.values()]
+
+# CELL 11: markdown
+## 6. Run: gold control + oracle for every task
+
+# CELL 12: code
+import concurrent.futures
+
+
+def run_sync(coro_fn):
+    """Jupyter already runs an event loop, so asyncio.run() must go to a worker thread."""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(lambda: asyncio.run(coro_fn())).result()
+
+
+tasks = load_tasks(DATA / "tasks.jsonl")[:MAX_TASKS]
+config = EvalConfig(tasks_path=DATA / "tasks.jsonl", snapshots_dir=DATA / "snapshots", results_dir=WORK / "results",
+                    submission_dir=WORK / "dummy_submission", models=None, sandbox="subprocess",
+                    graph_dir=str(DATA / "graphs"), embeddings_dir=str(DATA / "embeddings"), wheels_dir=DATA / "wheels",
+                    display_mode="quiet", **BUDGET)
+(WORK / "results").mkdir(parents=True, exist_ok=True); (WORK / "dummy_submission").mkdir(parents=True, exist_ok=True)
+ev = OracleEvaluator(config)
+
+summary = []
+with open(WORK / "trajectories.jsonl", "w", encoding="utf-8") as fh:
+    for i, task in enumerate(tasks, 1):
+        ev.gold_mode = True
+        try:
+            gold_ok = bool(run_sync(lambda: ev.evaluate_task(task, task_index=i, total_tasks=len(tasks))).resolved)
+        except Exception:
+            gold_ok = False
+        ev.gold_mode = False
+        t0 = time.time()
+        try:
+            res = run_sync(lambda: ev.evaluate_task(task, task_index=i, total_tasks=len(tasks)))
+            ok, verr = bool(res.resolved), res.error
+        except Exception as e:
+            ok, verr = False, f"evaluate error: {e}"
+        rec = OracleEvaluator.records.get(task.instance_id, {"instance_id": task.instance_id})
+        rec.update(resolved=ok, gold_resolved=gold_ok, verify_error=verr, seconds=round(time.time() - t0, 1))
+        fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        summary.append({"id": task.instance_id, "gold": gold_ok, "oracle": ok, "calls": rec.get("stats", {}).get("calls")})
+        print(summary[-1], flush=True)
+
+json.dump(OracleEvaluator.records.get("tool_schemas", []), open(WORK / "tool_schemas.json", "w"), indent=2)
+print(f"\ngold resolves {sum(s['gold'] for s in summary)}/{len(summary)} | "
+      f"oracle resolves {sum(s['gold'] and s['oracle'] for s in summary)} of the gold-resolvable tasks")
+
+# CELL 13: markdown
+## 7. Using the trajectories for SFT
+
+Keep `resolved and gold_resolved`. Convert to the Hugging Face chat format and render with the Gemma 4 template;
+train only on assistant turns (diff the rendered prefixes to get the spans).
+
+```python
+def to_hf(msgs, system="You are an expert autonomous software engineer."):
+    out = [{"role": "system", "content": system}]
+    for m in msgs:
+        if m["role"] == "assistant" and m.get("tool_calls"):
+            out.append({"role": "assistant", "content": "", "tool_calls": [
+                {"type": "function", "function": {"name": c["name"], "arguments": c["arguments"]}}
+                for c in m["tool_calls"]]})
+        elif m["role"] == "tool":
+            out.append({"role": "tool", "name": m["name"], "content": m["content"]})
+        else:
+            out.append({"role": m["role"], "content": m["content"]})
+    return out
+```
+
+Practical notes from our runs (Gemma 4 E2B on 2×T4):
+- Tool schemas use `any_of` for optional ints: convert to `{"type": "integer", "nullable": true}` before passing `tools=`.
+- Real token counts are ~1.5× a chars/4 estimate (tool declarations add ~2k tokens); median ≈ 6.3k tokens.
+- Call `model.train()` (HF applies gradient checkpointing only in train mode), keep no module on CPU
+  (non-persistent buffers become meta tensors), and compute the loss in chunks over the 262k vocabulary.
+
+# CELL 14: code
+import collections, statistics
+rows = [json.loads(l) for l in open(WORK / "trajectories.jsonl", encoding="utf-8")]
+good = [r for r in rows if r.get("resolved") and r.get("gold_resolved")]
+print("validated trajectories:", len(good), dict(collections.Counter(r["repo"] for r in good)))
+if good:
+    print("median tool calls:", statistics.median(r["stats"]["calls"] for r in good))
+print("tool usage:", dict(collections.Counter(tc["name"] for r in good for m in r["messages"]
+                                              if m.get("tool_calls") for tc in m["tool_calls"])))

@@ -1,0 +1,305 @@
+# CELL 0: markdown
+# robust-edit: reliable file edits for the Gemma 4 agent harness (31B A/B)
+
+**robust-edit** is a drop-in skill (dataset: `magicsword001/robust-edit`, Apache 2.0) that removes editing failures
+caused by the harness rather than by the model:
+
+- `edit_file` often fails on 31B: a string argument gets closed with a backtick and the other arguments are lost,
+  or `old_string` does not match.
+- Tool results reach the model as JSON, so code shows `\n` and `\"`; models copy these escapes into
+  `old_string`, and `edit_file`'s fallback does not undo a backslash followed by a real line break.
+- After a failed edit the model tends to repeat the identical call.
+- The harness's reset of agent-edited test files is a no-op in swegemma 0.2.7, so one edited test file makes the
+  hidden test patch fail to apply.
+
+A one-call setup step installs a small editor into `.git/agent/edit.py` and keeps test-file edits out of the patch.
+The agent then edits with one `run_command` (SEARCH/REPLACE blocks in a heredoc); the editor undoes copied escapes,
+never writes a Python file that does not compile, and answers a miss with the closest lines.
+
+This notebook (1) demonstrates the editor on a toy repository (no GPU needed), then (2) runs Gemma 4 31B on 4×L4
+with two agents that are identical except for robust-edit, alternately on the same training tasks, and counts
+editing outcomes. Traces, patches and logs are deleted at the end; only the counts are kept.
+
+
+# CELL 1: markdown
+## 1. The editor on a toy repository (no GPU)
+
+# CELL 2: code
+import glob, os, shutil, subprocess, sys, tempfile
+from pathlib import Path
+
+SKILL_DIR = next(Path(p).parent for p in sorted(glob.glob('/kaggle/input/**/skills/robust-edit/SKILL.md', recursive=True))
+                 if (Path(p).parents[2] / 'README.md').is_file() and (Path(p).parents[2] / 'example').is_dir())
+EXAMPLE_DIR = SKILL_DIR.parents[1] / 'example'
+print('skill:', SKILL_DIR)
+
+# A toy repository with the editor installed the way setup.py does it
+demo = Path(tempfile.mkdtemp())
+(demo / 'pkg').mkdir()
+(demo / 'pkg' / 'mod.py').write_text('def greet(name):\n    if not name:\n        return ""\n    return f"hi {name}"\n')
+subprocess.run(['git', 'init', '-q'], cwd=demo, check=True)
+(demo / '.git' / 'agent').mkdir()
+shutil.copyfile(SKILL_DIR / 'scripts' / 'edit_tool.py', demo / '.git' / 'agent' / 'edit.py')
+
+
+def edit(args, stdin=''):
+    out = subprocess.run([sys.executable, '.git/agent/edit.py', *args], cwd=demo, input=stdin,
+                         capture_output=True, text=True).stdout
+    print(f'$ python3 .git/agent/edit.py {" ".join(args)}\n{out}')
+
+
+block = lambda s, r: f'<<<<<<< SEARCH\n{s}\n=======\n{r}\n>>>>>>> REPLACE\n'
+# 1. SEARCH copied with JSON escapes from a tool result (backslash + line break, \")
+edit(['pkg/mod.py'], block('    if not name:\\\n        return \\"\\"', '    if not name:\\\n        return "nobody"'))
+# 2. An edit that would break the syntax is refused
+edit(['pkg/mod.py'], block('    if not name:', '    if not name'))
+# 3. SEARCH that is not in the file: the closest lines come back with line numbers
+edit(['pkg/mod.py'], block('    return f"hello {name}"', '    return f"hello, {name}"'))
+
+# CELL 3: markdown
+## 2. Install the harness (offline wheelhouse)
+
+# CELL 4: code
+import glob, importlib, json, os, shutil, subprocess, sys
+from pathlib import Path
+
+os.environ['LITELLM_LOCAL_MODEL_COST_MAP'] = 'True'
+os.environ['TRANSFORMERS_NO_TF'] = '1'
+os.environ['VLLM_WORKER_MULTIPROC_METHOD'] = 'spawn'
+os.environ['VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS'] = '1'
+os.environ['VLLM_ENGINE_READY_TIMEOUT_S'] = '1200'
+os.environ['VLLM_NO_USAGE_STATS'] = '1'
+os.environ['OTEL_SDK_DISABLED'] = 'true'
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+
+WHEELHOUSE_DIR = Path('/kaggle/input/datasets/metric/gemma-4-developer-agent-wheelhouse')
+for pth_pattern in ('/usr/local/lib/python*/dist-packages/*cutlass*.pth', '/usr/local/lib/python*/site-packages/*cutlass*.pth'):
+    for pth in glob.glob(pth_pattern):
+        try:
+            os.unlink(pth)
+        except OSError:
+            pass
+tmp_whl = Path('/tmp/wheelhouse')
+tmp_whl.mkdir(parents=True, exist_ok=True)
+for w in WHEELHOUSE_DIR.glob('*.whl'):
+    if 'cutlass' in w.name.lower():
+        continue
+    target = tmp_whl / (w.name.replace('cu128', '+cu128') if ('cu128' in w.name and '+' not in w.name) else w.name)
+    if not target.exists():
+        os.symlink(w, target)
+wheels = sorted(str(w) for w in tmp_whl.glob('*.whl'))
+subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', '--no-deps', '--force-reinstall', *wheels], check=True)
+importlib.invalidate_caches()
+print(f'Installed {len(wheels)} wheels')
+
+# CELL 5: markdown
+## 3. Two agents that differ only in robust-edit
+
+# CELL 6: code
+from swegemma.models import load_tasks
+
+DATA_DIR = Path('/kaggle/input/competitions/gemma-4-developer-agent')
+WORKING_DIR = Path('/kaggle/working')
+
+# robust_edit: the example submission shipped with the dataset (a setup step, then the solver).
+# baseline: the same solver prompt with edit_file in step 4 and no "Editing files" section, a single agent, no skill.
+ARM_DIRS = {}
+d = WORKING_DIR / 'agents' / 'robust_edit'
+shutil.rmtree(d, ignore_errors=True)
+shutil.copytree(EXAMPLE_DIR, d)
+ARM_DIRS['robust_edit'] = d
+
+d = WORKING_DIR / 'agents' / 'baseline'
+shutil.rmtree(d, ignore_errors=True)
+(d / 'prompts').mkdir(parents=True)
+shutil.copytree(EXAMPLE_DIR / 'configs', d / 'configs')
+shutil.copyfile(EXAMPLE_DIR / 'eval_config.yaml', d / 'eval_config.yaml')
+# baseline prompt: step 4 says edit_file instead of the editor, and the "Editing files" section is dropped
+solver = (EXAMPLE_DIR / 'prompts' / 'solver.md').read_text()
+s4, s5 = solver.index('4. '), solver.index('5. ')
+solver = (solver[:s4] + '4. Make the smallest change that fixes it. Edit files with `edit_file`; create new files '
+          'with `write_file`.\n' + solver[s5:])
+start, end = solver.index('## Editing files'), solver.index('## Notes')
+(d / 'prompts' / 'solver.md').write_text(solver[:start] + solver[end:])
+(d / 'agent.yaml').write_text('''name: swe_agent
+model: gemma-4-31b-it-qat-w4a16-ct
+instruction: !include prompts/solver.md
+tools: [run_command, submit_patch, get_status, read_file, edit_file, write_file,
+        get_code_neighbors, search_similar_code, get_code_subgraph]
+generate_content_config: !include configs/sampling.yaml
+''')
+ARM_DIRS['baseline'] = d
+ARM_DIRS = {k: ARM_DIRS[k] for k in ('baseline', 'robust_edit')}
+
+TASK_IDS = ["fastapi_14786", "requests_7315", "rich_3454", "rich_3894", "fastapi_14479", "fastapi_14458", "requests_7427", "rich_3470", "fastapi_14360", "fastapi_14485", "fastapi_13713", "rich_3061", "rich_3518", "rich_3905", "requests_7505", "requests_7205"]
+TASKS_PATH = DATA_DIR / 'tasks.jsonl'
+all_tasks = {t.instance_id: t for t in load_tasks(TASKS_PATH)}
+SAMPLE_TASKS = [all_tasks[i] for i in TASK_IDS]
+print(f'{len(SAMPLE_TASKS)} tasks x {len(ARM_DIRS)} configurations')
+
+# CELL 7: markdown
+## 4. Start vLLM (31B, tensor parallel over 4×L4)
+
+# CELL 8: code
+import litellm
+import torch
+from adk_submission import VllmConfig, VllmServer, discover_adapters
+from swegemma.config import ALLOWED_ADAPTER_EXTENSIONS
+from swegemma.models.discovery import validate_single_declared_model
+
+litellm.drop_params = True
+TARGET_MODEL_NAME = 'gemma-4-31b-it-qat-w4a16-ct'
+MODEL_PATH = Path('/kaggle/input/models/google/gemma-4/other/gemma-4-31b-it-qat-w4a16-ct/2')
+
+first_dir = next(iter(ARM_DIRS.values()))
+declared_model = validate_single_declared_model(first_dir)
+adapters = discover_adapters(str(first_dir), adapter_extensions=ALLOWED_ADAPTER_EXTENSIONS)
+gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 1
+tp_size = 4 if gpu_count >= 4 else (2 if gpu_count >= 2 else 1)
+vllm_cfg = VllmConfig(
+    model=str(MODEL_PATH), port=8000, host='127.0.0.1',
+    tool_call_parser='gemma4', reasoning_parser='gemma4', max_model_len=32768,
+    dtype='bfloat16' if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) else 'auto',
+    gpu_memory_utilization=0.90, enable_auto_tool_choice=True,
+    enable_lora=True, max_loras=8, max_lora_rank=128,
+    tensor_parallel_size=tp_size, startup_timeout=60 * 20,
+)
+server_instance = VllmServer(vllm_cfg, adapter_manifest=adapters)
+server_instance.start()
+print(f'vLLM server started on {server_instance.base_url} (tp={tp_size}, gpus={gpu_count})')
+models = server_instance.create_model_registry(
+    aliases=[declared_model, TARGET_MODEL_NAME], model_prefix='openai/', api_key='EMPTY')
+
+# CELL 9: markdown
+## 5. Run both agents (40 tool calls / 20 min per task)
+
+# CELL 10: code
+import asyncio, concurrent.futures, time
+import pandas as pd
+from google.adk.agents.context_cache_config import ContextCacheConfig
+from google.adk.apps._configs import EventsCompactionConfig
+from swegemma.config import EvalConfig, build_submission_limits
+from swegemma.evaluate import Evaluator
+
+
+def run_sync(coro_or_fn, *args, **kwargs):
+    fn = (lambda: coro_or_fn(*args, **kwargs)) if callable(coro_or_fn) else (lambda: coro_or_fn)
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is not None and loop.is_running():
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(lambda: asyncio.run(fn())).result()
+    return asyncio.run(fn())
+
+
+limits, gen_constraints = build_submission_limits()
+evaluators = {}
+for arm, agent_dir in ARM_DIRS.items():
+    evaluators[arm] = Evaluator(EvalConfig(
+        tasks_path=TASKS_PATH, snapshots_dir=DATA_DIR / 'snapshots', results_dir=WORKING_DIR / 'results' / arm,
+        submission_dir=agent_dir, models=models, sandbox='subprocess',
+        timeout_seconds=300, max_time_minutes=20, max_tool_calls=40, max_turns=500,
+        limits=limits, generation_constraints=gen_constraints, adapter_manifest=adapters,
+        context_cache_config=ContextCacheConfig(min_tokens=2048, ttl_seconds=1800, cache_intervals=10),
+        events_compaction_config=EventsCompactionConfig(
+            compaction_interval=15, overlap_size=2, token_threshold=14336, event_retention_size=5),
+        graph_dir=str(DATA_DIR / 'graphs'), embeddings_dir=str(DATA_DIR / 'embeddings'),
+        wheels_dir=DATA_DIR / 'wheels', verbose=False,
+    ))
+
+# Alternate the order per task so neither configuration always runs first
+rows = []
+arm_names = list(ARM_DIRS)
+for idx, task in enumerate(SAMPLE_TASKS, start=1):
+    order = arm_names if idx % 2 else arm_names[::-1]
+    for arm in order:
+        t0 = time.time()
+        try:
+            result = run_sync(evaluators[arm].evaluate_task, task=task, task_index=idx, total_tasks=len(SAMPLE_TASKS))
+            rows.append({'arm': arm, 'task': task.instance_id, 'resolved': bool(result.resolved),
+                         'tool_calls': result.tool_calls, 'patch_chars': len(result.agent_patch or ''),
+                         'error': (result.error or '')[:80], 'seconds': round(result.duration_seconds)})
+        except Exception as e:  # keep going so one broken task does not lose the whole run
+            rows.append({'arm': arm, 'task': task.instance_id, 'resolved': False,
+                         'error': f'{type(e).__name__}: {e}'[:120], 'seconds': round(time.time() - t0)})
+        print(rows[-1], flush=True)
+        pd.DataFrame(rows).to_csv(WORKING_DIR / 'task_results.csv', index=False)
+results_df = pd.DataFrame(rows)
+results_df.pivot_table(index='task', columns='arm', values='resolved', aggfunc='first')
+
+# CELL 11: markdown
+## 6. Editing outcomes per agent
+
+# CELL 12: code
+import re
+from collections import Counter
+
+
+def edit_stats(trace_path):
+    c = Counter()
+    prev, streak = None, 0
+    for step in json.loads(trace_path.read_text())['steps']:
+        obs = (step.get('observation') or {}).get('content', '') or ''
+        for call in step.get('tool_calls') or []:
+            name, args = call['function_name'], call.get('arguments') or {}
+            sig = json.dumps([name, args], sort_keys=True)
+            streak = streak + 1 if sig == prev else 1
+            prev = sig
+            c['max identical calls in a row'] = max(c['max identical calls in a row'], streak)
+            c['tool calls'] += 1
+            if 'mandatory input parameters are not present' in obs:
+                c['calls with lost arguments'] += 1
+            if name == 'run_skill_script':
+                c['setup ok'] += int('Tests protected' in obs or 'PROTECTED' in obs)
+                c['setup by setup step'] += int(call.get('extra', {}).get('author') == 'setup')
+            if name == 'edit_file':
+                c['edit_file'] += 1
+                if 'mandatory input parameters are not present' in obs:
+                    c['edit_file: arguments lost'] += 1
+                elif '"status": "error"' in obs:
+                    c['edit_file: failed'] += 1
+                else:
+                    c['edit_file: ok'] += 1
+            if name == 'run_command' and '.git/agent/edit.py' in (args.get('command') or ''):
+                cmd = args.get('command') or ''
+                if '--show' in cmd:
+                    c['editor: --show'] += 1
+                    continue
+                c['editor edits'] += 1
+                if 'APPLIED to' in obs and 'NOT APPLIED' not in obs:
+                    c['editor: applied'] += 1
+                    c['editor: applied after repair'] += int('(matched:' in obs)
+                else:
+                    c['editor: not applied'] += 1
+    return c
+
+
+per_arm, per_task = {}, []
+for arm in ARM_DIRS:
+    total = Counter()
+    for path in sorted((WORKING_DIR / 'results' / arm / 'traces').glob('trace_*.json')):
+        s = edit_stats(path)
+        per_task.append({'arm': arm, 'task': path.stem.removeprefix('trace_'), **s})
+        total.update({k: v for k, v in s.items() if k != 'max identical calls in a row'})
+        total['worst identical streak'] = max(total['worst identical streak'], s['max identical calls in a row'])
+    sub = results_df[results_df.arm == arm]
+    total['tasks'] = len(sub)
+    total['resolved'] = int(sub.resolved.sum())
+    per_arm[arm] = total
+
+summary = pd.DataFrame(per_arm).fillna(0).astype(int)
+display(summary)
+display(pd.DataFrame(per_task).fillna(0))
+(WORKING_DIR / 'ab_summary.json').write_text(json.dumps({'per_arm': per_arm, 'per_task': per_task}, indent=1, default=int))
+
+# CELL 13: markdown
+## 7. Clean up (keep only the counts)
+
+# CELL 14: code
+# Do not redistribute competition data: drop traces, patches, logs and test outputs; keep only the counts.
+for arm in ARM_DIRS:
+    shutil.rmtree(WORKING_DIR / 'results' / arm, ignore_errors=True)
+shutil.rmtree(WORKING_DIR / 'agents', ignore_errors=True)
+print(sorted(p.name for p in WORKING_DIR.iterdir()))
