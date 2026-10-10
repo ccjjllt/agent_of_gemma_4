@@ -180,7 +180,7 @@ def canonicalize_trace(trace, tools=None):
         "source": trace.get("source", {}), "synthetic": bool(trace.get("synthetic", False)),
         "protocol_id": trace.get("protocol_id", PROTOCOL_ID), "tool_schema_hash": tool_schema_hash(tools),
         "messages": messages, "target_assistant_steps": selected,
-        "behavior": trace.get("behavior", "local_edit"),
+        "behavior": trace.get("behavior", "unlabeled"),
         "observed_outcome": trace.get("observed_outcome", {}),
         "offline_labels": trace.get("offline_labels", {}),
         "protocol_incompatible_calls": incompatible,

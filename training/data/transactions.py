@@ -5,31 +5,22 @@ import json
 import sys
 from pathlib import Path
 
+from sample_behaviors import (
+    BEHAVIORS, attach_event_ids, classify_messages, calls_of as detailed_calls,
+    reply_status as labeled_reply_status,
+)
+
 
 def assistant_indices(messages):
     return [i for i, m in enumerate(messages) if m.get("role") == "assistant"]
 
 
 def calls_of(message):
-    if message.get("tool_calls"):
-        return [(c["id"], c["function"]["name"]) for c in message["tool_calls"]]
-    if message.get("tool_name"):
-        return [(message["tool_call_id"], message["tool_name"])]
-    return []
+    return [(cid, name) for cid, name, _args in detailed_calls(message)]
 
 
 def reply_status(reply):
-    value = reply.get("content", reply.get("tool_response", ""))
-    try:
-        value = json.loads(value) if isinstance(value, str) else value
-    except (TypeError, ValueError):
-        value = {}
-    if not isinstance(value, dict):
-        value = {}
-    status = value.get("status", reply.get("status", "unknown"))
-    if value.get("error_type") or status in ("error", "failed", "exception", "FileReadError", "FileEditError"):
-        return "error"
-    return "ok" if status in ("ok", "success", "applied") else "unknown"
+    return labeled_reply_status(reply)
 
 
 def slice_transactions(sample, max_actions=6):
@@ -45,7 +36,11 @@ def slice_transactions(sample, max_actions=6):
     if len(current) >= 2:
         chunks.append((current, False))
     elif current:
-        warnings.append("one-action tail omitted; earlier history never removed")
+        labeled = classify_messages(sample["messages"], current)["behavior"]
+        if labeled in BEHAVIORS:
+            chunks.append((current, False))
+        else:
+            warnings.append("one-action tail omitted; earlier history never removed")
     return chunks, warnings
 
 
@@ -61,28 +56,19 @@ def build_transaction(sample, tx_num, step_ids, err_seen=False):
     prefix = messages[:end]
     positions = assistant_indices(prefix)
     targets = [positions.index(p) for p in step_ids]
-    failed, recovered = {}, []
-    for i, message in enumerate(prefix):
-        for cid, name in calls_of(message):
-            replies = [m for m in prefix[i+1:] if m.get("role") == "tool" and m.get("tool_call_id") == cid]
-            if len(replies) != 1:
-                raise ValueError(f"missing/ambiguous response to {cid}")
-            status = reply_status(replies[0])
-            # Command error->success may be an unrelated check, not a recovery.
-            if name not in ("read_file", "edit_file", "write_file"):
-                continue
-            if status == "error":
-                failed[name] = cid
-            elif status == "ok" and name in failed and i in step_ids:
-                recovered.append({"failed_call": failed.pop(name), "successful_call": cid})
-    behavior = "tool_recovery" if recovered else sample.get("behavior", "local_edit")
-    if behavior == "tool_recovery" and not recovered:
-        behavior = "local_edit"
+    labeled = classify_messages(prefix, step_ids)
+    evidence, event_ids = attach_event_ids(sample.get("sample_id", ""), labeled["recovery_evidence"])
+    outcome = dict(sample.get("observed_outcome") or {})
+    outcome["action_succeeded"] = labeled["action_succeeded"]
+    if "task_resolved" not in outcome:
+        outcome["task_resolved"] = None
     tx = {k: sample[k] for k in ("sample_id", "origin_kind", "group", "source",
-        "protocol_id", "tool_schema_hash", "synthetic", "observed_outcome") if k in sample}
+        "protocol_id", "tool_schema_hash", "synthetic") if k in sample}
     tx.update(transaction_id=f"{sample['sample_id']}-tx{tx_num:02d}",
-        messages=prefix, target_assistant_steps=targets, behavior=behavior,
-        missing_observation=False, recovery_evidence=recovered,
+        messages=prefix, target_assistant_steps=targets, behavior=labeled["behavior"],
+        behaviors_present=labeled["behaviors_present"],
+        observed_outcome=outcome, missing_observation=False,
+        recovery_evidence=evidence, recovery_event_ids=event_ids,
         prefix_assistant_count=targets[0], selected_action_count=len(targets))
     sidecar = {"transaction_id": tx["transaction_id"],
                "offline_labels": sample.get("offline_labels", {}),

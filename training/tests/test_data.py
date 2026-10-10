@@ -13,6 +13,7 @@ import transactions as t
 import split_registry as s
 import prepare_local as p
 import length_census as lc
+import sample_behaviors as sb
 
 
 def trace(name="edit_file", args=None):
@@ -73,6 +74,10 @@ class DataTests(unittest.TestCase):
         self.assertEqual(tx["target_assistant_steps"], [1, 2])
         self.assertEqual(tx["behavior"], "tool_recovery")
         self.assertEqual(tx["recovery_evidence"][0]["failed_call"], "first")
+        self.assertEqual(tx["recovery_evidence"][0]["filepath"], "x.py")
+        self.assertIn("FileEditError", tx["recovery_evidence"][0]["failed_observation"])
+        self.assertTrue(tx["observed_outcome"]["action_succeeded"])
+        self.assertIsNone(tx["observed_outcome"].get("task_resolved"))
 
     def test_failure_without_recovery_not_positive_recovery(self):
         sample = c.canonicalize_trace(trace())
@@ -125,6 +130,10 @@ class DataTests(unittest.TestCase):
             self.assertIn("old_string", blob)
             self.assertIn("FileEditError", blob)
             self.assertNotIn(0, sample["target_assistant_steps"])
+            self.assertEqual(sample.get("behavior"), "unlabeled")
+            tx = json.loads((out / "failures" / "transactions.jsonl").read_text().splitlines()[0])
+            self.assertEqual(tx["behavior"], "tool_recovery")
+            self.assertNotEqual(tx["behavior"], "local_edit")
 
     def test_prepare_excludes_heldout_even_with_include_failures(self):
         with tempfile.TemporaryDirectory() as td:
@@ -138,6 +147,130 @@ class DataTests(unittest.TestCase):
             blob = (root / "out" / "canonical.jsonl").read_text()
             self.assertNotIn("held_issue", blob)
             self.assertNotIn("HELD_SECRET_SHOULD_NOT_LEAK", blob)
+
+    def test_recovery_does_not_pair_same_tool_different_files(self):
+        raw = trace()
+        raw["raw_turns"][2]["arguments"]["filepath"] = "a.py"
+        raw["raw_turns"][6]["arguments"]["filepath"] = "a.py"
+        raw["raw_turns"].extend([
+            {"role": "assistant", "tool_name": "edit_file", "tool_call_id": "fourth",
+             "arguments": {"filepath": "b.py", "old_string": "a", "new_string": "b"}},
+            {"role": "tool", "tool_call_id": "fourth",
+             "tool_response": {"status": "error", "error_type": "FileEditError"}},
+            {"role": "assistant", "tool_name": "edit_file", "tool_call_id": "fifth",
+             "arguments": {"filepath": "b.py", "old_string": "a", "new_string": "b"}},
+            {"role": "tool", "tool_call_id": "fifth", "tool_response": {"status": "ok"}},
+        ])
+        sample = c.canonicalize_trace(raw)
+        tx, _ = t.build_transaction(sample, 1, [4, 6, 10])
+        files = {item["filepath"] for item in tx["recovery_evidence"]}
+        failed = {item["failed_call"] for item in tx["recovery_evidence"]}
+        self.assertEqual(tx["behavior"], "tool_recovery")
+        self.assertEqual(files, {"a.py", "b.py"})
+        self.assertEqual(failed, {"first", "fourth"})
+        paired = {(item["failed_call"], item["successful_call"]) for item in tx["recovery_evidence"]}
+        self.assertEqual(paired, {("first", "third"), ("fourth", "fifth")})
+
+    def test_success_on_other_file_is_not_recovery(self):
+        raw = trace()
+        raw["raw_turns"][2]["arguments"]["filepath"] = "a.py"
+        raw["raw_turns"][6]["arguments"]["filepath"] = "b.py"
+        sample = c.canonicalize_trace(raw)
+        tx, _ = t.build_transaction(sample, 1, [4, 6])
+        self.assertNotEqual(tx["behavior"], "tool_recovery")
+        self.assertEqual(tx["recovery_evidence"], [])
+        self.assertEqual(tx["behavior"], "local_edit")
+
+    def test_later_success_closes_recovery_so_it_is_not_repeated(self):
+        raw = trace()
+        raw["raw_turns"].extend([
+            {"role": "assistant", "tool_name": "edit_file", "tool_call_id": "fourth",
+             "arguments": {"filepath": "x.py", "old_string": "b", "new_string": "c"}},
+            {"role": "tool", "tool_call_id": "fourth", "tool_response": {"status": "ok"}},
+        ])
+        sample = c.canonicalize_trace(raw)
+        first, _ = t.build_transaction(sample, 1, [4, 6])
+        later, _ = t.build_transaction(sample, 2, [8])
+        self.assertEqual(first["behavior"], "tool_recovery")
+        self.assertEqual(first["recovery_evidence"][0]["successful_call"], "third")
+        self.assertNotEqual(later["behavior"], "tool_recovery")
+        self.assertEqual(later["recovery_evidence"], [])
+        self.assertEqual(later["behavior"], "local_edit")
+
+    def test_jammed_filepath_still_matches_same_file_recovery(self):
+        raw = trace("read_file", {"filepath": "x.py`,start_line:1"})
+        raw["raw_turns"][6]["tool_name"] = "read_file"
+        raw["raw_turns"][6]["arguments"] = {"filepath": "x.py"}
+        sample = c.canonicalize_trace(raw)
+        tx, _ = t.build_transaction(sample, 1, [4, 6])
+        self.assertEqual(tx["behavior"], "tool_recovery")
+        self.assertEqual(tx["recovery_evidence"][0]["filepath"], "x.py")
+        self.assertEqual(tx["recovery_evidence"][0]["failed_call"], "first")
+
+    def test_submit_patch_is_verify_close(self):
+        raw = {"trace_id": "example", "group": {"issue": "a", "repo": "o/r", "commit": "abc"},
+               "synthetic": True, "raw_turns": [
+                   {"role": "system", "content": "Use the supplied tools"},
+                   {"role": "user", "content": "Fix the observed behavior"},
+                   {"role": "assistant", "tool_name": "edit_file", "tool_call_id": "e1",
+                    "arguments": {"filepath": "x.py", "old_string": "a", "new_string": "b"}},
+                   {"role": "tool", "tool_call_id": "e1", "tool_response": {"status": "ok"}},
+                   {"role": "assistant", "tool_name": "submit_patch", "tool_call_id": "s1",
+                    "arguments": {}},
+                   {"role": "tool", "tool_call_id": "s1", "tool_response": {"status": "ok"}}]}
+        sample = c.canonicalize_trace(raw)
+        tx, _ = t.build_transaction(sample, 1, [4])
+        self.assertEqual(tx["behavior"], "verify_close")
+        self.assertIn("verify_close", tx["behaviors_present"])
+
+    def test_register_keeps_recovery_not_file_order_first_three(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "tx.jsonl"
+            rows = []
+            for i in range(4):
+                rows.append(_sample_tx("iss-tx%02d" % (i + 1), "iss", "local_edit",
+                                       "edit body %d" % i, sample_id="iss-aaaa"))
+            rows.append(_sample_tx("iss-tx99", "iss", "tool_recovery", "recovery body",
+                                   sample_id="iss-bbbb",
+                                   evidence=[{"failed_call": "f1", "successful_call": "s1"}]))
+            rows.append(_sample_tx("iss-tx98", "iss", "verify_close", "verify body",
+                                   sample_id="iss-cccc"))
+            path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+            reg = s.register(path, max_per_issue=3, seed=20261010, reserved_issues=set())
+            members = next(iter(reg["groups"].values()))["members"]
+            self.assertIn("iss-tx99", members)
+            self.assertIn("iss-tx98", members)
+            self.assertEqual(len(members), 3)
+
+    def test_register_drops_reserved_pairing_issue(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "tx.jsonl"
+            rows = [
+                _sample_tx("fastapi_13713-tx01", "fastapi_13713", "local_edit", "a",
+                           repo="fastapi/fastapi", commit="deadbeef"),
+                _sample_tx("ok-tx01", "ok_issue", "local_edit", "b", repo="o/r", commit="abc"),
+                _sample_tx("ok-tx02", "ok_issue", "tool_recovery", "c", repo="o/r", commit="abc",
+                           evidence=[{"failed_call": "f", "successful_call": "s"}]),
+            ]
+            path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+            reg = s.register(path, max_per_issue=3, seed=20261010)
+            issues = {g["issue"] for g in reg["groups"].values()}
+            self.assertNotIn("fastapi_13713", issues)
+            self.assertIn("ok_issue", issues)
+
+    def test_missing_behavior_is_reported_not_invented(self):
+        selected, audit = sb.select_issue_transactions([
+            _sample_tx("a-tx01", "a", "local_edit", "only edits", sample_id="a-one"),
+            _sample_tx("a-tx02", "a", "local_edit", "more edits", sample_id="a-two"),
+        ], max_per_issue=3, seed=20261010)
+        self.assertTrue(all(tx["behavior"] == "local_edit" for tx in selected))
+        self.assertIn("tool_recovery", audit["missing_behaviors"])
+        self.assertIn("verify_close", audit["missing_behaviors"])
+        self.assertNotIn("tool_recovery", [tx["behavior"] for tx in selected])
+
+    def test_census_refuses_v1_output_dir(self):
+        with self.assertRaisesRegex(ValueError, "refusing to overwrite v1"):
+            lc.refuse_v1_overwrite(lc.V1_OUTPUT_DIR, Path("/tmp/other-report"))
 
 
 class CensusDecisionTests(unittest.TestCase):
@@ -160,6 +293,20 @@ class CensusDecisionTests(unittest.TestCase):
         empty = lc.decide_max_seq_len([])
         self.assertFalse(empty["trainable_ok"])
         self.assertNotEqual(empty["chosen_max_seq_len"], 2048)
+
+
+def _sample_tx(tid, issue, behavior, text, repo="o/r", commit="abc", evidence=None, sample_id=None):
+    return {
+        "transaction_id": tid,
+        "sample_id": sample_id or tid,
+        "group": {"issue": issue, "repo": repo, "commit": commit},
+        "messages": [{"role": "user", "content": text},
+                     {"role": "assistant", "content": text}],
+        "target_assistant_steps": [0],
+        "behavior": behavior,
+        "recovery_evidence": evidence or [],
+        "observed_outcome": {"task_resolved": False, "action_succeeded": True},
+    }
 
 
 def _atif_trace(user_text="Fix the observed behavior"):

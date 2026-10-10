@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 from prepare_local import prepare
+from sample_behaviors import BEHAVIORS, DEFAULT_SEED, pairing_reserved
 from split_registry import assign, materialize, register
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -24,6 +25,13 @@ CT_V2_TOKENIZER_SHA256 = "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45
 CT_V2_TOKENIZER_BYTES = 32169626
 PROTOCOL_ID = "p005-harness-tools-v1"
 PLACEHOLDER_T0_SIX_TOOLS_TOKENS = 1435
+V1_OUTPUT_DIR = ROOT / "training/artifacts/repair-sft-v1"
+V1_REPORT_DIR = ROOT / "research/005/length-census-20261010"
+V2_OUTPUT_DIR = ROOT / "training/artifacts/repair-sft-v2"
+V2_REPORT_DIR = ROOT / "research/005/length-census-v2-20261010"
+V1_RECOVERY_TXS_BEFORE_CAP = 20
+V1_RECOVERY_TXS_KEPT = 0
+TOKENIZER_FALLBACK = Path("/tmp/p005-gemma-tokenizer-source")
 
 
 def _load_encoding():
@@ -179,10 +187,67 @@ def issues_from_registry(registry, split):
     return sorted(found)
 
 
-def measure_rows(transactions, tokenizer, tools, enc):
+def default_tokenizer_dir():
+    env = os.environ.get("P005_GEMMA_TOKENIZER_DIR")
+    if env:
+        return env
+    if (TOKENIZER_FALLBACK / "tokenizer.json").is_file():
+        return str(TOKENIZER_FALLBACK)
+    return None
+
+
+def rel_to_root(path):
+    path = Path(path)
+    try:
+        return str(path.resolve().relative_to(ROOT.resolve()))
+    except Exception:
+        return str(path)
+
+
+def repo_relative_uri(uri):
+    if not uri:
+        return uri
+    try:
+        resolved = Path(uri).resolve()
+        results_root = (ROOT / "results").resolve()
+        return str(Path("results") / resolved.relative_to(results_root))
+    except Exception:
+        return rel_to_root(uri)
+
+
+def refuse_v1_overwrite(out, report_dir):
+    for path, frozen in ((out, V1_OUTPUT_DIR), (report_dir, V1_REPORT_DIR)):
+        if path.resolve() == frozen.resolve():
+            raise ValueError("refusing to overwrite v1 census path %s" % frozen)
+
+
+def behavior_counts(rows, key="behavior"):
+    counts = {name: 0 for name in BEHAVIORS}
+    counts["other"] = 0
+    for row in rows:
+        name = row.get(key) or "other"
+        if name not in counts:
+            counts[name] = 0
+        counts[name] += 1
+    return counts
+
+
+def recovery_event_ids(tx):
+    ids = list(tx.get("recovery_event_ids") or [])
+    if ids:
+        return ids
+    sample_id = tx.get("sample_id") or ""
+    return ["%s:%s" % (sample_id, item.get("failed_call"))
+            for item in (tx.get("recovery_evidence") or []) if item.get("failed_call")]
+
+
+def measure_rows(transactions, tokenizer, tools, enc, encode_supervised=False):
     rows, errors = [], []
     for tx in transactions:
         group = tx.get("group") or {}
+        source = tx.get("source") or {}
+        outcome = tx.get("observed_outcome") or {}
+        sampling = tx.get("sampling") or {}
         item = {
             "transaction_id": tx.get("transaction_id"),
             "sample_id": tx.get("sample_id"),
@@ -191,8 +256,15 @@ def measure_rows(transactions, tokenizer, tools, enc):
             "commit": group.get("commit"),
             "split": group.get("split"),
             "behavior": tx.get("behavior"),
+            "behaviors_present": list(tx.get("behaviors_present") or []),
             "n_messages": len(tx.get("messages") or []),
             "target_assistant_steps": list(tx.get("target_assistant_steps") or []),
+            "recovery_event_ids": recovery_event_ids(tx),
+            "action_succeeded": outcome.get("action_succeeded"),
+            "task_resolved": outcome.get("task_resolved"),
+            "source_uri": repo_relative_uri(source.get("uri")),
+            "source_sha256": source.get("sha256"),
+            "why_selected": sampling.get("reason"),
         }
         try:
             n = enc.count_template_tokens(
@@ -203,6 +275,16 @@ def measure_rows(transactions, tokenizer, tools, enc):
             continue
         item["raw_token_length"] = int(n)
         item["fits"] = {str(w): n <= w for w in WINDOWS}
+        if encode_supervised:
+            try:
+                record = enc.encode_transaction(
+                    tx, tokenizer, tools, max_seq_len=max(int(n) + 8, 8),
+                    enable_thinking=True, preserve_thinking=True, thought_loss="mask")
+                item["supervised_tokens"] = int(record["meta"]["supervised_tokens"])
+                item["supervised_density"] = (
+                    item["supervised_tokens"] / float(n) if n else None)
+            except (enc.EncodingError, ValueError, TypeError, KeyError) as err:
+                item["supervised_error"] = str(err)
         rows.append(item)
     return rows, errors
 
@@ -238,38 +320,68 @@ def run_census(args):
     if not results.exists():
         raise FileNotFoundError("results dir missing: %s (gitignored; use the main working tree copy)"
                                 % results)
-    tokenizer_dir = args.tokenizer or os.environ.get("P005_GEMMA_TOKENIZER_DIR")
+    tokenizer_dir = args.tokenizer or default_tokenizer_dir()
     if not tokenizer_dir:
         raise FileNotFoundError("pass --tokenizer or set P005_GEMMA_TOKENIZER_DIR; no 31B download")
     tok_fp = verify_ct_v2_tokenizer(tokenizer_dir)
     out = Path(args.output_dir)
     report_dir = Path(args.report_dir)
+    refuse_v1_overwrite(out, report_dir)
     out.mkdir(parents=True, exist_ok=True)
     report_dir.mkdir(parents=True, exist_ok=True)
     tools_path = Path(args.tools)
     splits_path = Path(args.splits)
     heldout, panel = heldout_and_panel(splits_path)
+    split_records = json.loads(splits_path.read_text(encoding="utf-8")).get("records") or []
+    reserved_issues, reserved_snaps = pairing_reserved(split_records)
     (out / "heldout-ids.txt").write_text("\n".join(heldout) + ("\n" if heldout else ""), encoding="utf-8")
+    (out / "reserved-pairing-ids.txt").write_text(
+        "\n".join(sorted(reserved_issues)) + "\n", encoding="utf-8")
 
     prepare_report = prepare(results, splits_path, args.eligibility, out, tools_path,
                              include_failures=True)
     (out / "prepare_manifest.json").write_text(
         json.dumps(prepare_report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     tx_path = out / "transactions.jsonl"
-    registry = register(tx_path, max_per_issue=args.max_per_issue)
-    assign(registry, args.select_fraction, whole_repo=True, seed=args.seed, heldout=set(heldout))
+    all_tx = read_jsonl(tx_path)
+    registry = register(tx_path, max_per_issue=args.max_per_issue, seed=args.seed,
+                        reserved_issues=reserved_issues, reserved_snapshots=reserved_snaps)
+    assign(registry, args.select_fraction, whole_repo=True, seed=args.seed,
+           heldout=set(heldout), reserved_issues=reserved_issues)
     (out / "splits.json").write_text(json.dumps(registry, indent=2) + "\n", encoding="utf-8")
     counts = materialize(tx_path, registry, out / "train.jsonl", out / "select.jsonl")
     train_issues = issues_from_registry(registry, "train")
     select_issues = issues_from_registry(registry, "select")
+    leak = [i for i in train_issues + select_issues if i in reserved_issues]
+    if leak:
+        raise RuntimeError("reserved pairing issues entered train/select: %s" % leak)
+    snap_leak = []
+    for group in registry["groups"].values():
+        if group.get("split") in ("train", "select") and (
+                group["issue"] in reserved_issues or
+                (group["repo"], group["commit"]) in reserved_snaps):
+            snap_leak.append(group["issue"])
+    if snap_leak:
+        raise RuntimeError("reserved pairing snapshot entered train/select: %s" % snap_leak)
 
     enc = _load_encoding()
     tokenizer = enc.load_tokenizer(str(tokenizer_dir), allow_download=False)
     tools, _protocol = enc.normalize_tools(json.loads(tools_path.read_text(encoding="utf-8")))
     train_tx = read_jsonl(out / "train.jsonl")
     select_tx = read_jsonl(out / "select.jsonl")
-    train_rows, train_err = measure_rows(train_tx, tokenizer, tools, enc)
-    select_rows, select_err = measure_rows(select_tx, tokenizer, tools, enc)
+    reason_by_id = {}
+    for audit in ((registry.get("sampling_audit") or {}).get("issue_audits") or {}).values():
+        reason_by_id.update(audit.get("reasons") or {})
+    for tx in train_tx + select_tx:
+        sampling = dict(tx.get("sampling") or {})
+        if tx.get("transaction_id") in reason_by_id:
+            sampling["reason"] = reason_by_id[tx["transaction_id"]]
+            sampling.setdefault("seed", args.seed)
+            tx["sampling"] = sampling
+    train_rows, train_err = measure_rows(
+        train_tx, tokenizer, tools, enc, encode_supervised=True)
+    select_rows, select_err = measure_rows(
+        select_tx, tokenizer, tools, enc, encode_supervised=True)
     all_rows = train_rows + select_rows
     decision = decide_max_seq_len([r["raw_token_length"] for r in train_rows])
     chosen = decision["chosen_max_seq_len"]
@@ -314,26 +426,75 @@ def run_census(args):
         "dev_panel_ids": panel,
         "dev_panel_in_train": panel_in_train,
         "dev_panel_not_in_train": panel_not_in_train,
+        "reserved_pairing_issues": sorted(reserved_issues),
+        "reserved_pairing_excluded": True,
         "pairing_note": "Issues in train_issues cannot be used as independent repair-gain evidence. "
-                        "Task 5 pairing must use exposed panel issues disjoint from train_issues.",
+                        "Task 3 pairing uses the reserved eight issues, which are excluded from "
+                        "v2 train/select along with the same repo+commit.",
     }
     (report_dir / "train_issues.json").write_text(
         json.dumps(train_issues_doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     def pack(rows):
         lengths = [r["raw_token_length"] for r in rows]
+        supervised = [r["supervised_tokens"] for r in rows if r.get("supervised_tokens") is not None]
+        events = sorted({eid for r in rows for eid in (r.get("recovery_event_ids") or [])})
         return {
             "n": len(rows),
             "independent_issues": sorted({r["issue"] for r in rows}),
+            "independent_recovery_events": len(events),
+            "recovery_event_ids": events,
+            "behavior_counts": behavior_counts(rows),
             "quantiles": length_quantiles(lengths),
             "histogram": length_histogram(lengths),
             "windows": {str(w): window_coverage(rows, w) for w in WINDOWS},
+            "supervised_tokens": int(sum(supervised)),
+            "supervised_density": (
+                (sum(supervised) / float(sum(r["raw_token_length"] for r in rows
+                                             if r.get("supervised_tokens") is not None)))
+                if supervised else None),
         }
+
+    before_behavior = behavior_counts(all_tx)
+    before_recovery_txs = sum(1 for tx in all_tx if tx.get("behavior") == "tool_recovery")
+    before_events = sorted({eid for tx in all_tx for eid in recovery_event_ids(tx)})
+    kept_events = sorted({eid for r in all_rows for eid in (r.get("recovery_event_ids") or [])})
+    sample_list = []
+    for row in all_rows:
+        sample_list.append({
+            "issue": row.get("issue"),
+            "trace": row.get("sample_id"),
+            "transaction_id": row.get("transaction_id"),
+            "behavior": row.get("behavior"),
+            "raw_token_length": row.get("raw_token_length"),
+            "split": row.get("split"),
+            "why_selected": row.get("why_selected"),
+            "recovery_event_ids": row.get("recovery_event_ids"),
+            "action_succeeded": row.get("action_succeeded"),
+            "task_resolved": row.get("task_resolved"),
+            "source_uri": row.get("source_uri"),
+            "supervised_tokens": row.get("supervised_tokens"),
+            "supervised_density": row.get("supervised_density"),
+        })
+    (report_dir / "sample_list.json").write_text(
+        json.dumps({"seed": args.seed, "max_per_issue": args.max_per_issue,
+                    "samples": sample_list}, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8")
+    (out / "sample_list.json").write_text(
+        json.dumps({"seed": args.seed, "max_per_issue": args.max_per_issue,
+                    "samples": sample_list}, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8")
+    sampling_audit = registry.get("sampling_audit") or {}
+    encoded_supervised = 0
+    for encoded_path in (out / "encoded-train.jsonl", out / "encoded-select.jsonl"):
+        for rec in read_jsonl(encoded_path):
+            encoded_supervised += int((rec.get("meta") or {}).get("supervised_tokens") or 0)
 
     length_report = {
         "generated_at": "2026-10-10",
         "protocol_id": PROTOCOL_ID,
-        "tools": str(tools_path),
+        "census_version": "v2",
+        "tools": rel_to_root(tools_path),
         "tokenizer": tok_fp,
         "tokenizer_hash": enc.tokenizer_fingerprint(tokenizer),
         "encoding": "training/encoding/gemma_tool_chat.py",
@@ -347,18 +508,44 @@ def run_census(args):
         "select_fraction": args.select_fraction,
         "seed": args.seed,
         "heldout_excluded": True,
+        "reserved_pairing_excluded": True,
+        "reserved_pairing_issues": sorted(reserved_issues),
         "prepare": {
             "traces": len(prepare_report.get("traces") or []),
             "rejected": len(prepare_report.get("rejected") or []),
             "transactions_before_cap": prepare_report.get("transactions"),
             "tasks": prepare_report.get("tasks"),
             "independent_task_count": prepare_report.get("independent_task_count"),
+            "behavior_counts": before_behavior,
+            "recovery_transactions": before_recovery_txs,
+            "independent_recovery_events": len(before_events),
+        },
+        "sampling_audit": {
+            "seed": args.seed,
+            "max_per_issue": args.max_per_issue,
+            "selected": sampling_audit.get("selected"),
+            "dropped_reserved": sampling_audit.get("dropped_reserved"),
+            "missing_behaviors_by_issue": sampling_audit.get("missing_behaviors_by_issue"),
+            "issue_audits": sampling_audit.get("issue_audits"),
+        },
+        "recovery_candidates": {
+            "v1_labeled_before_cap": V1_RECOVERY_TXS_BEFORE_CAP,
+            "v1_kept_in_capped": V1_RECOVERY_TXS_KEPT,
+            "v2_recovery_transactions_before_cap": before_recovery_txs,
+            "v2_unique_events_before_cap": len(before_events),
+            "v2_recovery_transactions_kept": sum(
+                1 for r in all_rows if r.get("behavior") == "tool_recovery"),
+            "v2_unique_events_kept": len(kept_events),
+            "note": "v1 labeled 20 tool_recovery txs by tool-name only and kept 0/20 after "
+                    "file-order first-3; v2 keys recovery by tool+file, closes on the next "
+                    "success, and samples across traces with seed %s" % args.seed,
         },
         "split_materialize_counts": counts,
         "measure_errors": train_err + select_err,
         "all_capped": pack(all_rows),
         "train": pack(train_rows),
         "select": pack(select_rows),
+        "sample_list": sample_list,
         "transactions": all_rows,
         "chosen_max_seq_len": chosen,
         "trainable_ok": decision["trainable_ok"],
@@ -366,17 +553,22 @@ def run_census(args):
         "encoded": {
             "train_written": encoded_train_n,
             "select_written": encoded_select_n,
-            "train_report": str(out / "encoded-train.jsonl.report.json"),
-            "select_report": str(out / "encoded-select.jsonl.report.json"),
-            "train_path": str(out / "encoded-train.jsonl"),
-            "select_path": str(out / "encoded-select.jsonl"),
+            "supervised_tokens": encoded_supervised,
+            "train_report": rel_to_root(out / "encoded-train.jsonl.report.json"),
+            "select_report": rel_to_root(out / "encoded-select.jsonl.report.json"),
+            "train_path": rel_to_root(out / "encoded-train.jsonl"),
+            "select_path": rel_to_root(out / "encoded-select.jsonl"),
         },
         "train_issues": train_issues,
         "select_issues": select_issues,
         "dev_panel_in_train": panel_in_train,
         "dev_panel_not_in_train": panel_not_in_train,
-        "artifacts_dir": str(out),
-        "did_not_overwrite": "training/artifacts/local-diagnostic",
+        "artifacts_dir": rel_to_root(out),
+        "did_not_overwrite": [
+            "training/artifacts/repair-sft-v1",
+            "research/005/length-census-20261010",
+            "training/artifacts/local-diagnostic",
+        ],
     }
     (report_dir / "length_report.json").write_text(
         json.dumps(length_report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -384,6 +576,8 @@ def run_census(args):
         "chosen_max_seq_len": chosen,
         "trainable_ok": decision["trainable_ok"],
         "train_issues": train_issues,
+        "behavior_counts_capped": behavior_counts(all_rows),
+        "recovery_kept": length_report["recovery_candidates"]["v2_unique_events_kept"],
         "encoded_train": encoded_train_n,
         "encoded_select": encoded_select_n,
         "report": str(report_dir / "length_report.json"),
@@ -397,12 +591,12 @@ def build_parser():
     p.add_argument("--splits", default=str(ROOT / "research/task_splits.json"))
     p.add_argument("--eligibility", default=str(ROOT / "research/002/verification_eligibility.json"))
     p.add_argument("--tools", default=str(ROOT / "training/configs/harness_tools.json"))
-    p.add_argument("--output-dir", default=str(ROOT / "training/artifacts/repair-sft-v1"))
-    p.add_argument("--report-dir", default=str(ROOT / "research/005/length-census-20261010"))
-    p.add_argument("--tokenizer", default=os.environ.get("P005_GEMMA_TOKENIZER_DIR"))
+    p.add_argument("--output-dir", default=str(V2_OUTPUT_DIR))
+    p.add_argument("--report-dir", default=str(V2_REPORT_DIR))
+    p.add_argument("--tokenizer", default=default_tokenizer_dir())
     p.add_argument("--max-per-issue", type=int, default=3)
     p.add_argument("--select-fraction", type=float, default=0.2)
-    p.add_argument("--seed", type=int, default=20261010)
+    p.add_argument("--seed", type=int, default=DEFAULT_SEED)
     return p
 
 

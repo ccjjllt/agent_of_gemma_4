@@ -6,11 +6,12 @@ import json
 import sys
 from pathlib import Path
 
+from sample_behaviors import DEFAULT_SEED, PAIRING_RESERVED_ISSUES, content_digest, select_transactions
+
 
 def near_dup_key(tx):
     # Exact normalized content; tool-name sequences alone are not duplicate tasks.
-    payload = {"messages": tx.get("messages", []), "targets": tx.get("target_assistant_steps", [])}
-    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+    return content_digest(tx)
 
 
 def group_key(tx):
@@ -24,38 +25,55 @@ def load_ids(path):
     return {x.strip() for x in Path(path).read_text().splitlines() if x.strip()} if path else set()
 
 
-def register(input_path, max_per_issue=3):
-    groups, seen_ids, seen_hashes, counts = {}, set(), set(), {}
+def _load_transactions(input_path):
+    rows, seen_ids = [], set()
     for line in Path(input_path).read_text().splitlines():
         if not line.strip():
             continue
         tx = json.loads(line)
-        issue, repo, commit = group_key(tx)
         tid = tx.get("transaction_id")
         if not tid:
             raise ValueError("missing transaction_id")
         if tid in seen_ids:
             raise ValueError(f"duplicate transaction id {tid}")
         seen_ids.add(tid)
+        group_key(tx)
+        rows.append(tx)
+    return rows
+
+
+def register(input_path, max_per_issue=3, seed=DEFAULT_SEED, reserved_issues=None,
+             reserved_snapshots=None):
+    rows = _load_transactions(input_path)
+    selected, audit = select_transactions(
+        rows, max_per_issue=max_per_issue, seed=seed,
+        reserved_issues=reserved_issues if reserved_issues is not None else PAIRING_RESERVED_ISSUES,
+        reserved_snapshots=reserved_snapshots)
+    groups = {}
+    for tx in selected:
+        issue, repo, commit = group_key(tx)
         digest = near_dup_key(tx)
         key = json.dumps([issue, repo, commit])
-        issue_key = (repo, issue)
-        if digest in seen_hashes or counts.get(issue_key, 0) >= max_per_issue:
-            continue
-        seen_hashes.add(digest)
-        counts[issue_key] = counts.get(issue_key, 0) + 1
         group = groups.setdefault(key, {"issue": issue, "repo": repo, "commit": commit,
-                                       "members": [], "content_hashes": [], "split": "unassigned"})
-        group["members"].append(tid)
+                                       "members": [], "content_hashes": [], "split": "unassigned",
+                                       "behaviors": [], "reasons": []})
+        group["members"].append(tx["transaction_id"])
         group["content_hashes"].append(digest)
-    return {"registry_version": 2, "groups": groups, "max_per_issue": max_per_issue,
-            "deduplication": "exact canonical content; not semantic near-duplicate detection"}
+        group["behaviors"].append(tx.get("behavior"))
+        group["reasons"].append((tx.get("sampling") or {}).get("reason"))
+    return {"registry_version": 3, "groups": groups, "max_per_issue": max_per_issue,
+            "seed": seed,
+            "deduplication": "exact canonical content, then recovery-event dedup; "
+                             "not semantic near-duplicate detection",
+            "sampling": "seeded behavior coverage across traces; not file-order first-N",
+            "sampling_audit": audit}
 
 
-def assign(registry, fraction, whole_repo=False, seed=20261010, heldout=None):
+def assign(registry, fraction, whole_repo=False, seed=20261010, heldout=None, reserved_issues=None):
     if not 0 < fraction < 1:
         raise ValueError("select-fraction must be between 0 and 1")
-    heldout = heldout or set()
+    heldout = set(heldout or ()) | set(
+        reserved_issues if reserved_issues is not None else PAIRING_RESERVED_ISSUES)
     groups = registry["groups"]
     for group in groups.values():
         if group["issue"] in heldout:
@@ -136,6 +154,8 @@ def main(argv=None):
     r.add_argument("--input", required=True)
     r.add_argument("--registry", required=True)
     r.add_argument("--max-per-issue", type=int, default=3)
+    r.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    r.add_argument("--reserved-ids")
     a = sub.add_parser("assign")
     a.add_argument("--registry", required=True)
     a.add_argument("--out")
@@ -156,9 +176,10 @@ def main(argv=None):
     if args.cmd == "register":
         if args.max_per_issue < 1:
             raise ValueError("max-per-issue must be positive")
-        reg = register(args.input, args.max_per_issue)
+        reserved = load_ids(args.reserved_ids) if args.reserved_ids else None
+        reg = register(args.input, args.max_per_issue, seed=args.seed, reserved_issues=reserved)
         Path(args.registry).write_text(json.dumps(reg, indent=2)+"\n")
-        print(json.dumps({"groups": len(reg["groups"])}))
+        print(json.dumps({"groups": len(reg["groups"]), "selected": reg["sampling_audit"]["selected"]}))
         return 0
     reg = json.loads(Path(args.registry).read_text())
     if args.cmd == "assign":

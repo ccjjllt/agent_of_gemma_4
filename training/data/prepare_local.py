@@ -65,8 +65,7 @@ def prepare(results, splits, eligibility, out, tools_path=SCHEMA_PATH, include_f
                            "teacher": "gemma-4-31b-it-qat-w4a16-ct",
                            "channel_basis": "ATIF extra.event_type when present"},
                 "observed_outcome": {"task_resolved": result.get("resolved"),
-                                     "action_succeeded": None},
-                "behavior": "local_edit"}
+                                     "action_succeeded": None}}
             try:
                 sample = canonicalize_trace(payload, tools)
                 if sample["needs_replay"]:
