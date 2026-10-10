@@ -19,6 +19,7 @@ autograd does not retain every chunk's vocabulary-sized intermediates.
 """
 from __future__ import annotations
 
+from contextlib import nullcontext
 import functools
 import inspect
 import types
@@ -143,7 +144,19 @@ def _text_inputs(base, values):
     return selected
 
 
-def selected_token_forward(base, *, chunk_size=32, **values):
+def _backbone_save_context(save_on_cpu):
+    """Offload autograd saved tensors from the backbone only. Default is off."""
+    if save_on_cpu not in (True, False):
+        raise ValueError("save_on_cpu must be True or False")
+    if not save_on_cpu:
+        return nullcontext()
+    hook = getattr(torch.autograd.graph, "save_on_cpu", None)
+    if hook is None:
+        raise RuntimeError("torch.autograd.graph.save_on_cpu is required for backbone CPU saves")
+    return hook(pin_memory=True)
+
+
+def selected_token_forward(base, *, chunk_size=32, save_on_cpu=False, **values):
     """Gemma4 loss-only forward with HF's shift, softcap and mean CE semantics.
 
     ``num_items_in_batch`` has the same optional sum/divisor semantics as HF's
@@ -151,6 +164,10 @@ def selected_token_forward(base, *, chunk_size=32, **values):
     distributed normalization. Every chunk is recomputed during backward,
     including the LM head and CE; full-vocabulary logits never leave this API.
     Prefer ``install_selected_token_loss`` to keep PEFT/DDP forward hooks.
+
+    ``save_on_cpu`` wraps only ``base.model(...)`` with
+    ``torch.autograd.graph.save_on_cpu(pin_memory=True)``. It is off by default
+    so the proven 2048 diagnostic path is unchanged unless explicitly enabled.
     """
     if not isinstance(base, Gemma4ForConditionalGeneration):
         raise TypeError("selected_token_forward requires the unwrapped Gemma4 base")
@@ -160,12 +177,13 @@ def selected_token_forward(base, *, chunk_size=32, **values):
     labels = values["labels"]
     batch_indices, prediction_indices = selected.nonzero(as_tuple=True)
     targets = labels[:, 1:][selected]
-    outputs = base.model(
-        input_ids=values["input_ids"], attention_mask=values.get("attention_mask"),
-        position_ids=values.get("position_ids"), use_cache=False, return_dict=True,
-        output_attentions=values.get("output_attentions"),
-        output_hidden_states=values.get("output_hidden_states"),
-    )
+    with _backbone_save_context(save_on_cpu):
+        outputs = base.model(
+            input_ids=values["input_ids"], attention_mask=values.get("attention_mask"),
+            position_ids=values.get("position_ids"), use_cache=False, return_dict=True,
+            output_attentions=values.get("output_attentions"),
+            output_hidden_states=values.get("output_hidden_states"),
+        )
     hidden = outputs.last_hidden_state
     batch_indices = batch_indices.to(hidden.device)
     prediction_indices = prediction_indices.to(hidden.device)
@@ -213,17 +231,21 @@ def selected_token_forward(base, *, chunk_size=32, **values):
     return output if return_dict else output.to_tuple()
 
 
-def install_selected_token_loss(model, *, chunk_size=32):
+def install_selected_token_loss(model, *, chunk_size=32, save_on_cpu=False):
     """Bind a loss-only Gemma4 forward underneath PEFT (and future DDP).
 
-    Calling this twice is idempotent and updates the chunk size. Save/load the
-    PEFT adapter normally; this runtime optimization is intentionally not
-    serialized into the adapter and must be installed again when training.
+    Calling this twice is idempotent and updates the chunk size and
+    ``save_on_cpu`` flag. Save/load the PEFT adapter normally; this runtime
+    optimization is intentionally not serialized into the adapter and must be
+    installed again when training. ``save_on_cpu`` defaults to False.
     """
     if not isinstance(chunk_size, int) or isinstance(chunk_size, bool) or chunk_size < 1:
         raise ValueError("chunk_size must be a positive integer")
+    if save_on_cpu not in (True, False):
+        raise ValueError("save_on_cpu must be True or False")
     base = _gemma4_base(model)
     base._p005_loss_chunk_size = chunk_size
+    base._p005_save_on_cpu = save_on_cpu
     if hasattr(base, "_p005_original_forward"):
         return model
     original = base.forward
@@ -237,7 +259,9 @@ def install_selected_token_loss(model, *, chunk_size=32):
         values.update(values.pop("kwargs", {}))
         if values.get("labels") is None:
             return original(*args, **kwargs)
-        return selected_token_forward(self, chunk_size=self._p005_loss_chunk_size, **values)
+        return selected_token_forward(
+            self, chunk_size=self._p005_loss_chunk_size,
+            save_on_cpu=getattr(self, "_p005_save_on_cpu", False), **values)
 
     # ``original`` is already bound. Add self to the wrapper's unbound
     # signature so inspection after MethodType binding still exposes input_ids

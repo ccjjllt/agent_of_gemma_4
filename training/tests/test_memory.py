@@ -10,8 +10,11 @@ import torch
 import transformers as tr
 from peft import LoraConfig, TaskType, get_peft_model
 
+from unittest import mock
+
 from training.memory import (install_selected_token_loss,
-                             prepare_model_for_memory_efficient_kbit_training)
+                             prepare_model_for_memory_efficient_kbit_training,
+                             selected_token_forward)
 
 
 def tiny_base(dtype=torch.float32):
@@ -215,6 +218,84 @@ class SelectedLossTests(unittest.TestCase):
                       {"input_ids": torch.full((2, 6), 40)}):
             with self.subTest(extra=list(extra)), self.assertRaises(ValueError):
                 model(**dict(batch(), **extra))
+
+
+def compare_save_on_cpu_grads():
+    """One-shot tiny-Gemma comparison. Returns the numbers; does not write files."""
+    reference = tiny_lora()
+    install_selected_token_loss(reference, chunk_size=2, save_on_cpu=False)
+    result = reference(**batch())
+    result.loss.backward()
+    expected = {name: parameter.grad.clone() for name, parameter in reference.named_parameters()
+                if parameter.requires_grad}
+    candidate = tiny_lora()
+    install_selected_token_loss(candidate, chunk_size=2, save_on_cpu=True)
+    actual = candidate(**batch())
+    actual.loss.backward()
+    diffs = {}
+    for name, parameter in candidate.named_parameters():
+        if parameter.requires_grad:
+            diffs[name] = float((parameter.grad - expected[name]).abs().max())
+    return {
+        "loss_baseline": float(result.loss.detach()),
+        "loss_save_on_cpu": float(actual.loss.detach()),
+        "loss_abs_diff": float((actual.loss - result.loss).abs().detach()),
+        "n_lora_params": len(diffs),
+        "max_lora_grad_abs_diff": max(diffs.values()) if diffs else None,
+        "all_lora_grads_nonzero": all(value.abs().sum().item() > 0 for value in expected.values()),
+        "save_on_cpu_flag": candidate.get_base_model()._p005_save_on_cpu,
+        "default_flag": reference.get_base_model()._p005_save_on_cpu,
+        "rtol_loss": 2e-6, "atol_loss": 2e-7, "rtol_grad": 3e-5, "atol_grad": 3e-7,
+    }
+
+
+class SaveOnCpuTests(unittest.TestCase):
+    def setUp(self):
+        torch.set_num_threads(1)
+
+    def test_default_install_leaves_save_on_cpu_off(self):
+        model = tiny_lora()
+        install_selected_token_loss(model, chunk_size=2)
+        self.assertFalse(model.get_base_model()._p005_save_on_cpu)
+        selected_token_forward(model.get_base_model(), chunk_size=2, **batch())
+
+    def test_backbone_save_on_cpu_called_only_when_enabled(self):
+        calls = []
+        real = torch.autograd.graph.save_on_cpu
+
+        def wrapped(*args, **kwargs):
+            calls.append({"args": args, "kwargs": kwargs})
+            return real(*args, **kwargs)
+
+        model = tiny_lora()
+        install_selected_token_loss(model, chunk_size=2, save_on_cpu=False)
+        with mock.patch.object(torch.autograd.graph, "save_on_cpu", wrapped):
+            model(**batch())
+        self.assertEqual(calls, [])
+        install_selected_token_loss(model, chunk_size=2, save_on_cpu=True)
+        with mock.patch.object(torch.autograd.graph, "save_on_cpu", wrapped):
+            model(**batch())
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["kwargs"].get("pin_memory"), True)
+
+    def test_save_on_cpu_matches_loss_and_lora_grads(self):
+        reference = tiny_lora()
+        install_selected_token_loss(reference, chunk_size=2, save_on_cpu=False)
+        result = reference(**batch())
+        result.loss.backward()
+        expected = {name: parameter.grad.clone() for name, parameter in reference.named_parameters()
+                    if parameter.requires_grad}
+        self.assertTrue(all(value.abs().sum().item() > 0 for value in expected.values()))
+        candidate = tiny_lora()
+        install_selected_token_loss(candidate, chunk_size=2, save_on_cpu=True)
+        self.assertTrue(candidate.get_base_model()._p005_save_on_cpu)
+        actual = candidate(**batch())
+        torch.testing.assert_close(actual.loss, result.loss, rtol=2e-6, atol=2e-7)
+        actual.loss.backward()
+        for name, parameter in candidate.named_parameters():
+            if parameter.requires_grad:
+                torch.testing.assert_close(parameter.grad, expected[name], rtol=3e-5, atol=3e-7,
+                                           msg=lambda message: name + ": " + message)
 
 
 if __name__ == "__main__":
