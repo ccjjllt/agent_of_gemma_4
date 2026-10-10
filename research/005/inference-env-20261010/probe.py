@@ -86,10 +86,37 @@ EXPECTED_WHEELS = {
 }
 
 
+SAFE_ENV_KEYS = (
+    "KAGGLE_DOCKER_IMAGE",
+    "COLAB_IMAGE_TYPE",
+    "KAGGLE_KERNEL_RUN_TYPE",
+    "KAGGLE_CONTAINER_NAME",
+)
+
+
 def evaluate_python(version_info):
     if tuple(version_info[:2]) != (3, 12):
         return "pin_failed", False
     return None, True
+
+
+def collect_env_hints(environ=None):
+    env = os.environ if environ is None else environ
+    hints = {}
+    for key in SAFE_ENV_KEYS:
+        if key not in env:
+            continue
+        lowered = key.lower()
+        if any(part in lowered for part in ("token", "secret", "password", "credential")):
+            continue
+        hints[key] = env[key]
+    return hints
+
+
+def decide_install_status(*, pip_attempted, failed_wheels, official_ok, required_ok):
+    if pip_attempted and not failed_wheels and official_ok and required_ok:
+        return "ok_python312_v30_installed", True
+    return "python312_install_incomplete", False
 
 
 def stage_wheel_name(name: str):
@@ -201,14 +228,7 @@ def run(*, out_dir=None, input_root=None, version_info=None, executable=None, pi
     print(f"platform: {platform.platform()}", flush=True)
     print(f"declared_docker_image: {DECLARED_DOCKER_IMAGE}", flush=True)
 
-    env_hints = {}
-    for key, value in sorted(os.environ.items()):
-        lowered = key.lower()
-        if any(part in lowered for part in ("token", "secret", "password", "credential")):
-            continue
-        if any(part in lowered for part in ("docker", "kaggle", "image", "container")):
-            env_hints[key] = value
-    report["env_hints"] = env_hints
+    report["env_hints"] = collect_env_hints()
     report["ct_model_mounted"] = any(
         (root / rel).exists()
         for rel in (
@@ -360,14 +380,23 @@ def run(*, out_dir=None, input_root=None, version_info=None, executable=None, pi
     official_ok = all(
         versions.get(name) == spec["version"] for name, spec in OFFICIAL_PACKAGES.items()
     )
-    report["installed"] = required_ok and official_ok and not failed
-    if required_ok:
-        report["abi_status"] = "ok_python312_v30_installed"
-        if not inventory_ok:
-            report["inventory_note"] = "required imports succeeded; wheelhouse inventory differed"
-    else:
-        report["abi_status"] = "python312_install_incomplete"
-        report["error"] = "required imports failed after 3.12 pip attempt"
+    report["official_versions_ok"] = official_ok
+    status, installed = decide_install_status(
+        pip_attempted=True,
+        failed_wheels=failed,
+        official_ok=official_ok,
+        required_ok=required_ok,
+    )
+    report["installed"] = installed
+    report["abi_status"] = status
+    if not inventory_ok:
+        report["inventory_note"] = "wheelhouse inventory differed from recorded v30 files"
+    if status != "ok_python312_v30_installed":
+        report["error"] = (
+            "partial v30 install: "
+            f"pip_attempted=True failed_wheels={failed!r} "
+            f"official_ok={official_ok} required_imports_ok={required_ok}"
+        )
     # Persist before optional CUDA imports; vllm may abort the CPU process.
     save()
 

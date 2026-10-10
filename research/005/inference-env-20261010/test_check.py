@@ -72,6 +72,8 @@ class AbiTests(unittest.TestCase):
             "KAGGLE_DOCKER_IMAGE": constants.STARTER_DOCKER_IMAGE,
             "KAGGLE_USER_SECRETS_TOKEN": "secret-value",
             "KAGGLE_DATA_PROXY_TOKEN": "proxy-value",
+            "KAGGLE_API_V1_TOKEN": "api-value",
+            "KAGGLE_DATA_PROXY_URL": "https://example.invalid",
             "PATH": "/usr/bin",
         }
         with mock.patch.dict("os.environ", env, clear=True):
@@ -85,7 +87,26 @@ class AbiTests(unittest.TestCase):
         self.assertEqual(report["env_hints"].get("KAGGLE_DOCKER_IMAGE"), constants.STARTER_DOCKER_IMAGE)
         self.assertNotIn("KAGGLE_USER_SECRETS_TOKEN", report["env_hints"])
         self.assertNotIn("KAGGLE_DATA_PROXY_TOKEN", report["env_hints"])
+        self.assertNotIn("KAGGLE_API_V1_TOKEN", report["env_hints"])
+        self.assertNotIn("KAGGLE_DATA_PROXY_URL", report["env_hints"])
         tmp.cleanup()
+
+    def test_ok_status_requires_full_install(self):
+        ok, installed = probe.decide_install_status(
+            pip_attempted=True, failed_wheels=[], official_ok=True, required_ok=True
+        )
+        self.assertEqual(ok, "ok_python312_v30_installed")
+        self.assertTrue(installed)
+        cases = [
+            dict(pip_attempted=False, failed_wheels=[], official_ok=True, required_ok=True),
+            dict(pip_attempted=True, failed_wheels=["vllm.whl"], official_ok=True, required_ok=True),
+            dict(pip_attempted=True, failed_wheels=[], official_ok=False, required_ok=True),
+            dict(pip_attempted=True, failed_wheels=[], official_ok=True, required_ok=False),
+        ]
+        for kwargs in cases:
+            status, installed = probe.decide_install_status(**kwargs)
+            self.assertEqual(status, "python312_install_incomplete", kwargs)
+            self.assertFalse(installed, kwargs)
 
     def test_python_313_is_pin_failed_and_forbids_pip(self):
         status, allow = probe.evaluate_python((3, 13, 15))
@@ -196,6 +217,63 @@ class AbiTests(unittest.TestCase):
         self.assertEqual(report["env_limits"]["vllm"]["ok"], False)
         self.assertIn("CPU environment limit", report["env_limits"]["vllm"]["note"])
         self.assertEqual(report["abi_status"], "ok_python312_v30_installed")
+        self.assertTrue(report["installed"])
+        tmp.cleanup()
+
+    def test_python312_partial_install_is_not_ok_status(self):
+        tmp = tempfile.TemporaryDirectory()
+        root = Path(tmp.name)
+        out = root / "working"
+        out.mkdir()
+        wheelhouse = root / "input" / "datasets" / "metric" / "gemma-4-developer-agent-wheelhouse"
+        data = root / "input" / "competitions" / "gemma-4-developer-agent"
+        wheelhouse.mkdir(parents=True)
+        data.mkdir(parents=True)
+        (data / "tasks.jsonl").write_text("{}\n")
+        tiny = {
+            "swegemma-0.2.11-py3-none-any.whl": 8,
+            "adk_submission-0.2.13-py3-none-any.whl": 8,
+            "google_adk-1.36.1-py3-none-any.whl": 8,
+            "adk_eval_core-0.1.0-py3-none-any.whl": 8,
+        }
+        for name, size in tiny.items():
+            (wheelhouse / name).write_bytes(b"w" * size)
+
+        def fake_pip(executable, wheels):
+            if len(wheels) > 1:
+                return subprocess.CompletedProcess(args=["pip"], returncode=1, stdout="batch fail\n", stderr="")
+            name = Path(wheels[0]).name
+            code = 1 if name.startswith("swegemma") else 0
+            return subprocess.CompletedProcess(args=["pip"], returncode=code, stdout="one\n", stderr="")
+
+        versions = {name: spec["version"] for name, spec in probe.OFFICIAL_PACKAGES.items()}
+
+        def fake_version(name):
+            if name in versions:
+                return versions[name]
+            raise probe.md.PackageNotFoundError(name)
+
+        def fake_import(name):
+            module = type(sys)("m")
+            module.__file__ = f"/tmp/{name}.py"
+            return module
+
+        with mock.patch.object(probe, "EXPECTED_WHEELS", tiny):
+            with mock.patch.object(probe.md, "version", side_effect=fake_version):
+                with mock.patch.object(probe.importlib, "import_module", side_effect=fake_import):
+                    report = probe.run(
+                        out_dir=out,
+                        input_root=root / "input",
+                        version_info=(3, 12, 11),
+                        executable="/usr/bin/python3.12",
+                        pip=fake_pip,
+                        staging_dir=root / "staging",
+                    )
+        self.assertTrue(report["pip_attempted"])
+        self.assertTrue(all(item["ok"] for item in report["imports"].values()))
+        self.assertTrue(report["failed_wheels"])
+        self.assertEqual(report["abi_status"], "python312_install_incomplete")
+        self.assertFalse(report["installed"])
         tmp.cleanup()
 
 
