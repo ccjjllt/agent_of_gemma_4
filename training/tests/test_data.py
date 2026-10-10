@@ -223,6 +223,27 @@ class DataTests(unittest.TestCase):
         self.assertEqual(tx["behavior"], "verify_close")
         self.assertIn("verify_close", tx["behaviors_present"])
 
+    def test_heredoc_mentioning_pytest_is_not_verify_close(self):
+        cmd = ("cat <<EOF > reproduce_issue.py\n"
+               "from fastapi.testclient import TestClient\n"
+               "import pytest\n\n"
+               "def test_bytes_after_form():\n"
+               "    pass\n"
+               "EOF\n")
+        raw = _edit_then_command(cmd)
+        sample = c.canonicalize_trace(raw)
+        tx, _ = t.build_transaction(sample, 1, [4])
+        self.assertNotEqual(tx["behavior"], "verify_close")
+        self.assertNotIn("verify_close", tx.get("behaviors_present") or [])
+        self.assertFalse(sb.is_verify_command({"command": cmd}))
+
+    def test_invoked_pytest_is_verify_close(self):
+        sample = c.canonicalize_trace(_edit_then_command("pytest tests/test_target.py -k test_feature"))
+        tx, _ = t.build_transaction(sample, 1, [4])
+        self.assertEqual(tx["behavior"], "verify_close")
+        self.assertTrue(sb.is_verify_command({"command": "python3 -m pytest tests/test_foo.py"}))
+        self.assertFalse(sb.is_verify_command({"command": "python3 reproduce_issue.py"}))
+
     def test_register_keeps_recovery_not_file_order_first_three(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "tx.jsonl"
@@ -293,6 +314,19 @@ class CensusDecisionTests(unittest.TestCase):
         empty = lc.decide_max_seq_len([])
         self.assertFalse(empty["trainable_ok"])
         self.assertNotEqual(empty["chosen_max_seq_len"], 2048)
+
+
+def _edit_then_command(command):
+    return {"trace_id": "example", "group": {"issue": "a", "repo": "o/r", "commit": "abc"},
+            "synthetic": True, "raw_turns": [
+                {"role": "system", "content": "Use the supplied tools"},
+                {"role": "user", "content": "Fix the observed behavior"},
+                {"role": "assistant", "tool_name": "edit_file", "tool_call_id": "e1",
+                 "arguments": {"filepath": "x.py", "old_string": "a", "new_string": "b"}},
+                {"role": "tool", "tool_call_id": "e1", "tool_response": {"status": "ok"}},
+                {"role": "assistant", "tool_name": "run_command", "tool_call_id": "c1",
+                 "arguments": {"command": command}},
+                {"role": "tool", "tool_call_id": "c1", "tool_response": {"status": "ok"}}]}
 
 
 def _sample_tx(tid, issue, behavior, text, repo="o/r", commit="abc", evidence=None, sample_id=None):

@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shlex
 from collections import defaultdict
 
 BEHAVIORS = ("local_edit", "tool_recovery", "verify_close")
@@ -35,11 +36,12 @@ _FP_JUNK = re.compile(
     r"(?:\\+[\"']|`|,?\s*start_line|,?\s*end_line).*",
     re.IGNORECASE,
 )
-_TEST_CMD = re.compile(
-    r"\b(pytest|unittest|tox|nosetests)\b|python[0-9.]*\s+-m\s+pytest"
-    r"|\btests?_[A-Za-z0-9_]+\.py\b",
-    re.IGNORECASE,
-)
+# Invoked-program names only. Do not search the full command string: a heredoc
+# that writes `import pytest` is not a test runner.
+_HEREDOC_OPEN = re.compile(r"""<<[-]?\s*(['\"]?)(\w+)\1""")
+_TEST_BIN = re.compile(r"^(?:pytest|py\.test|nosetests|tox)(?:-\d+(?:\.\d+)*)?$")
+_PYTHON_BIN = re.compile(r"^(?:python|pypy)(?:\d+(?:\.\d+)*)?$")
+_TEST_MODULES = frozenset({"pytest", "unittest", "nose", "tox"})
 
 
 def rank_key(seed, *parts):
@@ -120,8 +122,74 @@ def operation_key(name, args):
     return name, path
 
 
+def _without_heredocs(command):
+    """Drop heredoc payloads so body text cannot look like an invoked program."""
+    out, pos = [], 0
+    for match in _HEREDOC_OPEN.finditer(command):
+        out.append(command[pos:match.start()])
+        delim = match.group(2)
+        rest = command[match.end():]
+        newline = rest.find("\n")
+        if newline < 0:
+            return "".join(out)
+        body = rest[newline + 1:]
+        end = re.search(r"(?m)^" + re.escape(delim) + r"\s*$", body)
+        if not end:
+            return "".join(out)
+        pos = match.end() + newline + 1 + end.end()
+    out.append(command[pos:])
+    return "".join(out)
+
+
+def _drop_env(argv):
+    i = 0
+    if i < len(argv) and _prog_name(argv[0]) == "env":
+        i = 1
+    while i < len(argv) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[i]):
+        i += 1
+    return argv[i:]
+
+
+def _prog_name(token):
+    return token.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].lower()
+
+
+def _iter_invoked_argv(command):
+    text = _without_heredocs(command)
+    for chunk in re.split(r"[;\n]|&&|\|\|", text):
+        chunk = chunk.strip()
+        if not chunk or chunk.startswith("#"):
+            continue
+        try:
+            tokens = shlex.split(chunk, posix=True)
+        except ValueError:
+            tokens = chunk.split()
+        argv = []
+        for token in tokens:
+            if token == "|":
+                if argv:
+                    yield _drop_env(argv)
+                argv = []
+                continue
+            argv.append(token)
+        if argv:
+            yield _drop_env(argv)
+
+
 def is_verify_command(args):
-    return bool(_TEST_CMD.search(str((args or {}).get("command") or "")))
+    """True only if the invoked program is a test runner, not a substring match."""
+    command = str((args or {}).get("command") or "")
+    for argv in _iter_invoked_argv(command):
+        if not argv:
+            continue
+        name = _prog_name(argv[0])
+        if _TEST_BIN.match(name):
+            return True
+        if _PYTHON_BIN.match(name) and "-m" in argv:
+            module = argv[argv.index("-m") + 1] if argv.index("-m") + 1 < len(argv) else ""
+            if module.split(".")[0] in _TEST_MODULES:
+                return True
+    return False
 
 
 def pairing_reserved(splits_records=None, extra_ids=None):
