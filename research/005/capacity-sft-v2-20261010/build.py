@@ -203,6 +203,7 @@ def collect_results(output):
     return {'rank_reports': ranks, 'sft_metrics': metrics, 'metric_read_errors': metric_errors,
             'capacity': capacity, 'gpu_sft': gpu_sft,
             'sft_skip_reason': rank_zero.get('sft_skip_reason'),
+            'rank_zero_status': rank_zero.get('status'),
             'capacity_windows_ok': [c.get('window') for c in capacity if c.get('backprop_ok')]}
 
 def main():
@@ -296,7 +297,8 @@ def main():
             report.update(results)
             capacity_recorded = bool(results['capacity'])
             sft_ok = results['gpu_sft'] and retention['retained'] is not None
-            skipped_ok = (not results['gpu_sft']) and capacity_recorded
+            skipped_ok = ((not results['gpu_sft']) and capacity_recorded
+                          and results['rank_zero_status'] in {'capacity_oom', 'capacity_only'})
             completed = exit_code == 0 and (sft_ok or skipped_ok)
             report['success'] = completed
             report['status'] = 'completed' if completed else 'failed'

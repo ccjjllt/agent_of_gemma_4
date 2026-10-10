@@ -1,4 +1,5 @@
 """Local checks for the v2 capacity/SFT carrier. Never launches Kaggle or torchrun."""
+import ast
 import hashlib
 import importlib.util
 import json
@@ -109,6 +110,57 @@ class CarrierTests(unittest.TestCase):
         self.assertNotIn("diagnostic_2k", (self.root / "built" / "probe.py").read_text())
         self.assertEqual(loaded.WORLD, 4)
         self.assertEqual(loaded.SCHEMA, "p005-capacity-sft-v2")
+
+    def test_formal_sft_failure_is_not_an_expected_capacity_skip(self):
+        output = self.root / "failed-sft"
+        output.mkdir()
+        report_path = output / "rank-000-report.json"
+        rank = {"rank": 0, "status": "failed", "gpu_sft": False,
+                "capacity": [{"window": 8192, "backprop_ok": True},
+                             {"window": 16384, "backprop_ok": True}]}
+        report_path.write_text(json.dumps(rank))
+        results = self.wrapper.collect_results(output)
+        self.assertEqual(results["rank_zero_status"], "failed")
+        # Execute the production final-status expressions without starting a worker.
+        tree = ast.parse((self.root / "built" / "probe.py").read_text())
+        main = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                    and node.name == "main")
+        assignments = {node.targets[0].id: node for node in ast.walk(main)
+                       if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+                       and node.targets[0].id in {"capacity_recorded", "sft_ok", "skipped_ok", "completed"}}
+        code = compile(ast.Module(body=[assignments[name] for name in (
+            "capacity_recorded", "sft_ok", "skipped_ok", "completed")], type_ignores=[]),
+            "wrapper-final-status", "exec")
+        for status, expected in (("failed", False), ("capacity_oom", True), ("capacity_only", True)):
+            with self.subTest(status=status):
+                rank["status"] = status
+                report_path.write_text(json.dumps(rank))
+                namespace = {"results": self.wrapper.collect_results(output),
+                             "retention": {"retained": None}, "exit_code": 0}
+                exec(code, namespace)
+                self.assertEqual(namespace["completed"], expected)
+
+    def test_capacity_oom_keeps_traceback_and_outer_failures_return_nonzero(self):
+        tree = ast.parse((HERE / "worker.py").read_text())
+        main = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                    and node.name == "main")
+        outer = next(node for node in main.body if isinstance(node, ast.Try))
+        self.assertEqual(ast.literal_eval(outer.handlers[0].body[-1].value), 2)
+        capacity_handlers = [node.handlers[0] for node in outer.body
+                             if isinstance(node, ast.Try) and node.handlers]
+        self.assertEqual(len(capacity_handlers), 2)
+        for handler in capacity_handlers:
+            try:
+                raise RuntimeError("CUDA out of memory: capacity review fixture")
+            except RuntimeError:
+                namespace = {"entry": {}, "traceback": __import__("traceback")}
+                save_trace = next(node for node in handler.body if isinstance(node, ast.Assign)
+                                  and isinstance(node.targets[0], ast.Subscript)
+                                  and ast.literal_eval(node.targets[0].slice) == "traceback")
+                exec(compile(ast.Module(body=[save_trace], type_ignores=[]),
+                             "capacity-traceback", "exec"), namespace)
+            self.assertIn("capacity review fixture", namespace["entry"]["traceback"])
+            self.assertIn("Traceback", namespace["entry"]["traceback"])
 
     def test_oom_helper_and_select_not_sft(self):
         self.assertTrue(self.worker.is_oom(RuntimeError("CUDA out of memory")))

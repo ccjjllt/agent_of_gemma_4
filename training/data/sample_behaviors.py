@@ -31,9 +31,15 @@ PAIRING_RESERVED_ISSUES = (
     "rich_3296",
     "rich_3469",
 )
-# Model-jammed extra fields inside filepath (not extra JSON keys).
+# Recognize a rendered line-argument suffix only after an explicit separator.
+# Ordinary names such as test_start_line.py must remain distinct paths.
+_FP_LINE_FIELD = (
+    r"(?:\\*[\"'])?(?:start_line|end_line)(?:\\*[\"'])?"
+    r"\s*[:=]\s*(?:-?\d+|null)"
+)
 _FP_JUNK = re.compile(
-    r"(?:\\+[\"']|`|,?\s*start_line|,?\s*end_line).*",
+    r"(?:\\*[\"'`]\s*,?\s*|,\s*)" + _FP_LINE_FIELD
+    + r"(?:\s*,\s*" + _FP_LINE_FIELD + r")*\s*[}\\\"'`]*$",
     re.IGNORECASE,
 )
 # Invoked-program names only. Do not search the full command string: a heredoc
@@ -156,24 +162,40 @@ def _prog_name(token):
 
 def _iter_invoked_argv(command):
     text = _without_heredocs(command)
-    for chunk in re.split(r"[;\n]|&&|\|\|", text):
+    # Split only unquoted/unescaped shell operators. Splitting before lexing
+    # would turn `echo "example; pytest fake.py"` into a fictitious test run.
+    chunks, current, quote, escaped = [], [], None, False
+    for char in text:
+        if escaped:
+            current.append(char)
+            escaped = False
+        elif char == "\\" and quote != "'":
+            current.append(char)
+            escaped = True
+        elif quote is not None:
+            current.append(char)
+            if char == quote:
+                quote = None
+        elif char in ("'", '"'):
+            current.append(char)
+            quote = char
+        elif char in ";\n|&":
+            chunks.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+    chunks.append("".join(current))
+    for chunk in chunks:
         chunk = chunk.strip()
         if not chunk or chunk.startswith("#"):
             continue
         try:
             tokens = shlex.split(chunk, posix=True)
         except ValueError:
-            tokens = chunk.split()
-        argv = []
-        for token in tokens:
-            if token == "|":
-                if argv:
-                    yield _drop_env(argv)
-                argv = []
-                continue
-            argv.append(token)
-        if argv:
-            yield _drop_env(argv)
+            # Invalid/incomplete shell syntax is not evidence of verification.
+            continue
+        if tokens:
+            yield _drop_env(tokens)
 
 
 def is_verify_command(args):
@@ -361,26 +383,35 @@ def dedup_content(transactions, seed):
 
 
 def _dedup_recovery_events(transactions):
-    """Keep one transaction per closed failure; prefer the shortest prefix."""
-    by_event = defaultdict(list)
+    """Keep whole transactions with disjoint events, shortest prefixes first.
+
+    Picking a winner independently for each event can retain both {e1} and
+    {e1,e2}, supervising e1 twice. Reject a whole overlapping transaction here;
+    never remove its history or alter its targets. Before/kept event counts in
+    the sampling audit retain visibility of any event lost with that conflict.
+    """
+    recoveries = []
     others = []
     for tx in transactions:
         evidence = tx.get("recovery_evidence") or []
         sample_id = tx.get("sample_id") or ""
         if tx.get("behavior") == "tool_recovery" and evidence:
-            for item in evidence:
-                eid = item.get("event_id") or recovery_event_id(sample_id, item.get("failed_call"))
-                by_event[eid].append(tx)
+            event_ids = {item.get("event_id") or recovery_event_id(sample_id, item.get("failed_call"))
+                         for item in evidence}
+            recoveries.append((tx, event_ids))
         else:
             others.append(tx)
-    chosen = {}
+    chosen = []
     event_owner = {}
-    for eid, group in by_event.items():
-        group.sort(key=lambda tx: (len(tx.get("messages") or []), tx.get("transaction_id") or ""))
-        winner = group[0]
-        event_owner[eid] = winner.get("transaction_id")
-        chosen[winner.get("transaction_id")] = winner
-    return list(chosen.values()) + others, event_owner
+    recoveries.sort(key=lambda item: (len(item[0].get("messages") or []),
+                                     item[0].get("transaction_id") or ""))
+    for tx, event_ids in recoveries:
+        if event_ids.intersection(event_owner):
+            continue
+        chosen.append(tx)
+        for eid in event_ids:
+            event_owner[eid] = tx.get("transaction_id")
+    return chosen + others, event_owner
 
 
 def select_issue_transactions(transactions, max_per_issue=3, seed=DEFAULT_SEED):
@@ -455,6 +486,13 @@ def select_transactions(transactions, max_per_issue=3, seed=DEFAULT_SEED,
                         reserved_issues=None, reserved_snapshots=None):
     reserved_issues = set(reserved_issues or ()) | set(PAIRING_RESERVED_ISSUES)
     reserved_snapshots = set(tuple(x) for x in (reserved_snapshots or ()))
+    # Infer known reserved snapshots BEFORE removing their issue records. This
+    # protects standalone register/assign as well as census callers supplying
+    # the full metadata registry's snapshot set explicitly.
+    for tx in transactions:
+        issue, repo, commit = _group_fields(tx)
+        if issue in reserved_issues and repo and commit:
+            reserved_snapshots.add((repo, commit))
     usable, dropped_reserved = exclude_reserved(
         transactions, reserved_issues, reserved_snapshots)
     unique = dedup_content(usable, seed)

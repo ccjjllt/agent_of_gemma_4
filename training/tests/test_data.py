@@ -293,6 +293,64 @@ class DataTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "refusing to overwrite v1"):
             lc.refuse_v1_overwrite(lc.V1_OUTPUT_DIR, Path("/tmp/other-report"))
 
+    def test_quoted_semicolon_is_not_a_test_invocation(self):
+        for command in (
+            'echo "example; pytest tests/test_fake.py"',
+            '''python3 -c 'print("example; pytest tests/test_fake.py")' ''',
+            'echo ";" pytest tests/test_fake.py',
+            r'echo example\; pytest tests/test_fake.py',
+        ):
+            with self.subTest(command=command):
+                self.assertFalse(sb.is_verify_command({"command": command}))
+                sample = c.canonicalize_trace(_edit_then_command(command))
+                tx, _ = t.build_transaction(sample, 1, [4])
+                self.assertNotEqual(tx["behavior"], "verify_close")
+        self.assertTrue(sb.is_verify_command({"command": 'echo "example; text"; pytest tests/test_real.py'}))
+
+    def test_line_argument_names_inside_valid_paths_do_not_merge_files(self):
+        for path in ("tests/test_start_line.py", "tests/test_end_line.py", "tests/start_line.py"):
+            self.assertEqual(sb.canonical_filepath(path), path)
+        for path in ("x.py`,start_line:1", 'x.py", "start_line":1, "end_line":2}'):
+            self.assertEqual(sb.canonical_filepath(path), "x.py")
+        raw = trace()
+        raw["raw_turns"][2]["arguments"]["filepath"] = "tests/test_start_line.py"
+        raw["raw_turns"][6]["arguments"]["filepath"] = "tests/test_end_line.py"
+        sample = c.canonicalize_trace(raw)
+        tx, _ = t.build_transaction(sample, 1, [4, 6])
+        self.assertEqual(tx["behavior"], "local_edit")
+        self.assertEqual(tx["recovery_evidence"], [])
+
+    def test_standalone_register_excludes_reserved_input_snapshot(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "tx.jsonl"
+            rows = [
+                _sample_tx("reserved", "fastapi_13713", "local_edit", "a", repo="r/a", commit="same"),
+                _sample_tx("overlap", "other_issue", "local_edit", "b", repo="r/a", commit="same"),
+                _sample_tx("safe-a", "safe_a", "local_edit", "c", repo="r/b", commit="one"),
+                _sample_tx("safe-b", "safe_b", "local_edit", "d", repo="r/c", commit="two"),
+            ]
+            path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+            registry = s.register(path)
+            s.assign(registry, .5, whole_repo=True)
+            self.assertEqual({g["issue"] for g in registry["groups"].values()}, {"safe_a", "safe_b"})
+            self.assertEqual(set(registry["sampling_audit"]["dropped_reserved"]), {"reserved", "overlap"})
+
+    def test_overlapping_recovery_sets_keep_whole_disjoint_transactions(self):
+        short = _sample_tx("short", "a", "tool_recovery", "short", sample_id="trace",
+                           evidence=[{"failed_call": "f1", "successful_call": "s1"}])
+        long = _sample_tx("long", "a", "tool_recovery", "long", sample_id="trace",
+                          evidence=[{"failed_call": "f1", "successful_call": "s1"},
+                                    {"failed_call": "f2", "successful_call": "s2"}])
+        long["messages"].append({"role": "assistant", "content": "later"})
+        before = json.dumps([short, long], sort_keys=True)
+        for candidates in ([short, long], [long, short]):
+            selected, audit = sb.select_issue_transactions(candidates, max_per_issue=3)
+            self.assertEqual([row["transaction_id"] for row in selected], ["short"])
+            self.assertEqual(audit["recovery_events_before"], 2)
+            self.assertEqual(audit["recovery_events_kept"], 1)
+            self.assertEqual(selected[0], short)
+        self.assertEqual(json.dumps([short, long], sort_keys=True), before)
+
 
 class CensusDecisionTests(unittest.TestCase):
     def test_majority_4096_and_8192_and_gap(self):

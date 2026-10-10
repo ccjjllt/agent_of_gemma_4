@@ -280,7 +280,8 @@ def main(argv=None):
             record_capacity(8192, payload8)
         except Exception as exc:
             report["failure_memory"] = cuda_memory(torch, device) if device is not None else None
-            record_capacity(8192, None, exc)
+            entry = record_capacity(8192, None, exc)
+            entry["traceback"] = traceback.format_exc()
             if not is_oom(exc):
                 raise
             report["gpu_sft"] = False
@@ -288,7 +289,7 @@ def main(argv=None):
             report["activation_vs_weight"] = {
                 "load_allocated_bytes": (report.get("load_memory") or {}).get("allocated_bytes"),
                 "failure_peak_allocated_bytes": (report.get("failure_memory") or {}).get("peak_allocated_bytes"),
-                "note": "Per-rank replica already holds the NF4 base. OOM at 8K is activation/optimizer, not a missing replica. FSDP-QLoRA may be worth a later dedicated kernel; this job does not auto-retry.",
+                "note": "Each rank loaded the NF4 base, then exceeded available memory during the capacity step. The exact failing operation is not classified; use the traceback before attributing it to activations or optimizer state. This job does not auto-retry.",
             }
             report["status"] = "capacity_oom"
             emit("capacity_oom", window=8192, error=repr(exc))
@@ -311,7 +312,8 @@ def main(argv=None):
             record_capacity(16384, payload16)
         except Exception as exc:
             report["failure_memory"] = cuda_memory(torch, device) if device is not None else None
-            record_capacity(16384, None, exc)
+            entry = record_capacity(16384, None, exc)
+            entry["traceback"] = traceback.format_exc()
             if not is_oom(exc):
                 raise
             report["gpu_sft"] = False
@@ -319,7 +321,7 @@ def main(argv=None):
             report["activation_vs_weight"] = {
                 "load_allocated_bytes": (report.get("load_memory") or {}).get("allocated_bytes"),
                 "failure_peak_allocated_bytes": (report.get("failure_memory") or {}).get("peak_allocated_bytes"),
-                "note": "8K backprop succeeded; 16K did not. Train has 0 complete 8K rows, so formal SFT stops. FSDP-QLoRA is a later option, not an automatic retry.",
+                "note": "8K capacity succeeded; the 16K capacity step exceeded available memory. The exact failing operation is not classified; use the traceback before attributing it to activations or optimizer state. Train has 0 complete 8K rows, so formal SFT stops without an automatic retry.",
             }
             report["status"] = "capacity_oom"
             emit("capacity_oom", window=16384, error=repr(exc))
@@ -375,7 +377,9 @@ def main(argv=None):
             except Exception as memory_error:
                 report["memory_read_error"] = repr(memory_error)
         emit("failed", error=repr(exc))
-        return 0 if is_oom(exc) else 2
+        # Only the handled capacity OOM branches above are successful probe outcomes.
+        # Load/SFT failures must remain nonzero even after prior capacity checks passed.
+        return 2
 
 
 if __name__ == "__main__":
