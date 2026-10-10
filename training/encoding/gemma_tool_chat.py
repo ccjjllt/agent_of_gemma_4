@@ -32,7 +32,13 @@ class EncodingError(ValueError):
 
 
 class OversizeTransaction(EncodingError):
-    pass
+    """Whole-transaction reject. token_length is the untruncated template length."""
+
+    def __init__(self, token_length, max_seq_len):
+        self.token_length = int(token_length)
+        self.max_seq_len = int(max_seq_len)
+        super().__init__("%d tokens exceeds max_seq_len=%d; whole transaction rejected" %
+                         (self.token_length, self.max_seq_len))
 
 
 def canonical_json(value):
@@ -298,23 +304,11 @@ def _field_probes(messages, selected, ordinals, thought_loss):
                     yield mi, ordinal, "content", ci, True
 
 
-def encode_transaction(tx, tokenizer, tools, max_seq_len=4096, *,
-                       enable_thinking=True, preserve_thinking=True,
-                       thought_loss="mask", content_format="preserve",
-                       tokenizer_revision=None, synthetic=False,
-                       chat_template=None, tool_protocol_id=None,
-                       tokenizer_hash=None):
-    """One record per entire transaction; any unsafe boundary is an error."""
-    if max_seq_len < 2 or thought_loss not in ("mask", "include"):
-        raise EncodingError("invalid sequence limit or thought-loss policy")
+def _render_transaction(tx, tokenizer, tools, *, content_format="preserve",
+                        enable_thinking=True, preserve_thinking=True,
+                        chat_template=None, tool_protocol_id=None):
+    """Normalize and render the full chat template. No clipping."""
     messages, ordinals = normalize_messages(tx.get("messages"), tools, content_format)
-    targets = tx.get("target_assistant_steps", list(range(len(ordinals))))
-    if not isinstance(targets, list) or any(
-            type(n) is not int or n < 0 or n >= len(ordinals) for n in targets):
-        raise EncodingError("target_assistant_steps needs zero-based assistant ordinals")
-    selected = set(targets)
-    if not selected:
-        raise EncodingError("no selected assistant steps")
     protocol_id = tx.get("protocol_id")
     if not isinstance(protocol_id, str) or not protocol_id:
         raise EncodingError("transaction protocol_id is required")
@@ -337,9 +331,43 @@ def encode_transaction(tx, tokenizer, tools, max_seq_len=4096, *,
     if not isinstance(full, str):
         raise EncodingError("template must render text")
     template_ids = _ids(render(messages, True))
+    return dict(messages=messages, ordinals=ordinals, protocol_id=protocol_id,
+                template=template, render=render, full=full, template_ids=template_ids)
+
+
+def count_template_tokens(tx, tokenizer, tools, **kwargs):
+    """Raw full-template token count before any max_seq_len reject."""
+    return len(_render_transaction(tx, tokenizer, tools, **kwargs)["template_ids"])
+
+
+def encode_transaction(tx, tokenizer, tools, max_seq_len=4096, *,
+                       enable_thinking=True, preserve_thinking=True,
+                       thought_loss="mask", content_format="preserve",
+                       tokenizer_revision=None, synthetic=False,
+                       chat_template=None, tool_protocol_id=None,
+                       tokenizer_hash=None):
+    """One record per entire transaction; any unsafe boundary is an error."""
+    if max_seq_len < 2 or thought_loss not in ("mask", "include"):
+        raise EncodingError("invalid sequence limit or thought-loss policy")
+    rendered = _render_transaction(
+        tx, tokenizer, tools, content_format=content_format,
+        enable_thinking=enable_thinking, preserve_thinking=preserve_thinking,
+        chat_template=chat_template, tool_protocol_id=tool_protocol_id)
+    messages, ordinals = rendered["messages"], rendered["ordinals"]
+    targets = tx.get("target_assistant_steps", list(range(len(ordinals))))
+    if not isinstance(targets, list) or any(
+            type(n) is not int or n < 0 or n >= len(ordinals) for n in targets):
+        raise EncodingError("target_assistant_steps needs zero-based assistant ordinals")
+    selected = set(targets)
+    if not selected:
+        raise EncodingError("no selected assistant steps")
+    protocol_id = rendered["protocol_id"]
+    template = rendered["template"]
+    render = rendered["render"]
+    full = rendered["full"]
+    template_ids = rendered["template_ids"]
     if len(template_ids) > max_seq_len:
-        raise OversizeTransaction("%d tokens exceeds max_seq_len=%d; whole transaction rejected" %
-                                  (len(template_ids), max_seq_len))
+        raise OversizeTransaction(len(template_ids), max_seq_len)
     tokenized = tokenizer(full, add_special_tokens=False, return_offsets_mapping=True)
     input_ids = _ids(tokenized)
     if input_ids != template_ids:
@@ -407,6 +435,7 @@ def encode_transaction(tx, tokenizer, tools, max_seq_len=4096, *,
                     protocol_id=protocol_id, protocol_hash=sha256_json(protocol),
                     thought_config=thought_config, content_format=content_format,
                     max_seq_len=max_seq_len, sequence_length=len(input_ids),
+                    raw_token_length=len(input_ids),
                     supervised_tokens=supervised, target_assistant_steps=sorted(selected),
                     truncated=False, alignment="whole-template-differential-spans-and-token-offsets",
                     supervised_spans=spans))
@@ -467,8 +496,11 @@ def cmd_encode(args):
                 except OversizeTransaction as e:
                     if args.on_oversize != "skip":
                         raise
-                    report["skipped_oversize"].append(dict(line=line_number,
-                        transaction_id=tx.get("transaction_id", tx.get("sample_id")), reason=str(e)))
+                    report["skipped_oversize"].append(dict(
+                        line=line_number,
+                        transaction_id=tx.get("transaction_id", tx.get("sample_id")),
+                        reason=str(e), raw_token_length=e.token_length,
+                        truncated=False, clipped_json=False))
                     continue
                 fout.write(canonical_json(record) + "\n")
                 report["written"] += 1

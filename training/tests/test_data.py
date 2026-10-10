@@ -11,6 +11,8 @@ sys.path.insert(0, str(DATA))
 import canonicalize as c
 import transactions as t
 import split_registry as s
+import prepare_local as p
+import length_census as lc
 
 
 def trace(name="edit_file", args=None):
@@ -97,6 +99,112 @@ class DataTests(unittest.TestCase):
         b = c.canonicalize_trace(trace())
         b["messages"][1]["content"] = "A different bug"
         self.assertNotEqual(s.near_dup_key(a), s.near_dup_key(b))
+
+    def test_include_failures_keeps_edit_file_not_span_apply(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _write_prepare_fixture(root, "ok_issue", "org/repo", "abc", "dev_panel", resolved=False)
+            out = root / "out"
+            default_report = p.prepare(root / "results", root / "splits.json",
+                                       root / "eligibility.json", out / "default")
+            self.assertEqual(default_report["traces"], [])
+            self.assertTrue(default_report["resolved_only"])
+            fail_report = p.prepare(root / "results", root / "splits.json",
+                                    root / "eligibility.json", out / "failures",
+                                    include_failures=True)
+            self.assertEqual(len(fail_report["traces"]), 1)
+            self.assertFalse(fail_report["resolved_only"])
+            blob = (out / "failures" / "canonical.jsonl").read_text()
+            sample = json.loads(blob.splitlines()[0])
+            names = [call["function"]["name"]
+                     for msg in sample["messages"] if msg.get("tool_calls")
+                     for call in msg["tool_calls"]]
+            self.assertEqual(names, ["edit_file", "read_file", "edit_file"])
+            self.assertNotIn("span_apply", blob)
+            self.assertNotIn("span_id", blob)
+            self.assertIn("old_string", blob)
+            self.assertIn("FileEditError", blob)
+            self.assertNotIn(0, sample["target_assistant_steps"])
+
+    def test_prepare_excludes_heldout_even_with_include_failures(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _write_prepare_fixture(root, "held_issue", "org/repo", "abc", "heldout", resolved=True)
+            _write_prepare_fixture(root, "ok_issue", "org/repo", "def", "dev_panel", resolved=True)
+            report = p.prepare(root / "results", root / "splits.json",
+                               root / "eligibility.json", root / "out",
+                               include_failures=True)
+            self.assertEqual(report["tasks"], ["ok_issue"])
+            blob = (root / "out" / "canonical.jsonl").read_text()
+            self.assertNotIn("held_issue", blob)
+            self.assertNotIn("HELD_SECRET_SHOULD_NOT_LEAK", blob)
+
+
+class CensusDecisionTests(unittest.TestCase):
+    def test_majority_4096_and_8192_and_gap(self):
+        a = lc.decide_max_seq_len([1000, 2000, 3000, 4000])
+        self.assertEqual(a["chosen_max_seq_len"], 4096)
+        self.assertTrue(a["trainable_ok"])
+        self.assertFalse(a["four_k_capacity_unproven"])
+        b = lc.decide_max_seq_len([5000, 5000, 5000, 3000])
+        self.assertEqual(b["chosen_max_seq_len"], 8192)
+        self.assertTrue(b["trainable_ok"])
+        self.assertTrue(b["four_k_capacity_unproven"])
+        c = lc.decide_max_seq_len([12000, 15000, 20000])
+        self.assertEqual(c["chosen_max_seq_len"], 8192)
+        self.assertFalse(c["trainable_ok"])
+        self.assertIsNotNone(c["coverage_gap"])
+        self.assertTrue(c["majority_fit_16384"])
+        self.assertNotEqual(c["chosen_max_seq_len"], 16384)
+        self.assertNotEqual(c["chosen_max_seq_len"], 2048)
+        empty = lc.decide_max_seq_len([])
+        self.assertFalse(empty["trainable_ok"])
+        self.assertNotEqual(empty["chosen_max_seq_len"], 2048)
+
+
+def _atif_trace(user_text="Fix the observed behavior"):
+    return {
+        "schema_version": "ATIF-v1.0",
+        "steps": [
+            {"step_id": 1, "source": "system", "message": "Use the supplied tools"},
+            {"step_id": 2, "source": "user", "message": user_text},
+            {"step_id": 3, "source": "agent", "message": "",
+             "tool_calls": [{"tool_call_id": "first", "function_name": "edit_file",
+                             "arguments": {"filepath": "x.py", "old_string": "a", "new_string": "b"}}],
+             "observation": {"content": json.dumps({"status": "error", "error_type": "FileEditError"})}},
+            {"step_id": 4, "source": "agent", "message": "",
+             "tool_calls": [{"tool_call_id": "second", "function_name": "read_file",
+                             "arguments": {"filepath": "x.py"}}],
+             "observation": {"content": json.dumps({"status": "ok", "content": "a"})}},
+            {"step_id": 5, "source": "agent", "message": "",
+             "tool_calls": [{"tool_call_id": "third", "function_name": "edit_file",
+                             "arguments": {"filepath": "x.py", "old_string": "a", "new_string": "b"}}],
+             "observation": {"content": json.dumps({"status": "ok"})}},
+        ],
+    }
+
+
+def _write_prepare_fixture(root, issue, repo, commit, split, resolved):
+    results = root / "results" / "run" / "v" / "r1" / "attempts" / ("01-%s" % issue)
+    traces = results / "traces"
+    traces.mkdir(parents=True, exist_ok=True)
+    user = "HELD_SECRET_SHOULD_NOT_LEAK" if split == "heldout" else "Fix the observed behavior"
+    (traces / ("trace_%s.json" % issue)).write_text(json.dumps(_atif_trace(user)))
+    (results / "result.json").write_text(json.dumps({"resolved": resolved}))
+    splits_path = root / "splits.json"
+    records = []
+    if splits_path.exists():
+        records = json.loads(splits_path.read_text())["records"]
+    records = [r for r in records if r["instance_id"] != issue]
+    records.append({"instance_id": issue, "repo": repo, "base_commit": commit, "split": split})
+    splits_path.write_text(json.dumps({"records": records, "dev_panel_ids": []}))
+    elig_path = root / "eligibility.json"
+    tasks = []
+    if elig_path.exists():
+        tasks = json.loads(elig_path.read_text())["tasks"]
+    tasks = [t for t in tasks if t.get("task_id") != issue]
+    tasks.append({"task_id": issue, "eligibility": "eligible"})
+    elig_path.write_text(json.dumps({"tasks": tasks}))
 
 
 if __name__ == "__main__":

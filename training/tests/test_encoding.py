@@ -144,8 +144,12 @@ class EncoderTests(unittest.TestCase):
         tx = transaction(); tx["messages"][-1]["content"] = ""; tx["target_assistant_steps"] = [1]
         with self.assertRaisesRegex(enc.EncodingError, "no supervised"):
             enc.encode_transaction(tx, enc.SyntheticTokenizer(), TOOLS)
-        with self.assertRaises(enc.OversizeTransaction):
+        with self.assertRaises(enc.OversizeTransaction) as ctx:
             enc.encode_transaction(transaction(), enc.SyntheticTokenizer(), TOOLS, max_seq_len=30)
+        self.assertGreater(ctx.exception.token_length, 30)
+        self.assertEqual(ctx.exception.max_seq_len, 30)
+        self.assertEqual(enc.count_template_tokens(transaction(), enc.SyntheticTokenizer(), TOOLS),
+                         ctx.exception.token_length)
 
     def test_context_changing_template_rejected(self):
         class BadContext(enc.SyntheticTokenizer):
@@ -208,6 +212,40 @@ class EncoderTests(unittest.TestCase):
             report = json.loads((root / "out.jsonl.report.json").read_text())
             self.assertEqual(report["written"], 1)
             self.assertEqual(len(report["skipped_oversize"]), 1)
+
+    def test_oversize_skip_rejects_whole_transaction_without_clipping_json(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "tools.json").write_text(json.dumps(TOOLS))
+            marker = "UNIQUE_ARG_PAYLOAD_" + ("Z" * 40)
+            small = transaction()
+            small["transaction_id"] = "small-ok"
+            large = transaction()
+            large["transaction_id"] = "large-skip"
+            large["messages"][1]["content"] = "USER " + ("长上下文" * 2500)
+            large["messages"][2]["tool_calls"][0]["function"]["arguments"] = {"filepath": marker}
+            (root / "input.jsonl").write_text(json.dumps(large) + "\n" + json.dumps(small) + "\n")
+            args = ["encode", "--input", str(root / "input.jsonl"), "--output", str(root / "out.jsonl"),
+                    "--tools", str(root / "tools.json"), "--synthetic", "--max-seq-len", "600",
+                    "--on-oversize", "skip"]
+            with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(enc.main(args), 0)
+            rows = [json.loads(line) for line in (root / "out.jsonl").read_text().splitlines() if line.strip()]
+            self.assertEqual([r["meta"]["transaction_id"] for r in rows], ["small-ok"])
+            self.assertFalse(rows[0]["meta"]["truncated"])
+            self.assertLessEqual(rows[0]["meta"]["sequence_length"], 600)
+            self.assertEqual(rows[0]["meta"]["raw_token_length"], rows[0]["meta"]["sequence_length"])
+            report = json.loads((root / "out.jsonl.report.json").read_text())
+            skipped = report["skipped_oversize"][0]
+            self.assertEqual(skipped["transaction_id"], "large-skip")
+            self.assertGreater(skipped["raw_token_length"], 600)
+            self.assertFalse(skipped["truncated"])
+            self.assertFalse(skipped["clipped_json"])
+            full = enc.encode_transaction(large, enc.SyntheticTokenizer(), TOOLS, max_seq_len=10 ** 7)
+            self.assertFalse(full["meta"]["truncated"])
+            self.assertEqual(full["meta"]["raw_token_length"], skipped["raw_token_length"])
+            self.assertIn(marker, supervised_bytes(full))
+            self.assertNotIn(marker, json.dumps(rows))
 
 
 @unittest.skipUnless(os.environ.get("P005_GEMMA_TOKENIZER_DIR"), "optional real tokenizer assets absent")
