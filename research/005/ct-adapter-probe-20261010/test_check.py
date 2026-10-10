@@ -1,6 +1,7 @@
 """Local offline checks for the CT adapter probe. Does not call Kaggle or load 31B."""
 from __future__ import annotations
 
+import copy
 import json
 import subprocess
 import sys
@@ -132,13 +133,16 @@ class T0AndAdapterTests(unittest.TestCase):
         payload = {
             "choices": [{
                 "message": {
+                    "role": "assistant",
                     "tool_calls": [{
+                        "type": "function",
                         "function": {"name": "get_status", "arguments": "{}"},
                     }]
                 }
             }]
         }
         self.assertEqual(probe.extract_tool_names(payload), ["get_status"])
+        self.assertTrue(probe.valid_get_status_call(payload))
         ok = {
             "adapter_files_ok": True,
             "adapter_in_manifest": True,
@@ -156,6 +160,50 @@ class T0AndAdapterTests(unittest.TestCase):
         self.assertEqual(probe.classify(infer), "inference_error")
         with self.assertRaises(ValueError):
             probe.classify(dict(ok, repair_success_claimed=True))
+
+    def test_tool_call_rejects_unregistered_or_malformed_calls(self):
+        valid = {"choices": [{"message": {
+            "role": "assistant", "tool_calls": [{
+                "type": "function", "function": {"name": "get_status", "arguments": "{\n  }"}
+            }]
+        }}]}
+        self.assertTrue(probe.valid_get_status_call(valid))
+        for name, arguments in (("read_file", "{}"), ("get_status", "{bad"),
+                                ("get_status", '{"path":"file.py"}'),
+                                ("get_status", "[]"), ("get_status", "null"),
+                                ("get_status", {})):
+            with self.subTest(name=name, arguments=arguments):
+                bad = copy.deepcopy(valid)
+                bad["choices"][0]["message"]["tool_calls"][0]["function"] = {
+                    "name": name, "arguments": arguments,
+                }
+                self.assertFalse(probe.valid_get_status_call(bad))
+        for mutation in ("multiple_calls", "missing_type", "wrong_role", "multiple_choices"):
+            with self.subTest(mutation=mutation):
+                bad = copy.deepcopy(valid)
+                message = bad["choices"][0]["message"]
+                if mutation == "multiple_calls":
+                    message["tool_calls"] *= 2
+                elif mutation == "missing_type":
+                    del message["tool_calls"][0]["type"]
+                elif mutation == "wrong_role":
+                    message["role"] = "user"
+                else:
+                    bad["choices"] *= 2
+                self.assertFalse(probe.valid_get_status_call(bad))
+        for bad in (None, {}, {"choices": [None]}, {"choices": [{"message": None}]}):
+            self.assertFalse(probe.valid_get_status_call(bad))
+
+    def test_v30_status_requires_matching_inventory_and_official_hashes(self):
+        for inventory_ok, hashes_ok in ((True, True), (False, True), (True, False)):
+            with self.subTest(inventory_ok=inventory_ok, hashes_ok=hashes_ok):
+                status, installed = probe.decide_install_status(
+                    pip_attempted=True, failed_wheels=[], official_ok=True, required_ok=True,
+                    inventory_ok=inventory_ok, hashes_ok=hashes_ok,
+                )
+                self.assertEqual(installed, inventory_ok and hashes_ok)
+                self.assertEqual(status, "ok_python312_v30_installed" if installed
+                                 else "python312_install_incomplete")
 
     def test_python_313_is_pin_failed_and_forbids_pip(self):
         status, allow = probe.evaluate_python((3, 13, 15))

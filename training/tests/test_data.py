@@ -145,7 +145,7 @@ class CensusDecisionTests(unittest.TestCase):
         a = lc.decide_max_seq_len([1000, 2000, 3000, 4000])
         self.assertEqual(a["chosen_max_seq_len"], 4096)
         self.assertTrue(a["trainable_ok"])
-        self.assertFalse(a["four_k_capacity_unproven"])
+        self.assertTrue(a["four_k_capacity_unproven"])
         b = lc.decide_max_seq_len([5000, 5000, 5000, 3000])
         self.assertEqual(b["chosen_max_seq_len"], 8192)
         self.assertTrue(b["trainable_ok"])

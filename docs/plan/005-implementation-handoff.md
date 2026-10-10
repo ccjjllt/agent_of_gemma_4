@@ -1,6 +1,6 @@
 # 005：推理机制与LoRA实现交接
 
-日期：2026-10-10。配套[研究决策](005-medal-and-prize-research.md)。本文保留原始实现规格。后续已完成single_state载体、技能接线、真实编码/SFT/导出，以及31B四卡LoRA诊断训练；实际命令以[载体说明](../../notebooks/005-single-state.README.md)和[训练说明](../../training/README.md)为准，验证边界见[最新进展](../progress/005-medal-and-prize-research.md)。尚未完成真实修复语料SFT、CT adapter部署验证或比赛提交，DPO仍后置。
+日期：2026-10-10。配套[研究决策](005-medal-and-prize-research.md)。本文保留原始实现规格。后续已完成single_state载体、技能接线、真实编码/SFT/导出，以及31B四卡LoRA诊断训练；实际命令以[载体说明](../../notebooks/005-single-state.README.md)和[训练说明](../../training/README.md)为准，验证边界见[最新进展](../progress/005-medal-and-prize-research.md)。已完成官方 CT 上诊断 adapter 的加载、路由与工具格式兼容验证；尚未完成真实修复语料 SFT、修复收益配对或比赛提交，DPO仍后置。最新数据瓶颈、合并归档及后续资源安排见[下一轮计划](005-next-round-sft.md#合并审查后的下一轮工作2026-10-10)。
 
 ## 1. 先实现什么
 

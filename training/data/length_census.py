@@ -82,7 +82,7 @@ def length_histogram(lengths):
 
 
 def decide_max_seq_len(train_lengths):
-    """Choose 4096 or 8192. 2048 is never the official window."""
+    """Choose a data window; CPU length coverage does not prove GPU capacity."""
     n = len(train_lengths)
     train_counts = {w: sum(1 for x in train_lengths if x <= w) for w in WINDOWS}
     base = {
@@ -109,7 +109,7 @@ def decide_max_seq_len(train_lengths):
     base["majority_fit_16384"] = maj16384
     if maj4096:
         base.update(
-            chosen_max_seq_len=4096, trainable_ok=True, four_k_capacity_unproven=False,
+            chosen_max_seq_len=4096, trainable_ok=True, four_k_capacity_unproven=True,
             decision_reason="majority of representative train transactions fully encode at 4096")
         return base
     if maj8192:
@@ -333,7 +333,7 @@ def run_census(args):
     length_report = {
         "generated_at": "2026-10-10",
         "protocol_id": PROTOCOL_ID,
-        "tools": "training/configs/harness_tools.json",
+        "tools": str(tools_path),
         "tokenizer": tok_fp,
         "tokenizer_hash": enc.tokenizer_fingerprint(tokenizer),
         "encoding": "training/encoding/gemma_tool_chat.py",
@@ -366,16 +366,16 @@ def run_census(args):
         "encoded": {
             "train_written": encoded_train_n,
             "select_written": encoded_select_n,
-            "train_report": "training/artifacts/repair-sft-v1/encoded-train.jsonl.report.json",
-            "select_report": "training/artifacts/repair-sft-v1/encoded-select.jsonl.report.json",
-            "train_path": "training/artifacts/repair-sft-v1/encoded-train.jsonl",
-            "select_path": "training/artifacts/repair-sft-v1/encoded-select.jsonl",
+            "train_report": str(out / "encoded-train.jsonl.report.json"),
+            "select_report": str(out / "encoded-select.jsonl.report.json"),
+            "train_path": str(out / "encoded-train.jsonl"),
+            "select_path": str(out / "encoded-select.jsonl"),
         },
         "train_issues": train_issues,
         "select_issues": select_issues,
         "dev_panel_in_train": panel_in_train,
         "dev_panel_not_in_train": panel_not_in_train,
-        "artifacts_dir": "training/artifacts/repair-sft-v1",
+        "artifacts_dir": str(out),
         "did_not_overwrite": "training/artifacts/local-diagnostic",
     }
     (report_dir / "length_report.json").write_text(

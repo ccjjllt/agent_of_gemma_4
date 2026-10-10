@@ -1,6 +1,7 @@
 """Local offline checks for the CPU inference-env pin. Does not call Kaggle."""
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -93,7 +94,8 @@ class AbiTests(unittest.TestCase):
 
     def test_ok_status_requires_full_install(self):
         ok, installed = probe.decide_install_status(
-            pip_attempted=True, failed_wheels=[], official_ok=True, required_ok=True
+            pip_attempted=True, failed_wheels=[], official_ok=True, required_ok=True,
+            inventory_ok=True, hashes_ok=True,
         )
         self.assertEqual(ok, "ok_python312_v30_installed")
         self.assertTrue(installed)
@@ -104,9 +106,21 @@ class AbiTests(unittest.TestCase):
             dict(pip_attempted=True, failed_wheels=[], official_ok=True, required_ok=False),
         ]
         for kwargs in cases:
-            status, installed = probe.decide_install_status(**kwargs)
+            status, installed = probe.decide_install_status(
+                **kwargs, inventory_ok=True, hashes_ok=True
+            )
             self.assertEqual(status, "python312_install_incomplete", kwargs)
             self.assertFalse(installed, kwargs)
+
+    def test_ok_status_requires_matching_inventory_and_hashes(self):
+        for inventory_ok, hashes_ok in ((False, True), (True, False), (False, False)):
+            with self.subTest(inventory_ok=inventory_ok, hashes_ok=hashes_ok):
+                status, installed = probe.decide_install_status(
+                    pip_attempted=True, failed_wheels=[], official_ok=True, required_ok=True,
+                    inventory_ok=inventory_ok, hashes_ok=hashes_ok,
+                )
+                self.assertEqual(status, "python312_install_incomplete")
+                self.assertFalse(installed)
 
     def test_python_313_is_pin_failed_and_forbids_pip(self):
         status, allow = probe.evaluate_python((3, 13, 15))
@@ -197,9 +211,20 @@ class AbiTests(unittest.TestCase):
             module.__file__ = f"/tmp/{name}.py"
             return module
 
-        with mock.patch.object(probe, "EXPECTED_WHEELS", tiny):
-            with mock.patch.object(probe.md, "version", side_effect=fake_version):
-                with mock.patch.object(probe.importlib, "import_module", side_effect=fake_import):
+        matching_inventory = dict(tiny, **{"demo-1.0cu128-py3-none-any.whl": 4})
+        matching_packages = {
+            name: dict(spec, sha256=hashlib.sha256(b"w" * 8).hexdigest())
+            for name, spec in probe.OFFICIAL_PACKAGES.items()
+        }
+        for mode in ("matching", "inventory_drift", "hash_drift"):
+            with self.subTest(mode=mode):
+                calls.clear()
+                expected = tiny if mode == "inventory_drift" else matching_inventory
+                packages = probe.OFFICIAL_PACKAGES if mode == "hash_drift" else matching_packages
+                with mock.patch.object(probe, "EXPECTED_WHEELS", expected), \
+                        mock.patch.object(probe, "OFFICIAL_PACKAGES", packages), \
+                        mock.patch.object(probe.md, "version", side_effect=fake_version), \
+                        mock.patch.object(probe.importlib, "import_module", side_effect=fake_import):
                     report = probe.run(
                         out_dir=out,
                         input_root=root / "input",
@@ -208,16 +233,19 @@ class AbiTests(unittest.TestCase):
                         pip=fake_pip,
                         staging_dir=root / "staging",
                     )
-        self.assertTrue(report["pip_attempted"])
-        self.assertEqual(len(calls), 1)
-        staged = [Path(item).name for item in calls[0]]
-        self.assertNotIn("nvidia_cutlass-9.0-py3-none-any.whl", staged)
-        self.assertIn("demo-1.0+cu128-py3-none-any.whl", staged)
-        self.assertTrue(all(item["ok"] for item in report["imports"].values()))
-        self.assertEqual(report["env_limits"]["vllm"]["ok"], False)
-        self.assertIn("CPU environment limit", report["env_limits"]["vllm"]["note"])
-        self.assertEqual(report["abi_status"], "ok_python312_v30_installed")
-        self.assertTrue(report["installed"])
+                self.assertTrue(report["pip_attempted"])
+                self.assertEqual(len(calls), 1)
+                staged = [Path(item).name for item in calls[0]]
+                self.assertNotIn("nvidia_cutlass-9.0-py3-none-any.whl", staged)
+                self.assertIn("demo-1.0+cu128-py3-none-any.whl", staged)
+                self.assertTrue(all(item["ok"] for item in report["imports"].values()))
+                self.assertEqual(report["env_limits"]["vllm"]["ok"], False)
+                self.assertIn("CPU environment limit", report["env_limits"]["vllm"]["note"])
+                self.assertEqual(report["wheelhouse_matches_v30"], mode != "inventory_drift")
+                self.assertEqual(report["official_hashes_ok"], mode != "hash_drift")
+                self.assertEqual(report["installed"], mode == "matching")
+                self.assertEqual(report["abi_status"], "ok_python312_v30_installed"
+                                 if mode == "matching" else "python312_install_incomplete")
         tmp.cleanup()
 
     def test_python312_partial_install_is_not_ok_status(self):

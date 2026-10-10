@@ -113,8 +113,10 @@ def collect_env_hints(environ=None):
     return hints
 
 
-def decide_install_status(*, pip_attempted, failed_wheels, official_ok, required_ok):
-    if pip_attempted and not failed_wheels and official_ok and required_ok:
+def decide_install_status(*, pip_attempted, failed_wheels, official_ok, required_ok,
+                          inventory_ok, hashes_ok):
+    if (pip_attempted and not failed_wheels and official_ok and required_ok
+            and inventory_ok and hashes_ok):
         return "ok_python312_v30_installed", True
     return "python312_install_incomplete", False
 
@@ -322,6 +324,13 @@ def run(*, out_dir=None, input_root=None, version_info=None, executable=None, pi
             item["sha256_ok"] = item["sha256"] == OFFICIAL_PACKAGES[official]["sha256"]
         wheels_meta.append(item)
     report["wheels"] = wheels_meta
+    official_hashes = {
+        item["official"]: item["sha256_ok"]
+        for item in wheels_meta if "official" in item
+    }
+    report["official_hashes_ok"] = official_hashes == {
+        name: True for name in OFFICIAL_PACKAGES
+    }
 
     if staging.exists():
         for child in staging.iterdir():
@@ -386,6 +395,8 @@ def run(*, out_dir=None, input_root=None, version_info=None, executable=None, pi
         failed_wheels=failed,
         official_ok=official_ok,
         required_ok=required_ok,
+        inventory_ok=report["wheelhouse_matches_v30"],
+        hashes_ok=report["official_hashes_ok"],
     )
     report["installed"] = installed
     report["abi_status"] = status
