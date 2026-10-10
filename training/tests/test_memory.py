@@ -5,6 +5,7 @@ PYTHONDONTWRITEBYTECODE=1 /tmp/p005-training-check/bin/python -m unittest traini
 """
 import inspect
 import unittest
+from contextlib import ExitStack
 
 import torch
 import transformers as tr
@@ -220,29 +221,49 @@ class SelectedLossTests(unittest.TestCase):
                 model(**dict(batch(), **extra))
 
 
-def compare_save_on_cpu_grads():
+def _loss_grads_and_checkpoint_calls(model):
+    """Observe the actual decoder checkpoint entry points during forward/backward."""
+    base = model.get_base_model()
+    layers = list(base.model.language_model.layers)
+    train_mode = model.training and base.training and all(layer.training for layer in layers)
+    with ExitStack() as stack:
+        spies = [stack.enter_context(mock.patch.object(
+            layer, "_gradient_checkpointing_func",
+            wraps=getattr(layer, "_gradient_checkpointing_func", torch.utils.checkpoint.checkpoint),
+            create=True,
+        )) for layer in layers]
+        loss = model(**batch()).loss
+        loss.backward()
+        calls = [spy.call_count for spy in spies]
+    gradients = {name: parameter.grad.clone() for name, parameter in model.named_parameters()
+                 if parameter.requires_grad}
+    return loss, gradients, calls, train_mode
+
+
+def compare_save_on_cpu_grads(checkpointing=False):
     """One-shot tiny-Gemma comparison. Returns the numbers; does not write files."""
-    reference = tiny_lora()
+    reference = tiny_lora(checkpointing=checkpointing)
     install_selected_token_loss(reference, chunk_size=2, save_on_cpu=False)
-    result = reference(**batch())
-    result.loss.backward()
-    expected = {name: parameter.grad.clone() for name, parameter in reference.named_parameters()
-                if parameter.requires_grad}
-    candidate = tiny_lora()
+    expected_loss, expected, reference_calls, reference_train = _loss_grads_and_checkpoint_calls(reference)
+    candidate = tiny_lora(checkpointing=checkpointing)
     install_selected_token_loss(candidate, chunk_size=2, save_on_cpu=True)
-    actual = candidate(**batch())
-    actual.loss.backward()
-    diffs = {}
-    for name, parameter in candidate.named_parameters():
-        if parameter.requires_grad:
-            diffs[name] = float((parameter.grad - expected[name]).abs().max())
+    actual_loss, actual, candidate_calls, candidate_train = _loss_grads_and_checkpoint_calls(candidate)
+    diffs = {name: float((gradient - expected[name]).abs().max())
+             for name, gradient in actual.items()}
+    both_gradients = list(expected.values()) + list(actual.values())
     return {
-        "loss_baseline": float(result.loss.detach()),
-        "loss_save_on_cpu": float(actual.loss.detach()),
-        "loss_abs_diff": float((actual.loss - result.loss).abs().detach()),
+        "loss_baseline": float(expected_loss.detach()),
+        "loss_save_on_cpu": float(actual_loss.detach()),
+        "loss_abs_diff": float((actual_loss - expected_loss).abs().detach()),
         "n_lora_params": len(diffs),
         "max_lora_grad_abs_diff": max(diffs.values()) if diffs else None,
-        "all_lora_grads_nonzero": all(value.abs().sum().item() > 0 for value in expected.values()),
+        "all_lora_grads_nonzero": all(value.abs().sum().item() > 0 for value in both_gradients),
+        "all_lora_grads_finite": all(torch.isfinite(value).all().item() for value in both_gradients),
+        "checkpointing": checkpointing,
+        "baseline_train_mode": reference_train,
+        "save_on_cpu_train_mode": candidate_train,
+        "baseline_decoder_checkpoint_calls": reference_calls,
+        "save_on_cpu_decoder_checkpoint_calls": candidate_calls,
         "save_on_cpu_flag": candidate.get_base_model()._p005_save_on_cpu,
         "default_flag": reference.get_base_model()._p005_save_on_cpu,
         "rtol_loss": 2e-6, "atol_loss": 2e-7, "rtol_grad": 3e-5, "atol_grad": 3e-7,
@@ -279,23 +300,27 @@ class SaveOnCpuTests(unittest.TestCase):
         self.assertEqual(calls[0]["kwargs"].get("pin_memory"), True)
 
     def test_save_on_cpu_matches_loss_and_lora_grads(self):
-        reference = tiny_lora()
-        install_selected_token_loss(reference, chunk_size=2, save_on_cpu=False)
-        result = reference(**batch())
-        result.loss.backward()
-        expected = {name: parameter.grad.clone() for name, parameter in reference.named_parameters()
-                    if parameter.requires_grad}
-        self.assertTrue(all(value.abs().sum().item() > 0 for value in expected.values()))
-        candidate = tiny_lora()
-        install_selected_token_loss(candidate, chunk_size=2, save_on_cpu=True)
-        self.assertTrue(candidate.get_base_model()._p005_save_on_cpu)
-        actual = candidate(**batch())
-        torch.testing.assert_close(actual.loss, result.loss, rtol=2e-6, atol=2e-7)
-        actual.loss.backward()
-        for name, parameter in candidate.named_parameters():
-            if parameter.requires_grad:
-                torch.testing.assert_close(parameter.grad, expected[name], rtol=3e-5, atol=3e-7,
-                                           msg=lambda message: name + ": " + message)
+        for checkpointing in (False, True):
+            with self.subTest(checkpointing=checkpointing):
+                reference = tiny_lora(checkpointing=checkpointing)
+                install_selected_token_loss(reference, chunk_size=2, save_on_cpu=False)
+                expected_loss, expected, reference_calls, reference_train = _loss_grads_and_checkpoint_calls(reference)
+                candidate = tiny_lora(checkpointing=checkpointing)
+                install_selected_token_loss(candidate, chunk_size=2, save_on_cpu=True)
+                self.assertTrue(candidate.get_base_model()._p005_save_on_cpu)
+                actual_loss, actual, candidate_calls, candidate_train = _loss_grads_and_checkpoint_calls(candidate)
+                self.assertTrue(reference_train)
+                self.assertTrue(candidate_train)
+                for calls in (reference_calls, candidate_calls):
+                    self.assertTrue(calls)
+                    self.assertTrue(all(count > 0 if checkpointing else count == 0 for count in calls))
+                for gradient in list(expected.values()) + list(actual.values()):
+                    self.assertTrue(torch.isfinite(gradient).all())
+                    self.assertGreater(gradient.abs().sum().item(), 0)
+                torch.testing.assert_close(actual_loss, expected_loss, rtol=2e-6, atol=2e-7)
+                for name, gradient in actual.items():
+                    torch.testing.assert_close(gradient, expected[name], rtol=3e-5, atol=3e-7,
+                                               msg=lambda message: name + ": " + message)
 
 
 if __name__ == "__main__":

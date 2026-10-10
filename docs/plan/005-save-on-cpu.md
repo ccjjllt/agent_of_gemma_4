@@ -1,7 +1,7 @@
 # P005：6032-token 显存对照、长样本容量与 SFT
 
 日期：2026-10-10。源规格：[抽样计划合并审查节](005-sampling-sft-pair.md#合并审查后的研究安排2026-10-10)。
-工作分支：`p005-save-on-cpu`。不要改 `main`。
+原执行分支：`p005-save-on-cpu`。训练模式问题及修复后的研究顺序见文末合并审查。
 
 目标：用同一 6,032-token 完整样本定位显存峰值，对照 backbone `save_on_cpu`；有效后再测 9,841／12,832，并在容量与数据都支持时做一个真实 SFT 和八题 T0 配对。
 
@@ -62,3 +62,42 @@ CPU 继续扩充独立训练 issue 与真实恢复事件：来源、失败观察
 SFT：rank8/alpha16、LR 5e-5、≤1 epoch、`norms_fp32`、`selected_chunked`、干净初始化、一次加载。loss ≠ 修复增益。
 
 配对：八题固定 T0/六工具/预算，一次 vLLM，base vs 该 adapter。不提交比赛。无 adapter 则只写 skip 记录。
+
+## 2026-10-11 合并审查与下一步
+
+本轮四个提交交付了可选 backbone CPU 保存、两臂显存阶段记录和完整交易扫描。**合并审查发现实验 worker 漏了 `model.train()`：backbone/decoder 仍在 eval 模式，decoder checkpoint 未实际执行。** 因此旧两臂观测不能回答正常 checkpoint 训练配方下 `save_on_cpu` 是否有效，不能据此直接转向 MLP/FSDP 改造。
+
+本地加载 tiny Gemma＋PEFT 复现：外层 PEFT 的 `training=True`，但 base 和两个 decoder 的 `training=False`；checkpoint 标志虽开，实际调用为 0。显式 `model.train()` 后两个 decoder 都执行 checkpoint。官方实现的触发条件是 `gradient_checkpointing and self.training`，见 [Transformers 5.13.1 checkpoint 实现](https://github.com/huggingface/transformers/blob/v5.13.1/src/transformers/modeling_layers.py)及[模型加载实现](https://github.com/huggingface/transformers/blob/v5.13.1/src/transformers/modeling_utils.py)。
+
+### 已修正并可合并的内容
+
+- worker 在前向前显式设训练态，并记录/校验 base、decoder 的 training、checkpoint 开关及函数；不能只检查外层 PEFT 的 training。
+- CPU 数值核对同时覆盖 checkpoint 关闭和开启，观察实际 decoder checkpoint 调用。开启时两臂 loss 与全部 20 个 LoRA 梯度差为 0；原关闭场景最大梯度差仍为 8.94e-8。两臂梯度均有限且非零。运行时 `save_on_cpu` 仍默认关闭。
+- 扫描器在真正测长前排除预留 issue 及相同 repo＋commit，并用历史 v2 问题集计算新增问题，避免拿本轮 prepare 集合减自身。重算复现全部历史汇总：214 个完整前缀、9 个合格问题，8K 内 24 条、其中有标签 6 条且都是局部编辑，无恢复事件、无新独立问题。
+- 共 85 项本地检查通过：训练/编码/数据 71、载体 6、扫描 7、配对记录 1。没有启动新的 Kaggle GPU 作业。
+
+原始 `kaggle-output/`、遥测、配额与旧 CPU 数字不改写；派生摘要和下一步指引已更正，并附[机器可读审查记录](../../research/005/save-on-cpu-6032-20261010/review-20261011.json)。审查前源码/结论可在提交 `3cde33a` 回溯。修复后的 kernel 尚未远程运行；使用前从当前仓库重新 build，避免旧 worktree 绝对路径。
+
+### 第一优先：修正训练态后的同样本对照
+
+用同一 6,032-token 完整交易，保持 NF4、LoRA、loss、标签、注意力和优化器设置一致，两臂都明确启用训练态与 decoder checkpoint；唯一比较变量为 backbone `save_on_cpu`。每臂用新的分布式 worker，尝试一个完整优化步（含第一次 Adam 状态创建）。保留训练态记录、forward/backward/optimizer 边界、层号、完整 traceback、GPU 峰值和耗时；不再把开关配置本身当作 checkpoint 实际执行的证据。
+
+同时记录各 worker 的 RSS、主机可用内存，以及可取得的 cgroup `memory.events`；不可读取时注明缺失。旧 SIGKILL 只说明进程被杀，尚未证明主机 OOM 或 pinned-memory 耗尽。旧 baseline 确实在 decoder 索引 1 的 gate_proj/F.linear 分配 248 MiB 失败，但那是在 checkpoint 未激活时的现象；这一次先确定真实训练态下的失败阶段。
+
+建议这项仍最多 **0.6 个 GPU 额度小时**，设置整个对照会话的总时间上限，避免只限单臂；不自动连续重试。若失败就保留证据，再按结果选择修改，不能先承诺 offload 节省多少显存。最近保存的账号快照为北京时间 **2026-10-11 00:14**：已用 19,451.299 秒，剩约 **24.597h**；启动前重读，快照不是当前余额。
+
+### 第二优先：有效后才扩展长度和候选训练
+
+若纠正后的 offload 臂完成首个优化步，再验证完整 train 的 9,841／12,832 tokens，各做一步含 Adam；成功只能证明相应真实长度，不能声称已测 16,384。容量阶段的 select 更新必须丢弃，正式 SFT 从干净 adapter 初始化。
+
+若仍失败，依据实际失败阶段决定下一项：主机内存增长则检查保存了哪些张量及复制规模；训练态局部算子峰值才研究相应分块/融合；注意力路径则检查实际 kernel/mask/KV。只有证据支持时才投入 FSDP-QLoRA 和缓存格式改造。此前“Live MLP/dequant 已定位”“host pin_memory 导致 SIGKILL”的确定性表述已撤回。
+
+### 数据与收益研究并行推进
+
+现有本地数据没有增加独立问题，反复选更短前缀不会产生新的恢复训练分布。下一轮优先获取更多非预留问题的、协议兼容的真实修复/恢复轨迹，记录来源和最终 resolved；CPU 先做去重、来源与长度统计，再安排训练。不得使用 heldout 内容或预留八题及其相同快照。若研究证据摘要/状态化上下文，应另建数据表示实验，与原完整前缀样本分别记录，不能以裁剪冒充原样本。
+
+得到真实 SFT adapter 后才做固定 T0／六工具／预算的八题 base-adapter 配对，记录新增修复、回退、耗时。现阶段尚无修复收益证据；训练支线以小预算验证可行性，避免仅因技术路径能运行就扩大投入。
+
+### 清理时保留的材料
+
+旧 worktree 的 17 项非缓存忽略文件已逐项校验，存于 `training/artifacts/worktree-archives/p005-save-on-cpu-3cde33a-20261011/ignored-files.tar.gz`，旁边 `manifest.json` 记录哈希。5 个容量输入/日志/遥测文件已复制到主目录原相对路径。归档不进 Git，删除旧 worktree 后仍可恢复过程材料。

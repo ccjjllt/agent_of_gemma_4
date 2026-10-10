@@ -22,7 +22,7 @@ sys.path.insert(0, str(DATA))
 
 import length_census as lc  # noqa: E402
 from prepare_local import prepare  # noqa: E402
-from sample_behaviors import PAIRING_RESERVED_ISSUES, pairing_reserved  # noqa: E402
+from sample_behaviors import PAIRING_RESERVED_ISSUES, pairing_reserved, exclude_reserved  # noqa: E402
 
 WINDOWS = (2048, 4096, 8192, 16384)
 V2_CENSUS = (
@@ -186,6 +186,19 @@ def compact_row(row, v2_ids, results: Path):
     }
 
 
+def measured_pool(transactions, split_records):
+    """Exclude reserved issue IDs and snapshots from the actual measured rows."""
+    issues, snapshots = pairing_reserved(split_records)
+    return exclude_reserved(transactions, issues, snapshots)
+
+
+def new_issue_ids(measured_rows, historical_v2_report):
+    """Compare this scan with frozen v2, not with this scan's own preparation."""
+    historical = set((historical_v2_report.get("prepare") or {}).get("tasks") or [])
+    current = {row["issue"] for row in measured_rows}
+    return sorted(current - historical - set(PAIRING_RESERVED_ISSUES))
+
+
 def run(args):
     v2_before = snapshot_v2()
     results = Path(args.results)
@@ -203,7 +216,9 @@ def run(args):
         prepare_report = prepare(
             results, splits_path, eligibility_path, out, tools_path,
             include_failures=True)
-        all_tx = lc.read_jsonl(out / "transactions.jsonl")
+        all_tx, dropped_reserved = measured_pool(
+            lc.read_jsonl(out / "transactions.jsonl"),
+            json.loads(splits_path.read_text(encoding="utf-8")).get("records") or [])
         enc = lc._load_encoding()
         tokenizer = enc.load_tokenizer(str(tokenizer_dir), allow_download=False)
         tok_hash = enc.tokenizer_fingerprint(tokenizer)
@@ -240,8 +255,8 @@ def run(args):
         "local_edit", "tool_recovery", "verify_close")]
     new_short = [r for r in short if r["transaction_id"] not in v2_ids]
     new_short_labeled = [r for r in short_labeled if r["transaction_id"] not in v2_ids]
-    new_issues = sorted(set(inv["would_prepare_issues"]) - set(
-        prepare_report.get("tasks") or []) - set(PAIRING_RESERVED_ISSUES))
+    historical_v2_report = json.loads(V2_CENSUS[0].read_text(encoding="utf-8"))
+    new_issues = new_issue_ids(rows, historical_v2_report)
 
     v2_after = snapshot_v2()
     if v2_before != v2_after:
@@ -295,14 +310,16 @@ def run(args):
                     "as the repair distribution.",
         },
         "independent_issue_growth": {
-            "v2_prepare_issues": prepare_report.get("tasks"),
+            "v2_prepare_issues": (historical_v2_report.get("prepare") or {}).get("tasks"),
+            "current_measured_issues": sorted({r["issue"] for r in rows}),
             "v2_train_issues": v2_issues.get("train_issues"),
             "new_eligible_issues_with_traces": new_issues,
             "corpus_cannot_grow_without_new_rollouts": not new_issues,
-            "reason": "Only 9 frozen-eligible non-heldout issues have traces. Extra traces "
-                      "are reserved pairing IDs, ineligible panel/dev_future tasks, or "
-                      "missing result.json. Reserved eight and same repo+commit stay out. "
-                      "Do not invent ineligible issues as train data.",
+            "reason": ("New eligible independent issues were measured relative to frozen v2."
+                       if new_issues else
+                       "No new eligible independent issues were measured relative to frozen v2. "
+                       "Expanding this corpus requires additional eligible compatible traces; "
+                       "reserved issues and snapshots remain excluded."),
         },
         "known_length_check": {
             "transaction_id": KNOWN_6032[0],
@@ -311,6 +328,7 @@ def run(args):
         },
         "measure_errors": errors,
         "reserved_pairing_issues": list(PAIRING_RESERVED_ISSUES),
+        "reserved_transactions_excluded_before_measurement": dropped_reserved,
         "reserved_in_measured": sorted({
             r["issue"] for r in rows if r["issue"] in PAIRING_RESERVED_ISSUES}),
     }

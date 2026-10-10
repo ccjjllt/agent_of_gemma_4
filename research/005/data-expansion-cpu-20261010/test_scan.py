@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import unittest
 from pathlib import Path
@@ -31,6 +32,29 @@ def sha256_file(path: Path) -> str:
 
 
 class ExpansionScanTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("p005_scan_review", HERE / "scan.py")
+        cls.scan = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.scan)
+
+    def test_reserved_snapshots_are_excluded_from_actual_measured_pool(self):
+        records = [{"instance_id": "fastapi_13713", "repo": "r/a", "base_commit": "same"}]
+        rows = [
+            {"transaction_id": "reserved", "group": {"issue": "fastapi_13713", "repo": "r/a", "commit": "same"}},
+            {"transaction_id": "alias", "group": {"issue": "new_alias", "repo": "r/a", "commit": "same"}},
+            {"transaction_id": "keep", "group": {"issue": "new_issue", "repo": "r/b", "commit": "other"}},
+        ]
+        measured, dropped = self.scan.measured_pool(rows, records)
+        self.assertEqual([r["transaction_id"] for r in measured], ["keep"])
+        self.assertEqual(set(dropped), {"reserved", "alias"})
+
+    def test_new_issue_growth_is_relative_to_historical_v2(self):
+        frozen = {"prepare": {"tasks": ["old_issue"]}}
+        measured = [{"issue": "old_issue"}, {"issue": "new_issue"}, {"issue": "new_issue"}]
+        self.assertEqual(self.scan.new_issue_ids(measured, frozen), ["new_issue"])
+        self.assertEqual(self.scan.new_issue_ids([{"issue": "old_issue"}], frozen), [])
+
     def test_blocked_longseq_no_gpu(self):
         data = load(BLOCKED)
         self.assertEqual(data["status"], "BLOCKED")

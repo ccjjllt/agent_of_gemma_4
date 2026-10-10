@@ -8,6 +8,10 @@ SFT and pairing did not run. There is no adapter fingerprint, no per-issue base/
 
 Machine-readable skip: [`skipped.json`](skipped.json).
 
+## Review correction (2026-10-11)
+
+The Task 1 worker omitted `model.train()`, so its decoder checkpointing was inactive. The historical failure observations remain valid, but the inferred normal-training memory mechanism does not. See [review](../save-on-cpu-6032-20261010/review-20261011.json). The SFT/pairing skip remains valid because no real adapter exists.
+
 ## Why
 
 Binding gate: Task 3 SFT/pairing runs **only if** Task 2 proved at least one complete train length can backprop **and** there are independent train samples disjoint from the reserved eight.
@@ -36,6 +40,6 @@ Did **not** create `notebooks/005-base-adapter-pair-single-cell.py` as a fake co
 
 ## Next cut
 
-Live MLP/dequant workspace (chunk or fuse `gate_proj` dequant+linear), then SDPA/KV if that is no longer the limiter. Host `pin_memory` kill is the offload-arm failure mode. **Not** a 16K retry. **Not** another `save_on_cpu` at 6032. FSDP-QLoRA is later.
+Correct `model.train()` and repeat one matched 6032-token comparison with decoder checkpointing active in both arms. Record host/GPU memory before choosing an operator-specific optimization. Live MLP/dequant attribution and host pinned-memory OOM remain unproven under the intended recipe. **Not** a 16K retry; FSDP-QLoRA stays deferred.
 
 After a **memory-feasible complete-tx SFT** exports a real adapter (`gpu_sft=true`) from a clean init, run T0-fixed pairing on these eight IDs: same T0 prompt, official six tools, budgets 5min/50/80/60s, `max_output_tokens 16384`, one vLLM load, base (`n_adapters=0`) then adapter. Conclusions only from resolved differences. Eight IDs decide whether to expand; they do not extrapolate a medal.

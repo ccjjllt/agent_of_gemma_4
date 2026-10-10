@@ -1,0 +1,118 @@
+{
+  "reviewed_at": "2026-10-11",
+  "schema": "p005-save-on-cpu-merge-review-v1",
+  "historical_source_commit": "3cde33afa48fbea5f4a392369f3179d620d50b4f",
+  "comparison_valid_for_checkpointed_training": false,
+  "corrected_carrier_gpu_run": false,
+  "raw_kaggle_outputs_modified": false,
+  "finding": "The experiment worker omitted model.train(). The loaded Gemma backbone and decoders remained in eval mode; enabled checkpoint flags therefore did not activate decoder checkpointing.",
+  "evidence": {
+    "gpu_traceback": "kaggle-output/save-on-cpu-6032/baseline/rank-000-report.json: transformers/modeling_layers.py line 93 calls super().__call__, outside the checkpoint branch",
+    "cpu_load_reproduction": {
+      "transformers": "5.13.1",
+      "torch": "2.14.1",
+      "outer_training_before": true,
+      "base_training_before": false,
+      "decoder_training_before": [
+        false,
+        false
+      ],
+      "decoder_checkpointing_enabled_before": [
+        true,
+        true
+      ],
+      "checkpoint_calls_before": 0,
+      "checkpoint_calls_after_model_train": 2
+    },
+    "sources": [
+      "https://github.com/huggingface/transformers/blob/v5.13.1/src/transformers/modeling_layers.py",
+      "https://github.com/huggingface/transformers/blob/v5.13.1/src/transformers/modeling_utils.py"
+    ]
+  },
+  "supported_observations": {
+    "baseline": "forward CUDA OOM at decoder index 1 gate_proj F.linear, requesting 248 MiB; observed with inactive decoder checkpointing",
+    "save_on_cpu": "rank 2 SIGKILL during forward, no Python OOM report; host OOM/pinned-memory cause not established",
+    "first_adam_step_completed": false,
+    "long_train_lengths_tested": false,
+    "sft_adapter_exists": false
+  },
+  "unsupported_prior_conclusions": [
+    "save_on_cpu fails under the normal checkpointed training recipe",
+    "live MLP/dequant workspace is the established root cause of the prior training-mode OOM",
+    "host pinned-memory OOM caused SIGKILL"
+  ],
+  "corrections": [
+    "worker explicitly enters training mode and records/validates all decoder checkpoint prerequisites before forward",
+    "CPU gradient comparison now covers both checkpoint settings and confirms actual decoder checkpoint calls",
+    "scan excludes reserved issue/snapshot rows before measurement and compares issue growth with the historical v2 issue set"
+  ],
+  "cpu_offload_gradient_validation": {
+    "patch": "/tmp/p005-save-on-cpu-memory-test-review.patch",
+    "sha256": "ab2ca08cd273d3a01aec49e6ef24b283206f5a6e233248a3bac865a7af93fa5d",
+    "bytes": 6802,
+    "memory_runtime_unchanged": true,
+    "tests": "training.tests.test_memory: 12 passed; comparison covers checkpointing False and True",
+    "cpu_comparisons": [
+      {
+        "loss_baseline": 3.7964298725128174,
+        "loss_save_on_cpu": 3.7964298725128174,
+        "loss_abs_diff": 0.0,
+        "n_lora_params": 20,
+        "max_lora_grad_abs_diff": 8.940696716308594e-08,
+        "all_lora_grads_nonzero": true,
+        "all_lora_grads_finite": true,
+        "checkpointing": false,
+        "baseline_train_mode": true,
+        "save_on_cpu_train_mode": true,
+        "baseline_decoder_checkpoint_calls": [
+          0,
+          0
+        ],
+        "save_on_cpu_decoder_checkpoint_calls": [
+          0,
+          0
+        ],
+        "save_on_cpu_flag": true,
+        "default_flag": false,
+        "rtol_loss": 2e-06,
+        "atol_loss": 2e-07,
+        "rtol_grad": 3e-05,
+        "atol_grad": 3e-07
+      },
+      {
+        "loss_baseline": 3.7964298725128174,
+        "loss_save_on_cpu": 3.7964298725128174,
+        "loss_abs_diff": 0.0,
+        "n_lora_params": 20,
+        "max_lora_grad_abs_diff": 0.0,
+        "all_lora_grads_nonzero": true,
+        "all_lora_grads_finite": true,
+        "checkpointing": true,
+        "baseline_train_mode": true,
+        "save_on_cpu_train_mode": true,
+        "baseline_decoder_checkpoint_calls": [
+          1,
+          1
+        ],
+        "save_on_cpu_decoder_checkpoint_calls": [
+          1,
+          1
+        ],
+        "save_on_cpu_flag": true,
+        "default_flag": false,
+        "rtol_loss": 2e-06,
+        "atol_loss": 2e-07,
+        "rtol_grad": 3e-05,
+        "atol_grad": 3e-07
+      }
+    ]
+  },
+  "local_checks": {
+    "training": 71,
+    "carrier": 6,
+    "scan": 7,
+    "pairing_record": 1,
+    "total": 85
+  },
+  "next_experiment": "One corrected 6032-token train-mode comparison, budget at most 0.6 GPU quota hours; collect per-phase GPU memory, process RSS, host available memory and cgroup memory.events where available. No new GPU run during this merge review."
+}

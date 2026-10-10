@@ -36,6 +36,55 @@ class EncodedAndMemoryTests(unittest.TestCase):
         self.assertFalse(rows[0]["meta"]["synthetic"])
         self.assertFalse(rows[0]["meta"].get("truncated"))
 
+    def test_loaded_eval_backbone_activates_decoder_checkpointing(self):
+        import torch
+        import transformers as tr
+        from peft import LoraConfig, TaskType, get_peft_model
+        from unittest import mock
+        from training.tests.test_memory import tiny_base, batch
+        from training.memory import (prepare_model_for_memory_efficient_kbit_training,
+                                     install_selected_token_loss)
+
+        worker = load(HERE / "worker.py", "save_on_cpu_training_mode_test")
+        with tempfile.TemporaryDirectory() as directory:
+            tiny_base().save_pretrained(directory)
+            base = tr.Gemma4ForConditionalGeneration.from_pretrained(directory, local_files_only=True)
+        prepare_model_for_memory_efficient_kbit_training(base, use_gradient_checkpointing=True)
+        targets = [name for name, _ in base.named_modules()
+                   if name.startswith("model.language_model.")
+                   and name.rsplit(".", 1)[-1] in {"q_proj", "o_proj", "gate_proj", "up_proj", "down_proj"}]
+        model = get_peft_model(base, LoraConfig(task_type=TaskType.CAUSAL_LM, r=2,
+                              lora_alpha=4, lora_dropout=0.0, target_modules=targets, bias="none"))
+        install_selected_token_loss(model, chunk_size=2)
+        layers = worker.decoder_layers(model)
+        self.assertTrue(model.training)  # Checking only the outer PEFT wrapper misses this bug.
+        self.assertFalse(base.training)
+        self.assertTrue(all(not layer.training and layer.gradient_checkpointing for layer in layers))
+        functions = []
+        for layer in layers:
+            function = mock.Mock(wraps=layer._gradient_checkpointing_func)
+            layer._gradient_checkpointing_func = function
+            functions.append(function)
+        model(**batch()).loss.backward()
+        self.assertEqual(sum(function.call_count for function in functions), 0)
+        report = {}
+        state = worker.prepare_training_mode(model, report)
+        self.assertIs(report["training_mode"], state)
+        self.assertTrue(state["base_training"])
+        self.assertEqual(state["decoder_checkpointing_active"], [True, True])
+        for save_on_cpu in (False, True):
+            with self.subTest(save_on_cpu=save_on_cpu):
+                model.zero_grad(set_to_none=True)
+                for function in functions:
+                    function.reset_mock()
+                install_selected_token_loss(model, chunk_size=2, save_on_cpu=save_on_cpu)
+                model(**batch()).loss.backward()
+                self.assertTrue(all(function.call_count > 0 for function in functions))
+        layers[0].gradient_checkpointing = False
+        with self.assertRaisesRegex(RuntimeError, "invalid before forward"):
+            worker.prepare_training_mode(model, report)
+        self.assertFalse(report["training_mode"]["decoder_checkpointing_active"][0])
+
     def test_memory_module_default_is_off(self):
         import inspect
         from training import memory

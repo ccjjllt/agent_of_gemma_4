@@ -119,6 +119,36 @@ def decoder_layers(model):
     return list(layers) if layers is not None else []
 
 
+def prepare_training_mode(model, report):
+    """Enable training on the loaded backbone and verify checkpoint prerequisites."""
+    model.train()
+    base = model.get_base_model() if callable(getattr(model, "get_base_model", None)) else model
+    layers = decoder_layers(model)
+    expected = base.config.get_text_config().num_hidden_layers
+    state = {
+        "outer_training": bool(model.training),
+        "base_training": bool(base.training),
+        "expected_decoder_layers": expected,
+        "decoder_count": len(layers),
+        "decoder_training": [bool(layer.training) for layer in layers],
+        "decoder_checkpointing_enabled": [bool(getattr(layer, "gradient_checkpointing", False))
+                                          for layer in layers],
+        "decoder_checkpoint_function_present": [callable(getattr(layer, "_gradient_checkpointing_func", None))
+                                                for layer in layers],
+    }
+    state["decoder_checkpointing_active"] = [
+        training and enabled and present for training, enabled, present in zip(
+            state["decoder_training"], state["decoder_checkpointing_enabled"],
+            state["decoder_checkpoint_function_present"])
+    ]
+    report["training_mode"] = state
+    if (not state["outer_training"] or not state["base_training"]
+            or not layers or len(layers) != expected
+            or not all(state["decoder_checkpointing_active"])):
+        raise RuntimeError("Training/checkpoint state is invalid before forward: " + json.dumps(state))
+    return state
+
+
 def attach_layer_hooks(layers, tracker):
     handles = []
 
@@ -346,6 +376,8 @@ def main(argv=None):
         model, tokenizer, device, info = single.load_model_and_tokenizer(
             cfg, stack, expected_provenance=data["provenance"])
         install_selected_token_loss(model, chunk_size=cfg["loss_chunk_size"], save_on_cpu=save_on_cpu)
+        training_mode = prepare_training_mode(model, report)
+        emit("training_mode_verified", training_mode=training_mode)
         torch.cuda.synchronize(device)
         report["load_seconds"] = time.monotonic() - load_started
         report["model"] = info
