@@ -2,13 +2,23 @@
 
 日期：2026-10-10，Asia/Shanghai。用户要求围绕金牌与奖金继续深度研究，优先机制研究；大量实现写成交接，不纠结门控和测试。
 
-## 2026-10-11 训练态 6032 对照已测：有效比较，无首步 Adam（最新）
+## 2026-10-11 合并整理：研究优先，改为手动验证（最新）
+
+用户明确要求不写测试文件、所有验证手动进行。已删除20个专用测试文件、4个自检脚本和9个重复门控JSON；旧内容可从Git历史恢复，工作约定写入根目录AGENTS.md。原始模型实验、数据来源与日志保留，本次没有新增测试文件或运行测试套件。
+
+这轮有效对照证明offload使6032前向完成（15.38s，峰值18.988 GiB），反向仍CUDA OOM。baseline前向失败栈指向层47 SDPA；offload的53只是最后观察到的重算层，具体反向算子未定位。原始八份rank记录保持不变；wrapper已修正不完整/超时结果可能误报完成的问题。
+
+数据扫描已修正heldout哈希读取和按计数/mtime猜测历史内容的问题。手工对照归档v2 prepare指纹，39个当前合格轨迹全部匹配，未增加独立训练问题；其余文件和外部来源不在该判断范围。
+
+下一步把主要研究投入转向single_state对T0的真实修复收益和独立训练数据；训练仅保留一次全局注意力局部机制研究，不继续重复默认容量扫描。近期配额快照剩约22.231h（北京时间2026-10-11 03:25:55），运行前重读。本次审查未启动GPU。详见[研究计划](../plan/005-trainmode-save-on-cpu.md)。
+
+## 2026-10-11 训练态 6032 对照已测：有效比较，无首步 Adam（历史阶段）
 
 私有 4×L4 `ccjjllt/p005-save-on-cpu-6032-train-mode` v1 **COMPLETE**（metadata id `ccjjllt/p005-save-on-cpu-6032-tm`）。同一 6,032-token 交易，两臂都在 `model.train()` 下跑，decoder checkpoint **实际调用** > 0，对照对 checkpoint 训练有效。
 
-baseline 前向 CUDA OOM 在层 47 的 SDPA（申请 378 MiB，占用 21.69/22.03 GiB，调用 48/60）。save_on_cpu 前向完成（15.38s，loss 0.0603，末层 59，峰值 18.988 GiB，调用 60/60）后反向 CUDA OOM 在层 53（申请 124 MiB，占用 21.91 GiB）。两臂 `optimizer_reached=false`，无 adam_state。主机 `oom_kill=0`，MemAvailable 仍约 166 GiB，不是 SIGKILL。Wrapper `success=true` 只表示两臂记录了 oom/completed。
+baseline 前向 CUDA OOM 在层 47 的 SDPA（申请 378 MiB，占用 21.69/22.03 GiB，调用 48/60）。save_on_cpu 前向完成（15.38s，loss 0.0603，末层 59，峰值 18.988 GiB，调用 60/60）后反向 CUDA OOM（最后观察到重算层53，具体失败算子未定位）（申请 124 MiB，占用 21.91 GiB）。两臂 `optimizer_reached=false`，无 adam_state。主机 `oom_kill=0`，MemAvailable 仍约 166 GiB，不是 SIGKILL。Wrapper `success=true` 只表示两臂记录了 oom/completed。
 
-offload 完成了 baseline 未完成的前向，仍无 Adam；不能承诺 9841/12832 或训练省显存。9841/12832、真实 SFT、八题配对均未启动。Task 2 仍是 0 个新独立问题、0 个新恢复事件。下一刀是 checkpoint 下的 live 算子（层 47 SDPA / 反向层 53），不是 FSDP，也不是 16K。已撤回的 v1 根因表述不再使用。历史 20261010 `result.json` 状态保持 `invalid_checkpointed_training_comparison`。配额 Δ 612.944s = 0.170262h。证据：[`result.json`](../../research/005/save-on-cpu-6032-trainmode-20261011/result.json)。
+offload 完成了 baseline 未完成的前向，仍无 Adam；不能承诺 9841/12832 或训练省显存。9841/12832、真实 SFT、八题配对均未启动。Task 2 仍是 0 个新独立问题、0 个新恢复事件。下一刀是 checkpoint 下的 live 算子（层47 SDPA / 反向失败算子尚待定位），不是 FSDP，也不是 16K。已撤回的 v1 根因表述不再使用。历史 20261010 `result.json` 状态保持 `invalid_checkpointed_training_comparison`。配额 Δ 612.944s = 0.170262h。证据：[`result.json`](../../research/005/save-on-cpu-6032-trainmode-20261011/result.json)。
 
 ## 2026-10-11 CPU offload 合并审查：纠正训练模式后再做有效对照（历史阶段）
 

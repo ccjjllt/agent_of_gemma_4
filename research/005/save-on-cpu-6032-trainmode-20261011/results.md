@@ -35,14 +35,14 @@ This traceback with **active** checkpointing is SDPA, not v1's inactive-checkpoi
 
 ## save_on_cpu (`save_on_cpu=true`, installed)
 
-Forward **completed** (15.38 s, loss 0.0603, last layer 59, peak allocated 18.988 GiB, calls 60/60). Then CUDA OOM in **backward** at layer 53. Tried 124 MiB; 21.91 GiB in use. `optimizer_reached=false`, no adam_state. Host RSS ~6.29 GiB, MemAvailable ~166 GiB, cgroup `oom_kill=0`. Not SIGKILL.
+Forward **completed** (15.38 s, loss 0.0603, last layer 59, peak allocated 18.988 GiB, calls 60/60). Then CUDA OOM in **backward**; layer 53 was the last observed recomputation entry, not a localized failing operator. Tried 124 MiB; 21.91 GiB in use. `optimizer_reached=false`, no adam_state. Host RSS ~6.29 GiB, MemAvailable ~166 GiB, cgroup `oom_kill=0`. Not SIGKILL.
 
 | Field | Rank-000 |
 |---|---|
 | load | 11.667 s (second arm; cache warm); allocated 17.209 GiB |
 | save_on_cpu_installed | true |
 | forward | **completed** 15.380 s; loss 0.06029659882187843; last layer 59; peak allocated 18.988 GiB; peak reserved 19.107 GiB; calls 60/60 |
-| backward | started; OOM at `language_model.layers.53` |
+| backward | started; OOM; last observed recomputation `language_model.layers.53`, exact operator unknown |
 | traceback | `torch.autograd.backward` / `_engine_run_backward` |
 | CUDA error | Tried 124.00 MiB; 21.91 GiB in use of 22.03; 107.06 MiB free; PyTorch allocated 21.39 GiB |
 | failure_memory peak allocated | 21.447 GiB (bytes 23028763136) |
@@ -70,13 +70,15 @@ Withdrawn v1 claims remain withdrawn: not “Live MLP/dequant is the established
 | delta | 612.944 s = 0.170262 h (under 0.6 h cap) |
 | wrapper wall | 300.776 s |
 
-No 9841/12832 GPU, no SFT, no pairing, no competition submit in this write-up. Long-seq block: [`blocked-longseq.json`](blocked-longseq.json).
+No 9841/12832 GPU, no SFT, no pairing, no competition submit in this write-up. The longer samples, SFT and pairing were not run; reasons are recorded here without a separate gate file.
 
 ## Next cut
 
 From the **actual** failure stage:
 
 - baseline live operator is SDPA at layer 47 under active checkpointing
-- offload failed in backward at layer 53 (CUDA, not host)
+- offload failed in CUDA backward; layer 53 is the last observed recomputation entry, exact operator unknown
 
 Attention path → actual kernel/mask/KV. Do not jump to FSDP-QLoRA or a 16K retry from this record.
+
+Manual merge review confirmed all eight raw rank reports and source fingerprints. The wrapper now rejects incomplete or timed-out multi-rank records; the corrected carrier has not run remotely. No dedicated tests or gate files are maintained.

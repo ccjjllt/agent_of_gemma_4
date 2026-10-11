@@ -148,6 +148,23 @@ def discard_adapters(output):
         removed.append(str(path))
     return removed
 
+def rank_completion(ranks):
+    complete = (len(ranks) == 4 and all(type(r.get('rank')) is int for r in ranks)
+                and {r['rank'] for r in ranks} == set(range(4)))
+    terminal = complete and all(r.get('status') in {'completed', 'oom'} for r in ranks)
+    first_adam = complete and all(
+        r.get('status') == 'completed' and r.get('optimizer_reached') is True
+        and (r.get('adam_state') or {}).get('tensors', 0) > 0
+        and (r.get('adam_state') or {}).get('bytes', 0) > 0 for r in ranks)
+    return {'rank_reports_complete': complete, 'diagnostic_record_complete': terminal,
+            'first_adam_step_completed': first_adam}
+
+def comparison_complete(arms):
+    return (len(arms) == len(ARMS)
+            and {arm.get('arm') for arm in arms} == {name for name, _ in ARMS}
+            and all(arm.get('worker_exit_code') == 0
+                    and arm.get('diagnostic_record_complete') is True for arm in arms))
+
 def collect_arm(arm_dir):
     ranks = []
     for path in sorted(arm_dir.glob('rank-*-report.json')):
@@ -156,9 +173,12 @@ def collect_arm(arm_dir):
         except Exception as exc:
             ranks.append({'path': str(path), 'status': 'unreadable', 'error': repr(exc)})
     rank_zero = next((value for value in ranks if value.get('rank') == 0), {})
+    completion = rank_completion(ranks)
     return {'arm': arm_dir.name, 'rank_reports': ranks, 'rank_zero_status': rank_zero.get('status'),
-            'optimizer_reached': bool(rank_zero.get('optimizer_reached')),
-            'oom': bool(rank_zero.get('oom')), 'failure_phase': rank_zero.get('failure_phase'),
+            **completion,
+            'optimizer_reached': completion['first_adam_step_completed'],
+            'oom': any(r.get('status') == 'oom' for r in ranks),
+            'failure_phase': rank_zero.get('failure_phase'),
             'last_decoder_layer': rank_zero.get('last_decoder_layer'),
             'phases': rank_zero.get('phases') or [], 'load_seconds': rank_zero.get('load_seconds'),
             'traceback': rank_zero.get('traceback'),
@@ -304,9 +324,9 @@ def main():
             write_json(OUT / 'wrapper-report.json', report)
         discarded = discard_adapters(OUT)
         report['discarded_adapter_paths'] = discarded
-        statuses = [arm.get('rank_zero_status') for arm in report['arms'] if not arm.get('skipped')]
-        recorded = [status in {'completed', 'oom'} for status in statuses]
-        completed = len(recorded) == 2 and all(recorded)
+        completed = comparison_complete(report['arms'])
+        report['first_adam_step_completed_by_arm'] = {
+            arm['arm']: arm.get('first_adam_step_completed') is True for arm in report['arms']}
         report['success'] = completed
         report['status'] = 'completed' if completed else 'failed'
         exit_code = 0 if completed else 2
@@ -344,9 +364,12 @@ def build(destination):
     items = {name: {"sha256": hashlib.sha256(content.encode()).hexdigest(), "bytes": len(content.encode())}
              for name, content in sorted(sources.items())}
     encoded_meta = {name: {"sha256": blob["sha256"], "bytes": blob["bytes"]} for name, blob in encoded_gz.items()}
+    wrapper_hash = hashlib.sha256(WRAPPER.encode()).hexdigest()
     manifest = {"schema": "p005-save-on-cpu-source-bundle-v1", "files": items, "encoded": encoded_meta,
+                "wrapper_sha256": wrapper_hash,
                 "bundle_sha256": hashlib.sha256(
-                    json.dumps({"files": items, "encoded": {n: encoded_gz[n]["sha256"] for n in encoded_gz}},
+                    json.dumps({"files": items, "encoded": {n: encoded_gz[n]["sha256"] for n in encoded_gz},
+                                "wrapper_sha256": wrapper_hash},
                                sort_keys=True, separators=(",", ":")).encode()).hexdigest()}
     source = ("ENCODED_GZ = " + repr(encoded_gz) + "\nBUNDLE_FILES = " + repr(sources)
               + "\nSOURCE_MANIFEST = " + repr(manifest) + "\n" + WRAPPER)

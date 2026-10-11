@@ -2,7 +2,7 @@
 
 Date: 2026-10-10. No GPU. No 31B load. `gpu_launched=false`.
 
-Task 2 `trainable_ok=false` (`chosen_max_seq_len=8192`). Train window counts: **0/15 fit 4096**, **3/15 fit 8192**, majority exceed 8192. Census: [`research/005/length-census-20261010/length_report.json`](../length-census-20261010/length_report.json). Machine-readable block: [`blocked.json`](blocked.json).
+Task 2 `trainable_ok=false` (`chosen_max_seq_len=8192`). Train window counts: **0/15 fit 4096**, **3/15 fit 8192**, majority exceed 8192. Census: [`research/005/length-census-20261010/length_report.json`](../length-census-20261010/length_report.json). Machine-readable block: [`README.md`](README.md).
 
 This directory records the block so later work does not “just train anyway”:
 

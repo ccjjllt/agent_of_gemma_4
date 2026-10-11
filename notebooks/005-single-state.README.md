@@ -57,15 +57,10 @@ single_state/r1/
 
 ```sh
 python3 notebooks/build_005_single_state.py
-python3 notebooks/build_005_single_state.py --check
-python3 notebooks/check_005_single_state.py
-python3 research/005/test_skills.py
 ```
 
 生成器只用标准库，读取当前 `research/005/candidates/single_state/agent/`；已有P002冻结载体只作为服务/评测实现来源，不修改它。候选改动后重新生成，不能直接编辑生成文件里的大段BUNDLE。
 
-本地检查执行的是生成文件中的真实调度/归档/清理循环，Evaluator与模型服务由轻量fake替代，覆盖成功、任务异常和服务启动失败；另核对完整技能正文/SHA、Notebook一致性与Python3.13拒绝路径。它没有证明真实GPU速度、模型会调用技能或修复率提高，实际成绩仍待授权GPU运行。
-
-`test_skills.py`另外在合成官方subprocess布局中实际运行两个agent包的技能CLI，每次重新释放skill、切换到随机技能目录，并设置真实工作区/venv/tmp环境。覆盖默认root的编辑、状态、路径探针、交接往返与恢复快照；不访问比赛题，也不使用诊断flag掩盖路径问题。
+生成后手动核对候选内容、运行预算、任务列表和来源指纹；使用一次性命令观察关键路径，不再维护独立测试脚本。真实速度、工具行为和修复收益由开发题对照实验判断。
 
 旧 `005-single-state-draft.py` 保留为历史草稿，不作为执行入口。`one_handoff`是另一个候选agent包，本载体暂不把它混入单Agent实验。

@@ -129,12 +129,8 @@ DDP关闭冻结基座的启动广播，并验证各rank初始adapter指纹；其
 
 导出真实adapter_config.json及adapter_model.safetensors，校验A/B矩阵、rank、目标层和文件指纹；不合并或替换官方CT基座。缺权重即失败。导出成功不表示已经通过官方vLLM/CT加载或提高修复率。
 
-## 6. 本地验证与仍未执行的部分
+## 6. 手动验证与研究状态
 
-标准库检查与可选真实tokenizer/微型模型检查：
+本仓库不再维护专用测试套件。按当前改动用一次性Shell/Python命令手动核对输入、输出和必要数值，记录结论即可，不新增测试或check脚本。
 
-    python -m unittest discover -s training/tests -v
-
-设P005_GEMMA_TOKENIZER_DIR为本地官方tokenizer目录可运行真实模板检查。安装requirements后，随机微型Gemma4测试会实际更新LoRA、保存safetensors、恢复checkpoint并核对连续/恢复训练参数相同，不从Hub下载权重。
-
-本地数值验证位于/tmp隔离环境，项目已有.venv未改。随后已完成Kaggle CPU同源NF4缓存和31B四卡四步诊断训练，详见开头结果。尚未执行真实修复语料SFT、官方CT adapter推理验证或正式提交；DPO保留后续研究。
+同源NF4缓存与31B四卡短序列诊断已完成；官方CT上的诊断adapter加载与工具格式兼容已验证。最新训练态6032对照中CPU offload完成前向，但反向仍CUDA OOM，尚无真实修复SFT adapter或修复收益。下一步见[研究计划](../docs/plan/005-trainmode-save-on-cpu.md)。

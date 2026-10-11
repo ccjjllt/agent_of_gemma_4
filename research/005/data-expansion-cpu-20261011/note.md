@@ -1,23 +1,11 @@
-# CPU independent-issue expansion (2026-10-11)
+# 本地轨迹来源研究 — 2026-10-11
 
-No GPU. No new rollouts. v2 census files not overwritten. Reserved eight IDs and same repo+commit stay out. Protocol `p005-harness-tools-v1`.
+本次扫描没有使用GPU、没有新rollout，也未覆盖v2普查。heldout只按文件名和划分元数据判断，不读取内容计算哈希。
 
-**Independent issues cannot grow without new rollouts.** Walked 92 `trace_*.json` files under `results/` (20261010 inventory: 92 traces, 9 eligible issues). New files by sha256: **0**. New independent non-reserved issues versus frozen v2: **none**. New recovery events measured: **0**.
+旧实现按文件计数或mtime猜测哪些内容已经出现过，不能支撑“新增文件为0”的结论，现已移除。旧20261010库存没有逐文件指纹；仅用该库存比较，当前92个文件的历史内容都应记为未知，而非当作已证明的旧文件。
 
-Did not re-prepare the old 214 complete prefixes; no new eligible protocol-compatible traces appeared.
+随后手工对照之前归档的 `training/artifacts/repair-sft-v2/prepare_manifest.json`，并确认它与归档时SHA256一致：当前39个合格、非预留轨迹全部匹配已记录的历史内容，涉及同样9个问题。这项额外证据只支持该本地冻结合格池内无新增内容，不能覆盖其余53个文件，更不能说明外部数据或新增训练来源不可用。
 
-Eligible non-reserved issue ids in splits that still have **no** unused protocol-compatible trace:
+来源指纹、归档引用和手工比对结果写在 `window_report.json` 的 `manual_source_reconciliation` 中；扫描器自身未知项保留，避免混淆两种证据。
 
-- `fastapi_11194`
-- `fastapi_14873`
-- `fastapi_5077`
-- `fastapi_9425`
-- `rich_2725`
-- `rich_3518`
-- `rich_3777`
-- `rich_3942`
-- `rich_4075`
-
-84 other non-reserved, non-heldout split issues have zero protocol-compatible traces (not P002-eligible; listed in `window_report.json`). Do not invent them into train.
-
-Independent issues cannot grow without new rollouts. No new eligible non-reserved protocol-compatible issue id appeared beyond the historical v2 issue set. Repeated shorter prefixes of the same 9 issues are not independent issues. Reserved issues and snapshots remain excluded.
+下一步优先研究独立问题和恢复行为来源，不再重复对同9个问题的早期前缀做库存扫描。P002资格表是当前本地过滤范围；新数据的官方许可、工具协议和训练价值应分别核实。

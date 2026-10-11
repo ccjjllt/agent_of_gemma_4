@@ -1,12 +1,5 @@
-# Train-mode SFT candidate — BLOCKED
+# 真实 SFT 候选尚未训练
 
-Date: 2026-10-11. No GPU. `gpu_launched=false`. `gpu_sft=false`.
+更新：2026-10-11。训练态6032实验在首次Adam之前OOM，尚无真实SFT adapter；9,841/12,832未运行。本地冻结合格池仍只有9个问题，需要更多独立问题和恢复行为。
 
-SFT is gated on (a) a complete **train** length backprop with first Adam and (b) independent non-reserved samples. Both false.
-
-- Train-mode 6032 kernel `ccjjllt/p005-save-on-cpu-6032-train-mode` (metadata id `ccjjllt/p005-save-on-cpu-6032-tm`) v1: valid checkpointed comparison, no first Adam.
-- 9841/12832 not launched.
-- Task 2: 0 new independent issues, 0 new recovery events; corpus cannot grow without new rollouts.
-- v2 census `trainable_ok=false` (0/11 train transactions fit 8192).
-
-Machine-readable: [`blocked.json`](blocked.json). Do not truncate. Do not treat `ccjjllt/p005-training-ddp-probe` as a repair-gain arm. Do not change `training/configs/sft_qat_nf4_ddp.yaml` `max_sequence_length` (still 1024).
+证据见[训练态实验](../save-on-cpu-6032-trainmode-20261011/results.md)与[数据说明](../data-expansion-cpu-20261011/note.md)。未执行原因保留在本页，不再生成独立blocked文件。旧记录可从Git历史恢复。

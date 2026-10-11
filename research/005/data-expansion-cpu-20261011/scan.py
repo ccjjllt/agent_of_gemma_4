@@ -106,43 +106,38 @@ def collect_stored_sha256s(inventory):
 
 
 def apply_previous_inventory(files, prev_inventory):
-    """A file is new only if its sha256 is not in the 20261010 inventory.
+    """Compare actual stored hashes; missing historical evidence stays unknown.
 
-    That inventory stored issue counts, not per-file hashes. When counts still
-    match, current hashes are the reconstructed previous set. Otherwise keep the
-    oldest n_traces per issue as already counted, then apply sha256 membership
-    so copies of old content are not treated as new files.
+    A known hash proves previous content even in a partial inventory. Absence
+    proves new content only when the historical non-heldout hash list is complete.
+    Counts, paths and mtimes alone cannot identify previous file contents.
     """
-    stored = collect_stored_sha256s(prev_inventory)
-    prev_n = {item["task_id"]: int(item["n_traces"])
-              for item in prev_inventory.get("issues") or []}
-    if stored:
-        hashes, source = stored, "stored_files_sha256"
-    else:
-        current_n = {}
-        for row in files:
-            current_n[row["task_id"]] = current_n.get(row["task_id"], 0) + 1
-        counts_match = (
-            len(files) == int(prev_inventory.get("n_trace_files") or 0)
-            and sorted({row["task_id"] for row in files})
-            == sorted(prev_inventory.get("unique_issues_with_traces") or [])
-            and prev_n == current_n
-        )
-        if counts_match:
-            hashes = {row["sha256"] for row in files}
-            source = "reconstructed_counts_match"
-        else:
-            hashes = set()
-            grouped = {}
-            for row in files:
-                grouped.setdefault(row["task_id"], []).append(row)
-            for task_id, group in grouped.items():
-                keep = prev_n.get(task_id, 0)
-                ordered = sorted(group, key=lambda r: (r.get("mtime_ns") or 0, r["path"]))
-                hashes.update(item["sha256"] for item in ordered[:keep])
-            source = "reconstructed_oldest_n_per_issue"
+    hashes = collect_stored_sha256s(prev_inventory)
+    previous_files = prev_inventory.get("files") or []
+    complete = (
+        bool(previous_files)
+        and len(previous_files) == prev_inventory.get("n_trace_files")
+        and all("heldout" in (row.get("exclude_reasons") or [])
+                or (isinstance(row.get("sha256"), str) and len(row["sha256"]) == 64)
+                for row in previous_files)
+    )
+    source = ("stored_files_sha256" if complete else
+              "stored_files_sha256_incomplete" if hashes else "unavailable_no_file_sha256")
     for row in files:
-        row["in_previous_inventory"] = row["sha256"] in hashes
+        digest = row.get("sha256")
+        if not isinstance(digest, str) or len(digest) != 64:
+            previous, reason = None, "content_not_read_excluded_heldout"
+        elif digest in hashes:
+            previous, reason = True, "sha256_matches_stored_previous_content"
+        elif complete:
+            previous, reason = False, "sha256_absent_from_complete_previous_inventory"
+        else:
+            previous, reason = None, "historical_file_hashes_missing_or_incomplete"
+        row["in_previous_inventory"] = previous
+        row["previous_inventory_status"] = (
+            "excluded_heldout" if reason == "content_not_read_excluded_heldout" else
+            "known_previous" if previous is True else "known_new" if previous is False else "unknown")
+        row["previous_inventory_reason"] = reason
     return hashes, source
 
 
@@ -170,7 +165,8 @@ def classify_trace(trace_path: Path, results: Path, allowed, heldout, eligible,
     return {
         "task_id": task_id,
         "path": results_relative_uri(str(trace_path), results),
-        "sha256": sha256_file(trace_path),
+        # Heldout classification uses metadata only: never open its content for hashing.
+        "sha256": None if task_id in heldout else sha256_file(trace_path),
         "bytes": st.st_size,
         "mtime_ns": int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9))),
         "split": rec.get("split"),
@@ -223,15 +219,18 @@ def inventory_traces(results: Path, splits_path: Path, eligibility_path: Path,
     for row in traces:
         item = by_issue.setdefault(row["task_id"], {
             "task_id": row["task_id"], "n_traces": 0, "would_prepare": 0,
-            "n_new_files": 0, "eligibility": row["eligibility"], "split": row["split"],
+            "n_new_files": 0, "n_unknown_files": 0,
+            "eligibility": row["eligibility"], "split": row["split"],
             "repo": row["repo"], "commit": row["commit"],
             "exclude_reasons": sorted(set(row["exclude_reasons"])),
         })
         item["n_traces"] += 1
         if row["would_prepare"]:
             item["would_prepare"] += 1
-        if not row["in_previous_inventory"]:
+        if row["in_previous_inventory"] is False:
             item["n_new_files"] += 1
+        elif row["previous_inventory_status"] == "unknown":
+            item["n_unknown_files"] += 1
         for reason in row["exclude_reasons"]:
             if reason not in item["exclude_reasons"]:
                 item["exclude_reasons"].append(reason)
@@ -241,7 +240,7 @@ def inventory_traces(results: Path, splits_path: Path, eligibility_path: Path,
             "task_id", "path", "sha256", "bytes", "split", "repo", "commit",
             "eligibility", "pairing_reserved", "reserved_repo_commit",
             "would_prepare", "exclude_reasons", "has_result_json",
-            "in_previous_inventory")})
+            "in_previous_inventory", "previous_inventory_status", "previous_inventory_reason")})
     return {
         "results": "results",
         "n_trace_files": len(traces),
@@ -267,7 +266,8 @@ def inventory_traces(results: Path, splits_path: Path, eligibility_path: Path,
             "applied_sha256_count": len(prev_hashes),
             "sha256_source": prev_source,
         },
-        "n_new_files": sum(1 for row in traces if not row["in_previous_inventory"]),
+        "n_new_files": sum(1 for row in traces if row["in_previous_inventory"] is False),
+        "n_unknown_files": sum(1 for row in traces if row["previous_inventory_status"] == "unknown"),
         "_private_files": traces,
         "_records": records,
         "_reserved_snaps": sorted(
@@ -283,14 +283,17 @@ def already_counted_issues(historical_v2_report, prev_inventory):
 
 
 def classify_new_file(row, counted_issues, historical_v2_issues):
-    new_file = not row["in_previous_inventory"]
+    new_file = row["in_previous_inventory"] is False
+    unknown = row["previous_inventory_status"] == "unknown"
     prefix = bool(new_file and row["task_id"] in counted_issues)
     independent = bool(
         new_file and row.get("would_prepare") and row["task_id"] not in historical_v2_issues
         and row["task_id"] not in PAIRING_RESERVED_ISSUES
         and not row.get("pairing_reserved") and not row.get("reserved_repo_commit"))
     note = None
-    if new_file and prefix:
+    if unknown:
+        note = "previous content is unknown; review historical source evidence before treating it as new or old"
+    elif new_file and prefix:
         note = "another prefix of an already-counted issue; not an independent issue"
     elif new_file and not row.get("would_prepare"):
         note = "new file is not an eligible non-reserved protocol-compatible trace"
@@ -298,6 +301,7 @@ def classify_new_file(row, counted_issues, historical_v2_issues):
         note = "candidate independent issue pending protocol-compatible prepare"
     return {
         "new_file": new_file,
+        "previous_content_unknown": unknown,
         "prefix_of_already_counted_issue": prefix,
         "independent_issue_candidate": independent,
         "note": note,
@@ -308,8 +312,10 @@ def eligible_non_reserved_without_unused(records, eligible, reserved_issues,
                                          reserved_snaps, files):
     unused_ok = {
         row["task_id"] for row in files
-        if (not row["in_previous_inventory"]) and row.get("would_prepare")
+        if row["in_previous_inventory"] is False and row.get("would_prepare")
     }
+    unknown = {row["task_id"] for row in files
+               if row["in_previous_inventory"] is None and row.get("would_prepare")}
     out = []
     for rec in records:
         tid = rec["instance_id"]
@@ -318,7 +324,7 @@ def eligible_non_reserved_without_unused(records, eligible, reserved_issues,
         repo, commit = rec.get("repo"), rec.get("base_commit") or rec.get("commit")
         if tid in reserved_issues or (repo, commit) in reserved_snaps:
             continue
-        if tid not in unused_ok:
+        if tid not in unused_ok and tid not in unknown:
             out.append(tid)
     return sorted(out)
 
@@ -434,7 +440,7 @@ def write_note(report):
         "No GPU. No new rollouts. v2 census files not overwritten. Reserved eight "
         "IDs and same repo+commit stay out. Protocol `%s`." % PROTOCOL_ID,
         "",
-        "**Independent issues cannot grow without new rollouts.** "
+        "**Local inventory comparison; external data was not assessed.** "
         "Walked %d `trace_*.json` files under `results/` (20261010 inventory: %s traces, "
         "%s eligible issues). New files by sha256: **%d**. New independent non-reserved "
         "issues versus frozen v2: **%s**. New recovery events measured: **%s**."
@@ -445,11 +451,16 @@ def write_note(report):
            growth["new_eligible_issues_with_traces"] or "none",
            report.get("new_recovery_event_count", 0)),
         "",
+        "Historical-content comparison unknown for **%d** files (**%d** eligible). "
+        "Unknown means neither new nor previously seen is established; see `unknown_files` "
+        "and `unknown_eligible_traces` for manual source review."
+        % (report.get("n_unknown_files", 0), len(report.get("unknown_eligible_traces") or [])),
+        "",
     ]
     if report.get("did_not_reprepare_old_prefixes"):
         lines.append(
-            "Did not re-prepare the old 214 complete prefixes; no new eligible "
-            "protocol-compatible traces appeared.")
+            "No trace was re-prepared: none was verified new against historical content hashes. "
+            "Unknown traces are pending source review, not evidence that no new content appeared.")
         lines.append("")
     if report.get("new_files"):
         lines.append("New files (sha256 not in the 20261010 inventory):")
@@ -459,8 +470,8 @@ def write_note(report):
                 row["path"], row["task_id"], row["sha256"][:12], extra))
         lines.append("")
     lines.append(
-        "Eligible non-reserved issue ids in splits that still have **no** unused "
-        "protocol-compatible trace:")
+        "Eligible non-reserved issue ids with a complete comparison and **no verified new** "
+        "eligible trace (unknown histories are excluded from this list):")
     lines.append("")
     for tid in issues:
         lines.append("- `%s`" % tid)
@@ -505,13 +516,15 @@ def run(args):
                 "task_id", "path", "sha256", "bytes", "split", "repo", "commit",
                 "eligibility", "pairing_reserved", "reserved_repo_commit",
                 "would_prepare", "exclude_reasons", "has_result_json",
-                "in_previous_inventory")}
+                "in_previous_inventory", "previous_inventory_status", "previous_inventory_reason")}
             item.update(extra)
             new_files.append(item)
 
+    unknown_files = [row for row in inv["files"] if row["previous_inventory_status"] == "unknown"]
+    unknown_eligible = [row for row in unknown_files if row.get("would_prepare")]
     new_eligible_private = [
         row for row in files
-        if (not row["in_previous_inventory"]) and row.get("would_prepare")
+        if row["in_previous_inventory"] is False and row.get("would_prepare")
     ]
     without_unused = eligible_non_reserved_without_unused(
         records, set(inv["eligible_issues"]), reserved_issues, reserved_snaps, files)
@@ -556,6 +569,9 @@ def run(args):
         raise RuntimeError("20261010 inventory changed during scan")
 
     growth_reason = (
+        "Historical file hashes are missing or incomplete for eligible traces. New trace/recovery "
+        "content is unknown and requires source review; counts and mtimes cannot establish no growth. This scan only covers local results and the frozen eligibility scope; external data was not assessed."
+        if unknown_eligible else
         "New eligible independent issues were measured relative to frozen v2."
         if new_issues else
         "Independent issues cannot grow without new rollouts. No new eligible "
@@ -590,7 +606,11 @@ def run(args):
             "n_new_files": inv["n_new_files"],
         },
         "n_new_files": inv["n_new_files"],
+        "n_unknown_files": inv["n_unknown_files"],
         "new_files": new_files,
+        "unknown_files": unknown_files,
+        "unknown_eligible_traces": unknown_eligible,
+        "historical_content_comparison_complete": not bool(unknown_files),
         "new_eligible_traces": [
             {k: row[k] for k in ("task_id", "path", "sha256", "would_prepare",
                                  "pairing_reserved", "reserved_repo_commit")}
@@ -610,7 +630,7 @@ def run(args):
             "inventory_would_prepare_issues": inv["would_prepare_issues"],
             "current_measured_issues": prepared_issues,
             "new_eligible_issues_with_traces": new_issues,
-            "corpus_cannot_grow_without_new_rollouts": not new_issues,
+            "corpus_cannot_grow_without_new_rollouts": None if unknown_eligible else not new_issues,
             "reason": growth_reason,
         },
         "eligible_non_reserved_issues_without_unused_protocol_compatible_trace":
@@ -646,7 +666,8 @@ def run(args):
         "n_new_files": inv["n_new_files"],
         "new_eligible_traces": len(new_eligible_private),
         "new_eligible_issues": new_issues,
-        "cannot_grow_without_new_rollouts": not new_issues,
+        "cannot_grow_without_new_rollouts": None if unknown_eligible else not new_issues,
+        "unknown_eligible_traces": len(unknown_eligible),
         "did_not_reprepare_old_prefixes": report["did_not_reprepare_old_prefixes"],
         "eligible_without_unused_trace": without_unused,
         "v2_untouched": True,

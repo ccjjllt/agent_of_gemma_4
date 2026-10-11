@@ -6,7 +6,7 @@ Date: 2026-10-11. Worktree `p005-save-on-cpu`. **No GPU. No SFT. No scored pairi
 
 SFT and pairing did not run. There is no adapter fingerprint, no per-issue base/adapter resolved table, no new-fix / regression counts, and no duration comparison. Do not invent a delta from NLL, from the diagnostic DDP adapter (`ccjjllt/p005-training-ddp-probe`), or from earlier T0 edits.
 
-Machine-readable skip: [`skipped.json`](skipped.json).
+未执行原因保留在本说明；独立状态JSON已清理，历史记录可从Git恢复。
 
 ## Review correction (2026-10-11)
 
