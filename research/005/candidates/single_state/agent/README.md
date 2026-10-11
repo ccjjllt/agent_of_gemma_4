@@ -1,6 +1,6 @@
-# P005 single_state agent（实现完成，尚未跑模型、无成绩）
+# P005 single_state agent（四题探索对照已完成）
 
-当前配对研究入口为 [005-t0-single-state-pair.ipynb](../../../../../notebooks/005-t0-single-state-pair.ipynb)，使用说明见 notebooks 目录的 005-t0-single-state-pair.README.md。旧 005-single-state.ipynb 保留为历史入口，未重生成。本包已有显式 eval_config；workspace_paths 支持官方 Docker/subprocess 工作区。真实 CLI 集成已验证，尚未取得 31B 模型研究成绩。
+当前配对研究入口为 [005-t0-single-state-pair.ipynb](../../../../../notebooks/005-t0-single-state-pair.ipynb)，使用说明见 notebooks 目录的 005-t0-single-state-pair.README.md。旧 005-single-state.ipynb 保留为历史入口，未重生成。本包已有显式 eval_config；workspace_paths 支持官方 Docker/subprocess 工作区。2026-10-11官方CT v2四题对照为本候选2/4、T0 1/4，但四题均未实际调用新增技能，不能声称state/handle技能获益；同补丁的rich_3518还多耗约139秒。[原始结果与解释](../../../t0-single-state-pair-20261011/results.md)。
 
 2026-10-11 按 v30 / Google ADK 1.36.1 的默认命名规则，将三项技能统一为 `source-edit`、`working-state`、`source-probe`，同步目录、frontmatter 和提示引用；不启用 snake_case 功能开关。全部 8 个 Python 脚本字节保持不变，脚本文件名、内部模块、CLI 参数及行为不变。冻结 T0、one_handoff 和历史载体均不迁移。
 
