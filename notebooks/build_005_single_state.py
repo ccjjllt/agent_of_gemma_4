@@ -63,8 +63,8 @@ def collect_bundle():
     if "eval_config.yaml" not in files:
         files["eval_config.yaml"] = EVAL_TEXT
     required = {"agent.yaml", "prompts/system.md", "configs/sampling.yaml",
-                "skills/source_edit/SKILL.md", "skills/working_state/SKILL.md",
-                "skills/source_probe/SKILL.md"}
+                "skills/source-edit/SKILL.md", "skills/working-state/SKILL.md",
+                "skills/source-probe/SKILL.md"}
     if not required <= files.keys():
         raise ValueError("Incomplete candidate: " + repr(required - files.keys()))
     return {"single_state": files}
@@ -192,7 +192,7 @@ common_sampling = yaml.safe_load(BUNDLE['single_state']['configs/sampling.yaml']
 budgets = yaml.safe_load(BUNDLE['single_state']['eval_config.yaml'])['evaluation']
 config = yaml.safe_load(BUNDLE['single_state']['agent.yaml'])
 assert config['tools'] == common['tool_list'] and 'adapter' not in config
-assert config['skills'] == ['skills/source_edit', 'skills/working_state', 'skills/source_probe']
+assert config['skills'] == ['skills/source-edit', 'skills/working-state', 'skills/source-probe']
 assert budgets == common['eval_budgets']
 assert common_sampling == common['sampling']
 assert validate_single_declared_model(AGENT_ROOT / 'single_state') == TARGET_MODEL_NAME

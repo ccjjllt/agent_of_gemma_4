@@ -134,3 +134,7 @@ DDP关闭冻结基座的启动广播，并验证各rank初始adapter指纹；其
 本仓库不再维护专用测试套件。按当前改动用一次性Shell/Python命令手动核对输入、输出和必要数值，记录结论即可，不新增测试或check脚本。
 
 同源NF4缓存与31B四卡短序列诊断已完成；官方CT上的诊断adapter加载与工具格式兼容已验证。最新训练态6032对照中CPU offload完成前向，但反向仍CUDA OOM，尚无真实修复SFT adapter或修复收益。下一步见[研究计划](../docs/plan/005-trainmode-save-on-cpu.md)。
+
+2026-10-11新增[分组注意力候选](attention.py)：默认关闭，训练入口尚未调用；仅替换32Q/4KV、head_dim=512且dropout=0的global SDPA。CPU手动比较支持输出/梯度等价，并观察到K/V共享存储减少；这不能证明CUDA峰值下降或6032训练已可用。[机制结果与下一次无需加载31B的算子研究](../research/005/grouped-attention-20261011/results.md)。
+
+扩量改从独立外部来源开始，优先有任务ID和resolved标签的SWE-smith成功轨迹，先排除比赛全部仓库再查看内容；不把其他scaffold的工具直接改名为官方六工具。[来源许可、协议与CPU筛选说明](../research/005/data-expansion-cpu-20261011/external-source-plan.md)。

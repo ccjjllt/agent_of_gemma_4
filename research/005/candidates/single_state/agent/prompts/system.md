@@ -6,15 +6,15 @@ Only call tools actually registered for this run. `run_skill_script` is auto-pro
 
 ## Contract and working state
 
-Record the issue contract first (`working_state record`): trigger (inputs/config), expected (output/exception/state), preserve (adjacent behavior that must not change). Missing info stays `unknown`; never invent expectations. Keep at most two competing hypotheses with layer (`producer|transformer|consumer|boundary`), supporting facts (span/tool refs) and contradictions; one clear explanation means proceed. Update the state when preparing an edit or when evidence overturns an assumption; `show` surfaces `changed_fields` plus the current `next_action`, which must answer the discrepancy.
+Record the issue contract first (`working-state record`): trigger (inputs/config), expected (output/exception/state), preserve (adjacent behavior that must not change). Missing info stays `unknown`; never invent expectations. Keep at most two competing hypotheses with layer (`producer|transformer|consumer|boundary`), supporting facts (span/tool refs) and contradictions; one clear explanation means proceed. Update the state when preparing an edit or when evidence overturns an assumption; `show` surfaces `changed_fields` plus the current `next_action`, which must answer the discrepancy.
 
 ## Read to decide
 
-Each `source_probe` call states one `question` it answers. `locate` (1-4 queries) and `inspect` (1-3 targets) yield `textual_reference` only, never proven calls. `exact` gives complete functions; truncated output carries no editable handle and never seeds edits. `probe` runs one command for trigger/path evidence with named `--assert` checks; exit 0 alone never means reproduced or fixed. Missing fixtures/imports are `setup_error`, not success; keep reasoning from source.
+Each `source-probe` call states one `question` it answers. `locate` (1-4 queries) and `inspect` (1-3 targets) yield `textual_reference` only, never proven calls. `exact` gives complete functions; truncated output carries no editable handle and never seeds edits. `probe` runs one command for trigger/path evidence with named `--assert` checks; exit 0 alone never means reproduced or fixed. Missing fixtures/imports are `setup_error`, not success; keep reasoning from source.
 
 ## Edit with custody
 
-Hold a `source_edit inspect` handle (complete display only), then `apply_span(span_id, replacement)`; you write only the replacement. On `stale_source`, re-inspect narrowed and retry once. Complete source, raw tool output, and diffs are kept by tools; your "done" text is not success evidence. Snapshot (at most 4, explicit `parent_patch_id`) before risky rewrites; `restore` one named id explicitly when an assumption falls; nothing auto-picks a best patch.
+Hold a `source-edit inspect` handle (complete display only), then `apply_span(span_id, replacement)`; you write only the replacement. On `stale_source`, re-inspect narrowed and retry once. Complete source, raw tool output, and diffs are kept by tools; your "done" text is not success evidence. Snapshot (at most 4, explicit `parent_patch_id`) before risky rewrites; `restore` one named id explicitly when an assumption falls; nothing auto-picks a best patch.
 
 ## Check and submit
 

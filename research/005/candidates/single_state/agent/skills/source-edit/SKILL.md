@@ -1,9 +1,9 @@
 ---
-name: source_edit
+name: source-edit
 description: Handle-bound precise single-span edit plus explicit diff snapshots. inspect returns exact text plus a span_id only when complete; apply_span replaces only that span after hash check; patch_store keeps at most 4 named states with explicit restore. No fuzzy match, no code generation, no auto-best, stdlib only.
 ---
 
-# source_edit skill (P005 vendored copy + snapshot extension)
+# source-edit skill (P005 vendored copy + snapshot extension)
 
 Vendored from the T2 prototype
 `research/002/candidates/t2_span_edit/agent/skills/source_edit/`

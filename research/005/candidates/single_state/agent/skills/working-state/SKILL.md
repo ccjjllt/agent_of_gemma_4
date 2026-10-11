@@ -1,9 +1,9 @@
 ---
-name: working_state
+name: working-state
 description: Issue contract plus at most two sourced hypotheses and one next action. record/show store only what the model was told and what tools returned; record-issue/write-handoff/read-handoff compose the executor handoff. Never infers root causes, stdlib only.
 ---
 
-# working_state skill
+# working-state skill
 
 Implements handoff-doc I2 (behavioral constraint + two-hypothesis state) and
 the I4 handoff file round-trip. The tool stores; the model judges. State lives

@@ -1,9 +1,9 @@
 ---
-name: source_probe
+name: source-probe
 description: Decision-oriented reading plus on-demand path probe. locate (1-4 queries + question), inspect (1-3 targets, exact|outline), probe (one command + question + timeout, optional repo-filtered setprofile trace). Truncated output never editable; exit 0 proves nothing alone. Stdlib only.
 ---
 
-# source_probe skill
+# source-probe skill
 
 Implements handoff-doc I3, reusing the T4 `layered_lookup` ideas (sourced
 queries, AST-boundary complete reads, shared output budget) with complete-JSON
@@ -24,7 +24,7 @@ python3 source_probe.py probe --command '<single command string>' --question '..
   reasoning dump. `locate` takes 1-4 queries, `inspect` 1-3 targets.
 - `locate`/`inspect` relations are `textual_reference` only. `exact` returns
   full AST nodes (`complete: true`) or a marked TRUNCATED head with NO handle
-  -- this tool issues no `span_id` ever; only `source_edit inspect` does, and
+  -- this tool issues no `span_id` ever; only `source-edit inspect` does, and
   only for complete displays. `outline` returns signatures, never bodies.
 - `probe` runs only to confirm a trigger/path: single command string (no
   nested quoting layers), named `--assert` substring checks are the only
@@ -41,6 +41,6 @@ python3 source_probe.py probe --command '<single command string>' --question '..
 1. NEVER treat outline signatures, locate snippets, or truncated heads as
    complete functions or edit input.
 2. One discriminating read/probe per ambiguity; with sufficient evidence edit
-   directly via `source_edit`.
+   directly via `source-edit`.
 3. If the probe only shows missing fixtures/imports, record `setup_error` and
    keep reasoning from source -- do not burn budget fixing the environment.

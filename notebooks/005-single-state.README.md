@@ -1,5 +1,7 @@
 # P005 single_state 完整运行载体
 
+**历史单臂入口。2026-10-11起，本轮研究使用[四题双臂载体](005-t0-single-state-pair.README.md)，共用一次加载并发比较T0/single_state。下面的原六题panel包含现已预留的`rich_3130`和`requests_6644`，不用于当前调参。**
+
 入口是 `005-single-state.ipynb`，其单个代码cell与 `005-single-state-single-cell.py` 完全一致。当前已补齐真实模型服务、逐题Evaluator、结果/补丁/轨迹归档及清理流程；没有在本轮启动GPU、提交Kaggle或取得新修复率。
 
 与旧DRAFT不同，本载体嵌入候选agent的全部技能正文及逐文件SHA，无需在Kaggle克隆本仓库。运行时生成独立agent目录和submission ZIP；ZIP只作为输出，不自动提交比赛。
@@ -8,7 +10,7 @@
 
 1. 使用 **Linux x86_64、CPython 3.12、CUDA** 的全新Kaggle kernel。v30有cp312专用二进制wheel；如果当前kernel是Python3.13，载体会在任何包安装、模型加载之前明确停止。请选择Python3.12镜像/kernel后重跑，不强装不兼容wheel；脚本不自动更换解释器。
 2. 挂载比赛数据、`metric/gemma-4-developer-agent-wheelhouse` **v30**，以及 `google/gemma-4/other/gemma-4-31b-it-qat-w4a16-ct/2`。载体不下载这些大输入。
-3. 默认 `RUN_MODE = 'smoke'` 只执行已暴露的 `rich_3518`。改为 `'panel'` 执行原六题；也可显式改 `SELECTED_TASK_IDS`，限定这六个已暴露ID。新run自动使用唯一目录，不覆盖历史结果。
+3. 历史默认 `RUN_MODE = 'smoke'` 只执行已暴露的 `rich_3518`；原 `'panel'` 会执行六题，现包含预留任务，不应按本页旧配置启动。当前四题双臂研究使用上方新入口。
 4. 执行代码cell即启动真实GPU模型。所有所选题共享一次服务启动，每题新建Evaluator/工作区；发生任务异常记录原始异常并继续下一题，不自动重试。
 
 六题为 `rich_3942`、`rich_3130`、`fastapi_14873`、`fastapi_5077`、`requests_6644`、`rich_3518`。其中两个历史裁判条件有歧义，已在manifest说明。这个单臂载体研究的是整个single_state组合，不能把其分数差全部归给状态卡或某个单独技能；smoke更不是效果证据。

@@ -1,6 +1,8 @@
 # P005 single_state agent（实现完成，尚未跑模型、无成绩）
 
-实际运行入口现为 [005-single-state.ipynb](../../../../../notebooks/005-single-state.ipynb)，使用说明见notebooks目录的005-single-state.README.md。本包已有显式eval_config；workspace_paths支持官方Docker/subprocess工作区。真实CLI集成已验证，尚未运行31B模型。
+当前配对研究入口为 [005-t0-single-state-pair.ipynb](../../../../../notebooks/005-t0-single-state-pair.ipynb)，使用说明见 notebooks 目录的 005-t0-single-state-pair.README.md。旧 005-single-state.ipynb 保留为历史入口，未重生成。本包已有显式 eval_config；workspace_paths 支持官方 Docker/subprocess 工作区。真实 CLI 集成已验证，尚未取得 31B 模型研究成绩。
+
+2026-10-11 按 v30 / Google ADK 1.36.1 的默认命名规则，将三项技能统一为 `source-edit`、`working-state`、`source-probe`，同步目录、frontmatter 和提示引用；不启用 snake_case 功能开关。全部 8 个 Python 脚本字节保持不变，脚本文件名、内部模块、CLI 参数及行为不变。冻结 T0、one_handoff 和历史载体均不迁移。
 
 单 Agent + 行为约束 + 当前状态版。与 P002 冻结变体（`research/002/...`）无
 任何覆盖；历史结果不动；不读 heldout。
@@ -14,11 +16,11 @@
   4096（本文件）/1024 为新转发语义下的实验起点，非最优值。
 - `prompts/system.md`：短段落行为约束（T2 句柄 → I1 事实保管 → issue 契约 →
   最多 2 假设 → 区分动作 → 推翻更新）。
-- `skills/source_edit/`：T2 原型复刻（`source_edit.py` + `span_store.py`
+- `skills/source-edit/`：T2 原型复刻（`source_edit.py` + `span_store.py`
   打包时字节一致拷贝，冻结原件不动）+ I1 快照扩展 `patch_store.py`
  （最多 4 份，`parent_patch_id` + 文件哈希，显式恢复，不自动选最佳）。
-- `skills/working_state/`：`record`/`show`（I2 schema）+ handoff 往返入口。
-- `skills/source_probe/`：`locate`/`inspect`/`probe` 三入口雏形。
+- `skills/working-state/`：`record`/`show`（I2 schema）+ handoff 往返入口。
+- `skills/source-probe/`：`locate`/`inspect`/`probe` 三入口雏形。
 
 ## source_context 引用说明
 
