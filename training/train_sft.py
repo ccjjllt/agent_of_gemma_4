@@ -47,6 +47,7 @@ DEFAULTS = {
     "chat_template_path": None, "tool_schema_path": "training/configs/harness_tools.json",
     "base_family": "gemma-4-31b-it-qat-q4_0-unquantized",
     "source_version_note": None, "is_fallback_reference": False,
+    "model_source_manifest": None,
     "local_files_only": True, "quant_backend": "bf16", "compute_dtype": "bfloat16",
     "target_text_modules": list(TARGET_SUBSTRINGS), "rank": 8, "alpha": 16,
     "dropout": 0.0, "bias": "none", "learning_rate": 5e-5,
@@ -106,12 +107,17 @@ def validate_config(raw):
     check_base_family(cfg["base_family"])
     if "qat" not in cfg["base_family"].lower() and not cfg["is_fallback_reference"]:
         raise TrainingError("ordinary IT requires is_fallback_reference=true")
-    for key in ("model_name_or_path", "tokenizer_name_or_path"):
-        if cfg[key]:
-            check_base_family(cfg[key])
+    if cfg["model_name_or_path"]:
+        check_base_family(cfg["model_name_or_path"])
+    # A CT directory is a valid tokenizer source, but never training weights.
     known_plain_it = str(cfg["model_name_or_path"] or "").lower().rstrip("/")
-    if known_plain_it in ("google/gemma-4-31b-it", "unsloth/gemma-4-31b-it") and not cfg["is_fallback_reference"]:
+    if re.fullmatch(r"(?:google|unsloth)/gemma-4-(?:31b|12b)-it", known_plain_it) and not cfg["is_fallback_reference"]:
         raise TrainingError("ordinary IT weights require is_fallback_reference=true; do not relabel them QAT")
+    if cfg["base_family"] == "gemma-4-12b-it-qat-q4_0-unquantized":
+        if not cfg["model_source_manifest"] or not cfg["chat_template_path"]:
+            raise TrainingError("12B QAT requires an explicit model_source_manifest and deployment CT chat_template_path")
+        if cfg["allow_cached_nf4"]:
+            raise TrainingError("no 12B NF4 cache has been produced/verified; the 31B cache cannot be reused")
     for key in ("model_revision", "tokenizer_revision"):
         if cfg[key] and str(cfg[key]).lower().startswith("kaggle"):
             raise TrainingError("Kaggle version is not an HF revision; use a local path or HF commit/tag")
@@ -249,18 +255,74 @@ def validate_nf4_cache(source, model_config, cfg):
             "validation": "manifest source + saved file sizes; full hashes recorded at CPU creation"}
 
 
+def validate_pinned_model_source(source, options, tok_source, tok_options, cfg, transformers):
+    """Check explicit QAT source and deployment tokenizer/template before weights.
+
+    A local mirror must also match the published weight hash, so renaming plain
+    IT or a 31B directory is not sufficient. Remote HF sources require the exact
+    recorded commit. Existing 31B recipes retain their cache validation path.
+    """
+    manifest_path = cfg.get("model_source_manifest")
+    if not manifest_path:
+        return None
+    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    if manifest.get("base_family") != cfg["base_family"]:
+        raise TrainingError("model source manifest does not match base_family")
+    training = manifest["training_source"]
+    local = Path(source).is_dir()
+    if not local and (source != training["repo_id"] or options.get("revision") != training["revision"]):
+        raise TrainingError("model source/revision differs from the pinned QAT manifest")
+
+    def source_file(root, load_options, name):
+        if Path(root).is_dir():
+            path = Path(root) / name
+        else:
+            path = Path(transformers.utils.hub.cached_file(root, name, **load_options))
+        if not path.is_file():
+            raise TrainingError("pinned source file missing: " + str(path))
+        return path
+
+    config_path = source_file(source, options, "config.json")
+    if sha256_file(config_path) != training["config_sha256"]:
+        raise TrainingError("model config differs from the pinned unquantized QAT source")
+    if local:
+        weight = training["weights"]
+        path = source_file(source, options, weight["name"])
+        if path.stat().st_size != weight["bytes"] or sha256_file(path) != weight["sha256"]:
+            raise TrainingError("local QAT weight file differs from its published source; do not relabel another base")
+    deployment = manifest["deployment_source"]
+    for name, digest in deployment["tokenizer_sha256"].items():
+        if sha256_file(source_file(tok_source, tok_options, name)) != digest:
+            raise TrainingError("tokenizer differs from pinned deployment CT file: " + name)
+    if not cfg["chat_template_path"] or sha256_file(cfg["chat_template_path"]) != deployment["chat_template_sha256"]:
+        raise TrainingError("chat template differs from pinned deployment CT template")
+    return {"manifest_path": str(Path(manifest_path).resolve()),
+            "manifest_sha256": sha256_file(manifest_path), **manifest,
+            "local_weights_hash_checked": local}
+
+
 def load_model_and_tokenizer(cfg, stack, resume=None, expected_provenance=None):
     torch, transformers, peft = stack["torch"], stack["transformers"], stack["peft"]
     source, options = source_options(cfg["model_name_or_path"], cfg["model_revision"], cfg["local_files_only"])
     tok_source, tok_options = source_options(
         cfg["tokenizer_name_or_path"] or source,
         cfg["tokenizer_revision"] or cfg["model_revision"], cfg["local_files_only"])
+    pinned_source = validate_pinned_model_source(source, options, tok_source, tok_options, cfg, transformers)
     model_config = transformers.AutoConfig.from_pretrained(source, **options)
-    if getattr(model_config, "model_type", None) != "gemma4":
-        raise TrainingError("expected full Gemma4ForConditionalGeneration config (model_type=gemma4)")
+    model_type = getattr(model_config, "model_type", None)
+    model_classes = {"gemma4": "Gemma4ForConditionalGeneration",
+                     "gemma4_unified": "Gemma4UnifiedForConditionalGeneration"}
+    if model_type not in model_classes:
+        raise TrainingError("expected full gemma4 or gemma4_unified conditional-generation config")
+    if model_type == "gemma4_unified" and not cfg["is_fallback_reference"]:
+        if cfg["base_family"] != "gemma-4-12b-it-qat-q4_0-unquantized" or not pinned_source:
+            raise TrainingError("production unified training requires the pinned 12B QAT recipe; do not relabel a 31B config")
+    if pinned_source and model_type != pinned_source["training_source"]["model_type"]:
+        raise TrainingError("model architecture differs from the pinned source")
     cache_info = validate_nf4_cache(source, model_config, cfg)
-    if not hasattr(transformers, "AutoModelForImageTextToText"):
-        raise TrainingError("installed transformers lacks Gemma4 image-text model support")
+    model_class = getattr(transformers, model_classes[model_type], None)
+    if model_class is None:
+        raise TrainingError("installed transformers lacks " + model_classes[model_type])
     tokenizer = transformers.AutoTokenizer.from_pretrained(tok_source, **tok_options)
     if tokenizer.pad_token_id is None:
         raise TrainingError("tokenizer has no pad token; do not silently add new tokens")
@@ -284,7 +346,7 @@ def load_model_and_tokenizer(cfg, stack, resume=None, expected_provenance=None):
                 load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True,
                 bnb_4bit_compute_dtype=dtype)
         kwargs["device_map"] = {"": device.index if device.index is not None else torch.cuda.current_device()}
-    model = transformers.AutoModelForImageTextToText.from_pretrained(source, **kwargs)
+    model = model_class.from_pretrained(source, **kwargs)
     if cfg["quant_backend"] == "nf4":
         if cfg["kbit_prepare"] == "norms_fp32":
             try:
@@ -328,6 +390,7 @@ def load_model_and_tokenizer(cfg, stack, resume=None, expected_provenance=None):
                             for name, _ in trainable):
         raise TrainingError("unexpected trainable parameters outside language LoRA")
     provenance = {"source": source, "requested_revision": cfg["model_revision"],
+                  "model_type": model_type, "model_class": model_class.__name__, "pinned_source": pinned_source,
                   "resolved_commit": getattr(model_config, "_commit_hash", None),
                   "config_sha256": hashlib.sha256(model_config.to_json_string().encode()).hexdigest(),
                   "tokenizer_source": tok_source, "target_modules": targets, "encoding_protocol": protocol_info,
@@ -336,10 +399,52 @@ def load_model_and_tokenizer(cfg, stack, resume=None, expected_provenance=None):
     return model, tokenizer, device, provenance
 
 
-def _signature(cfg, data):
-    encoded = json.dumps({"config": cfg, "data_sha256": data["sha256"],
-                          "provenance": data["provenance"]}, sort_keys=True).encode()
+def _signature(cfg, data, model_info=None):
+    """Bind pinned runs to verified base bytes, independently of mount paths.
+
+    Recipes without a source manifest retain the historical 31B signature
+    format. Old 12B signatures without base identity are intentionally not
+    accepted: they cannot establish which pinned base produced a checkpoint.
+    """
+    config = dict(cfg)
+    payload = {"config": config, "data_sha256": data["sha256"],
+               "provenance": data["provenance"]}
+    if cfg.get("model_source_manifest"):
+        pinned = (model_info or {}).get("pinned_source")
+        if not pinned:
+            raise TrainingError("checkpoint identity requires the verified pinned model source")
+        training, deployment = pinned["training_source"], pinned["deployment_source"]
+        payload["base_identity"] = {
+            "manifest_sha256": pinned["manifest_sha256"],
+            "base_family": pinned["base_family"],
+            "repo_id": training["repo_id"], "revision": training["revision"],
+            "model_type": training["model_type"],
+            "config_sha256": training["config_sha256"],
+            "weights_sha256": training["weights"]["sha256"],
+            "weights_bytes": training["weights"]["bytes"],
+        }
+        config.update({
+            "model_name_or_path": training["repo_id"], "model_revision": training["revision"],
+            "tokenizer_name_or_path": deployment["kaggle_handle"], "tokenizer_revision": None,
+            "model_source_manifest": pinned["manifest_sha256"],
+            "chat_template_path": deployment["chat_template_sha256"],
+            "tool_schema_path": data["provenance"]["tools_hash"],
+        })
+    else:
+        # This optional key did not exist in historical 31B run configs.
+        config.pop("model_source_manifest", None)
+    encoded = json.dumps(payload, sort_keys=True).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+def load_resume_state(resume, signature, torch, world_size=None):
+    """Reject incompatible resumes before optimizer restore or metadata writes."""
+    state = torch.load(Path(resume) / "training_state.pt", map_location="cpu", weights_only=True)
+    if state["signature"] != signature:
+        raise TrainingError("resume base/config/data/protocol fingerprint mismatch")
+    if world_size is not None and state.get("world_size") != world_size:
+        raise TrainingError("DDP resume requires identical world size")
+    return state
 
 
 def run_training_loop(model, rows, cfg, output_dir, torch, pad_token_id, signature, resume=None):
@@ -368,9 +473,7 @@ def run_training_loop(model, rows, cfg, output_dir, torch, pad_token_id, signatu
     scaler = torch.amp.GradScaler("cuda", enabled=use_scaler)
     start_epoch, next_batch, global_step = 0, 0, 0
     if resume:
-        state = torch.load(Path(resume) / "training_state.pt", map_location="cpu", weights_only=True)
-        if state["signature"] != signature:
-            raise TrainingError("resume config/data/protocol fingerprint mismatch")
+        state = load_resume_state(resume, signature, torch)
         optimizer.load_state_dict(state["optimizer"])
         scheduler.load_state_dict(state["scheduler"])
         scaler.load_state_dict(state["scaler"])
@@ -514,7 +617,9 @@ def main(argv=None):
         if any(max(row["input_ids"]) >= vocabulary_size for row in rows):
             raise TrainingError("encoded token id exceeds the model embedding vocabulary")
         output.mkdir(parents=True, exist_ok=True)
-        signature = _signature(cfg, data)
+        signature = _signature(cfg, data, model_info)
+        if a.resume:
+            load_resume_state(a.resume, signature, torch)
         atomic_json(output / "run_config.json", {"config": cfg, "data": data, "model": model_info,
                                                "signature": signature})
         if device.type == "cuda":

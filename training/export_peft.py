@@ -20,6 +20,7 @@ except ImportError:
 
 TEXT_TARGETS = {"q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"}
 FORBIDDEN = ("vision", "visual", "audio", "projector", "embed", "lm_head", "norm")
+TEXT_STACK = re.compile(r"(?:^|\.)(?:language_model|text_model)\.layers\.\d+\.(?:self_attn|mlp)\.")
 TRAINING_RELATIONS = {
     "bf16": "train W_QAT + dW; serve dequant(Q_CT(W_QAT)) + dW",
     "nf4": "train Q_NF4(W_QAT) + dW; serve dequant(Q_CT(W_QAT)) + dW",
@@ -69,6 +70,8 @@ def inspect_adapter(adapter_dir, expected_rank=None, expected_targets=None, max_
                 module, side = match.groups()
                 if module.rsplit(".", 1)[-1] not in TEXT_TARGETS or any(p in module.lower() for p in FORBIDDEN):
                     raise TrainingError("forbidden/non-text adapter tensor: " + key)
+                if not TEXT_STACK.search(module):
+                    raise TrainingError("adapter tensor is outside the Gemma4 text decoder stack: " + key)
                 if not any(module.endswith("." + t) or module == t for t in targets):
                     raise TrainingError("tensor absent from target_modules: " + key)
                 view = handle.get_slice(key)
@@ -124,6 +127,8 @@ def export_adapter(adapter_dir, destination=None, config=None, training_manifest
             "adapter": report, "training": training_manifest or None, "quant_backend": quant,
             "training_relation": TRAINING_RELATIONS.get(quant, "unknown"),
             "base_model_name_or_path": report["adapter_config"]["base_model_name_or_path"],
+            "pinned_source": training_manifest.get("model", {}).get("pinned_source"),
+            "tensor_key_policy": "preserve PEFT text language_model keys for both gemma4 and gemma4_unified; no base merge or silent renaming",
             "kept_independent": True, "runtime_compatibility_verified": False}
 
 

@@ -63,9 +63,7 @@ def run_ddp_loop(model, rows, cfg, output, torch, pad_token_id, signature, resum
     scaler = torch.amp.GradScaler('cuda', enabled=device.type=='cuda' and cfg['compute_dtype']=='float16')
     epoch_start, batch_start, step_no = 0, 0, 0
     if resume:
-        state = torch.load(Path(resume)/'training_state.pt', map_location='cpu', weights_only=True)
-        if state['signature'] != signature or state['world_size'] != world:
-            raise TrainingError('DDP resume requires identical config, data and world size')
+        state = single.load_resume_state(resume,signature,torch,world_size=world)
         optimizer.load_state_dict(state['optimizer'])
         scheduler.load_state_dict(state['scheduler'])
         scaler.load_state_dict(state['scaler'])
@@ -175,7 +173,7 @@ def main(argv=None):
         stack=single.require_stack(cfg['quant_backend']);torch=stack['torch'];dist=torch.distributed
         if int(os.environ.get('WORLD_SIZE','1'))<2:raise TrainingError('Use torchrun with at least two ranks')
         local_rank=int(os.environ['LOCAL_RANK'])
-        signature=single._signature(cfg,data)
+        signature_config=dict(cfg)
         if cfg['device'].startswith('cuda'):
             torch.cuda.set_device(local_rank);cfg['device']='cuda:%d'%local_rank;backend='nccl'
         elif cfg['device']=='cpu':backend='gloo'
@@ -191,6 +189,9 @@ def main(argv=None):
         print(json.dumps({'rank':rank,'stage':'model_load_begin','device':cfg['device']}),flush=True)
         t=time.monotonic()
         model,tok,device,info=single.load_model_and_tokenizer(cfg,stack,args.resume,expected_provenance=data['provenance'])
+        signature=single._signature(signature_config,data,info)
+        if args.resume:
+            single.load_resume_state(args.resume,signature,torch,world_size=dist.get_world_size())
         print(json.dumps({'rank':rank,'stage':'model_load_ok','seconds':time.monotonic()-t,
             'allocated_bytes':torch.cuda.memory_allocated(device) if backend=='nccl' else None}),flush=True)
         if any(max(r['input_ids'])>=model.get_input_embeddings().num_embeddings for r in rows):

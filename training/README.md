@@ -129,6 +129,24 @@ DDP关闭冻结基座的启动广播，并验证各rank初始adapter指纹；其
 
 导出真实adapter_config.json及adapter_model.safetensors，校验A/B矩阵、rank、目标层和文件指纹；不合并或替换官方CT基座。缺权重即失败。导出成功不表示已经通过官方vLLM/CT加载或提高修复率。
 
+### 12B Unified 的独立准备路径（2026-10-13）
+
+[12B 配置](configs/sft_12b_qat_nf4.yaml)固定官方 HF QAT revision `b6ed86275a6a5735884e208bfed95b445a684ca2`，来源/权重/CT tokenizer 指纹见 [source manifest](configs/gemma4_12b_sources.json)。入口按实际 model_type 选择 `Gemma4ForConditionalGeneration` 或 `Gemma4UnifiedForConditionalGeneration`；生产 unified 路径必须使用固定12B配方。普通IT、31B NF4缓存及未核实的12B缓存均不能重命名当作该QAT来源。若传本地QAT镜像，加载前核对原config以及24GB权重文件SHA；HF路径要求固定repo/commit。
+
+训练编码显式使用[部署CT v2模板](configs/chat_templates/gemma4_12b_ct_v2.jinja)，17,466 bytes，不能跟随HF QAT的18,683-byte模板。已下载的本地CT tokenizer位于 `training/artifacts/tokenizers/gemma4-12b-ct-v2/`；远程运行须挂载同指纹文件并用 `--tokenizer` 指向该目录。tokenizer来源允许是CT目录，但CT权重仍拒绝用于训练。配置、工具schema和Jinja也应随运行一同保存。
+
+    python training/train_sft.py --config training/configs/sft_12b_qat_nf4.yaml --dry-run
+
+这只是无权重的配置检查。真实运行需要另行安排GPU额度和已取得的固定QAT权重；新配置的16K只是输入上限，未证明训练可容纳16K。配置只安排一个优化步骤，默认不下载。
+
+10月13日已[冻结数据用途](../research/006/data-replay-20261013/data-usage.json)：未来首步只使用 `research/006/data-replay-20261013/outputs/encoded-12b-train-capacity.jsonl` 中的click（3368输入、519监督tokens）。pydicom单独作为select诊断，不更新参数；MarkupSafe两阶段仍为candidate。原合并文件 `encoded-12b-ct-v2.jsonl` 仅作收集归档，不能整体传入训练。本轮未据此自动启动真实12B训练。
+
+统一模型沿用完整文本backbone、shifted selected-token loss与softcap、non-reentrant checkpoint和仅小norm转FP32的NF4准备策略。LoRA限于语言decoder的q/o与MLP；vision/audio/embedder/head均不训练。导出保留实际PEFT的 `model.language_model.layers...` 键，不伪造已在CT服务加载；当前没有验证12B vLLM运行时映射。
+
+固定来源的恢复签名包含已核对的manifest、QAT revision/config/权重身份，并以文件指纹替代模型、tokenizer、模板等本地挂载路径。同一资产换挂载位置可恢复；更换manifest或基座时，在恢复优化器和覆盖运行元数据前拒绝。未使用新manifest的31B配方保持历史签名格式；旧12B无基座身份签名不做静默迁移。
+
+CPU随机微型模型已实际比较原HF与selected-token的loss/LoRA梯度，并完成两步Adam、checkpoint恢复和独立导出；另以meta device读取完整12B架构，未分配或下载12B权重。这些只证明实现路径，**真实12B NF4、长序列训练、CT adapter推理和修复收益均未运行**。[实际记录](../research/006/12b-cpu-adaptation-20261013/results.md)。
+
 ## 6. 手动验证与研究状态
 
 本仓库不再维护专用测试套件。按当前改动用一次性Shell/Python命令手动核对输入、输出和必要数值，记录结论即可，不新增测试或check脚本。

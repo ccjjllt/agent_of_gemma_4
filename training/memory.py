@@ -1,7 +1,8 @@
 """Memory-bounded, text-only Gemma4 LoRA training helpers.
 
-Implementation checked against Transformers 5.13.1 ``modeling_gemma4.py`` /
-``loss_utils.py`` and PEFT 0.21.2 ``prepare_model_for_kbit_training``. No model
+Implementation checked against Transformers 5.13.1 ``modeling_gemma4.py``,
+``modeling_gemma4_unified.py`` / ``loss_utils.py`` and PEFT 0.21.2
+``prepare_model_for_kbit_training``. No model
 weights are downloaded here. Import this module only in the real ML path.
 
 The preparation helper must run BEFORE injecting LoRA. It deliberately differs
@@ -32,6 +33,14 @@ from transformers.models.gemma4.modeling_gemma4 import (
     Gemma4ForConditionalGeneration,
     Gemma4RMSNorm,
 )
+from transformers.models.gemma4_unified.modeling_gemma4_unified import (
+    Gemma4UnifiedCausalLMOutputWithPast,
+    Gemma4UnifiedForConditionalGeneration,
+    Gemma4UnifiedRMSNorm,
+)
+
+GEMMA4_BASE_TYPES = (Gemma4ForConditionalGeneration, Gemma4UnifiedForConditionalGeneration)
+GEMMA4_NORM_TYPES = (Gemma4RMSNorm, Gemma4UnifiedRMSNorm, torch.nn.LayerNorm)
 
 
 def _is_4bit_parameter(parameter):
@@ -41,18 +50,18 @@ def _is_4bit_parameter(parameter):
 
 
 def _gemma4_base(model):
-    if isinstance(model, Gemma4ForConditionalGeneration):
+    if isinstance(model, GEMMA4_BASE_TYPES):
         return model
     configs = getattr(model, "peft_config", None)
     if not configs or not callable(getattr(model, "get_base_model", None)):
-        raise TypeError("Only Gemma4ForConditionalGeneration with optional plain PEFT LoRA is supported")
+        raise TypeError("Only Gemma4 or Gemma4Unified conditional generation with optional plain LoRA is supported")
     for config in configs.values():
         kind = getattr(config.peft_type, "value", config.peft_type)
         if kind != "LORA" or config.is_prompt_learning or getattr(config, "alora_invocation_tokens", None):
             raise TypeError("Selected-token loss supports plain LoRA, not prompt learning or aLoRA")
     base = model.get_base_model()
-    if not isinstance(base, Gemma4ForConditionalGeneration):
-        raise TypeError("Selected-token loss requires a Gemma4ForConditionalGeneration base")
+    if not isinstance(base, GEMMA4_BASE_TYPES):
+        raise TypeError("Selected-token loss requires a Gemma4 or Gemma4Unified conditional generation base")
     return base
 
 
@@ -75,7 +84,7 @@ def prepare_model_for_memory_efficient_kbit_training(model, *, use_gradient_chec
         quantized += int(_is_4bit_parameter(parameter))
     seen = set()
     for module_name, module in model.named_modules():
-        if not isinstance(module, (Gemma4RMSNorm, torch.nn.LayerNorm)):
+        if not isinstance(module, GEMMA4_NORM_TYPES):
             continue
         for local_name, parameter in module.named_parameters(recurse=False):
             if id(parameter) in seen or _is_4bit_parameter(parameter):
@@ -169,7 +178,7 @@ def selected_token_forward(base, *, chunk_size=32, save_on_cpu=False, **values):
     ``torch.autograd.graph.save_on_cpu(pin_memory=True)``. It is off by default
     so the proven 2048 diagnostic path is unchanged unless explicitly enabled.
     """
-    if not isinstance(base, Gemma4ForConditionalGeneration):
+    if not isinstance(base, GEMMA4_BASE_TYPES):
         raise TypeError("selected_token_forward requires the unwrapped Gemma4 base")
     if not isinstance(chunk_size, int) or isinstance(chunk_size, bool) or chunk_size < 1:
         raise ValueError("chunk_size must be a positive integer")
@@ -218,7 +227,10 @@ def selected_token_forward(base, *, chunk_size=32, save_on_cpu=False, **values):
         denominator = denominator.to(loss_sum.device)
     elif not isinstance(denominator, (int, float)) or denominator <= 0:
         raise ValueError("num_items_in_batch must be a positive scalar")
-    output = Gemma4CausalLMOutputWithPast(
+    output_type = (Gemma4UnifiedCausalLMOutputWithPast
+                   if isinstance(base, Gemma4UnifiedForConditionalGeneration)
+                   else Gemma4CausalLMOutputWithPast)
+    output = output_type(
         loss=loss_sum / denominator, logits=None,
         past_key_values=outputs.past_key_values,
         hidden_states=getattr(outputs, "hidden_states", None),
