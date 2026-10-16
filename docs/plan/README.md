@@ -1,5 +1,7 @@
 # 首批研究计划
 
+**当前入口（2026-10-13）：[006：从正式0.13出发的冲牌与奖金研究](006-from-013-to-competitive-agent.md)，[实际进展](../progress/006-from-013-to-competitive-agent.md)。** 首次正式submission已COMPLETE/0.13；本轮已完成12次GPU对照（执行提示版4/6、五分钟公开参考5/6）、三个外部仓库的真实CPU重放和12B训练代码适配。未做真实12B权重训练或再次正式提交。下文保留历史索引，“尚无正式成绩/只能31B”等表述不代表当前状态。
+
 状态更新：2026-10-10；早期官方资料记录的日期另见各节。
 
 后续实施更新：P005已接通[single_state完整载体](../../notebooks/005-single-state.README.md)与[真实训练/导出链](../../training/README.md)。本地40项检查及随机微型Gemma4 LoRA计算通过，已导入真实历史诊断语料；没有31B训练/GPU比赛结果。以下“交用户实现”的段落为此前研究交接，最新事实见[005进展](../progress/005-medal-and-prize-research.md)。
