@@ -1,0 +1,215 @@
+{
+  "forum_topic": {
+    "allow_attachments": true,
+    "author_id": 31485171,
+    "author_thumbnail_name": "default-thumb.png",
+    "author_user_display_name": "Andrew McAdoo",
+    "author_user_name": "andrewmcadoo",
+    "comments": [
+      {
+        "id": 3536450,
+        "post_date": "2026-10-10T12:31:58.043Z",
+        "raw_markdown": "This was intended. My apologies. I'll post an update on Monday and update the readme. This change was meant to have `include_thoughts` manage what's carried in the chat template from call to call, more consistent with the Gemini API.",
+        "content": "<p>This was intended. My apologies. I'll post an update on Monday and update the readme. This change was meant to have <code>include_thoughts</code> manage what's carried in the chat template from call to call, more consistent with the Gemini API.</p>",
+        "parent": {},
+        "author": {
+          "display_name": "Ryan Holbrook",
+          "thumbnail_url": "https://storage.googleapis.com/kaggle-avatars/thumbnails/2003505-kg.jpg",
+          "url": "/ryanholbrook",
+          "tier": "STAFF",
+          "id": 2003505,
+          "progression_opt_out": false
+        },
+        "author_type": "ADMIN",
+        "votes": {
+          "total_votes": 2,
+          "can_upvote": true,
+          "total_upvotes": 2
+        },
+        "kernel_version": 0,
+        "feedback_tracking_data": {},
+        "is_thank_you": false,
+        "team_up_info": {
+          "team_leader": {
+            "display_name": "Ryan Holbrook",
+            "thumbnail_url": "https://storage.googleapis.com/kaggle-avatars/thumbnails/2003505-kg.jpg",
+            "url": "/ryanholbrook",
+            "user_name": "ryanholbrook",
+            "tier": "STAFF",
+            "id": 2003505,
+            "profile_url": "/ryanholbrook",
+            "performance_tier": "STAFF",
+            "user_id": 2003505,
+            "progression_opt_out": false
+          },
+          "intro": ""
+        }
+      },
+      {
+        "id": 3536691,
+        "post_date": "2026-10-11T03:02:17.790Z",
+        "raw_markdown": "Same regression, but on the harness's own default backend it is a hard failure, not a slowdown.\n\nWe hit this on 2026-10-10 and can add one data point. We serve the model through\n`transformers serve` — the backend `adk_submission.server.spawn_transformers_server`\ndefaults to for `backend=\"transformers\"` — and there the two fields you identified do\nnot merely cost time: they make every request fail.\n\nWhat the request carries (observed at the server, adk_submission 0.2.13):\n\n    'chat_template_kwargs', 'thinking_token_budget'\n\nWhat the server answers:\n\n    HTTP 422\n    {\"detail\":\"Unexpected fields in the request: {'chat_template_kwargs', 'thinking_token_budget'}\"}\n\nThat validation is unconditional and has no opt-out flag:\n\n    transformers/cli/serving/utils.py:1109\n      raise HTTPException(status_code=422, detail=f\"Unexpected fields in the request: {unexpected}\")\n\nNet effect: with the wheelhouse as shipped, `sample_submission` plus the default\n`TransformersServer` backend fails on the **first** model call. The layers of reporting\nall point away from the cause:\n\n- LiteLLM surfaces it as a `None` response\n- ADK raises `AttributeError: 'NoneType' object has no attribute 'get'` inside its own\n  response handler (`google/adk/models/lite_llm.py:1655`)\n- the harness records the task as `Sandbox execution error: ...` with\n  `total_llm_calls: 0` and `duration_seconds ≈ 5`\n\nThree misleading labels for one 422. If anyone else is debugging \"sandbox execution\nerror\" with zero LLM calls, this is worth checking first.\n\nYour `thinking_budget: 0` workaround is correct, and it also removes both fields from\nthe emitted body (we verified end to end: with it, neither `chat_template_kwargs` nor\n`thinking_token_budget` appears).\n\nTwo things we could not determine from our side and would like to know:\n\n1. Is `thinking_token_budget` being merged in from the runner default (4096) intended to\n   outrank an explicit `include_thoughts: false`? Your 0.2.12-vs-0.2.13 comparison\n   suggests a behavior change, and `adk_submission/resolvers/generation.py:407-417` reads\n   as if the budget branch was placed above the `include_thoughts` branch by accident.\n2. The workaround depends on a user-supplied `0` beating a runner default. If that default\n   changes, does `include_thoughts: false` become meaningful again, or is `thinking_budget`\n   now the only supported switch?\n\nScope, so the claim is not read as broader than it is: one deployment, one served model\n(a small stand-in rather than the 31B), one backend (`transformers serve`), one harness\nversion (0.2.13). We have not tested vLLM, where your measurement shows the same fields\ncosting time rather than failing.\n",
+        "content": "<p>Same regression, but on the harness's own default backend it is a hard failure, not a slowdown.</p>\n<p>We hit this on 2026-10-10 and can add one data point. We serve the model through\n<code>transformers serve</code> — the backend <code>adk_submission.server.spawn_transformers_server</code>\ndefaults to for <code>backend=\"transformers\"</code> — and there the two fields you identified do\nnot merely cost time: they make every request fail.</p>\n<p>What the request carries (observed at the server, adk_submission 0.2.13):</p>\n<pre><code>'chat_template_kwargs', 'thinking_token_budget'\n</code></pre>\n<p>What the server answers:</p>\n<pre><code>HTTP 422\n{\"detail\":\"Unexpected fields in the request: {'chat_template_kwargs', 'thinking_token_budget'}\"}\n</code></pre>\n<p>That validation is unconditional and has no opt-out flag:</p>\n<pre><code>transformers/cli/serving/utils.py:1109\n  raise HTTPException(status_code=422, detail=f\"Unexpected fields in the request: {unexpected}\")\n</code></pre>\n<p>Net effect: with the wheelhouse as shipped, <code>sample_submission</code> plus the default\n<code>TransformersServer</code> backend fails on the <strong>first</strong> model call. The layers of reporting\nall point away from the cause:</p>\n<ul>\n<li>LiteLLM surfaces it as a <code>None</code> response</li>\n<li>ADK raises <code>AttributeError: 'NoneType' object has no attribute 'get'</code> inside its own\nresponse handler (<code>google/adk/models/lite_llm.py:1655</code>)</li>\n<li>the harness records the task as <code>Sandbox execution error: ...</code> with\n<code>total_llm_calls: 0</code> and <code>duration_seconds ≈ 5</code></li>\n</ul>\n<p>Three misleading labels for one 422. If anyone else is debugging \"sandbox execution\nerror\" with zero LLM calls, this is worth checking first.</p>\n<p>Your <code>thinking_budget: 0</code> workaround is correct, and it also removes both fields from\nthe emitted body (we verified end to end: with it, neither <code>chat_template_kwargs</code> nor\n<code>thinking_token_budget</code> appears).</p>\n<p>Two things we could not determine from our side and would like to know:</p>\n<ol>\n<li>Is <code>thinking_token_budget</code> being merged in from the runner default (4096) intended to\noutrank an explicit <code>include_thoughts: false</code>? Your 0.2.12-vs-0.2.13 comparison\nsuggests a behavior change, and <code>adk_submission/resolvers/generation.py:407-417</code> reads\nas if the budget branch was placed above the <code>include_thoughts</code> branch by accident.</li>\n<li>The workaround depends on a user-supplied <code>0</code> beating a runner default. If that default\nchanges, does <code>include_thoughts: false</code> become meaningful again, or is <code>thinking_budget</code>\nnow the only supported switch?</li>\n</ol>\n<p>Scope, so the claim is not read as broader than it is: one deployment, one served model\n(a small stand-in rather than the 31B), one backend (<code>transformers serve</code>), one harness\nversion (0.2.13). We have not tested vLLM, where your measurement shows the same fields\ncosting time rather than failing.</p>",
+        "replies": [
+          {
+            "id": 3536860,
+            "post_date": "2026-10-11T11:40:23.770Z",
+            "raw_markdown": "Thanks for the heads up. I haven't tested the change yet with `transformers serve`. It should work with vLLM, though. I'll investigate.",
+            "content": "<p>Thanks for the heads up. I haven't tested the change yet with <code>transformers serve</code>. It should work with vLLM, though. I'll investigate.</p>",
+            "parent": {},
+            "author": {
+              "display_name": "Ryan Holbrook",
+              "thumbnail_url": "https://storage.googleapis.com/kaggle-avatars/thumbnails/2003505-kg.jpg",
+              "url": "/ryanholbrook",
+              "tier": "STAFF",
+              "id": 2003505,
+              "progression_opt_out": false
+            },
+            "author_type": "ADMIN",
+            "votes": {
+              "can_upvote": true
+            },
+            "kernel_version": 0,
+            "feedback_tracking_data": {},
+            "is_thank_you": false,
+            "team_up_info": {
+              "team_leader": {
+                "display_name": "Ryan Holbrook",
+                "thumbnail_url": "https://storage.googleapis.com/kaggle-avatars/thumbnails/2003505-kg.jpg",
+                "url": "/ryanholbrook",
+                "user_name": "ryanholbrook",
+                "tier": "STAFF",
+                "id": 2003505,
+                "profile_url": "/ryanholbrook",
+                "performance_tier": "STAFF",
+                "user_id": 2003505,
+                "progression_opt_out": false
+              },
+              "intro": ""
+            }
+          }
+        ],
+        "parent": {},
+        "author": {
+          "display_name": "laa1991",
+          "thumbnail_url": "https://storage.googleapis.com/kaggle-avatars/thumbnails/default-thumb.png",
+          "url": "/laa1991",
+          "tier": "CONTRIBUTOR",
+          "id": 37207559,
+          "progression_opt_out": false
+        },
+        "author_type": "COMMENT",
+        "votes": {
+          "can_upvote": true
+        },
+        "kernel_version": 0,
+        "competition_ranking": 282,
+        "feedback_tracking_data": {},
+        "is_thank_you": false,
+        "team_up_info": {
+          "team_leader": {
+            "display_name": "laa1991",
+            "thumbnail_url": "https://storage.googleapis.com/kaggle-avatars/thumbnails/default-thumb.png",
+            "url": "/laa1991",
+            "user_name": "laa1991",
+            "tier": "CONTRIBUTOR",
+            "id": 37207559,
+            "profile_url": "/laa1991",
+            "performance_tier": "CONTRIBUTOR",
+            "user_id": 37207559,
+            "progression_opt_out": false
+          },
+          "intro": ""
+        }
+      },
+      {
+        "id": 3536734,
+        "post_date": "2026-10-11T05:47:00.093Z",
+        "raw_markdown": "Thank you for the Wheelhouse v29/v30 info @andrewmcadoo ",
+        "content": "<p>Thank you for the Wheelhouse v29/v30 info <a href=\"/andrewmcadoo\" target=\"_blank\">@andrewmcadoo</a> </p>",
+        "parent": {},
+        "author": {
+          "display_name": "Navneet",
+          "thumbnail_url": "https://storage.googleapis.com/kaggle-avatars/thumbnails/15692441-kg.jpg?t=2025-05-18-07-58-06",
+          "url": "/navneetbende",
+          "tier": "CONTRIBUTOR",
+          "id": 15692441,
+          "progression_opt_out": false
+        },
+        "author_type": "COMMENT",
+        "votes": {
+          "can_upvote": true
+        },
+        "kernel_version": 0,
+        "feedback_tracking_data": {},
+        "is_thank_you": false
+      }
+    ],
+    "comment_sort": "COMMENT_LIST_SORT_BY_OLD",
+    "first_message": {
+      "id": 3536203,
+      "post_date": "2026-10-09T22:56:58.350Z",
+      "raw_markdown": "Our submission has used thinking_config: {include_thoughts: false} \n  since day one, following the README (section 2.4 says to \"use 0 or \n  include_thoughts: false to disable thinking\"). After the wheelhouse \n  moved to v29/v30 our local runs got a lot slower, so we compiled the \n  same bundle with both harness versions and compared what actually gets\n  sent to vLLM.\n\n  With adk_submission 0.2.12 the request carries \"chat_template_kwargs\":\n  {\"enable_thinking\": false}. With 0.2.13 the same bundle carries \n  \"enable_thinking\": true plus \"thinking_token_budget\": 4096. As far as \n  we can tell the 4096 is the runner's default budget being merged into \n  our config, and 0.2.13's apply_thinking_config_to_model now checks the\n  budget before it checks include_thoughts. On 4x L4 with the scorer's \n  flags that turned one of our tasks from about 90 seconds of agent time\n  into 316 seconds, with the model thinking on most calls.\n\n  Setting thinking_budget: 0 explicitly turns it off again under both \n  versions, so there is an easy workaround. I wanted to check whether \n  this is intended, though. If include_thoughts: false is no longer the \n  off switch, it would be worth saying so in the README, since anyone \n  relying on it has been scored with thinking on since Oct 8.",
+      "content": "<p>Our submission has used thinking_config: {include_thoughts: false} \n  since day one, following the README (section 2.4 says to \"use 0 or \n  include_thoughts: false to disable thinking\"). After the wheelhouse \n  moved to v29/v30 our local runs got a lot slower, so we compiled the \n  same bundle with both harness versions and compared what actually gets\n  sent to vLLM.</p>\n<p>With adk_submission 0.2.12 the request carries \"chat_template_kwargs\":\n  {\"enable_thinking\": false}. With 0.2.13 the same bundle carries \n  \"enable_thinking\": true plus \"thinking_token_budget\": 4096. As far as \n  we can tell the 4096 is the runner's default budget being merged into \n  our config, and 0.2.13's apply_thinking_config_to_model now checks the\n  budget before it checks include_thoughts. On 4x L4 with the scorer's \n  flags that turned one of our tasks from about 90 seconds of agent time\n  into 316 seconds, with the model thinking on most calls.</p>\n<p>Setting thinking_budget: 0 explicitly turns it off again under both \n  versions, so there is an easy workaround. I wanted to check whether \n  this is intended, though. If include_thoughts: false is no longer the \n  off switch, it would be worth saying so in the README, since anyone \n  relying on it has been scored with thinking on since Oct 8.</p>",
+      "parent": {},
+      "author": {
+        "display_name": "Andrew McAdoo",
+        "thumbnail_url": "https://storage.googleapis.com/kaggle-avatars/thumbnails/default-thumb.png",
+        "url": "/andrewmcadoo",
+        "tier": "CONTRIBUTOR",
+        "id": 31485171,
+        "progression_opt_out": false
+      },
+      "author_type": "TOPIC",
+      "votes": {
+        "total_votes": 1,
+        "can_upvote": true,
+        "total_upvotes": 1
+      },
+      "kernel_version": 0,
+      "competition_ranking": 365,
+      "feedback_tracking_data": {},
+      "is_thank_you": false,
+      "reactions": [
+        {
+          "emoji": "THANK_YOU",
+          "featured_user_names": [
+            "burtonlancaster"
+          ],
+          "user_count": 1
+        }
+      ],
+      "team_up_info": {
+        "team_leader": {
+          "display_name": "Andrew McAdoo",
+          "thumbnail_url": "https://storage.googleapis.com/kaggle-avatars/thumbnails/default-thumb.png",
+          "url": "/andrewmcadoo",
+          "user_name": "andrewmcadoo",
+          "tier": "CONTRIBUTOR",
+          "id": 31485171,
+          "profile_url": "/andrewmcadoo",
+          "performance_tier": "CONTRIBUTOR",
+          "user_id": 31485171,
+          "progression_opt_out": false
+        },
+        "intro": ""
+      }
+    },
+    "first_message_id": 3536203,
+    "forum_id": 11630393,
+    "forum_name": "Google - The Gemma 4 Developer Agent Competition",
+    "id": 747914,
+    "name": "Wheelhouse v29/v30: include_thoughts: false no longer disables thinking (thinking_budget: 0 does)",
+    "parent_name": "gemma-4-developer-agent",
+    "parent_url": "/competitions/gemma-4-developer-agent",
+    "post_date": "2026-10-09T22:56:58.348835900Z",
+    "total_votes": 1,
+    "url": "/competitions/gemma-4-developer-agent/discussion/747914",
+    "total_messages": 4,
+    "author_performance_tier": "CONTRIBUTOR",
+    "is_global_notifications_enabled": true,
+    "current_user_can_reply": true,
+    "author_progression_opt_out": false
+  }
+}
+
