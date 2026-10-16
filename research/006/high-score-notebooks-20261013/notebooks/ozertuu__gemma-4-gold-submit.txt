@@ -1,0 +1,39 @@
+# CELL 0 markdown
+# Gold Submission Generator for Gemma 4 Developer Agent
+
+This notebook generates the submission.zip for the competition.
+Based on the 0.24 LB winner approach: contract-first, thinking ON, single agent, no graph tools.
+
+# CELL 1 code
+import zipfile
+from pathlib import Path
+import shutil
+import glob
+
+# Copy submission bundle to working directory
+input_paths = glob.glob('/kaggle/input/**/gemma-4-gold-bundle', recursive=True)
+if not input_paths:
+    input_paths = glob.glob('/kaggle/input/gemma-4-gold-bundle', recursive=True)
+assert input_paths, f'Dataset not found: {input_paths}'
+src = Path(input_paths[0])
+dst = Path('/kaggle/working/submission_bundle')
+if dst.exists():
+    shutil.rmtree(dst)
+shutil.copytree(src, dst)
+
+# Create submission.zip
+zip_path = Path('/kaggle/working/submission.zip')
+with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as z:
+    for f in sorted(dst.rglob('*')):
+        if f.is_file():
+            z.write(f, f.relative_to(dst).as_posix())
+
+# Verify
+with zipfile.ZipFile(zip_path) as z:
+    names = z.namelist()
+    assert 'agent.yaml' in names
+    assert not any(n.endswith('/') for n in names)
+    print(f'submission.zip created: {len(names)} files')
+    for n in sorted(names):
+        info = z.getinfo(n)
+        print(f'  {n} ({info.file_size} bytes)')

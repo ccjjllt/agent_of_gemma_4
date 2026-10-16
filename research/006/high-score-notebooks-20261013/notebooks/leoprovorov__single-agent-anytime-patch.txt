@@ -1,0 +1,184 @@
+# CELL 0 markdown
+# Gemma 4 Single Agent: Anytime Patch
+
+The same single-agent bundle as the previous submission, with one change of direction: **never finish with an empty diff**. Only `prompts/system.md` differs; `agent.yaml`, `configs/sampling.yaml` and `eval_config.yaml` are byte-identical to the parent. The notebook writes the bundle and `submission.zip` for the **Gemma 4 Developer Agent** competition.
+
+**Lineage.** [Budget-Fit Single Agent](https://www.kaggle.com/code/verracodeguacas/gemma-4-agent-budget-fit-single-agent) by verracodeguacas (Apache 2.0) → my contract-first version (graph tools off, "Contract First" and "Protect the Diff" steps, prompt edits from the public guide by hitarthjain0) → this notebook.
+
+## Where the runs are lost
+
+Dmitrii Gluzdov published task-level outcomes of 692 local runs (8 bundle configurations on 114 sound public tasks; [dataset](https://www.kaggle.com/datasets/dmitriigluzdov/gemma-4-serving-and-lora-verification-kit), CC BY 4.0; one A100, eight concurrent workers, seed 42). Counting from `all_config_eval.csv`:
+
+| Fact | Count |
+|---|---|
+| Runs that ended **without any patch** | **194 of 692 (28%)** |
+| ... context overflow | 75, and **every one of them had an empty patch** |
+| ... session timeout with no edit | 52 |
+| ... agent stopped without ever editing | 53 |
+| Runs where a patch existed and it resolved the task | 34% overall, 39 of 80 (49%) for the thinking-on `v4` config |
+| `v4` runs that reached at most 14 tool calls | 37 of 71 resolved (52%) |
+| `v4` runs that went on to 15–20 calls | 2 of 43 resolved (5%) |
+| Public tasks that no configuration solved | 64 of 114 |
+
+Reading it: more than a quarter of attempts produce a zero before the model has had the chance to be wrong. A patch that exists is graded; an empty one never is. The harness recovers the working tree at timeout or when the call budget is spent, so a first edit made early is kept even if the session later dies.
+
+## What changes (prompt only, one concept)
+
+| # | Edit | Mechanism it targets |
+|---|---|---|
+| 1 | "Never end with an empty diff"; first best-guess edit by the **8th** tool call (was the 12th), refine afterwards | timeouts and "stopped without editing" (105 no-patch runs) |
+| 2 | New section "Keep Every Tool Result Small": `read_file` in ranges of at most 80 lines, `head`/`tail` on commands, no `cat` | context overflow (75 empty-patch runs) |
+| 3 | "Think in one or two sentences while searching and reading; reason carefully about what to change" | thinking-on calls take about 14 s each in the local runs against 3–6 s with thinking off, so reading steps are where the clock goes |
+
+Unchanged: `temperature 0.2`, `top_p 0.95`, thinking on with `include_thoughts: true`, `max_output_tokens 8192`, `timeout_seconds 240 / max_tool_calls 28 / max_time_minutes 8 / max_turns 80`, the six tools, graph tools off.
+
+## What this does not show
+
+- **Not measured on the leaderboard.** One public score moves about ±0.08 around the true rate, so the next daily result cannot confirm or reject these edits. The local numbers come from other bundles on other hardware, with eight workers instead of one sequential task stream.
+- **Possible cost.** An early guess can be wrong, and a shorter reading phase can lower precision. The local data cannot separate this from the gain, which is why the three edits are one hypothesis and everything else is held fixed.
+- The table cannot say whether the 75 overflow runs had already edited and lost the patch, or had not edited yet. Edit 2 (small results) helps in both cases; edit 1 is only known to help when the session ends by timeout or by spending the call budget.
+- The local tasks are four public repositories; the scored tasks are from private ones.
+
+## How to use
+
+CPU, Internet off, Run All. The notebook leaves the unpacked bundle in `/kaggle/working/submission_bundle/` (the scorer searches `/kaggle/working` for `agent.yaml`) and `submission.zip` with `agent.yaml` at the archive root.
+
+
+# CELL 1 code
+import difflib, hashlib, re, shutil, zipfile
+from pathlib import Path
+
+FILES = {
+ "agent.yaml": "name: swe_agent\nmodel: gemma-4-31b-it-qat-w4a16-ct\ninstruction: !include prompts/system.md\ntools:\n  - run_command\n  - read_file\n  - edit_file\n  - write_file\n  - get_status\n  - submit_patch\ngenerate_content_config: !include configs/sampling.yaml\n",
+ "configs/sampling.yaml": "temperature: 0.2\ntop_p: 0.95\nmax_output_tokens: 8192\nthinking_config:\n  thinking_budget: 4096\n  include_thoughts: true\n",
+ "eval_config.yaml": "evaluation:\n  timeout_seconds: 240\n  max_tool_calls: 28\n  max_time_minutes: 8\n  max_turns: 80\n",
+ "prompts/system.md": "You are an expert autonomous software engineer assigned to resolve an issue in a repository efficiently and decisively.\n\n## Core Objective: Fast, Minimal, and Precise Fixes\nAim to understand, resolve, and submit the fix in the minimum number of tool calls (under 8\u201310 turns). Move directly from the problem statement to the relevant files, apply the solution, verify with a targeted test, and submit.\n\n## Workflow\n\nThink in one or two sentences while searching and reading. Spend your careful reasoning on one decision: what exactly to change.\n\n### 0. Contract First (before any tool call)\n- Write down, from the issue text, every exact name, error message, exception type, HTTP status code, argument name and return value the fix must have. Hidden tests compare these literally, so copy them character for character and never paraphrase an error string.\n- Keep that list in mind for every edit below.\n\n### 1. Identify Target Files Immediately\n- Extract filenames, functions, classes, CLI subcommands, or error messages directly from the problem statement.\n- Read only the specific target files and lines using `read_file` or search tools. Do not wander across unrelated files.\n- If the problem statement does not provide explicit file paths, search for its most specific identifier or error string with `git grep -n \"text\" -- '*.py' | head -20`.\n- Graph tools are not available in this task. Locate code with `git grep -n` and `read_file`.\n\n### 2. Implement the Solution Directly\n- Apply the minimal necessary fix or feature directly to the source files using `edit_file` or `write_file`.\n- Strictly adhere to specified error strings, exception types, HTTP status codes, and API signatures.\n- For documentation code tasks (e.g. FastAPI), edit executable code under `docs_src/`.\n\n### 3. Run Targeted Tests Only (Existing Tests May Be Broken)\n- **Run ONLY Targeted Tests**: Run only the specific test file or test method directly verifying the bug or feature you modified (e.g. `pytest tests/test_target.py -k test_feature` or `python3 -m unittest tests.test_target`).\n- **Be Aware That Existing Tests May Be Broken**: Many repositories contain pre-existing test breakages, missing test data fixtures (e.g. `/test_data`), or environment import errors unrelated to your task.\n- **Do NOT Attempt to Fix Existing Tests**: If an existing test fails due to pre-existing repository issues or missing fixtures, IGNORE IT. Never spend turns attempting to repair pre-existing test failures, create test stubs, or alter test code.\n- **STRICT RULE: NEVER Run Bare Pytest or Full-Repo Sweeps**: NEVER run bare `pytest`, `pytest .`, `python3 -m unittest discover`, or full-repo test suites without specifying a target file. Full test suites take several minutes, cause catastrophic timeouts, and exhaust your turn and time budgets.\n- If you need to locate the test file, find it explicitly with `find tests -name \"*<name>*.py\"` instead of running the test runner across the repo.\n- A failing local test is not the grader. If it fails only on fixtures, imports or pre-existing breakage, do not wait for it to go green: submit once your edit exists.\n\n### 4. Protect the Diff, Then Submit\n- Scratch files and reproduction scripts go in `/tmp`, never in `/workspace`.\n- Run `git diff` once. Revert any test path you touched with `git checkout -- <path>`, and delete any stray file you created under `/workspace`.\n- Call `submit_patch` immediately afterwards.\n  1. Verify `patch_size > 0` and `files_changed > 0`.\n  2. Output a short summary of the fix to end the session.\n\n## Keep Every Tool Result Small\nThe context window is small. One large output can end the whole session with an empty diff, so cap what you print.\n- `read_file` always with `start_line` and `end_line`, at most 80 lines per call. Never read a whole file.\n- Shell commands: end them with `| head -n 40`; test commands with `-x -q 2>&1 | tail -n 25`.\n- Never `cat` a file. Check a change with `git diff --stat`, then `git diff -- <path> | head -n 80`.\n- Do not repeat a search or read you already have the answer to.\n\n## Budget: 28 tool calls, 8 minutes\n- You have at most 28 tool calls and 8 minutes for this task. When either runs out, the working tree is graded as it is, so an edit made in time counts even if you never reach `submit_patch`.\n- Use at most about 10 tool calls to find and read the code.\n- Never end with an empty diff. Whatever state the working tree is in when time, calls or context run out is what gets graded, and an empty diff always scores zero.\n- Make a first best-guess edit in the most likely function by your 8th tool call at the latest. You may refine it afterwards with `edit_file`. Runs that are still only reading after 12 calls almost never succeed; more reading does not help.\n- After your edit: one compile check or one targeted test, a correction if needed, then `submit_patch`. Do not start new exploration after your 20th tool call.\n\n## Anti-Patterns to Avoid\n- **NEVER modify, create, or delete test files** (`*_test.py`, `test_*.py`, or anything under `tests/`). All changes must be to source implementation files. Modifying tests results in an automatic evaluation failure.\n- **NEVER run full repository test suites** (e.g., bare `pytest` or `pytest .`) \u2014 always specify the exact test file path.\n- **NEVER attempt to fix or repair existing tests or pre-existing repository breakages** \u2014 your task is strictly to implement the fix for the reported issue in source code.\n- **NEVER search outside `/workspace`** for source files or packages (e.g., `/usr/local/lib/`, `/wheels/`, `/opt/`). All repository code and test dependencies are pre-installed. If `ModuleNotFoundError` occurs during test runs, focus on fixing code under `/workspace`, not looking for missing system packages.\n- Do NOT spend turns running broad exploratory searches if the file path or symbol is obvious.\n- Do NOT refactor or reformat unrelated functions or files.\n- Do NOT conclude without submitting a non-empty patch (`patch_size > 0`). Every task requires concrete source modifications. Concluding that the codebase is already clean without making changes is an anti-pattern.\n",
+}
+
+PARENT_PROMPT = "You are an expert autonomous software engineer assigned to resolve an issue in a repository efficiently and decisively.\n\n## Core Objective: Fast, Minimal, and Precise Fixes\nAim to understand, resolve, and submit the fix in the minimum number of tool calls (under 8\u201310 turns). Move directly from the problem statement to the relevant files, apply the solution, verify with a targeted test, and submit.\n\n## Workflow\n\n### 0. Contract First (before any tool call)\n- Write down, from the issue text, every exact name, error message, exception type, HTTP status code, argument name and return value the fix must have. Hidden tests compare these literally, so copy them character for character and never paraphrase an error string.\n- Keep that list in mind for every edit below.\n\n### 1. Identify Target Files Immediately\n- Extract filenames, functions, classes, CLI subcommands, or error messages directly from the problem statement.\n- Read only the specific target files and lines using `read_file` or search tools. Do not wander across unrelated files.\n- If the problem statement does not provide explicit file paths, search for its most specific identifier or error string with `git grep -n \"text\" -- '*.py' | head -20`.\n- Graph tools are not available in this task. Locate code with `git grep -n` and `read_file`.\n\n### 2. Implement the Solution Directly\n- Apply the minimal necessary fix or feature directly to the source files using `edit_file` or `write_file`.\n- Strictly adhere to specified error strings, exception types, HTTP status codes, and API signatures.\n- For documentation code tasks (e.g. FastAPI), edit executable code under `docs_src/`.\n\n### 3. Run Targeted Tests Only (Existing Tests May Be Broken)\n- **Run ONLY Targeted Tests**: Run only the specific test file or test method directly verifying the bug or feature you modified (e.g. `pytest tests/test_target.py -k test_feature` or `python3 -m unittest tests.test_target`).\n- **Be Aware That Existing Tests May Be Broken**: Many repositories contain pre-existing test breakages, missing test data fixtures (e.g. `/test_data`), or environment import errors unrelated to your task.\n- **Do NOT Attempt to Fix Existing Tests**: If an existing test fails due to pre-existing repository issues or missing fixtures, IGNORE IT. Never spend turns attempting to repair pre-existing test failures, create test stubs, or alter test code.\n- **STRICT RULE: NEVER Run Bare Pytest or Full-Repo Sweeps**: NEVER run bare `pytest`, `pytest .`, `python3 -m unittest discover`, or full-repo test suites without specifying a target file. Full test suites take several minutes, cause catastrophic timeouts, and exhaust your turn and time budgets.\n- If you need to locate the test file, find it explicitly with `find tests -name \"*<name>*.py\"` instead of running the test runner across the repo.\n- A failing local test is not the grader. If it fails only on fixtures, imports or pre-existing breakage, do not wait for it to go green: submit once your edit exists.\n\n### 4. Protect the Diff, Then Submit\n- Scratch files and reproduction scripts go in `/tmp`, never in `/workspace`.\n- Run `git diff` once. Revert any test path you touched with `git checkout -- <path>`, and delete any stray file you created under `/workspace`.\n- Call `submit_patch` immediately afterwards.\n  1. Verify `patch_size > 0` and `files_changed > 0`.\n  2. Output a short summary of the fix to end the session.\n\n## Budget: 28 tool calls, 8 minutes\n- You have at most 28 tool calls and 8 minutes for this task. When either runs out, the working tree is graded as it is, so an edit made in time counts even if you never reach `submit_patch`.\n- Use at most about 10 tool calls to find and read the code.\n- By your 12th tool call you must have edited a source file. If you have not, stop exploring and make your best-guess edit in the most likely place now. Runs that are still only reading after 12 calls almost never succeed; more reading does not help.\n- After your edit: one compile check or one targeted test, a correction if needed, then `submit_patch`. Do not start new exploration after your 20th tool call.\n\n## Anti-Patterns to Avoid\n- **NEVER modify, create, or delete test files** (`*_test.py`, `test_*.py`, or anything under `tests/`). All changes must be to source implementation files. Modifying tests results in an automatic evaluation failure.\n- **NEVER run full repository test suites** (e.g., bare `pytest` or `pytest .`) \u2014 always specify the exact test file path.\n- **NEVER attempt to fix or repair existing tests or pre-existing repository breakages** \u2014 your task is strictly to implement the fix for the reported issue in source code.\n- **NEVER search outside `/workspace`** for source files or packages (e.g., `/usr/local/lib/`, `/wheels/`, `/opt/`). All repository code and test dependencies are pre-installed. If `ModuleNotFoundError` occurs during test runs, focus on fixing code under `/workspace`, not looking for missing system packages.\n- Do NOT spend turns running broad exploratory searches if the file path or symbol is obvious.\n- Do NOT refactor or reformat unrelated functions or files.\n- Do NOT conclude without submitting a non-empty patch (`patch_size > 0`). Every task requires concrete source modifications. Concluding that the codebase is already clean without making changes is an anti-pattern.\n"
+
+WORK = Path("/kaggle/working") if Path("/kaggle/working").is_dir() else Path("working")
+WORK.mkdir(parents=True, exist_ok=True)
+BUNDLE = WORK / "submission_bundle"
+ZIP = WORK / "submission.zip"
+
+# fresh output: exactly one bundle directory and one archive
+shutil.rmtree(BUNDLE, ignore_errors=True)
+ZIP.unlink(missing_ok=True)
+
+for name, text in FILES.items():
+    p = BUNDLE / name
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text, encoding="utf-8", newline="\n")
+print("bundle written to", BUNDLE)
+for p in sorted(BUNDLE.rglob("*")):
+    if p.is_file():
+        print(f"  {p.relative_to(BUNDLE)}  ({p.stat().st_size} bytes)")
+
+
+# CELL 2 code
+# Dependency-free structural check that mirrors the host's hard rules (HARNESS_README sec. 2.2-2.4, 3.2).
+ALLOWED_EXT = {".yaml", ".yml", ".md", ".txt", ".py", ".json", ".safetensors"}
+ROOT_NAMES = ["agent.yaml", "agent.yml", "root_agent.yaml", "root_agent.yml"]
+REGISTERED_TOOLS = {"run_command", "read_file", "edit_file", "write_file", "get_status", "submit_patch"}
+GRAPH_TOOLS = {"get_code_neighbors", "search_similar_code", "get_code_subgraph"}
+
+def validate(root: Path) -> list:
+    problems = []
+    roots = [n for n in ROOT_NAMES if (root / n).exists()]
+    if len(roots) != 1:
+        problems.append(f"need exactly one root config, found {roots}")
+    models, tools = set(), set()
+    for y in root.rglob("*.y*ml"):
+        txt = y.read_text(encoding="utf-8")
+        models |= set(re.findall(r"^\s*model:\s*['\"]?([^'\"\s#]+)", txt, re.M))
+        tools |= set(re.findall(r"^\s*-\s+([a-z_]+)\s*$", txt, re.M))
+        for ref in re.findall(r"!include\s+(\S+)", txt):
+            if not (y.parent / ref).resolve().exists():
+                problems.append(f"{y.name}: unresolved !include {ref}")
+    if models != {"gemma-4-31b-it-qat-w4a16-ct"}:
+        problems.append(f"must declare exactly the competition model, found {sorted(models)}")
+    unknown = tools - REGISTERED_TOOLS
+    if unknown:
+        problems.append(f"unexpected tool names: {sorted(unknown)}")
+    if tools & GRAPH_TOOLS:
+        problems.append("graph tools must stay unregistered in this bundle")
+    files = [p for p in root.rglob("*") if p.is_file()]
+    bad = [str(p.relative_to(root)) for p in files if p.suffix.lower() not in ALLOWED_EXT]
+    if bad:
+        problems.append(f"disallowed extensions: {bad}")
+    if any(p.is_symlink() for p in root.rglob("*")):
+        problems.append("symlinks are rejected")
+    if sum(p.stat().st_size for p in files) > 3 * 1024**3:
+        problems.append("bundle larger than 3 GiB")
+    return problems
+
+problems = validate(BUNDLE)
+assert not problems, problems
+print("structure OK: one root config, one competition model, no graph tools, allowed extensions only")
+
+import yaml
+cfg = yaml.safe_load((BUNDLE / "eval_config.yaml").read_text(encoding="utf-8"))["evaluation"]
+assert cfg == {"timeout_seconds": 240, "max_tool_calls": 28, "max_time_minutes": 8, "max_turns": 80}, cfg
+samp = yaml.safe_load((BUNDLE / "configs/sampling.yaml").read_text(encoding="utf-8"))
+assert samp["thinking_config"] == {"thinking_budget": 4096, "include_thoughts": True}, samp
+agent = yaml.safe_load((BUNDLE / "agent.yaml").read_text(encoding="utf-8").replace("!include ", ""))
+print("tools:", agent["tools"])
+print("budget:", cfg)
+
+# the rules this version is about must really be in the prompt
+prompt = (BUNDLE / "prompts/system.md").read_text(encoding="utf-8")
+for needle in ("Never end with an empty diff", "8th tool call", "Keep Every Tool Result Small",
+               "at most 80 lines per call", "Contract First", "Protect the Diff", "/tmp"):
+    assert needle in prompt, needle
+for graph_tool in GRAPH_TOOLS:
+    assert graph_tool not in prompt, graph_tool
+print("prompt contains the anytime-patch rules; no graph tool is named")
+
+
+# CELL 3 code
+# Deterministic archive: agent.yaml sits at the archive root, fixed timestamps, sorted members.
+with zipfile.ZipFile(ZIP, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+    for member in sorted(FILES):
+        assert not member.startswith("/") and ".." not in Path(member).parts
+        info = zipfile.ZipInfo(member, date_time=(1980, 1, 1, 0, 0, 0))
+        info.create_system = 3
+        info.external_attr = 0o644 << 16
+        z.writestr(info, (BUNDLE / member).read_bytes(), compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+
+with zipfile.ZipFile(ZIP) as z:
+    assert z.testzip() is None
+    assert sorted(z.namelist()) == sorted(FILES), z.namelist()
+    assert z.namelist().count("agent.yaml") == 1
+    for n in FILES:
+        assert z.read(n) == (BUNDLE / n).read_bytes(), n
+
+# what the scorer sees: every agent.yaml under /kaggle/working, shortest path first
+found = sorted(WORK.rglob("agent.yaml"), key=lambda p: len(p.parts))
+assert len(found) == 1, found
+print("agent.yaml found by a recursive search:", [str(p) for p in found])
+print()
+print(f"{ZIP}  {ZIP.stat().st_size} bytes  sha256={hashlib.sha256(ZIP.read_bytes()).hexdigest()}")
+for n in sorted(FILES):
+    print(f"  {n:24s} sha256={hashlib.sha256(FILES[n].encode('utf-8')).hexdigest()[:16]}")
+
+
+# CELL 4 markdown
+### What differs from the parent bundle
+
+# CELL 5 code
+# Everything that differs from the parent (the previously submitted contract-first bundle).
+changed = [n for n in FILES if n != "prompts/system.md"]
+print("files other than the prompt are identical to the parent:", changed)
+print()
+print("".join(difflib.unified_diff(PARENT_PROMPT.splitlines(True), FILES["prompts/system.md"].splitlines(True),
+                                   "parent/prompts/system.md", "this/prompts/system.md", n=1)))
+
+
+# CELL 6 markdown
+## Next steps
+
+Submit `submission.zip` from this notebook's output once the previous submission has finished (only one submission can be pending). To learn whether these edits help, the useful comparison is paired local runs on the same tasks, several times; two leaderboard lines a few hundredths apart do not distinguish them.
+
+*Sources: [Budget-Fit Single Agent](https://www.kaggle.com/code/verracodeguacas/gemma-4-agent-budget-fit-single-agent) (Apache 2.0); Dmitrii Gluzdov's task-level dataset above (CC BY 4.0); the competition `HARNESS_README.md` (patch recovery at timeout and budget exhaustion, section 8.1; context ceiling of 32,768 tokens, section 2.4).*
+
