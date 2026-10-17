@@ -116,8 +116,6 @@ def validate_config(raw):
     if cfg["base_family"] == "gemma-4-12b-it-qat-q4_0-unquantized":
         if not cfg["model_source_manifest"] or not cfg["chat_template_path"]:
             raise TrainingError("12B QAT requires an explicit model_source_manifest and deployment CT chat_template_path")
-        if cfg["allow_cached_nf4"]:
-            raise TrainingError("no 12B NF4 cache has been produced/verified; the 31B cache cannot be reused")
     for key in ("model_revision", "tokenizer_revision"):
         if cfg[key] and str(cfg[key]).lower().startswith("kaggle"):
             raise TrainingError("Kaggle version is not an HF revision; use a local path or HF commit/tag")
@@ -239,9 +237,24 @@ def validate_nf4_cache(source, model_config, cfg):
     if not path.is_file():
         raise TrainingError("NF4 cache is missing its official-source provenance manifest")
     manifest = json.loads(path.read_text())
-    expected = "google/gemma-4/Transformers/gemma-4-31b-it-qat-q4_0-unquantized/2"
-    if manifest.get("source") != expected or cfg["base_family"] != "gemma-4-31b-it-qat-q4_0-unquantized":
-        raise TrainingError("NF4 cache source is not official QAT-unquantized v2")
+    if cfg["base_family"] == "gemma-4-31b-it-qat-q4_0-unquantized":
+        expected = "google/gemma-4/Transformers/gemma-4-31b-it-qat-q4_0-unquantized/2"
+        if manifest.get("source") != expected:
+            raise TrainingError("NF4 cache source is not official 31B QAT-unquantized v2")
+    elif cfg["base_family"] == "gemma-4-12b-it-qat-q4_0-unquantized":
+        if not cfg.get("model_source_manifest"):
+            raise TrainingError("12B NF4 cache requires model_source_manifest")
+        src_manifest = json.loads(Path(cfg["model_source_manifest"]).read_text(encoding="utf-8"))
+        training = src_manifest["training_source"]
+        if (manifest.get("base_family") != cfg["base_family"]
+                or manifest.get("source_repo_id") != training["repo_id"]
+                or manifest.get("source_revision") != training["revision"]
+                or manifest.get("source_config_sha256") != training["config_sha256"]
+                or manifest.get("source_weights_sha256") != training["weights"]["sha256"]
+                or manifest.get("source_weights_bytes") != training["weights"]["bytes"]):
+            raise TrainingError("12B NF4 cache provenance does not match pinned 12B QAT source manifest; 31B or plain IT caches cannot be reused")
+    else:
+        raise TrainingError("unsupported base_family for NF4 cache: " + str(cfg["base_family"]))
     files = manifest.get("files", [])
     if not files or not any(x["name"].endswith(".safetensors") for x in files):
         raise TrainingError("NF4 cache manifest has no weights")
@@ -249,16 +262,20 @@ def validate_nf4_cache(source, model_config, cfg):
         name = item["name"]
         if Path(name).name != name or not (Path(source)/name).is_file() or (Path(source)/name).stat().st_size != item["bytes"]:
             raise TrainingError("NF4 cache file is missing or has changed size: " + name)
-    return {"source": manifest["source"], "manifest_sha256": sha256_file(path),
+    return {"source": manifest.get("source") or f"{manifest.get('source_repo_id')}@{manifest.get('source_revision')}",
+            "manifest_sha256": sha256_file(path),
             "source_config_sha256": manifest.get("source_config_sha256"),
             "source_index_sha256": manifest.get("source_index_sha256"),
+            "source_weights_sha256": manifest.get("source_weights_sha256"),
+            "source_weights_bytes": manifest.get("source_weights_bytes"),
             "validation": "manifest source + saved file sizes; full hashes recorded at CPU creation"}
 
 
 def validate_pinned_model_source(source, options, tok_source, tok_options, cfg, transformers):
     """Check explicit QAT source and deployment tokenizer/template before weights.
 
-    A local mirror must also match the published weight hash, so renaming plain
+    A local mirror must also match the published weight hash (or a verified
+    same-source NF4 cache manifest when allow_cached_nf4=true), so renaming plain
     IT or a 31B directory is not sufficient. Remote HF sources require the exact
     recorded commit. Existing 31B recipes retain their cache validation path.
     """
@@ -282,14 +299,25 @@ def validate_pinned_model_source(source, options, tok_source, tok_options, cfg, 
             raise TrainingError("pinned source file missing: " + str(path))
         return path
 
-    config_path = source_file(source, options, "config.json")
-    if sha256_file(config_path) != training["config_sha256"]:
-        raise TrainingError("model config differs from the pinned unquantized QAT source")
-    if local:
-        weight = training["weights"]
-        path = source_file(source, options, weight["name"])
-        if path.stat().st_size != weight["bytes"] or sha256_file(path) != weight["sha256"]:
-            raise TrainingError("local QAT weight file differs from its published source; do not relabel another base")
+    cache_manifest_path = Path(source) / "cache-manifest.json" if local else None
+    if local and cfg.get("allow_cached_nf4") and cache_manifest_path and cache_manifest_path.is_file():
+        cache_manifest = json.loads(cache_manifest_path.read_text(encoding="utf-8"))
+        if (cache_manifest.get("base_family") != cfg["base_family"]
+                or cache_manifest.get("source_repo_id") != training["repo_id"]
+                or cache_manifest.get("source_revision") != training["revision"]
+                or cache_manifest.get("source_config_sha256") != training["config_sha256"]
+                or cache_manifest.get("source_weights_sha256") != training["weights"]["sha256"]
+                or cache_manifest.get("source_weights_bytes") != training["weights"]["bytes"]):
+            raise TrainingError("local NF4 cache manifest differs from pinned QAT source; do not relabel another base")
+    else:
+        config_path = source_file(source, options, "config.json")
+        if sha256_file(config_path) != training["config_sha256"]:
+            raise TrainingError("model config differs from the pinned unquantized QAT source")
+        if local:
+            weight = training["weights"]
+            path = source_file(source, options, weight["name"])
+            if path.stat().st_size != weight["bytes"] or sha256_file(path) != weight["sha256"]:
+                raise TrainingError("local QAT weight file differs from its published source; do not relabel another base")
     deployment = manifest["deployment_source"]
     for name, digest in deployment["tokenizer_sha256"].items():
         if sha256_file(source_file(tok_source, tok_options, name)) != digest:
