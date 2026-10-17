@@ -451,16 +451,11 @@ try:
             lp = float(val['logprob'] if isinstance(val, dict) else val)
             sup_logprobs.append({'pos': idx, 'token_id': input_ids[idx], 'logprob': lp})
         assert sup_logprobs, f'No covered supervised tokens for {model_id} (missing={missing})'
+        # NOTE: row['meta']['supervised_spans'] uses character offsets
+        # (start/end, up to ~12039 on a 3368-token sequence), not token
+        # positions, so per-step token grouping is not derivable here.
+        # Report overall supervised logprob sums only.
         per_step = []
-        for span in row['meta'].get('supervised_spans', []):
-            step_lps = [x['logprob'] for x in sup_logprobs if span['token_start'] <= x['pos'] < span['token_end'] and x['pos'] >= 1]
-            if step_lps:
-                per_step.append({
-                    'assistant_step': span.get('assistant_step'),
-                    'count': len(step_lps),
-                    'sum_logprob': sum(step_lps),
-                    'mean_nll': -sum(step_lps) / len(step_lps),
-                })
         all_vals = [x['logprob'] for x in sup_logprobs]
         return {
             'supervised_tokens': len(all_vals),
