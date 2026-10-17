@@ -272,7 +272,7 @@ os.environ.update({
 import litellm
 import torch
 from adk_submission import VllmConfig, VllmServer, discover_adapters, discover_declared_models
-from adk_eval_core.editing import edit_file_content
+from adk_eval_core.editing import apply_replacement
 from swegemma.config import ALLOWED_ADAPTER_EXTENSIONS
 
 litellm.drop_params = True
@@ -318,8 +318,39 @@ def http_json(url: str, body=None, timeout=180):
     req.add_header('Authorization', 'Bearer EMPTY')
     if body is not None:
         req.add_header('Content-Type', 'application/json')
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode('utf-8'))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode('utf-8'))
+    except urllib.error.HTTPError as exc:
+        try:
+            err_body = exc.read().decode('utf-8', errors='replace')
+        except Exception:
+            err_body = '<unreadable error body>'
+        # Persist the server-side error body so Kaggle outputs capture it.
+        try:
+            (OUT / 'http-error-body.txt').write_text(
+                f'URL: {url}\nCODE: {exc.code}\nBODY:\n{err_body[:8000]}\n'
+            )
+        except Exception:
+            pass
+        raise RuntimeError(f'HTTP {exc.code} for {url}: {err_body[:2000]}') from exc
+
+
+def archive_server_log(tag: str):
+    log_path = getattr(server, 'log_path', None)
+    try:
+        if log_path and Path(log_path).is_file():
+            log_text = Path(log_path).read_text(errors='replace')
+            (OUT / f'vllm_12b_server-{tag}.log').write_text(log_text)
+            # Also keep the canonical name updated for successful runs.
+            (OUT / 'vllm_12b_server.log').write_text(log_text)
+            return log_text
+    except Exception as exc:
+        try:
+            (OUT / f'vllm_12b_server-{tag}-archive-error.txt').write_text(str(exc))
+        except Exception:
+            pass
+    return ''
 
 
 gpu_count = torch.cuda.device_count()
@@ -330,7 +361,10 @@ vllm_cfg = VllmConfig(
     host='127.0.0.1',
     tool_call_parser='gemma4',
     reasoning_parser='gemma4',
-    max_model_len=32768,
+    # 8192 covers the 3368-token teacher-forced prompt plus 1024 live-gen
+    # tokens while reserving far less KV than 32768 (V4 OOM: 2048-token
+    # chunked-prefill log_softmax needed 2.00 GiB with only 1.27 GiB free).
+    max_model_len=8192,
     dtype='bfloat16' if torch.cuda.is_bf16_supported() else 'auto',
     gpu_memory_utilization=0.90,
     enable_auto_tool_choice=True,
@@ -339,23 +373,49 @@ vllm_cfg = VllmConfig(
     max_lora_rank=16,
     tensor_parallel_size=tp_size,
     startup_timeout=60 * 15,
-    extra_args=['--max-num-seqs', '4'],
+    extra_args=[
+        '--hf-overrides',
+        '{"architectures": ["Gemma4ForCausalLM"], "model_type": "gemma4"}',
+        # Cap prefill chunks so per-step full-vocab log_softmax
+        # (512 x 256k x fp32 ~= 0.5 GiB) fits in the ~1.27 GiB free.
+        '--max-num-batched-tokens',
+        '512',
+        '--max-num-seqs',
+        '1',
+    ],
 )
 server = VllmServer(vllm_cfg, adapter_manifest=adapters)
 server_cmd = server.build_cmd()
+(OUT / 'phase2-server-cmd.json').write_text(json.dumps({'cmd': server_cmd}, indent=2) + '\n')
 t_start = time.monotonic()
 try:
     server.start()
     startup_seconds = round(time.monotonic() - t_start, 3)
+    archive_server_log('after-startup')
     base_url = str(server.base_url).rstrip('/')
     if not base_url.endswith('/v1'):
         base_url = base_url + '/v1'
     models_resp = http_json(base_url + '/models', timeout=30)
+    (OUT / 'phase2-models.json').write_text(json.dumps(models_resp, indent=2) + '\n')
     model_ids = [item['id'] for item in models_resp.get('data', [])]
     base_model_id = str(CT_DIR)
     assert base_model_id in model_ids, f'Base model missing from {model_ids}'
     assert 'click_r8_step1' in model_ids, f'click_r8_step1 missing from {model_ids}'
     assert 'zero_r8_ctrl' in model_ids, f'zero_r8_ctrl missing from {model_ids}'
+
+    # Smoke-probe the /v1/completions endpoint with a tiny prompt before the
+    # 3368-token teacher-forced payload, so a 500 here is isolated to the
+    # endpoint/payload shape rather than the long prompt.
+    for smoke_model in (base_model_id, 'zero_r8_ctrl', 'click_r8_step1'):
+        smoke_resp = http_json(base_url + '/completions', body={
+            'model': smoke_model,
+            'prompt': [1, 2, 3],
+            'max_tokens': 1,
+            'temperature': 0.0,
+        }, timeout=120)
+        assert smoke_resp['choices'], f'Empty smoke choices for {smoke_model}'
+    (OUT / 'phase2-smoke-ok.json').write_text(json.dumps({'smoke': 'ok'}, indent=2) + '\n')
+    archive_server_log('after-smoke')
 
     # 1. Teacher-forced log-probability comparison across all supervised tokens on official 12B CT v2.
     train_row = json.loads((BUNDLE / 'research/006/data-replay-20261013/outputs/encoded-12b-train-capacity.jsonl').read_text().splitlines()[0])
@@ -369,22 +429,28 @@ try:
             'prompt': input_ids,
             'max_tokens': 1,
             'temperature': 0.0,
-            'prompt_logprobs': 1,
+            # Top-5: the actual prompt token is only guaranteed to be
+            # retrievable when it falls inside the returned top-k set.
+            'prompt_logprobs': 5,
         }
-        resp = http_json(base_url + '/completions', body=payload, timeout=180)
+        resp = http_json(base_url + '/completions', body=payload, timeout=300)
         choice = resp['choices'][0]
         prompt_lps = choice['prompt_logprobs']
         assert len(prompt_lps) == len(input_ids), f'Expected {len(input_ids)} prompt_logprobs, got {len(prompt_lps)}'
         sup_logprobs = []
+        missing = 0
         for idx in range(1, len(input_ids)):
             if labels[idx] == -100:
                 continue
             token_id_str = str(input_ids[idx])
             entry = prompt_lps[idx]
-            assert entry is not None and token_id_str in entry, f'Missing logprob for token {token_id_str} at pos {idx}'
+            if not isinstance(entry, dict) or token_id_str not in entry:
+                missing += 1
+                continue
             val = entry[token_id_str]
             lp = float(val['logprob'] if isinstance(val, dict) else val)
             sup_logprobs.append({'pos': idx, 'token_id': input_ids[idx], 'logprob': lp})
+        assert sup_logprobs, f'No covered supervised tokens for {model_id} (missing={missing})'
         per_step = []
         for span in row['meta'].get('supervised_spans', []):
             step_lps = [x['logprob'] for x in sup_logprobs if span['token_start'] <= x['pos'] < span['token_end'] and x['pos'] >= 1]
@@ -398,10 +464,11 @@ try:
         all_vals = [x['logprob'] for x in sup_logprobs]
         return {
             'supervised_tokens': len(all_vals),
+            'missing_supervised_tokens': missing,
             'sum_logprob': sum(all_vals),
             'mean_nll': -sum(all_vals) / len(all_vals),
             'per_step': per_step,
-            'raw_logprobs': all_vals,
+            'pos_logprobs': {x['pos']: x['logprob'] for x in sup_logprobs},
         }
 
     ct_teacher_forced = {}
@@ -409,23 +476,44 @@ try:
         by_model = {}
         for mid_key, mid in (('base', base_model_id), ('zero_r8_ctrl', 'zero_r8_ctrl'), ('click_r8_step1', 'click_r8_step1')):
             by_model[mid_key] = evaluate_ct_teacher_forced(mid, row)
-        base_lps = by_model['base'].pop('raw_logprobs')
-        zero_lps = by_model['zero_r8_ctrl'].pop('raw_logprobs')
-        real_lps = by_model['click_r8_step1'].pop('raw_logprobs')
+        # Align on positions covered by ALL three arms so deltas compare
+        # identical token sets even if top-5 coverage differs per model.
+        common_pos = sorted(
+            set(by_model['base']['pos_logprobs'])
+            & set(by_model['zero_r8_ctrl']['pos_logprobs'])
+            & set(by_model['click_r8_step1']['pos_logprobs'])
+        )
+        assert common_pos, f'No common covered positions for {sample_name}'
+        base_map = by_model['base'].pop('pos_logprobs')
+        zero_map = by_model['zero_r8_ctrl'].pop('pos_logprobs')
+        real_map = by_model['click_r8_step1'].pop('pos_logprobs')
+        base_lps = [base_map[p] for p in common_pos]
+        zero_lps = [zero_map[p] for p in common_pos]
+        real_lps = [real_map[p] for p in common_pos]
         diffs_zero = [abs(z - b) for z, b in zip(zero_lps, base_lps)]
         diffs_real = [r - b for r, b in zip(real_lps, base_lps)]
+        # Deltas are computed over the COMMON covered positions only, so all
+        # three arms compare identical token sets.
+        real_sum = sum(real_lps)
+        base_sum = sum(base_lps)
         ct_teacher_forced[sample_name] = {
             'models': by_model,
+            'common_covered_positions': len(common_pos),
             'zero_vs_base_max_abs_logprob_diff': max(diffs_zero),
             'zero_vs_base_mean_abs_logprob_diff': sum(diffs_zero) / len(diffs_zero),
             'real_vs_base_max_abs_logprob_diff': max(abs(d) for d in diffs_real),
             'real_vs_base_mean_abs_logprob_diff': sum(abs(d) for d in diffs_real) / len(diffs_real),
-            'real_vs_base_sum_logprob_delta': by_model['click_r8_step1']['sum_logprob'] - by_model['base']['sum_logprob'],
-            'real_vs_base_mean_nll_delta': by_model['click_r8_step1']['mean_nll'] - by_model['base']['mean_nll'],
+            'real_vs_base_sum_logprob_delta': real_sum - base_sum,
+            'real_vs_base_mean_nll_delta': -(real_sum - base_sum) / len(common_pos),
             'improved_token_count': sum(1 for d in diffs_real if d > 1e-6),
             'degraded_token_count': sum(1 for d in diffs_real if d < -1e-6),
             'unchanged_token_count': sum(1 for d in diffs_real if abs(d) <= 1e-6),
         }
+
+    # Persist teacher-forced results incrementally so a later live-gen failure
+    # still leaves the logprob comparison in the Kaggle outputs.
+    (OUT / 'phase2-teacher-forced.json').write_text(json.dumps(ct_teacher_forced, indent=2) + '\n')
+    archive_server_log('after-teacher-forced')
 
     # 2. Live tool-call generation + top-5 logprobs + real workspace execution on click and pydicom.
     tools_schema = json.loads((BUNDLE / 'training/configs/harness_tools.json').read_text())
@@ -476,13 +564,13 @@ try:
         new_str = args.get('new_string', '')
         allow_mult = bool(args.get('allow_multiple', False))
         source_text = click_buggy_src if case_name == 'click_pre_edit' else pydicom_state_src
-        edit_res = edit_file_content(source_text, old_str, new_str, allow_multiple=allow_mult)
-        if not edit_res.success:
+        edit_res = apply_replacement(source_text, old_str, new_str, allow_multiple=allow_mult)
+        if edit_res.error_message is not None:
             return {
                 'called_tool': name,
                 'filepath': args.get('filepath'),
                 'edit_ok': False,
-                'error': edit_res.error,
+                'error': edit_res.error_message,
                 'occurrences': edit_res.occurrences,
             }
         new_content = edit_res.new_content
@@ -557,11 +645,13 @@ try:
     }
 
     # Archive server log and parse KV cache / concurrency lines.
-    log_path = getattr(server, 'log_path', None)
+    # NOTE: this block also runs on the failure path via the finally clause
+    # below (see archive_server_log('on-failure')), so a 500 on /completions
+    # still leaves the vLLM traceback in the Kaggle outputs.
+    log_text = archive_server_log('final')
     kv_metrics = {}
     lora_log_lines = []
-    if log_path and Path(log_path).is_file():
-        log_text = Path(log_path).read_text(errors='replace')
+    if log_text:
         (OUT / 'vllm_12b_server.log').write_text(log_text)
         for line in log_text.splitlines():
             if 'Available KV cache memory:' in line:
@@ -594,6 +684,10 @@ try:
         'pydicom_nll_delta': ct_teacher_forced['pydicom_select_2055_226']['real_vs_base_mean_nll_delta'],
     }), flush=True)
 finally:
+    try:
+        archive_server_log('on-failure')
+    except Exception:
+        pass
     try:
         server.stop(timeout=10.0)
     except Exception:
@@ -786,7 +880,15 @@ def main():
 
     if PREPARE_ONLY:
         assert not torch.cuda.is_available(), 'CPU prepare must not allocate GPU'
-        event('prepared', status='prepared', success=True, model_requests=0, optimizer_steps=0)
+        import zipfile
+        vllm_whl = next(wheelhouse_dir.glob('vllm-*.whl'))
+        gemma4_sources = {}
+        with zipfile.ZipFile(vllm_whl) as zf:
+            for zname in zf.namelist():
+                if ('gemma4' in zname or 'lora/models.py' in zname) and zname.endswith('.py'):
+                    gemma4_sources[zname] = zf.read(zname).decode('utf-8', errors='replace')
+        write_json(OUT / 'vllm-gemma4-sources.json', gemma4_sources)
+        event('prepared', status='prepared', success=True, model_requests=0, optimizer_steps=0, vllm_gemma4_files=sorted(gemma4_sources.keys()))
         return
 
     assert torch.cuda.is_available() and torch.cuda.device_count() == 4, 'Requires 4xL4 GPU session'
@@ -821,7 +923,7 @@ def main():
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        timeout=1500,
+        timeout=2000,
     )
     (OUT / 'phase2.log').write_text(p2.stdout or '')
     print(p2.stdout or '', flush=True)
