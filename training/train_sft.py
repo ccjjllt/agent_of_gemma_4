@@ -262,13 +262,18 @@ def validate_nf4_cache(source, model_config, cfg):
         name = item["name"]
         if Path(name).name != name or not (Path(source)/name).is_file() or (Path(source)/name).stat().st_size != item["bytes"]:
             raise TrainingError("NF4 cache file is missing or has changed size: " + name)
+    config_entry = next((item for item in files if item["name"] == "config.json"), None)
+    config_sha256 = sha256_file(Path(source) / "config.json")
+    if config_entry is None or config_entry.get("sha256") != config_sha256:
+        raise TrainingError("NF4 cache config differs from its creation manifest")
     return {"source": manifest.get("source") or f"{manifest.get('source_repo_id')}@{manifest.get('source_revision')}",
             "manifest_sha256": sha256_file(path),
+            "config_sha256": config_sha256,
             "source_config_sha256": manifest.get("source_config_sha256"),
             "source_index_sha256": manifest.get("source_index_sha256"),
             "source_weights_sha256": manifest.get("source_weights_sha256"),
             "source_weights_bytes": manifest.get("source_weights_bytes"),
-            "validation": "manifest source + saved file sizes; full hashes recorded at CPU creation"}
+            "validation": "manifest source + actual config SHA256 + saved file sizes; full weight hashes recorded at CPU creation"}
 
 
 def validate_pinned_model_source(source, options, tok_source, tok_options, cfg, transformers):
@@ -300,7 +305,8 @@ def validate_pinned_model_source(source, options, tok_source, tok_options, cfg, 
         return path
 
     cache_manifest_path = Path(source) / "cache-manifest.json" if local else None
-    if local and cfg.get("allow_cached_nf4") and cache_manifest_path and cache_manifest_path.is_file():
+    cached_nf4 = bool(local and cfg.get("allow_cached_nf4") and cache_manifest_path and cache_manifest_path.is_file())
+    if cached_nf4:
         cache_manifest = json.loads(cache_manifest_path.read_text(encoding="utf-8"))
         if (cache_manifest.get("base_family") != cfg["base_family"]
                 or cache_manifest.get("source_repo_id") != training["repo_id"]
@@ -326,7 +332,8 @@ def validate_pinned_model_source(source, options, tok_source, tok_options, cfg, 
         raise TrainingError("chat template differs from pinned deployment CT template")
     return {"manifest_path": str(Path(manifest_path).resolve()),
             "manifest_sha256": sha256_file(manifest_path), **manifest,
-            "local_weights_hash_checked": local}
+            "local_weights_hash_checked": local and not cached_nf4,
+            "local_nf4_cache_manifest_checked": cached_nf4}
 
 
 def load_model_and_tokenizer(cfg, stack, resume=None, expected_provenance=None):
@@ -430,9 +437,9 @@ def load_model_and_tokenizer(cfg, stack, resume=None, expected_provenance=None):
 def _signature(cfg, data, model_info=None):
     """Bind pinned runs to verified base bytes, independently of mount paths.
 
-    Recipes without a source manifest retain the historical 31B signature
-    format. Old 12B signatures without base identity are intentionally not
-    accepted: they cannot establish which pinned base produced a checkpoint.
+    Runs without an NF4 cache retain their historical signature format.
+    Cached runs additionally bind the effective quantized base, independently
+    of its mount path. Old cache signatures cannot prove that base identity.
     """
     config = dict(cfg)
     payload = {"config": config, "data_sha256": data["sha256"],
@@ -461,6 +468,19 @@ def _signature(cfg, data, model_info=None):
     else:
         # This optional key did not exist in historical 31B run configs.
         config.pop("model_source_manifest", None)
+    cache = (model_info or {}).get("nf4_cache")
+    if cache is not None:
+        identity = {key: cache.get(key) for key in ("manifest_sha256", "config_sha256")}
+        if any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
+               for value in identity.values()):
+            raise TrainingError("NF4 checkpoint identity requires verified cache manifest and actual config hashes; old cache metadata is insufficient")
+        payload["effective_nf4_base"] = identity
+        config.update({
+            "model_name_or_path": "nf4-cache:" + identity["manifest_sha256"],
+            "tokenizer_name_or_path": data["provenance"]["tokenizer_hash"],
+            "chat_template_path": data["provenance"]["chat_template_hash"],
+            "tool_schema_path": data["provenance"]["tools_hash"],
+        })
     encoded = json.dumps(payload, sort_keys=True).encode()
     return hashlib.sha256(encoded).hexdigest()
 

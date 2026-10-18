@@ -1,64 +1,77 @@
-# P007 公共12题（24次尝试）4×L4 配对评测报告：`public022_v10` vs `behavior_v1`
+# P007 公共 12 题配对评测：public022_v10 vs behavior_v1
 
-- **执行时间**：2026-10-17（UTC `06:35:27Z` – `07:32:05Z`）
-- **CPU 预检 Kernel**：`ccjjllt/p007-public12-pair-cpu-prepare` Version 1（`COMPLETE`，`151.03s`，`0s` GPU 额度，验证 41 个 v31 wheels、12 个 `dev_future` 任务与快照、双臂 `compile_submission` 均通过，产物见 `cpu-output-v1/`）
-- **GPU 评测 Kernel**：`ccjjllt/p007-public12-pair` Version 2（`COMPLETE`，`NvidiaL4` 4×L4，`run_id = run-007-public12-pair-20261017T063527Z-5d0f2c69`，完整产物与 24 条 trace/patch/test_output 归档于 `gpu-output-v2/results/007/run-007-public12-pair-20261017T063527Z-5d0f2c69/`）
-- **注**：Version 1 因 CLI 未显式带 `--accelerator NvidiaL4` 默认落到 `NvidiaTeslaT4`（2×T4），在启动第 16 秒被 4×L4 断言拦截退出，未启动 vLLM；Version 2 显式指定 `--accelerator NvidiaL4 -t 5760` 一次跑完。
+本报告于 **2026-10-18** 按原始 result、context_metrics、harness 日志、trace 和 patch 复核更正。原始产物保持不变，官方 resolved 仍是 **3/12 对 4/12**。这是一次开发集配对观测；不能称为确定性增益，也不能据此预测正式公榜分数。详细复核见 [agent-review.md](../../008/review-20261018/agent-review.md)。
 
-## 1. 实验设计与 GPU 利用率优化结果
+- GPU 执行：2026-10-17 UTC 06:35:27–07:32:05，`ccjjllt/p007-public12-pair` V2，4×L4，24/24 attempts 完成。
+- run_id：`run-007-public12-pair-20261017T063527Z-5d0f2c69`。
+- 原件根目录：`gpu-output-v2/results/007/run-007-public12-pair-20261017T063527Z-5d0f2c69/`，下称 `RUN/`。
+- CPU prepare V1 完成，两臂 compile 成功，151.03 秒。GPU V1 误分配 2×T4 后在 16 秒退出，未启动模型；V2 使用显式 NvidiaL4 完成实验。
 
-- **严格单变量对照**：
-  - `agent.yaml` SHA256：`680799291cc7d156d06fb7bfb5577f683ccc0d555b00e8ddb662d577f9bfa5e4`（双臂完全一致：8 min / 28 tool calls / 80 turns / 240s 命令超时，无额外 skills）
-  - `configs/sampling.yaml` SHA256：`571a934e89911734927533f1d36cbcc7b8d493592febe63b217e911cf7ed4926`（双臂完全一致：`temperature=0.2, top_p=0.95, max_output_tokens=8192, thinking_budget=4096`）
-  - `eval_config.yaml` SHA256：`916cf6cb34a6cc3de39837fa72cac681599b9ac2a3ee0b893adadfd36474c531`（双臂完全一致）
-  - `prompts/system.md` SHA256：`public022_v10` 为 `7f8dde62578a247ffbfc1a519b712ae65849fcfae1ee70c49e0628cab74cbef6`；`behavior_v1` 为 `079af84132a2931adf2aa84d48bf15407dce92aa07c4dfa6cf330e0ce146bdca`（仅修改 `### 2. Locate`、`### 3. Read`、`### 5. Verify` 三个行为验证小节）。
-- **单共享 31B CT v2 服务与滚动双配对并发（`MAX_CONCURRENT = 4`）**：
-  - `server_start_count = 1`，vLLM 启动耗时 `333.41s`，批评测耗时 `3291.30s`，Supervisor 总墙钟 `3397.60s`（**56.63 分钟** 完成全部 24 次 8 分钟预算尝试）。
-  - 4×L4 KV cache：`Available KV cache memory: 13.2 GiB`/卡，`GPU KV cache size: 57,664 tokens`（`32,768` 上下文下最大并发 `10.87x`）。
-  - 4 路并发运行时 vLLM 生成吞吐最高达 `108.9 tokens/s`、预填充吞吐达 `985.9 tokens/s`，消除了双路 barrier 等待空闲。
+## 1. 实际控制条件与耗时口径
 
-## 2. 总体配对结果汇总
+A 为外部公开 0.22 的原样 `public022_v10`，B 为 `behavior_v1`。逐成员核对，`agent.yaml`、`configs/sampling.yaml`、`eval_config.yaml` 完全一致，只有 prompt 不同。B 替换 **Locate 的一个行为复现 bullet 与 Verify 的三个 bullet**；Edit 节未变，没有单独的 Read 节。改动同时涉及行为证据、证据失败诊断和修复时机，不能把单一 prompt 因子进一步解释成某一句话的独立收益。
 
-| 指标 | `public022_v10`（原样 0.22 基线） | `behavior_v1`（单变量行为验证升级） | 差值（`behavior_v1 - public022_v10`） |
-|---|---:|---:|---:|
-| 计划 / 完成任务数 | 12 / 12 | 12 / 12 | 0 |
-| 官方 `resolved = true` 题数 | **3 / 12 (25.0%)** | **4 / 12 (33.3%)** | **+1 (+8.3 pct)** |
-| **含非空源码修改**且 `resolved = true` 题数 | **2 / 12 (16.7%)** | **4 / 12 (33.3%)** | **+2 (+16.7 pct)** |
-| 产出非空生产补丁（`agent_patch_size > 0`）题数 | 7 / 12 | 9 / 12 | +2 |
-| 配对净胜题数（`behavior_v1` 独胜 vs `public022_v10` 独胜） | 0 独胜 | **1 独胜（`rich_3180`）** | **+1（0 回退）** |
-| 单题平均 / 中位 / P95 耗时（含评测容器阶段，秒） | `381.64s` / `465.85s` / `488.61s` | `422.99s` / `454.62s` / `786.03s`（注：`rich_4006` 含 `300s` 测试容器超时） | 见注 |
-| 平均工具调用数 / 平均 LLM 调用数 | `22.75` / `25.17` | **`21.25`** / **`24.58`** | `-1.50` / `-0.59` |
-| 8 分钟会话超时题数 / 未正常收尾比例（超时+工具预算耗尽） | 6 题 / **50.0% (6/12)** | **3 题** / **33.3% (4/12)** | **-3 题 (-16.7 pct)** |
-| 共享 vLLM 启动耗时 / 24 次尝试总批处理墙钟 | `333.41s` / `3291.30s`（单次启动共享） | 同左（双臂同服并发） | 0 |
+两臂均为 31B CT v2、temperature=0.2、top_p=0.95、8192 output、4096 thinking、8 分钟、28 counted calls、80 turns、240 秒命令超时。没有额外 skills；原九工具声明保持不变。v31 harness 的 verification 另固定为 300 秒，sandbox 为 subprocess。12 个已选择开发题每臂仅一次，AB/BA 交替，一个模型服务、最多四 worker 滚动并发。
 
-- 配对四格表（`(public022_v10, behavior_v1)`）：
-  - `(1, 1)` 双臂均通过：**3 题**（`rich_3067`, `fastapi_14851`, `fastapi_14463`）
-  - `(0, 1)` `behavior_v1` 独胜：**1 题**（`rich_3180`）
-  - `(1, 0)` `public022_v10` 独胜：**0 题**
-  - `(0, 0)` 双臂均未通过：**8 题**（其中 5 题受 `SubprocessManager` `src/` 路径或 `dev_future` 缺失 `inline_snapshot` / 保护 `tox.ini` 限制，详见第 4 节）
+- prompt SHA：A `7f8dde62578a247ffbfc1a519b712ae65849fcfae1ee70c49e0628cab74cbef6`；B `079af84132a2931adf2aa84d48bf15407dce92aa07c4dfa6cf330e0ce146bdca`。
+- 模型启动 333.41 秒；`batch_wall_seconds=3291.30` **已包含模型启动**，因为 coordinator 在 server.start 之前设置 batch_start。不能再把两者相加。
+- Supervisor 总墙钟 3397.60 秒（56.63 分钟）。四并发下的批次耗时、单题排队时间均不等于正式 scorer 串行耗时。
+- `context_metrics.agent_elapsed_seconds` 是 agent 阶段；`result.duration_seconds` 还包含 setup/verification。正式预算分析应区分两者，不能将含 300 秒裁判超时的 duration 直接外推。
 
-## 3. 逐题配对明细（12 题 × 双臂 = 24 次尝试）
+## 2. 更正后的配对汇总
 
-| Slot | 任务 ID | 仓库 | 配对顺序 | `public022_v10` 结果 / 补丁 / 调用 / 耗时 | `behavior_v1` 结果 / 补丁 / 调用 / 耗时 | 配对结论与关键机制观察 |
-|---:|---|---|---|---|---|---|
-| 1 | `rich_4006` | `Textualize/rich` | AB | `False` / `0B` / `5` calls / `484.5s` (timeout) | `False` / `709B` / `9` calls / `786.0s` (timeout) | 双臂复现 `split_graphemes('\ufe0f')` 死循环时未加短超时，单条命令卡满 `240s`；`behavior_v1` 仍改出 `rich/cells.py` 补丁修复了 `\ufe0f` 分支，但因耗时耗尽未及修 `\ufe0e` 分支 |
-| 2 | `rich_3067` | `Textualize/rich` | BA | `True` / `1338B` / `28` calls / `244.5s` (5 tool errs) | `True` / `655B` / `13` calls / `224.5s` (0 tool errs) | 双臂均通过（82 passed）；`behavior_v1` 仅用 **13 次工具调用、0 错误**即完成最小干净补丁并提交，而基线用满 28 次调用且留下未清理 `repro.py` |
-| 3 | `rich_3180` | `Textualize/rich` | AB | `False` / `499B` (`repro.py` only) / `16` calls / `485.7s` | **`True`** / **`2761B`** / **`9` calls** / `485.7s` | **`behavior_v1` 独胜（0→1）**：`behavior_v1` 构造 `divide_line("A你好", 3)` 正反合同断言，9 次调用定位并修复 `rich/cells.py::chop_cells` 中 `reversed(characters)` 顺序错误，114 passed；基线前 14 次调用反复读/搜，478.8s 才写 `repro.py`，未改生产代码 |
-| 4 | `rich_3472` | `Textualize/rich` | BA | `False` / `0B` / `28` calls / `482.4s` | `False` / `0B` / `28` calls / `307.3s` | 双臂均在 `rich/repr.py` 与 `rich/pretty.py` 间耗尽 28 次调用未完成有效编辑 |
-| 5 | `fastapi_14482` | `fastapi/fastapi` | AB | `False` / `0B` / `28` calls / `485.3s` | `False` / `1541B` / `28` calls / `338.3s` | `behavior_v1` 完成 `fastapi/encoders.py` 生产修改并 `submit_patch`（基线 `0B` 超时）；但官方评测容器收集 `tests/test_arbitrary_types.py` 时因 wheelhouse 缺少 `inline_snapshot` 报 `ModuleNotFoundError` (`rc=2`) |
-| 6 | `fastapi_14851` | `fastapi/fastapi` | BA | `True` / **`0B`** / `28` calls / `226.8s` | `True` / **`526B`** / `28` calls / `489.2s` | 基线耗尽 28 次调用未改任何文件（`patch_size=0`），仅因当前环境 Starlette 尚未移除 `on_event` 而空补丁通过；`behavior_v1` 实际修改了 `fastapi/routing.py` 并通过全部 9 个测试 |
-| 7 | `fastapi_14463` | `fastapi/fastapi` | AB | `True` / `745B` / `16` calls / `171.8s` | `True` / `1900B` / `28` calls / `302.8s` | 双臂均用 `copy.deepcopy(additional_response)` 修复 `fastapi/openapi/utils.py` 并通过评测 |
-| 8 | `fastapi_14459` | `fastapi/fastapi` | BA | `False` / `1133B` (`repro.py` only) / `28` calls / `488.6s` | `False` / `0B` / `28` calls / `485.2s` | 双臂均未改出生产文件；且评测测试同样因缺少 `inline_snapshot` 在收集阶段报 `ModuleNotFoundError` (`rc=2`) |
-| 9 | `requests_7205` | `psf/requests` | AB | `False` / `503B` / `22` calls / `266.2s` | `False` / `503B` / `14` calls / `214.8s` | **双臂均写出与官方 Gold 完全一致的源码补丁**（`src/requests/utils.py`: `if _netrc and any(_netrc):`），且 `behavior_v1` 主动发现 `requests.__file__` 指向系统目录并用 `PYTHONPATH=/workspace/src` 验证通过；但 `SubprocessManager` 在 `verify_task` 中未把 `/workspace/src` 加入 `PYTHONPATH`，导致评测导入了系统未打补丁的 `requests` 而误判失败 |
-| 10 | `requests_6757` | `psf/requests` | BA | `False` / `0B` / `28` calls / `449.3s` | `False` / `0B` / `27` calls / `425.0s` | 该题要求修改 `tox.ini` 增加 `urllib3_1_26` 环境；双臂均正确修改了 `tox.ini`，但 `swegemma` 的 `_is_protected_test_or_config_path` 将 `tox.ini` 视为保护文件在 `submit_patch` 时剥离为 `0B` |
-| 11 | `requests_7427` | `psf/requests` | AB | `False` / `1089B` / `18` calls / `484.3s` | `False` / `2442B` / `15` calls / `484.3s` | 双臂均修改了 `src/requests/utils.py::should_bypass_proxies` 域名边界逻辑，但因 `SubprocessManager` 默认导入系统 `requests`，复现实验与 `verify_task` 均实际运行了系统旧代码 |
-| 12 | `requests_7502` | `psf/requests` | BA | `False` / `1715B` / `28` calls / `310.2s` | `False` / `1194B` / `28` calls / `532.9s` | `verify_task` 全量运行 `tests/test_requests.py` 触发 196 个 httpbin fixture 错误，且同样受 `SubprocessManager` `src/requests` 路径遮蔽影响 |
+| 指标 | A public022_v10 | B behavior_v1 |
+|---|---:|---:|
+| 完成 / 计划 | 12/12 | 12/12 |
+| 官方 resolved | **3/12** | **4/12** |
+| resolved 且有非空生产修改 | 2/12 | 4/12 |
+| 非空 patch（含 scratch-only） | 7/12 | 9/12 |
+| 实际含生产文件修改的 patch | **5/12** | **8/12** |
+| harness 记录的 agent 会话超时 | **6/12** | **5/12** |
+| 明确 tool-budget error | 0/12 | 1/12 |
+| 会话超时或 tool-budget error | **6/12（50%）** | **6/12（50%）** |
+| agent 阶段平均耗时 | **364.04s** | **380.25s** |
+| 含 setup/verification 的平均 duration | 381.64s | 422.99s |
+| 含 setup/verification 的中位 / P95 duration | 465.85s / 488.61s | 454.62s / 786.03s |
+| 平均工具调用 / LLM 调用 | 22.75 / 25.17 | 21.25 / 24.58 |
 
-## 4. 新形成的三项核心机制证据
+生产文件口径为最终 patch 中存在 `rich/`、`fastapi/` 或 `src/requests/` 修改；repro.py 等不算生产修改。P95 使用 nearest-rank，因此 n=12 时等于最大值。
 
-1. **正反行为验证指令（`behavior_v1`）带来确定性净增且零回退**：
-   - 在完全相同的 31B CT v2 模型、采样参数与 8min/28-call 预算下，`behavior_v1` 将官方 `resolved` 从 `3/12` 提升到 `4/12`（非空有效补丁 `resolved` 从 `2/12` 提升到 `4/12`），在 `rich_3180` 实现 `0 -> 1` 突破，在 `rich_3067` 将工具调用从 28 次降为 13 次（0 错误），在 `fastapi_14851` 与 `fastapi_14482` 均完成了 `public022_v10` 未能完成的生产源码修改。
-2. **死循环/阻塞复现耗尽预算机制（`rich_4006` 证据）**：
-   - 当任务本身是修复死循环或卡死（如 `rich_4006` 的 `split_graphemes`）时，`eval_config.yaml` 的单命令超时为 `240s`（占 8 分钟总预算的一半）。模型直接执行 `python3 -c "..."` 复现 bug 会立刻挂死 `240s`，导致单次工具调用吞掉半场时间。在复现命令中显式使用短超时（如 `timeout 10 python3 -c ...`）可完全避免此类 240s 挂死。
-3. **本地/Notebook `SubprocessManager` 对 `src/` 布局仓库的导入遮蔽机制（`psf/requests` 四题证据）**：
-   - 核查 `swegemma/harness/container_setup.py` 与 `swegemma/sandbox/subprocess.py` 证实：官方比赛重跑使用 Docker `ContainerManager`（会执行 `pip install -e /workspace` 与 `sandbox/setup.py` 注入 `/workspace/src`），而 Notebook 离线评测使用的 `SubprocessManager` 跳过了 `install_editable_package` 且仅设置 `PYTHONPATH=/workspace`。因此对采用 `src/` 布局的 `psf/requests`，评测容器 `python3 -s -m pytest` 实际导入的是镜像自带的 `/usr/local/lib/python3.12/dist-packages/requests`，导致 `requests_7205` 双臂写出的 **100% 正确补丁**被评测容器忽略。同时，`behavior_v1` 在 `18-requests_7205-r1-behavior_v1` 的第 14–15 步自主通过 `print(requests.__file__)` 诊断出该遮蔽并用 `PYTHONPATH=/workspace/src` 完成了真实行为验证。
+配对四格仍为：双方成功 3、B 独胜 1、A 独胜 0、双方失败 8。唯一 B 独胜是 `rich_3180`。只能说“本次未观察到 resolved 回退”；只有一对 discordant，双侧 exact paired sign test p=1，不足以确认稳定优势。
+
+B 的 `rich_3180` 和 `fastapi_14851` 都明确超时，但恢复工作树 patch 后通过，故 result.error=null。此前仅按 error 字段统计漏掉这两次，将 B 超时误记为 3/12。更正后的 JSON 保留 error 原值，为全部尝试独立增加 `agent_timed_out` 等派生字段。
+
+## 3. 逐题结果与证据边界
+
+| 题目 | A resolved / patch / duration | B resolved / patch / duration | 核实后的解释 |
+|---|---|---|---|
+| rich_4006 | False / 0B / 484.51s | False / 709B / 786.03s | 两臂无短超时复现各阻塞 240 秒。B 464.65s 才编辑一处分支，裁判又超时；不是完整修复 |
+| rich_3067 | True / 1338B / 244.51s | True / 655B / 224.49s | 双方通过；B 13 tool calls，A 28。A patch 携带 repro.py，B 为较干净的生产修改 |
+| rich_3180 | False / 499B / 485.75s | **True / 2761B / 485.70s** | B 正确修改生产文件后超时恢复成功；无修复后验证、无 submit_patch，含两个 scratch 文件 |
+| rich_3472 | False / 0B / 482.41s | False / 0B / 307.26s | A 会话超时，B 工具预算耗尽，均没有最终生产修改 |
+| fastapi_14482 | False / 0B / 485.27s | False / 1541B / 338.27s | B 有生产修改；裁判收集失败缺 inline_snapshot，不能据此判断修改是否正确 |
+| fastapi_14851 | **True / 0B / 226.84s** | True / 526B / 489.21s | A 空 patch 通过，说明当前环境不能充分区分该题；B 超时恢复后通过，不能算新增修复胜场 |
+| fastapi_14463 | True / 745B / 171.77s | True / 1900B / 302.84s | 双方修改生产文件并通过；B 更慢且包含 reproduction.py |
+| fastapi_14459 | False / 1133B / 488.61s | False / 0B / 485.17s | A 只有 repro.py、裁判缺 inline_snapshot；B 无 patch。二者都未落地生产修改 |
+| requests_7205 | False / 503B / 266.21s | False / 503B / 214.83s | 两 patch 相同；B 诊断系统 requests 导入遮蔽并用本地 src 验证。独立裁判仍失败，保留 False，不改记成功 |
+| requests_6757 | False / 0B / 449.28s | False / 0B / 424.96s | 涉及受保护 tox.ini；最终 patch 均为 0，A/B 反复 submit_patch 11/10 次仍未交付 |
+| requests_7427 | False / 1089B / 484.34s | False / 2442B / 484.28s | 均有生产修改并超时；B 另带 repro.py。src 导入问题使本地质量结论受限 |
+| requests_7502 | False / 1715B / 310.24s | False / 1194B / 532.88s | A 有 src/requests/models.py 修改，B **只有 repro.py**；双方评测有 196 个 fixture 错误，存在生产编辑层回退 |
+
+各数来自 `RUN/<arm>/r1/attempts/<attempt_id>/result.json`；生产修改来自该目录 `patches/`。两臂各四个 Rich、FastAPI、Requests 开发题，不能覆盖其他仓库或正式隐藏任务分布。
+
+## 4. 可以支持的机制结论
+
+**rich_3180 的正面证据是正确编辑落地，不是完整验证闭环。** B trace step 7 在 174.94 秒写 repro.py；step 8 对关键 mixed-width 输入打印当前 [1]，该例没有正确结果 assert。step 10 在 415.41 秒首次编辑 rich/cells.py；step 11 在 474.80 秒写包含 pass 的 repro_2.py。之后没有修复后检查或 submit_patch，harness 记录超时，恢复 patch 后裁判 114 passed。A 仅写 repro.py。这个独胜值得跟进，但不能证明提示要求被完整执行。
+
+**requests_7205 支持“核实运行的是哪份代码”。** B trace step 10 先验证自造 helper，不能代表真实源码；step 11 编辑生产代码；step 12 实际 API 仍显示旧结果。step 14 查出 requests.__file__ 指向系统目录，step 15 使用 PYTHONPATH=/workspace/src 后观察到空凭据 None、正常凭据保持原值，step 17 提交非空 patch。然而独立 verify 仍报告 1 failed、205 passed、13 skipped，关键断言得到 ('', '')。它支持 subprocess 环境路径问题的诊断；未经修正环境复评，不称“100% 正确补丁”，不手工改写官方 resolved。
+
+**短超时可以限制复现损耗，但不是成功保证。** rich_4006 的两个 run_command 均真实阻塞 240 秒，占 agent 预算一半。应为可能死循环的复现限定短 shell 超时，再依据源码证据编辑；仅增加总预算或提示篇幅没有得到本轮支持。
+
+**环境与污染问题仍制约结论。** 缺 inline_snapshot、src 导入遮蔽、配置文件保护及 httpbin fixture 错误，使若干失败不能等价于模型修复错误；空 patch 通过又说明存在假阳性。新增 scratch 文件和反复空提交同时显示行为版仍有执行问题。这些结果不适合未经甄别直接作为训练奖励。
+
+## 5. 实验结论
+
+原样公开参考已完成本地真实运行，B 在一次同条件配对中观察到 1 个 resolved 净胜、更多生产修改，但 agent 平均耗时增加 16.21 秒，超时或工具耗尽比例没有降低。应将 B 视作待确认候选，保留原样参考，不宣称确定性升级或金牌水平。
+
+后续正式提交与训练进展另记，不追加为本次 P007 原始结果。原 result/trace/patch 均未更改；[paired-analysis.json](paired-analysis.json) 记录更正口径和独立 timeout 信息。
