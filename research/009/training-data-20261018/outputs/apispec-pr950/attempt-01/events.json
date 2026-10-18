@@ -1,0 +1,73 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "src/apispec/ext/marshmallow/field_converter.py",
+      "start_line": 506,
+      "end_line": 586
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "src/apispec/ext/marshmallow/field_converter.py",
+      "content": "        \"\"\"\n        ret = {}\n        if isinstance(field, marshmallow.fields.List):\n            ret[\"items\"] = self.field2property(field.inner)\n        return ret\n\n    def dict2properties(self, field, **kwargs: typing.Any) -> dict:\n        \"\"\"Return a dictionary of properties from :class:`Dict <marshmallow.fields.Dict>` fields.\n\n        Only applicable for Marshmallow versions greater than 3. Will provide an\n        `additionalProperties` property based on the field's `value_field` attribute\n\n        :param Field field: A marshmallow field.\n        :rtype: dict\n        \"\"\"\n        ret = {}\n        if isinstance(field, marshmallow.fields.Dict):\n            value_field = field.value_field\n            if value_field:\n                ret[\"additionalProperties\"] = self.field2property(value_field)\n        return ret\n\n    def timedelta2properties(self, field, **kwargs: typing.Any) -> dict:\n        \"\"\"Return a dictionary of properties from :class:`TimeDelta <marshmallow.fields.TimeDelta>` fields.\n\n        Adds a `x-unit` vendor property based on the field's `precision` attribute\n\n        :param Field field: A marshmallow field.\n        :rtype: dict\n        \"\"\"\n        ret = {}\n        if isinstance(field, marshmallow.fields.TimeDelta):\n            ret[\"x-unit\"] = field.precision\n        return ret\n\n    def enum2properties(self, field, **kwargs: typing.Any) -> dict:\n        \"\"\"Return a dictionary of properties from :class:`Enum <marshmallow.fields.Enum` fields.\n\n        :param Field field: A marshmallow field.\n        :rtype: dict\n        \"\"\"\n        ret = {}\n        if isinstance(field, marshmallow.fields.Enum):\n            ret = self.field2property(field.field)\n            if field.by_value is False:\n                choices = (m for m in field.enum.__members__)\n            else:\n                choices = (m.value for m in field.enum)\n            ret[\"enum\"] = [field.field._serialize(v, None, None) for v in choices]\n            if field.allow_none and None not in ret[\"enum\"]:\n                ret[\"enum\"].append(None)\n        return ret\n\n    def datetime2properties(self, field, **kwargs: typing.Any) -> dict:\n        \"\"\"Return a dictionary of properties from :class:`DateTime <marshmallow.fields.DateTime` fields.\n\n        :param Field field: A marshmallow field.\n        :rtype: dict\n        \"\"\"\n        ret = {}\n        if isinstance(field, marshmallow.fields.DateTime) and not isinstance(\n            field, marshmallow.fields.Date\n        ):\n            if field.format == \"iso\" or field.format is None:\n                # Will return { \"type\": \"string\", \"format\": \"date-time\" }\n                # as specified inside DEFAULT_FIELD_MAPPING\n                pass\n            elif field.format == \"rfc\":\n                ret = {\n                    \"type\": \"string\",\n                    \"format\": None,\n                    \"example\": \"Wed, 02 Oct 2002 13:00:00 GMT\",\n                    \"pattern\": r\"((Mon|Tue|Wed|Thu|Fri|Sat|Sun), ){0,1}\\d{2} \"\n                    + r\"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \\d{4} \\d{2}:\\d{2}:\\d{2} \"\n                    + r\"(UT|GMT|EST|EDT|CST|CDT|MST|MDT|PST|PDT|(Z|A|M|N)|(\\+|-)\\d{4})\",\n                }\n            elif field.format == \"timestamp\":\n                ret = {\n                    \"type\": \"number\",\n                    \"format\": \"float\",\n                    \"example\": \"1676451245.596\",",
+      "start_line": 506,
+      "end_line": 586,
+      "total_lines": 641,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "run_command",
+    "arguments": {
+      "command": "PYTHONPATH=src:. python - <<'PY'\nimport json,sys\nfrom apispec import APISpec\nfrom apispec.ext.marshmallow import MarshmallowPlugin\nfrom marshmallow import Schema,fields\nclass S(Schema):\n    plain=fields.Dict()\n    raw=fields.Dict(values=fields.Raw())\n    integer=fields.Dict(values=fields.Integer())\n    scalar=fields.Integer()\nspec=APISpec(title=\"API\",version=\"1\",openapi_version=\"3.0.2\",plugins=[MarshmallowPlugin()])\nspec.components.schema(\"S\",schema=S)\np=spec.to_dict()['components']['schemas']['S']['properties']\ncases=[{'case':'plain_dict','schema':p['plain'],'pass':p['plain']=={'type':'object','additionalProperties':{}}},\n       {'case':'raw_dict','schema':p['raw'],'pass':p['raw']=={'type':'object','additionalProperties':{}}},\n       {'case':'integer_dict','schema':p['integer'],'pass':p['integer']=={'type':'object','additionalProperties':{'type':'integer'}}},\n       {'case':'scalar_unchanged','schema':p['scalar'],'pass':p['scalar']=={'type':'integer'}}]\nprint(json.dumps({'cases':cases},sort_keys=True))\nsys.exit(0 if all(c['pass'] for c in cases) else 1)\nPY"
+    },
+    "response": {
+      "status": "error",
+      "error_type": "CommandError",
+      "error_message": "{\"cases\": [{\"case\": \"plain_dict\", \"pass\": false, \"schema\": {\"type\": \"object\"}}, {\"case\": \"raw_dict\", \"pass\": true, \"schema\": {\"additionalProperties\": {}, \"type\": \"object\"}}, {\"case\": \"integer_dict\", \"pass\": true, \"schema\": {\"additionalProperties\": {\"type\": \"integer\"}, \"type\": \"object\"}}, {\"case\": \"scalar_unchanged\", \"pass\": true, \"schema\": {\"type\": \"integer\"}}]}\n",
+      "details": {
+        "stdout": "{\"cases\": [{\"case\": \"plain_dict\", \"pass\": false, \"schema\": {\"type\": \"object\"}}, {\"case\": \"raw_dict\", \"pass\": true, \"schema\": {\"additionalProperties\": {}, \"type\": \"object\"}}, {\"case\": \"integer_dict\", \"pass\": true, \"schema\": {\"additionalProperties\": {\"type\": \"integer\"}, \"type\": \"object\"}}, {\"case\": \"scalar_unchanged\", \"pass\": true, \"schema\": {\"type\": \"integer\"}}]}\n",
+        "stderr": "",
+        "exit_code": 1
+      }
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "src/apispec/ext/marshmallow/field_converter.py",
+      "old_string": "    def dict2properties(self, field, **kwargs: typing.Any) -> dict:\n        \"\"\"Return a dictionary of properties from :class:`Dict <marshmallow.fields.Dict>` fields.\n\n        Only applicable for Marshmallow versions greater than 3. Will provide an\n        `additionalProperties` property based on the field's `value_field` attribute\n\n        :param Field field: A marshmallow field.\n        :rtype: dict\n        \"\"\"\n        ret = {}\n        if isinstance(field, marshmallow.fields.Dict):\n            value_field = field.value_field\n            if value_field:\n                ret[\"additionalProperties\"] = self.field2property(value_field)\n        return ret",
+      "new_string": "    def dict2properties(self, field, **kwargs: typing.Any) -> dict:\n        \"\"\"Return a dictionary of properties from :class:`Dict <marshmallow.fields.Dict>` fields.\n\n        Only applicable for Marshmallow versions greater than 3. Will provide an\n        `additionalProperties` property based on the field's `value_field` attribute.\n        If value_field is None, behaves as if value_field was set to Raw().\n\n        :param Field field: A marshmallow field.\n        :rtype: dict\n        \"\"\"\n        ret = {}\n        if isinstance(field, marshmallow.fields.Dict):\n            value_field = field.value_field\n            if value_field:\n                ret[\"additionalProperties\"] = self.field2property(value_field)\n            else:\n                # When value_field is None, behave like Dict(values=Raw())\n                ret[\"additionalProperties\"] = {}\n        return ret",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "src/apispec/ext/marshmallow/field_converter.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/src/apispec/ext/marshmallow/field_converter.py\n+++ b/src/apispec/ext/marshmallow/field_converter.py\n@@ -513,7 +513,8 @@\n         \"\"\"Return a dictionary of properties from :class:`Dict <marshmallow.fields.Dict>` fields.\n \n         Only applicable for Marshmallow versions greater than 3. Will provide an\n-        `additionalProperties` property based on the field's `value_field` attribute\n+        `additionalProperties` property based on the field's `value_field` attribute.\n+        If value_field is None, behaves as if value_field was set to Raw().\n \n         :param Field field: A marshmallow field.\n         :rtype: dict\n@@ -523,6 +524,9 @@\n             value_field = field.value_field\n             if value_field:\n                 ret[\"additionalProperties\"] = self.field2property(value_field)\n+            else:\n+                # When value_field is None, behave like Dict(values=Raw())\n+                ret[\"additionalProperties\"] = {}\n         return ret\n \n     def timedelta2properties(self, field, **kwargs: typing.Any) -> dict:\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "run_command",
+    "arguments": {
+      "command": "PYTHONPATH=src:. python - <<'PY'\nimport json,sys\nfrom apispec import APISpec\nfrom apispec.ext.marshmallow import MarshmallowPlugin\nfrom marshmallow import Schema,fields\nclass S(Schema):\n    plain=fields.Dict()\n    raw=fields.Dict(values=fields.Raw())\n    integer=fields.Dict(values=fields.Integer())\n    scalar=fields.Integer()\nspec=APISpec(title=\"API\",version=\"1\",openapi_version=\"3.0.2\",plugins=[MarshmallowPlugin()])\nspec.components.schema(\"S\",schema=S)\np=spec.to_dict()['components']['schemas']['S']['properties']\ncases=[{'case':'plain_dict','schema':p['plain'],'pass':p['plain']=={'type':'object','additionalProperties':{}}},\n       {'case':'raw_dict','schema':p['raw'],'pass':p['raw']=={'type':'object','additionalProperties':{}}},\n       {'case':'integer_dict','schema':p['integer'],'pass':p['integer']=={'type':'object','additionalProperties':{'type':'integer'}}},\n       {'case':'scalar_unchanged','schema':p['scalar'],'pass':p['scalar']=={'type':'integer'}}]\nprint(json.dumps({'cases':cases},sort_keys=True))\nsys.exit(0 if all(c['pass'] for c in cases) else 1)\nPY"
+    },
+    "response": {
+      "status": "ok",
+      "stdout": "{\"cases\": [{\"case\": \"plain_dict\", \"pass\": true, \"schema\": {\"additionalProperties\": {}, \"type\": \"object\"}}, {\"case\": \"raw_dict\", \"pass\": true, \"schema\": {\"additionalProperties\": {}, \"type\": \"object\"}}, {\"case\": \"integer_dict\", \"pass\": true, \"schema\": {\"additionalProperties\": {\"type\": \"integer\"}, \"type\": \"object\"}}, {\"case\": \"scalar_unchanged\", \"pass\": true, \"schema\": {\"type\": \"integer\"}}]}\n",
+      "stderr": "",
+      "exit_code": 0
+    }
+  },
+  {
+    "tool": "submit_patch",
+    "arguments": {},
+    "response": {
+      "status": "ok",
+      "patch_size": 1241,
+      "files_changed": 1
+    }
+  }
+]

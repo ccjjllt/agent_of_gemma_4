@@ -1,5 +1,7 @@
 # 12B真实训练与CT探针复核
 
+> **P009执行更正（2026-10-18）**：本报告下文“override是自定义路径、默认Unified失败所以正式兼容未通过”的推断遗漏了已归档官方证据。Ryan在[discussion748287](https://www.kaggle.com/competitions/gemma-4-developer-agent/discussion/748287) comment3536939（2026-10-11 14:39 UTC）明确scorer已经加入`Gemma4ForCausalLM/model_type=gemma4`覆盖；原件位于`research/006/official-data-20261013/topic-748287.json`，P006报告第38行亦有记录。V6使用这一架构覆盖符合官方说明。ADK默认`extra_args=[]`不能推翻scorer的per-model映射。保留下文当时诊断作为可追溯记录，但不再据此阻止新数据训练；实际未证明部分仍是32768等完整运行条件、真实Agent修复及正式得分。
+
 复核日期：2026-10-18。起点HEAD `be9b27b578127cc4939933ba2e8d4eb6d9db49ea`，比较`5a979ef..be9b27b`；只读训练代码、NF4生产脚本、V1–V6原件与冻结click训练/pydicom诊断材料。随后按主代理明确授权，仅修改`training/train_sft.py`的缓存恢复身份和来源字段。未运行GPU、模型加载、训练或新测试脚本，未读取heldout或预留题。
 
 ## 可以确认的进展

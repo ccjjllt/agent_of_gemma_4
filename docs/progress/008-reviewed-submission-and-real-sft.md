@@ -2,6 +2,8 @@
 
 2026-10-18，北京时间。复核 `5a979ef..be9b27b` 新工作；当前执行方案见[008计划](../plan/008-reviewed-submission-and-real-sft.md)。没有新增测试文件、读取heldout/预留题正文或启动新GPU作业。
 
+> P009执行时更正：此前把12B架构override视为自定义部署障碍，遗漏了主办方comment3536939已经明确scorer采用同一配置的证据。V6架构覆盖符合官方说明；未完成的是完整任务对照及修复收益。P008未开GPU这一历史记录不包括用户随后授权的P009实验。
+
 ## 已完成的新submission
 
 - **提交编号57340172**，北京时间2026-10-18 **13:23:16** 上传成功；回读为`SubmissionStatus.PENDING`，分数为空。
@@ -14,7 +16,7 @@
 
 1. 公共12题已完成24次真实模型尝试：原样3/12、行为版4/12，独胜rich_3180。真实生产补丁5/12对8/12；非空patch7/12对9/12，两者不能混用。行为版实际超时5次，原报告按error计数漏掉2次超时后恢复补丁成功的尝试；双方超时或明确工具预算错误均为6/12。
 2. 12B已完成真实QAT NF4训练首步：click一题、3368输入/519监督token、单步训练loop（含保存）14.827秒、训练阶段allocated峰值9.7362GiB、240/240 LoRA_B非零。V1–V6是新起单步探针，不是累计六步训练。
-3. V6在官方CT权重上得到adapter概率作用，零delta对照与base精确一致；但依赖自定义文本后端override，普通声明式提交路径尚未验证。Live探针在预选内存文本上执行替换，不能当真实仓库工具执行或whole-issue修复；现有edit_ok均为False。
+3. V6在官方CT权重上得到adapter概率作用，零delta对照与base精确一致；其文本架构override符合主办方已声明的scorer设置。V6还使用8192上下文等诊断限制，没有运行完整Agent任务。Live探针在预选内存文本上执行替换，不能当真实仓库工具执行或whole-issue修复；现有edit_ok均为False。
 4. 外部8仓库已归档6个源码快照、5个目标源码import成功；0个完成任务裁判区分验证、0次模型配对。训练隔离仍成立，没有发现这些选择repo进入梯度。新跨repo效果SFT数据集尚未形成。
 
 具体见[Agent复核](../../research/008/review-20261018/agent-review.md)、[训练复核](../../research/008/review-20261018/training-review.md)、[数据复核](../../research/008/review-20261018/data-review.md)。P007派生报告的错误统计与过度结论按原件修正，原始result、trace、模型产物保持不变。

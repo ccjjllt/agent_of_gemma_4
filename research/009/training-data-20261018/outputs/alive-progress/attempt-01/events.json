@@ -1,0 +1,90 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "alive_progress/core/configuration.py",
+      "start_line": 61,
+      "end_line": 141
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "alive_progress/core/configuration.py",
+      "content": "            return int(x)\n        return ERROR\n\n    return _input\n\n\ndef _force_tty_input_factory():\n    def _input(x):\n        return table.get(x, ERROR)\n\n    table = {\n        None: FULL if sys.stdout.isatty() else NON_TTY,\n        False: NON_TTY,\n        True: FULL,\n    }\n    return _input\n\n\ndef _text_input_factory():\n    def _input(x):\n        return None if x is None else str(x)\n\n    return _input\n\n\nConfig = namedtuple('Config', 'title length spinner bar unknown force_tty disable manual '\n                              'enrich_print receipt receipt_text monitor elapsed stats '\n                              'title_length spinner_length refresh_secs monitor_end '\n                              'elapsed_end stats_end ctrl_c dual_line')\n\n\ndef create_config():\n    def reset():\n        \"\"\"Resets global configuration to the default one.\"\"\"\n        set_global(  # this must have all available config vars.\n            title=None,\n            length=40,\n            theme='smooth',  # includes spinner, bar and unknown.\n            force_tty=None,\n            disable=False,\n            manual=False,\n            enrich_print=True,\n            enrich_offset=0,\n            receipt=True,\n            receipt_text=False,\n            monitor=True,\n            elapsed=True,\n            stats=True,\n            monitor_end=True,\n            elapsed_end=True,\n            stats_end=True,\n            title_length=0,\n            spinner_length=0,\n            refresh_secs=0,\n            ctrl_c=True,\n            dual_line=False,\n        )\n\n    def set_global(theme=None, **options):\n        \"\"\"Update the global configuration, to be used in subsequent alive bars.\n\n        See Also:\n            alive_progress#alive_bar(**options)\n\n        \"\"\"\n        lazy_init()\n        global_config.update(_parse(theme, options))\n\n    def create_context(theme=None, **options):\n        \"\"\"Create an immutable copy of the current configuration, with optional customization.\"\"\"\n        lazy_init()\n        local_config = {**global_config, **_parse(theme, options)}\n        return Config(**local_config)\n\n    def _parse(theme, options):\n        \"\"\"Validate and convert some configuration options.\"\"\"\n\n        def validator(key, value):\n            try:\n                result = validations[key](value)\n                if result is ERROR:",
+      "start_line": 61,
+      "end_line": 141,
+      "total_lines": 198,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "run_command",
+    "arguments": {
+      "command": "PYTHONPATH=src:. python - <<'PY'\nimport ast,json,sys\nfrom pathlib import Path\ntree=ast.parse(Path('alive_progress/core/configuration.py').read_text())\nns={'ERROR':object()}\nfuncs=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in ['_int_input_factory','_float_input_factory']]\nexec(compile(ast.Module(body=funcs,type_ignores=[]),'<actual-source-factories>','exec'),ns)\nvalues=[kw.value for n in ast.walk(tree) if isinstance(n,ast.Call) for kw in n.keywords if kw.arg=='refresh_secs' and isinstance(kw.value,ast.Call)]\nassert len(values)==1\nvalidator=eval(compile(ast.Expression(values[0]),'<actual-refresh-validator>','eval'),ns)\ncases=[]\nfor value,expected in [(0.25,0.25),(1,1),(0,0),(-1,None),('0.25',None),(86401,None)]:\n    result=validator(value)\n    ok=(result is ns['ERROR']) if expected is None else result==expected\n    cases.append({'input':value,'output':'ERROR' if result is ns['ERROR'] else result,'pass':ok})\ncases.append({'case':'integer_length_still_rejects_fraction','pass':ns['_int_input_factory'](3,100)(3.5) is ns['ERROR']})\nprint(json.dumps({'cases':cases},sort_keys=True))\nsys.exit(0 if all(c['pass'] for c in cases) else 1)\nPY"
+    },
+    "response": {
+      "status": "error",
+      "error_type": "CommandError",
+      "error_message": "{\"cases\": [{\"input\": 0.25, \"output\": \"ERROR\", \"pass\": false}, {\"input\": 1, \"output\": 1, \"pass\": true}, {\"input\": 0, \"output\": 0, \"pass\": true}, {\"input\": -1, \"output\": \"ERROR\", \"pass\": true}, {\"input\": \"0.25\", \"output\": \"ERROR\", \"pass\": true}, {\"input\": 86401, \"output\": \"ERROR\", \"pass\": true}, {\"case\": \"integer_length_still_rejects_fraction\", \"pass\": true}]}\n",
+      "details": {
+        "stdout": "{\"cases\": [{\"input\": 0.25, \"output\": \"ERROR\", \"pass\": false}, {\"input\": 1, \"output\": 1, \"pass\": true}, {\"input\": 0, \"output\": 0, \"pass\": true}, {\"input\": -1, \"output\": \"ERROR\", \"pass\": true}, {\"input\": \"0.25\", \"output\": \"ERROR\", \"pass\": true}, {\"input\": 86401, \"output\": \"ERROR\", \"pass\": true}, {\"case\": \"integer_length_still_rejects_fraction\", \"pass\": true}]}\n",
+        "stderr": "",
+        "exit_code": 1
+      }
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "alive_progress/core/configuration.py",
+      "old_string": "def _force_tty_input_factory():",
+      "new_string": "def _float_input_factory(lower, upper):\n    def _input(x):\n        if isinstance(x, (int, float)) and lower <= x <= upper:\n            return float(x)\n        return ERROR\n\n    return _input\n\n\ndef _force_tty_input_factory():",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "alive_progress/core/configuration.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/alive_progress/core/configuration.py\n+++ b/alive_progress/core/configuration.py\n@@ -59,6 +59,15 @@\n     def _input(x):\n         if isinstance(x, int) and lower <= x <= upper:\n             return int(x)\n+        return ERROR\n+\n+    return _input\n+\n+\n+def _float_input_factory(lower, upper):\n+    def _input(x):\n+        if isinstance(x, (int, float)) and lower <= x <= upper:\n+            return float(x)\n         return ERROR\n \n     return _input\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "alive_progress/core/configuration.py",
+      "old_string": "refresh_secs=_int_input_factory(0, 60 * 60 * 24),",
+      "new_string": "refresh_secs=_float_input_factory(0, 60 * 60 * 24),",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "alive_progress/core/configuration.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/alive_progress/core/configuration.py\n+++ b/alive_progress/core/configuration.py\n@@ -189,7 +189,7 @@\n             stats_end=_format_input_factory('rate'),\n             title_length=_int_input_factory(0, 100),\n             spinner_length=_int_input_factory(0, 100),\n-            refresh_secs=_int_input_factory(0, 60 * 60 * 24),  # maximum 24 hours.\n+            refresh_secs=_float_input_factory(0, 60 * 60 * 24),  # maximum 24 hours.\n             ctrl_c=_bool_input_factory(),\n             dual_line=_bool_input_factory(),\n             # title_effect=_enum_input_factory(),  # TODO someday.\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "run_command",
+    "arguments": {
+      "command": "PYTHONPATH=src:. python - <<'PY'\nimport ast,json,sys\nfrom pathlib import Path\ntree=ast.parse(Path('alive_progress/core/configuration.py').read_text())\nns={'ERROR':object()}\nfuncs=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in ['_int_input_factory','_float_input_factory']]\nexec(compile(ast.Module(body=funcs,type_ignores=[]),'<actual-source-factories>','exec'),ns)\nvalues=[kw.value for n in ast.walk(tree) if isinstance(n,ast.Call) for kw in n.keywords if kw.arg=='refresh_secs' and isinstance(kw.value,ast.Call)]\nassert len(values)==1\nvalidator=eval(compile(ast.Expression(values[0]),'<actual-refresh-validator>','eval'),ns)\ncases=[]\nfor value,expected in [(0.25,0.25),(1,1),(0,0),(-1,None),('0.25',None),(86401,None)]:\n    result=validator(value)\n    ok=(result is ns['ERROR']) if expected is None else result==expected\n    cases.append({'input':value,'output':'ERROR' if result is ns['ERROR'] else result,'pass':ok})\ncases.append({'case':'integer_length_still_rejects_fraction','pass':ns['_int_input_factory'](3,100)(3.5) is ns['ERROR']})\nprint(json.dumps({'cases':cases},sort_keys=True))\nsys.exit(0 if all(c['pass'] for c in cases) else 1)\nPY"
+    },
+    "response": {
+      "status": "ok",
+      "stdout": "{\"cases\": [{\"input\": 0.25, \"output\": 0.25, \"pass\": true}, {\"input\": 1, \"output\": 1.0, \"pass\": true}, {\"input\": 0, \"output\": 0.0, \"pass\": true}, {\"input\": -1, \"output\": \"ERROR\", \"pass\": true}, {\"input\": \"0.25\", \"output\": \"ERROR\", \"pass\": true}, {\"input\": 86401, \"output\": \"ERROR\", \"pass\": true}, {\"case\": \"integer_length_still_rejects_fraction\", \"pass\": true}]}\n",
+      "stderr": "",
+      "exit_code": 0
+    }
+  },
+  {
+    "tool": "submit_patch",
+    "arguments": {},
+    "response": {
+      "status": "ok",
+      "patch_size": 1108,
+      "files_changed": 1
+    }
+  }
+]

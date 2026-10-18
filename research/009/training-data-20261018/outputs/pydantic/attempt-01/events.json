@@ -1,0 +1,73 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "pydantic/_internal/_validators.py",
+      "start_line": 323,
+      "end_line": 403
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "pydantic/_internal/_validators.py",
+      "content": "            )\n        return x\n    except TypeError:\n        raise TypeError(f\"Unable to apply constraint 'min_length' to supplied value {x}\")\n\n\ndef max_length_validator(x: Any, max_length: Any) -> Any:\n    try:\n        if not (len(x) < max_length):\n            raise PydanticKnownError(\n                'too_long',\n                {'field_type': 'Value', 'max_length': max_length, 'actual_length': len(x)},\n            )\n        return x\n    except TypeError:\n        raise TypeError(f\"Unable to apply constraint 'max_length' to supplied value {x}\")\n\n\ndef _extract_decimal_digits_info(decimal: Decimal) -> tuple[int, int]:\n    \"\"\"Compute the total number of digits and decimal places for a given [`Decimal`][decimal.Decimal] instance.\n\n    This function handles both normalized and non-normalized Decimal instances.\n    Example: Decimal('1.230') -> 4 digits, 3 decimal places\n\n    Args:\n        decimal (Decimal): The decimal number to analyze.\n\n    Returns:\n        tuple[int, int]: A tuple containing the number of decimal places and total digits.\n\n    Though this could be divided into two separate functions, the logic is easier to follow if we couple the computation\n    of the number of decimals and digits together.\n    \"\"\"\n    try:\n        decimal_tuple = decimal.as_tuple()\n\n        assert isinstance(decimal_tuple.exponent, int)\n\n        exponent = decimal_tuple.exponent\n        num_digits = len(decimal_tuple.digits)\n\n        if exponent >= 0:\n            # A positive exponent adds that many trailing zeros\n            # Ex: digit_tuple=(1, 2, 3), exponent=2 -> 12300 -> 0 decimal places, 5 digits\n            num_digits += exponent\n            decimal_places = 0\n        else:\n            # If the absolute value of the negative exponent is larger than the\n            # number of digits, then it's the same as the number of digits,\n            # because it'll consume all the digits in digit_tuple and then\n            # add abs(exponent) - len(digit_tuple) leading zeros after the decimal point.\n            # Ex: digit_tuple=(1, 2, 3), exponent=-2 -> 1.23 -> 2 decimal places, 3 digits\n            # Ex: digit_tuple=(1, 2, 3), exponent=-4 -> 0.0123 -> 4 decimal places, 4 digits\n            decimal_places = abs(exponent)\n            num_digits = max(num_digits, decimal_places)\n\n        return decimal_places, num_digits\n    except (AssertionError, AttributeError):\n        raise TypeError(f'Unable to extract decimal digits info from supplied value {decimal}')\n\n\ndef max_digits_validator(x: Any, max_digits: Any) -> Any:\n    try:\n        _, num_digits = _extract_decimal_digits_info(x)\n        _, normalized_num_digits = _extract_decimal_digits_info(x.normalize())\n        if (num_digits > max_digits) and (normalized_num_digits > max_digits):\n            raise PydanticKnownError(\n                'decimal_max_digits',\n                {'max_digits': max_digits},\n            )\n        return x\n    except TypeError:\n        raise TypeError(f\"Unable to apply constraint 'max_digits' to supplied value {x}\")\n\n\ndef decimal_places_validator(x: Any, decimal_places: Any) -> Any:\n    try:\n        decimal_places_, _ = _extract_decimal_digits_info(x)\n        if decimal_places_ > decimal_places:\n            normalized_decimal_places, _ = _extract_decimal_digits_info(x.normalize())\n            if normalized_decimal_places > decimal_places:",
+      "start_line": 323,
+      "end_line": 403,
+      "total_lines": 530,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "run_command",
+    "arguments": {
+      "command": "PYTHONPATH=src:. python - <<'PY'\nimport json, sys\nfrom typing import Annotated\nfrom annotated_types import MaxLen\nfrom pydantic import BaseModel, ValidationError\nclass Seq(BaseModel):\n    inner:list[int]\n    def __len__(self): return len(self.inner)\n    def __getitem__(self,k): return self.inner[k]\nclass Model(BaseModel):\n    seq:Annotated[Seq,MaxLen(3)]\ncases=[]\nfor n in [2,3,4]:\n    try:\n        value=Model.model_validate({'seq':{'inner':list(range(n))}})\n        accepted=True\n    except ValidationError:\n        accepted=False\n    cases.append({'length':n,'accepted':accepted,'pass':accepted==(n<=3)})\nprint(json.dumps({'cases':cases},sort_keys=True))\nsys.exit(0 if all(c['pass'] for c in cases) else 1)\nPY"
+    },
+    "response": {
+      "status": "error",
+      "error_type": "CommandError",
+      "error_message": "{\"cases\": [{\"accepted\": true, \"length\": 2, \"pass\": true}, {\"accepted\": false, \"length\": 3, \"pass\": false}, {\"accepted\": false, \"length\": 4, \"pass\": true}]}\n",
+      "details": {
+        "stdout": "{\"cases\": [{\"accepted\": true, \"length\": 2, \"pass\": true}, {\"accepted\": false, \"length\": 3, \"pass\": false}, {\"accepted\": false, \"length\": 4, \"pass\": true}]}\n",
+        "stderr": "",
+        "exit_code": 1
+      }
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "pydantic/_internal/_validators.py",
+      "old_string": "def max_length_validator(x: Any, max_length: Any) -> Any:\n    try:\n        if not (len(x) < max_length):\n            raise PydanticKnownError(\n                'too_long',\n                {'field_type': 'Value', 'max_length': max_length, 'actual_length': len(x)},\n            )\n        return x\n    except TypeError:\n        raise TypeError(f\"Unable to apply constraint 'max_length' to supplied value {x}\")",
+      "new_string": "def max_length_validator(x: Any, max_length: Any) -> Any:\n    try:\n        if not (len(x) <= max_length):\n            raise PydanticKnownError(\n                'too_long',\n                {'field_type': 'Value', 'max_length': max_length, 'actual_length': len(x)},\n            )\n        return x\n    except TypeError:\n        raise TypeError(f\"Unable to apply constraint 'max_length' to supplied value {x}\")",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "pydantic/_internal/_validators.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/pydantic/_internal/_validators.py\n+++ b/pydantic/_internal/_validators.py\n@@ -328,7 +328,7 @@\n \n def max_length_validator(x: Any, max_length: Any) -> Any:\n     try:\n-        if not (len(x) < max_length):\n+        if not (len(x) <= max_length):\n             raise PydanticKnownError(\n                 'too_long',\n                 {'field_type': 'Value', 'max_length': max_length, 'actual_length': len(x)},\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "run_command",
+    "arguments": {
+      "command": "PYTHONPATH=src:. python - <<'PY'\nimport json, sys\nfrom typing import Annotated\nfrom annotated_types import MaxLen\nfrom pydantic import BaseModel, ValidationError\nclass Seq(BaseModel):\n    inner:list[int]\n    def __len__(self): return len(self.inner)\n    def __getitem__(self,k): return self.inner[k]\nclass Model(BaseModel):\n    seq:Annotated[Seq,MaxLen(3)]\ncases=[]\nfor n in [2,3,4]:\n    try:\n        value=Model.model_validate({'seq':{'inner':list(range(n))}})\n        accepted=True\n    except ValidationError:\n        accepted=False\n    cases.append({'length':n,'accepted':accepted,'pass':accepted==(n<=3)})\nprint(json.dumps({'cases':cases},sort_keys=True))\nsys.exit(0 if all(c['pass'] for c in cases) else 1)\nPY"
+    },
+    "response": {
+      "status": "ok",
+      "stdout": "{\"cases\": [{\"accepted\": true, \"length\": 2, \"pass\": true}, {\"accepted\": true, \"length\": 3, \"pass\": true}, {\"accepted\": false, \"length\": 4, \"pass\": true}]}\n",
+      "stderr": "",
+      "exit_code": 0
+    }
+  },
+  {
+    "tool": "submit_patch",
+    "arguments": {},
+    "response": {
+      "status": "ok",
+      "patch_size": 582,
+      "files_changed": 1
+    }
+  }
+]
