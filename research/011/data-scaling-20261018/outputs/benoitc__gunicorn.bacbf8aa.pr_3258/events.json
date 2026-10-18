@@ -1,0 +1,45 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "gunicorn/http/body.py",
+      "start_line": 77,
+      "end_line": 109
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "gunicorn/http/body.py",
+      "content": "    def parse_chunk_size(self, unreader, data=None):\n        buf = io.BytesIO()\n        if data is not None:\n            buf.write(data)\n\n        idx = buf.getvalue().find(b\"\\r\\n\")\n        while idx < 0:\n            self.get_data(unreader, buf)\n            idx = buf.getvalue().find(b\"\\r\\n\")\n\n        data = buf.getvalue()\n        line, rest_chunk = data[:idx], data[idx + 2:]\n\n        # RFC9112 7.1.1: BWS before chunk-ext - but ONLY then\n        chunk_size, *chunk_ext = line.split(b\";\", 1)\n        if chunk_ext:\n            chunk_size = chunk_size.rstrip(b\" \\t\")\n        if any(n not in b\"0123456789abcdefABCDEF\" for n in chunk_size):\n            raise InvalidChunkSize(chunk_size)\n        chunk_size = int(chunk_size, 16)\n\n        if chunk_size == 0:\n            try:\n                self.parse_trailers(unreader, rest_chunk)\n            except NoMoreData:\n                pass\n            return (0, None)\n        return (chunk_size, rest_chunk)\n\n    def get_data(self, unreader, buf):\n        data = unreader.read()\n        if not data:\n            raise NoMoreData()",
+      "start_line": 77,
+      "end_line": 109,
+      "total_lines": 266,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "gunicorn/http/body.py",
+      "old_string": "\n        # RFC9112 7.1.1: BWS before chunk-ext - but ONLY then\n        chunk_size, *chunk_ext = line.split(b\";\", 1)\n        if chunk_ext:\n            chunk_size = chunk_size.rstrip(b\" \\t\")\n        if any(n not in b\"0123456789abcdefABCDEF\" for n in chunk_size):\n            raise InvalidChunkSize(chunk_size)\n        chunk_size = int(chunk_size, 16)\n",
+      "new_string": "\n        # RFC9112 7.1.1: BWS before chunk-ext - but ONLY then\n        chunk_size, *chunk_ext = line.split(b\";\", 1)\n        if chunk_ext:\n            chunk_size = chunk_size.rstrip(b\" \\t\")\n        if not chunk_size or any(n not in b\"0123456789abcdefABCDEF\" for n in chunk_size):\n            raise InvalidChunkSize(chunk_size)\n        chunk_size = int(chunk_size, 16)\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "gunicorn/http/body.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/gunicorn/http/body.py\n+++ b/gunicorn/http/body.py\n@@ -91,7 +91,7 @@\n         chunk_size, *chunk_ext = line.split(b\";\", 1)\n         if chunk_ext:\n             chunk_size = chunk_size.rstrip(b\" \\t\")\n-        if any(n not in b\"0123456789abcdefABCDEF\" for n in chunk_size):\n+        if not chunk_size or any(n not in b\"0123456789abcdefABCDEF\" for n in chunk_size):\n             raise InvalidChunkSize(chunk_size)\n         chunk_size = int(chunk_size, 16)\n \n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "submit_patch",
+    "arguments": {},
+    "response": {
+      "status": "ok",
+      "patch_size": 569,
+      "files_changed": 1
+    }
+  }
+]

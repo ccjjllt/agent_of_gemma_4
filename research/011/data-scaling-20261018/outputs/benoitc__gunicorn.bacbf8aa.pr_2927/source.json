@@ -1,0 +1,42 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 2632,
+  "instance_id": "benoitc__gunicorn.bacbf8aa.pr_2927",
+  "repo": "benoitc/gunicorn",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "benoitc__gunicorn.bacbf8aa.pr_2927.40o1rcbf",
+  "messages_sha256": "7c590da9cc25a7c482942a56c4b935bb778b44577bd6f2b37dfb5eef5bb833c3",
+  "issue": "### Issue: HTTP Parser Fails with Invalid Requests\n\n#### Description\n\nAfter applying the recent patch, it seems that the HTTP parser is encountering issues when processing certain invalid requests. The parser is expected to handle these gracefully, but instead, it raises unexpected errors.\n\n#### Steps to Reproduce\n\n1. Prepare a set of invalid HTTP request files. These files should contain various malformed HTTP requests.\n2. Load each file and attempt to parse it using the HTTP parser.\n3. Observe the behavior of the parser. It should raise specific exceptions for each type of invalid request, but instead, it fails unexpectedly.\n\n#### Example Code\n\n```python\nimport os\nimport treq\n\nhttpfiles = [\n    '/testbed/tests/requests/invalid/003b.http',\n    '/testbed/tests/requests/invalid/020.http',\n    # Add more files as needed\n]\n\nfor fname in httpfiles:\n    env = treq.load_py(os.path.splitext(fname)[0] + '.py')\n    expect = env['request']\n    cfg = env['cfg']\n    req = treq.badrequest(fname)\n    try:\n        req.check(cfg)\n    except Exception as e:\n        print(f\"Unexpected error for {fname}: {e}\")\n```\n\n#### Expected Behavior\n\nThe parser should raise the expected exceptions for each invalid request, as defined in the test environment.\n\n#### Actual Behavior\n\nThe parser fails with unexpected errors, indicating a potential issue with how it processes the `peer_addr` or related configurations.\n\n#### Additional Information\n\nThis issue seems to be related to the recent changes in how `peer_addr` is handled in the `Message` class. Further investigation is needed to pinpoint the exact cause.",
+  "actions": [
+    {
+      "source_message_index": 32,
+      "filepath": "gunicorn/http/message.py",
+      "old_string": "    def __init__(self, cfg, unreader, peer_addr):\n        self.cfg = cfg\n        self.unreader = unreader\n        self.peer_addr = peer_addr\n        self.remote_addr = peer_addr[0]\n        self.version = None\n        self.headers = []\n        self.trailers = []\n        self.body = None\n        self.scheme = \"https\" if cfg.is_ssl else \"http\"\n        self.must_close = False",
+      "new_string": "    def __init__(self, cfg, unreader, peer_addr):\n        self.cfg = cfg\n        self.unreader = unreader\n        self.peer_addr = peer_addr\n        self.remote_addr = peer_addr[0] if peer_addr is not None else None\n        self.version = None\n        self.headers = []\n        self.trailers = []\n        self.body = None\n        self.scheme = \"https\" if cfg.is_ssl else \"http\"\n        self.must_close = False",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 34,
+      "filepath": "gunicorn/http/message.py",
+      "old_string": "    def proxy_protocol_access_check(self):\n        # check in allow list\n        if (\"*\" not in self.cfg.proxy_allow_ips and\n            isinstance(self.peer_addr, tuple) and\n                self.peer_addr[0] not in self.cfg.proxy_allow_ips):\n            raise ForbiddenProxyRequest(self.peer_addr[0])",
+      "new_string": "    def proxy_protocol_access_check(self):\n        # check in allow list\n        if (self.peer_addr is not None and\n            \"*\" not in self.cfg.proxy_allow_ips and\n            isinstance(self.peer_addr, tuple) and\n                self.peer_addr[0] not in self.cfg.proxy_allow_ips):\n            raise ForbiddenProxyRequest(self.peer_addr[0])",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 50,
+      "filepath": "gunicorn/http/message.py",
+      "old_string": "    def __init__(self, cfg, unreader, peer_addr):\n        self.cfg = cfg\n        self.unreader = unreader\n        self.peer_addr = peer_addr\n        self.remote_addr = peer_addr[0] if peer_addr is not None else None\n        self.version = None\n        self.headers = []\n        self.trailers = []\n        self.body = None\n        self.scheme = \"https\" if cfg.is_ssl else \"http\"\n        self.must_close = False",
+      "new_string": "    def __init__(self, cfg, unreader, peer_addr):\n        self.cfg = cfg\n        self.unreader = unreader\n        self.peer_addr = peer_addr\n        \n        # Handle different types of peer_addr safely\n        self.remote_addr = None\n        if peer_addr is not None:\n            try:\n                if isinstance(peer_addr, tuple) and len(peer_addr) > 0:\n                    self.remote_addr = peer_addr[0]\n            except (IndexError, TypeError):\n                pass\n                \n        self.version = None\n        self.headers = []\n        self.trailers = []\n        self.body = None\n        self.scheme = \"https\" if cfg.is_ssl else \"http\"\n        self.must_close = False",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 52,
+      "filepath": "gunicorn/http/message.py",
+      "old_string": "    def proxy_protocol_access_check(self):\n        # check in allow list\n        if (self.peer_addr is not None and\n            \"*\" not in self.cfg.proxy_allow_ips and\n            isinstance(self.peer_addr, tuple) and\n                self.peer_addr[0] not in self.cfg.proxy_allow_ips):\n            raise ForbiddenProxyRequest(self.peer_addr[0])",
+      "new_string": "    def proxy_protocol_access_check(self):\n        # check in allow list\n        if \"*\" in self.cfg.proxy_allow_ips:\n            return\n            \n        # Only proceed with the check if we have a valid peer_addr\n        if (self.peer_addr is not None and \n            isinstance(self.peer_addr, tuple) and \n            len(self.peer_addr) > 0):\n            \n            client_addr = self.peer_addr[0]\n            if client_addr not in self.cfg.proxy_allow_ips:\n                raise ForbiddenProxyRequest(client_addr)",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

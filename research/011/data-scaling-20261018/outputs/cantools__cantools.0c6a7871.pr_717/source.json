@@ -1,0 +1,28 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 949,
+  "instance_id": "cantools__cantools.0c6a7871.pr_717",
+  "repo": "cantools/cantools",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "cantools__cantools.0c6a7871.pr_717.xekqr9ke",
+  "messages_sha256": "ea7ec32502aa94b175e752429c979b5f5d41516a96c08334d6d4af3ae5492042",
+  "issue": "# Monitor shows incorrect error count for invalid CAN messages\n\nI'm using cantools 39.2.0 and noticed that the monitor command is not correctly tracking errors when receiving invalid CAN messages.\n\n## Steps to reproduce\n\n1. Create a simple CAN database with a multiplexed message\n2. Run the monitor command\n3. Send a CAN message with an invalid multiplexer value\n\n## Actual behavior\n\nWhen receiving a message with an invalid multiplexer value or a message that's too short, the monitor shows:\n\n```\nReceived: 1, Discarded: 1, Errors: 0\n```\n\nBut the message is clearly shown as an error in the display:\n\n```\n0.000 BATTERY_VT ( undecoded, expected multiplexer id 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34 or 35, but got 36: 0x240098980b00 )\n```\n\n## Expected behavior\n\nThe monitor should show:\n\n```\nReceived: 1, Discarded: 0, Errors: 1\n```\n\nSince the message was received but had an error during decoding, it should be counted as an error, not as discarded.\n\n## Reproduction script\n\n```python\nimport can\nfrom cantools.subparsers.monitor import Monitor\n\n# Create a virtual CAN bus\nbus = can.interface.Bus('test', bustype='virtual')\n\n# Send a message with an invalid multiplexer value\nmsg = can.Message(arbitration_id=1025, data=b'$\\x00\\x98\\x98\\x0b\\x00')\nbus.send(msg)\n\n# The monitor will show \"Discarded: 1, Errors: 0\" instead of \"Discarded: 0, Errors: 1\"\n```",
+  "actions": [
+    {
+      "source_message_index": 68,
+      "filepath": "src/cantools/subparsers/monitor.py",
+      "old_string": "\n    def update_messages(self):\n        modified = False\n\n        try:\n            while True:\n                result = self.try_update_message(self._queue.get_nowait())\n                self._received += 1\n                if result == MessageFormattingResult.UnknownMessage:\n                    self._discarded += 1\n                elif result == MessageFormattingResult.DecodeError:\n                    self._errors += 1\n                modified = True\n        except queue.Empty:\n            pass\n\n        return modified\n",
+      "new_string": "\n    def update_messages(self):\n        modified = False\n\n        try:\n            while True:\n                result = self.try_update_message(self._queue.get_nowait())\n                self._received += 1\n                if result == MessageFormattingResult.UnknownMessage:\n                    self._discarded += 1\n                elif result == MessageFormattingResult.DecodeError:\n                    self._discarded += 1\n                modified = True\n        except queue.Empty:\n            pass\n\n        return modified\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 70,
+      "filepath": "src/cantools/subparsers/monitor.py",
+      "old_string": "\n    def update_messages(self):\n        modified = False\n\n        try:\n            while True:\n                result = self.try_update_message(self._queue.get_nowait())\n                self._received += 1\n                if result == MessageFormattingResult.UnknownMessage:\n                    self._discarded += 1\n                elif result == MessageFormattingResult.DecodeError:\n                    self._discarded += 1\n                modified = True\n        except queue.Empty:\n            pass\n\n        return modified\n",
+      "new_string": "\n    def update_messages(self):\n        modified = False\n\n        try:\n            while True:\n                result = self.try_update_message(self._queue.get_nowait())\n                self._received += 1\n                if result == MessageFormattingResult.UnknownMessage:\n                    self._discarded += 1\n                elif result == MessageFormattingResult.DecodeError:\n                    self._errors += 1\n                modified = True\n        except queue.Empty:\n            pass\n\n        return modified\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

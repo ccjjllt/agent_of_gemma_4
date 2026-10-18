@@ -1,0 +1,21 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00005-of-00008.parquet",
+  "row_index": 1934,
+  "instance_id": "iterative__dvc.1d6ea681.pr_9123",
+  "repo": "iterative/dvc",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "iterative__dvc.1d6ea681.pr_9123.6iglyte7",
+  "messages_sha256": "5ef71c601b0b0cd236f92f418b8922b63f255451033cee48dac02d1fd1e72f52",
+  "issue": "# Stage cache fails when using local.fs instead of legacy.fs\n\n## Description\n\nI'm encountering an issue with the stage cache functionality. When trying to run a stage that should be cached, I'm getting an AttributeError.\n\n## How to reproduce:\n\n1. Create a simple DVC pipeline with a stage that has outputs\n```python\n# Create files\nwith open('dep', 'w') as f:\n    f.write('dep')\nwith open('script.py', 'w') as f:\n    f.write('open(\"out\", \"w+\").write(\"out\"); ')\n\n# Create and run a stage\nimport dvc.api\nrepo = dvc.api.Repo()\nstage = repo.run(cmd='python script.py', deps=['script.py', 'dep'], outs=['out'], name='write-out')\n```\n\n2. Remove the outputs and try to run the stage again (should use cache)\n```python\n# Remove outputs\nimport os\nos.remove('out')\n\n# Run again - should use cache but fails\nstage.run()\n```\n\nThe error I'm getting looks like an AttributeError related to accessing the cache filesystem. It seems the code is trying to use `repo.cache.local.fs` but there's some issue with the path handling or attribute access.\n\nI think the problem is related to how the stage cache is trying to create temporary files when saving the cache. The error happens when trying to save a stage to the cache, specifically when creating a temporary file in the cache directory.\n\nThis worked in previous versions but seems to be broken now. Has something changed in how the cache filesystem is accessed?\n\n<END WRITING>",
+  "actions": [
+    {
+      "source_message_index": 28,
+      "filepath": "dvc/stage/cache.py",
+      "old_string": "\n        path = self._get_cache_path(cache_key, cache_value)\n        parent = self.repo.cache.local.fs.path.parent(path)\n        self.repo.cache.local.makedirs(parent)\n        tmp = tempfile.NamedTemporaryFile(delete=False, dir=parent).name\n",
+      "new_string": "\n        path = self._get_cache_path(cache_key, cache_value)\n        parent = self.repo.cache.local.fs.parent(path)\n        self.repo.cache.local.makedirs(parent)\n        tmp = tempfile.NamedTemporaryFile(delete=False, dir=parent).name\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

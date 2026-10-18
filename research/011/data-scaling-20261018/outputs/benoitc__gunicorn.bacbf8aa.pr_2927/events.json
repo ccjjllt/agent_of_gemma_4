@@ -1,0 +1,147 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "gunicorn/http/message.py",
+      "start_line": 22,
+      "end_line": 56
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "gunicorn/http/message.py",
+      "content": "DEFAULT_MAX_HEADERFIELD_SIZE = 8190\n\n# verbosely on purpose, avoid backslash ambiguity\nRFC9110_5_6_2_TOKEN_SPECIALS = r\"!#$%&'*+-.^_`|~\"\nTOKEN_RE = re.compile(r\"[%s0-9a-zA-Z]+\" % (re.escape(RFC9110_5_6_2_TOKEN_SPECIALS)))\nMETHOD_BADCHAR_RE = re.compile(\"[a-z#]\")\n# usually 1.0 or 1.1 - RFC9112 permits restricting to single-digit versions\nVERSION_RE = re.compile(r\"HTTP/(\\d)\\.(\\d)\")\nRFC9110_5_5_INVALID_AND_DANGEROUS = re.compile(r\"[\\0\\r\\n]\")\n\n\nclass Message:\n    def __init__(self, cfg, unreader, peer_addr):\n        self.cfg = cfg\n        self.unreader = unreader\n        self.peer_addr = peer_addr\n        self.remote_addr = peer_addr[0]\n        self.version = None\n        self.headers = []\n        self.trailers = []\n        self.body = None\n        self.scheme = \"https\" if cfg.is_ssl else \"http\"\n        self.must_close = False\n\n        # set headers limits\n        self.limit_request_fields = cfg.limit_request_fields\n        if (self.limit_request_fields <= 0\n                or self.limit_request_fields > MAX_HEADERS):\n            self.limit_request_fields = MAX_HEADERS\n        self.limit_request_field_size = cfg.limit_request_field_size\n        if self.limit_request_field_size < 0:\n            self.limit_request_field_size = DEFAULT_MAX_HEADERFIELD_SIZE\n\n        # set max header buffer size\n        max_header_field_size = self.limit_request_field_size or DEFAULT_MAX_HEADERFIELD_SIZE",
+      "start_line": 22,
+      "end_line": 56,
+      "total_lines": 463,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "gunicorn/http/message.py",
+      "old_string": "    def __init__(self, cfg, unreader, peer_addr):\n        self.cfg = cfg\n        self.unreader = unreader\n        self.peer_addr = peer_addr\n        self.remote_addr = peer_addr[0]\n        self.version = None\n        self.headers = []\n        self.trailers = []\n        self.body = None\n        self.scheme = \"https\" if cfg.is_ssl else \"http\"\n        self.must_close = False",
+      "new_string": "    def __init__(self, cfg, unreader, peer_addr):\n        self.cfg = cfg\n        self.unreader = unreader\n        self.peer_addr = peer_addr\n        self.remote_addr = peer_addr[0] if peer_addr is not None else None\n        self.version = None\n        self.headers = []\n        self.trailers = []\n        self.body = None\n        self.scheme = \"https\" if cfg.is_ssl else \"http\"\n        self.must_close = False",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "gunicorn/http/message.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/gunicorn/http/message.py\n+++ b/gunicorn/http/message.py\n@@ -35,7 +35,7 @@\n         self.cfg = cfg\n         self.unreader = unreader\n         self.peer_addr = peer_addr\n-        self.remote_addr = peer_addr[0]\n+        self.remote_addr = peer_addr[0] if peer_addr is not None else None\n         self.version = None\n         self.headers = []\n         self.trailers = []\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "gunicorn/http/message.py",
+      "start_line": 341,
+      "end_line": 370
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "gunicorn/http/message.py",
+      "content": "\n        if self.req_number != 1:\n            return False\n\n        if not line.startswith(\"PROXY\"):\n            return False\n\n        self.proxy_protocol_access_check()\n        self.parse_proxy_protocol(line)\n\n        return True\n\n    def proxy_protocol_access_check(self):\n        # check in allow list\n        if (\"*\" not in self.cfg.proxy_allow_ips and\n            isinstance(self.peer_addr, tuple) and\n                self.peer_addr[0] not in self.cfg.proxy_allow_ips):\n            raise ForbiddenProxyRequest(self.peer_addr[0])\n\n    def parse_proxy_protocol(self, line):\n        bits = line.split(\" \")\n\n        if len(bits) != 6:\n            raise InvalidProxyLine(line)\n\n        # Extract data\n        proto = bits[1]\n        s_addr = bits[2]\n        d_addr = bits[3]\n",
+      "start_line": 341,
+      "end_line": 370,
+      "total_lines": 463,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "gunicorn/http/message.py",
+      "old_string": "    def proxy_protocol_access_check(self):\n        # check in allow list\n        if (\"*\" not in self.cfg.proxy_allow_ips and\n            isinstance(self.peer_addr, tuple) and\n                self.peer_addr[0] not in self.cfg.proxy_allow_ips):\n            raise ForbiddenProxyRequest(self.peer_addr[0])",
+      "new_string": "    def proxy_protocol_access_check(self):\n        # check in allow list\n        if (self.peer_addr is not None and\n            \"*\" not in self.cfg.proxy_allow_ips and\n            isinstance(self.peer_addr, tuple) and\n                self.peer_addr[0] not in self.cfg.proxy_allow_ips):\n            raise ForbiddenProxyRequest(self.peer_addr[0])",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "gunicorn/http/message.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/gunicorn/http/message.py\n+++ b/gunicorn/http/message.py\n@@ -352,7 +352,8 @@\n \n     def proxy_protocol_access_check(self):\n         # check in allow list\n-        if (\"*\" not in self.cfg.proxy_allow_ips and\n+        if (self.peer_addr is not None and\n+            \"*\" not in self.cfg.proxy_allow_ips and\n             isinstance(self.peer_addr, tuple) and\n                 self.peer_addr[0] not in self.cfg.proxy_allow_ips):\n             raise ForbiddenProxyRequest(self.peer_addr[0])\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "gunicorn/http/message.py",
+      "start_line": 22,
+      "end_line": 56
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "gunicorn/http/message.py",
+      "content": "DEFAULT_MAX_HEADERFIELD_SIZE = 8190\n\n# verbosely on purpose, avoid backslash ambiguity\nRFC9110_5_6_2_TOKEN_SPECIALS = r\"!#$%&'*+-.^_`|~\"\nTOKEN_RE = re.compile(r\"[%s0-9a-zA-Z]+\" % (re.escape(RFC9110_5_6_2_TOKEN_SPECIALS)))\nMETHOD_BADCHAR_RE = re.compile(\"[a-z#]\")\n# usually 1.0 or 1.1 - RFC9112 permits restricting to single-digit versions\nVERSION_RE = re.compile(r\"HTTP/(\\d)\\.(\\d)\")\nRFC9110_5_5_INVALID_AND_DANGEROUS = re.compile(r\"[\\0\\r\\n]\")\n\n\nclass Message:\n    def __init__(self, cfg, unreader, peer_addr):\n        self.cfg = cfg\n        self.unreader = unreader\n        self.peer_addr = peer_addr\n        self.remote_addr = peer_addr[0] if peer_addr is not None else None\n        self.version = None\n        self.headers = []\n        self.trailers = []\n        self.body = None\n        self.scheme = \"https\" if cfg.is_ssl else \"http\"\n        self.must_close = False\n\n        # set headers limits\n        self.limit_request_fields = cfg.limit_request_fields\n        if (self.limit_request_fields <= 0\n                or self.limit_request_fields > MAX_HEADERS):\n            self.limit_request_fields = MAX_HEADERS\n        self.limit_request_field_size = cfg.limit_request_field_size\n        if self.limit_request_field_size < 0:\n            self.limit_request_field_size = DEFAULT_MAX_HEADERFIELD_SIZE\n\n        # set max header buffer size\n        max_header_field_size = self.limit_request_field_size or DEFAULT_MAX_HEADERFIELD_SIZE",
+      "start_line": 22,
+      "end_line": 56,
+      "total_lines": 464,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "gunicorn/http/message.py",
+      "old_string": "    def __init__(self, cfg, unreader, peer_addr):\n        self.cfg = cfg\n        self.unreader = unreader\n        self.peer_addr = peer_addr\n        self.remote_addr = peer_addr[0] if peer_addr is not None else None\n        self.version = None\n        self.headers = []\n        self.trailers = []\n        self.body = None\n        self.scheme = \"https\" if cfg.is_ssl else \"http\"\n        self.must_close = False",
+      "new_string": "    def __init__(self, cfg, unreader, peer_addr):\n        self.cfg = cfg\n        self.unreader = unreader\n        self.peer_addr = peer_addr\n        \n        # Handle different types of peer_addr safely\n        self.remote_addr = None\n        if peer_addr is not None:\n            try:\n                if isinstance(peer_addr, tuple) and len(peer_addr) > 0:\n                    self.remote_addr = peer_addr[0]\n            except (IndexError, TypeError):\n                pass\n                \n        self.version = None\n        self.headers = []\n        self.trailers = []\n        self.body = None\n        self.scheme = \"https\" if cfg.is_ssl else \"http\"\n        self.must_close = False",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "gunicorn/http/message.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/gunicorn/http/message.py\n+++ b/gunicorn/http/message.py\n@@ -35,7 +35,16 @@\n         self.cfg = cfg\n         self.unreader = unreader\n         self.peer_addr = peer_addr\n-        self.remote_addr = peer_addr[0] if peer_addr is not None else None\n+        \n+        # Handle different types of peer_addr safely\n+        self.remote_addr = None\n+        if peer_addr is not None:\n+            try:\n+                if isinstance(peer_addr, tuple) and len(peer_addr) > 0:\n+                    self.remote_addr = peer_addr[0]\n+            except (IndexError, TypeError):\n+                pass\n+                \n         self.version = None\n         self.headers = []\n         self.trailers = []\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "gunicorn/http/message.py",
+      "start_line": 350,
+      "end_line": 380
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "gunicorn/http/message.py",
+      "content": "\n        if self.req_number != 1:\n            return False\n\n        if not line.startswith(\"PROXY\"):\n            return False\n\n        self.proxy_protocol_access_check()\n        self.parse_proxy_protocol(line)\n\n        return True\n\n    def proxy_protocol_access_check(self):\n        # check in allow list\n        if (self.peer_addr is not None and\n            \"*\" not in self.cfg.proxy_allow_ips and\n            isinstance(self.peer_addr, tuple) and\n                self.peer_addr[0] not in self.cfg.proxy_allow_ips):\n            raise ForbiddenProxyRequest(self.peer_addr[0])\n\n    def parse_proxy_protocol(self, line):\n        bits = line.split(\" \")\n\n        if len(bits) != 6:\n            raise InvalidProxyLine(line)\n\n        # Extract data\n        proto = bits[1]\n        s_addr = bits[2]\n        d_addr = bits[3]\n",
+      "start_line": 350,
+      "end_line": 380,
+      "total_lines": 473,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "gunicorn/http/message.py",
+      "old_string": "    def proxy_protocol_access_check(self):\n        # check in allow list\n        if (self.peer_addr is not None and\n            \"*\" not in self.cfg.proxy_allow_ips and\n            isinstance(self.peer_addr, tuple) and\n                self.peer_addr[0] not in self.cfg.proxy_allow_ips):\n            raise ForbiddenProxyRequest(self.peer_addr[0])",
+      "new_string": "    def proxy_protocol_access_check(self):\n        # check in allow list\n        if \"*\" in self.cfg.proxy_allow_ips:\n            return\n            \n        # Only proceed with the check if we have a valid peer_addr\n        if (self.peer_addr is not None and \n            isinstance(self.peer_addr, tuple) and \n            len(self.peer_addr) > 0):\n            \n            client_addr = self.peer_addr[0]\n            if client_addr not in self.cfg.proxy_allow_ips:\n                raise ForbiddenProxyRequest(client_addr)",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "gunicorn/http/message.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/gunicorn/http/message.py\n+++ b/gunicorn/http/message.py\n@@ -361,11 +361,17 @@\n \n     def proxy_protocol_access_check(self):\n         # check in allow list\n-        if (self.peer_addr is not None and\n-            \"*\" not in self.cfg.proxy_allow_ips and\n-            isinstance(self.peer_addr, tuple) and\n-                self.peer_addr[0] not in self.cfg.proxy_allow_ips):\n-            raise ForbiddenProxyRequest(self.peer_addr[0])\n+        if \"*\" in self.cfg.proxy_allow_ips:\n+            return\n+            \n+        # Only proceed with the check if we have a valid peer_addr\n+        if (self.peer_addr is not None and \n+            isinstance(self.peer_addr, tuple) and \n+            len(self.peer_addr) > 0):\n+            \n+            client_addr = self.peer_addr[0]\n+            if client_addr not in self.cfg.proxy_allow_ips:\n+                raise ForbiddenProxyRequest(client_addr)\n \n     def parse_proxy_protocol(self, line):\n         bits = line.split(\" \")\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "submit_patch",
+    "arguments": {},
+    "response": {
+      "status": "ok",
+      "patch_size": 1665,
+      "files_changed": 1
+    }
+  }
+]

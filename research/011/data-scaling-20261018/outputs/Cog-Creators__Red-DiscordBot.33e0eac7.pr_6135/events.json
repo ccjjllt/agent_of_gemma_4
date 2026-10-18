@@ -1,0 +1,317 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "redbot/core/dev_commands.py",
+      "start_line": 33,
+      "end_line": 62
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "redbot/core/dev_commands.py",
+      "content": "from .i18n import Translator, cog_i18n\nfrom .utils import chat_formatting\nfrom .utils.chat_formatting import pagify\nfrom .utils.predicates import MessagePredicate\n\n_ = Translator(\"Dev\", __file__)\n\n# we want to match either:\n# - \"```lang\\n\"\n# - or \"```\" and potentially also strip a single \"\\n\" if it follows it immediately\nSTART_CODE_BLOCK_RE = re.compile(r\"^((```[\\w.+\\-]+\\n+(?!```))|(```\\n*))\")\n\nT = TypeVar(\"T\")\n\n\ndef get_pages(msg: str) -> Iterator[str]:\n    \"\"\"Pagify the given message for output to the user.\"\"\"\n    return pagify(msg, delims=[\"\\n\", \" \"], priority=True, shorten_by=10)\n\n\ndef sanitize_output(ctx: commands.Context, to_sanitize: str) -> str:\n    \"\"\"Hides the bot's token from a string.\"\"\"\n    token = ctx.bot.http.token\n    if token:\n        return re.sub(re.escape(token), \"[EXPUNGED]\", to_sanitize, re.I)\n    return to_sanitize\n\n\ndef async_compile(source: str, filename: str, mode: Literal[\"eval\", \"exec\"]) -> CodeType:\n    return compile(",
+      "start_line": 33,
+      "end_line": 62,
+      "total_lines": 561,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "redbot/core/dev_commands.py",
+      "old_string": "T = TypeVar(\"T\")\n\n\ndef get_pages(msg: str) -> Iterator[str]:\n    \"\"\"Pagify the given message for output to the user.\"\"\"\n    return pagify(msg, delims=[\"\\n\", \" \"], priority=True, shorten_by=10)",
+      "new_string": "T = TypeVar(\"T\")\n\n\nclass SourceCache:\n    \"\"\"\n    A class that caches source code snippets for use in dev commands.\n    This allows for proper error tracebacks when code spans multiple snippets.\n    \"\"\"\n    def __init__(self) -> None:\n        self._cache: Dict[str, str] = {}\n        self._next_index = 0\n\n    def take_next_index(self) -> int:\n        \"\"\"Get the next available index for a new source snippet.\"\"\"\n        index = self._next_index\n        self._next_index += 1\n        return index\n\n    def store(self, filename: str, source: str) -> None:\n        \"\"\"Store a source snippet with the given filename.\"\"\"\n        self._cache[filename] = source\n\n    def get(self, filename: str) -> str:\n        \"\"\"Get a source snippet by filename.\"\"\"\n        return self._cache.get(filename, \"\")\n\n\ndef get_pages(msg: str) -> Iterator[str]:\n    \"\"\"Pagify the given message for output to the user.\"\"\"\n    return pagify(msg, delims=[\"\\n\", \" \"], priority=True, shorten_by=10)",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "redbot/core/dev_commands.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/redbot/core/dev_commands.py\n+++ b/redbot/core/dev_commands.py\n@@ -43,6 +43,30 @@\n START_CODE_BLOCK_RE = re.compile(r\"^((```[\\w.+\\-]+\\n+(?!```))|(```\\n*))\")\n \n T = TypeVar(\"T\")\n+\n+\n+class SourceCache:\n+    \"\"\"\n+    A class that caches source code snippets for use in dev commands.\n+    This allows for proper error tracebacks when code spans multiple snippets.\n+    \"\"\"\n+    def __init__(self) -> None:\n+        self._cache: Dict[str, str] = {}\n+        self._next_index = 0\n+\n+    def take_next_index(self) -> int:\n+        \"\"\"Get the next available index for a new source snippet.\"\"\"\n+        index = self._next_index\n+        self._next_index += 1\n+        return index\n+\n+    def store(self, filename: str, source: str) -> None:\n+        \"\"\"Store a source snippet with the given filename.\"\"\"\n+        self._cache[filename] = source\n+\n+    def get(self, filename: str) -> str:\n+        \"\"\"Get a source snippet by filename.\"\"\"\n+        return self._cache.get(filename, \"\")\n \n \n def get_pages(msg: str) -> Iterator[str]:\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "redbot/core/dev_commands.py",
+      "start_line": 98,
+      "end_line": 142
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "redbot/core/dev_commands.py",
+      "content": "\n\ndef cleanup_code(content: str) -> str:\n    \"\"\"Automatically removes code blocks from the code.\"\"\"\n    # remove ```py\\n```\n    if content.startswith(\"```\") and content.endswith(\"```\"):\n        return START_CODE_BLOCK_RE.sub(\"\", content)[:-3].rstrip(\"\\n\")\n\n    # remove `foo`\n    return content.strip(\"` \\n\")\n\n\nclass DevOutput:\n    def __init__(\n        self, ctx: commands.Context, *, source: str, filename: str, env: Dict[str, Any]\n    ) -> None:\n        self.ctx = ctx\n        self.source = source\n        self.filename = filename\n        self.env = env\n        self.always_include_result = False\n        self._stream = io.StringIO()\n        self.formatted_exc = \"\"\n        self.result: Any = None\n        self._old_streams = []\n\n    @property\n    def source(self) -> str:\n        return self._original_source\n\n    @source.setter\n    def source(self, value: str) -> None:\n        self._source = self._original_source = value\n\n    def __str__(self) -> str:\n        output = []\n        printed = self._stream.getvalue()\n        if printed:\n            output.append(printed)\n        if self.formatted_exc:\n            output.append(self.formatted_exc)\n        elif self.always_include_result or self.result is not None:\n            try:\n                output.append(str(self.result))\n            except Exception as exc:",
+      "start_line": 98,
+      "end_line": 142,
+      "total_lines": 585,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "redbot/core/dev_commands.py",
+      "old_string": "class DevOutput:\n    def __init__(\n        self, ctx: commands.Context, *, source: str, filename: str, env: Dict[str, Any]\n    ) -> None:\n        self.ctx = ctx\n        self.source = source\n        self.filename = filename\n        self.env = env\n        self.always_include_result = False\n        self._stream = io.StringIO()\n        self.formatted_exc = \"\"\n        self.result: Any = None\n        self._old_streams = []\n\n    @property\n    def source(self) -> str:\n        return self._original_source\n\n    @source.setter\n    def source(self, value: str) -> None:\n        self._source = self._original_source = value",
+      "new_string": "class DevOutput:\n    def __init__(\n        self, ctx: commands.Context, *, source_cache: SourceCache = None, source: str, filename: str, env: Dict[str, Any]\n    ) -> None:\n        self.ctx = ctx\n        self.source_cache = source_cache or SourceCache()\n        self.source = source\n        self.filename = filename\n        self.env = env\n        self.always_include_result = False\n        self._stream = io.StringIO()\n        self.formatted_exc = \"\"\n        self.result: Any = None\n        self._old_streams = []\n        \n        # Store the source in the cache\n        self.source_cache.store(self.filename, self._source)\n\n    @property\n    def source(self) -> str:\n        return self._original_source\n\n    @source.setter\n    def source(self, value: str) -> None:\n        self._source = self._original_source = value",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "redbot/core/dev_commands.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/redbot/core/dev_commands.py\n+++ b/redbot/core/dev_commands.py\n@@ -109,9 +109,10 @@\n \n class DevOutput:\n     def __init__(\n-        self, ctx: commands.Context, *, source: str, filename: str, env: Dict[str, Any]\n+        self, ctx: commands.Context, *, source_cache: SourceCache = None, source: str, filename: str, env: Dict[str, Any]\n     ) -> None:\n         self.ctx = ctx\n+        self.source_cache = source_cache or SourceCache()\n         self.source = source\n         self.filename = filename\n         self.env = env\n@@ -120,6 +121,9 @@\n         self.formatted_exc = \"\"\n         self.result: Any = None\n         self._old_streams = []\n+        \n+        # Store the source in the cache\n+        self.source_cache.store(self.filename, self._source)\n \n     @property\n     def source(self) -> str:\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "redbot/core/dev_commands.py",
+      "start_line": 255,
+      "end_line": 351
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "redbot/core/dev_commands.py",
+      "content": "        except Exception as exc:\n            self.set_exception(exc)\n        else:\n            if self.result is not None:\n                self.env[\"_\"] = self.result\n\n    def async_compile_with_exec(self) -> CodeType:\n        return async_compile(self._source, self.filename, \"exec\")\n\n    def async_compile_with_eval(self) -> CodeType:\n        return async_compile(self._source, self.filename, \"eval\")\n\n    def format_exception(\n        self, exc: Exception, *, line_offset: int = 0, skip_frames: int = 1\n    ) -> str:\n        \"\"\"\n        Format an exception to send to the user.\n\n        This function makes a few alterations to the traceback:\n        - First `skip_frames` frames are skipped so that we don't show the frames\n          that are part of Red's code to the user\n        - `FrameSummary` objects that we get from traceback module are updated\n          with the string for the corresponding line of code as otherwise\n          the generated traceback string wouldn't show user's code.\n        - If `line_offset` is passed, this function subtracts it from line numbers\n          in `FrameSummary` objects so that those numbers properly correspond to\n          the code that was provided by the user. This is needed for cases where\n          we wrap user's code in an async function before exec-ing it.\n        \"\"\"\n        exc_type = type(exc)\n        tb = exc.__traceback__\n        for x in range(skip_frames):\n            if tb is None:\n                break\n            tb = tb.tb_next\n\n        # To mimic linecache module's behavior,\n        # all lines (including the last one) should end with \\n.\n        source_lines = [f\"{line}\\n\" for line in self._source.splitlines()]\n        filename = self.filename\n        # sometimes SyntaxError.text is None, sometimes it isn't\n        if (\n            issubclass(exc_type, SyntaxError)\n            and exc.filename == filename\n            and exc.lineno is not None\n        ):\n            if exc.text is None:\n                # line numbers are 1-based, the list indexes are 0-based\n                exc.text = source_lines[exc.lineno - 1]\n            exc.lineno -= line_offset\n\n        traceback_exc = traceback.TracebackException(exc_type, exc, tb)\n        py311_or_above = sys.version_info >= (3, 11)\n        stack_summary = traceback_exc.stack\n        for idx, frame_summary in enumerate(stack_summary):\n            if frame_summary.filename != filename:\n                continue\n            lineno = frame_summary.lineno\n            if lineno is None:\n                continue\n\n            # line numbers are 1-based, the list indexes are 0-based\n            line = source_lines[lineno - 1]\n            lineno -= line_offset\n            # support for enhanced error locations in tracebacks\n            if py311_or_above:\n                end_lineno = frame_summary.end_lineno\n                if end_lineno is not None:\n                    end_lineno -= line_offset\n                frame_summary = traceback.FrameSummary(\n                    frame_summary.filename,\n                    lineno,\n                    frame_summary.name,\n                    line=line,\n                    end_lineno=end_lineno,\n                    colno=frame_summary.colno,\n                    end_colno=frame_summary.end_colno,\n                )\n            else:\n                frame_summary = traceback.FrameSummary(\n                    frame_summary.filename, lineno, frame_summary.name, line=line\n                )\n            stack_summary[idx] = frame_summary\n\n        return \"\".join(traceback_exc.format())\n\n\n@cog_i18n(_)\nclass Dev(commands.Cog):\n    \"\"\"Various development focused utilities.\"\"\"\n\n    async def red_delete_data_for_user(self, **kwargs: Any) -> None:\n        \"\"\"\n        Because despite my best efforts to advise otherwise,\n        people use ``--dev`` in production\n        \"\"\"\n        return",
+      "start_line": 255,
+      "end_line": 351,
+      "total_lines": 589,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "redbot/core/dev_commands.py",
+      "old_string": "    def format_exception(\n        self, exc: Exception, *, line_offset: int = 0, skip_frames: int = 1\n    ) -> str:\n        \"\"\"\n        Format an exception to send to the user.\n\n        This function makes a few alterations to the traceback:\n        - First `skip_frames` frames are skipped so that we don't show the frames\n          that are part of Red's code to the user\n        - `FrameSummary` objects that we get from traceback module are updated\n          with the string for the corresponding line of code as otherwise\n          the generated traceback string wouldn't show user's code.\n        - If `line_offset` is passed, this function subtracts it from line numbers\n          in `FrameSummary` objects so that those numbers properly correspond to\n          the code that was provided by the user. This is needed for cases where\n          we wrap user's code in an async function before exec-ing it.\n        \"\"\"\n        exc_type = type(exc)\n        tb = exc.__traceback__\n        for x in range(skip_frames):\n            if tb is None:\n                break\n            tb = tb.tb_next\n\n        # To mimic linecache module's behavior,\n        # all lines (including the last one) should end with \\n.\n        source_lines = [f\"{line}\\n\" for line in self._source.splitlines()]\n        filename = self.filename\n        # sometimes SyntaxError.text is None, sometimes it isn't\n        if (\n            issubclass(exc_type, SyntaxError)\n            and exc.filename == filename\n            and exc.lineno is not None\n        ):\n            if exc.text is None:\n                # line numbers are 1-based, the list indexes are 0-based\n                exc.text = source_lines[exc.lineno - 1]\n            exc.lineno -= line_offset\n\n        traceback_exc = traceback.TracebackException(exc_type, exc, tb)\n        py311_or_above = sys.version_info >= (3, 11)\n        stack_summary = traceback_exc.stack\n        for idx, frame_summary in enumerate(stack_summary):\n            if frame_summary.filename != filename:\n                continue\n            lineno = frame_summary.lineno\n            if lineno is None:\n                continue\n\n            # line numbers are 1-based, the list indexes are 0-based\n            line = source_lines[lineno - 1]\n            lineno -= line_offset\n            # support for enhanced error locations in tracebacks\n            if py311_or_above:\n                end_lineno = frame_summary.end_lineno\n                if end_lineno is not None:\n                    end_lineno -= line_offset\n                frame_summary = traceback.FrameSummary(\n                    frame_summary.filename,\n                    lineno,\n                    frame_summary.name,\n                    line=line,\n                    end_lineno=end_lineno,\n                    colno=frame_summary.colno,\n                    end_colno=frame_summary.end_colno,\n                )\n            else:\n                frame_summary = traceback.FrameSummary(\n                    frame_summary.filename, lineno, frame_summary.name, line=line\n                )\n            stack_summary[idx] = frame_summary\n\n        return \"\".join(traceback_exc.format())",
+      "new_string": "    def format_exception(\n        self, exc: Exception, *, line_offset: int = 0, skip_frames: int = 1\n    ) -> str:\n        \"\"\"\n        Format an exception to send to the user.\n\n        This function makes a few alterations to the traceback:\n        - First `skip_frames` frames are skipped so that we don't show the frames\n          that are part of Red's code to the user\n        - `FrameSummary` objects that we get from traceback module are updated\n          with the string for the corresponding line of code as otherwise\n          the generated traceback string wouldn't show user's code.\n        - If `line_offset` is passed, this function subtracts it from line numbers\n          in `FrameSummary` objects so that those numbers properly correspond to\n          the code that was provided by the user. This is needed for cases where\n          we wrap user's code in an async function before exec-ing it.\n        \"\"\"\n        exc_type = type(exc)\n        tb = exc.__traceback__\n        for x in range(skip_frames):\n            if tb is None:\n                break\n            tb = tb.tb_next\n\n        # To mimic linecache module's behavior,\n        # all lines (including the last one) should end with \\n.\n        source_lines = [f\"{line}\\n\" for line in self._source.splitlines()]\n        filename = self.filename\n        # sometimes SyntaxError.text is None, sometimes it isn't\n        if (\n            issubclass(exc_type, SyntaxError)\n            and exc.filename == filename\n            and exc.lineno is not None\n        ):\n            if exc.text is None:\n                # line numbers are 1-based, the list indexes are 0-based\n                exc.text = source_lines[exc.lineno - 1]\n            exc.lineno -= line_offset\n\n        traceback_exc = traceback.TracebackException(exc_type, exc, tb)\n        py311_or_above = sys.version_info >= (3, 11)\n        stack_summary = traceback_exc.stack\n        for idx, frame_summary in enumerate(stack_summary):\n            # Check if the frame is from our source code\n            if frame_summary.filename != filename:\n                # Check if it's from another snippet in our source cache\n                cached_source = self.source_cache.get(frame_summary.filename)\n                if not cached_source:\n                    continue\n                # Use the cached source for this frame\n                frame_source_lines = [f\"{line}\\n\" for line in cached_source.splitlines()]\n            else:\n                frame_source_lines = source_lines\n            \n            lineno = frame_summary.lineno\n            if lineno is None:\n                continue\n\n            # line numbers are 1-based, the list indexes are 0-based\n            try:\n                line = frame_source_lines[lineno - 1]\n            except IndexError:\n                # If the line number is out of range, skip this frame\n                continue\n                \n            # Only apply line offset for the current snippet\n            if frame_summary.filename == filename:\n                lineno -= line_offset\n                \n            # support for enhanced error locations in tracebacks\n            if py311_or_above:\n                end_lineno = frame_summary.end_lineno\n                if end_lineno is not None and frame_summary.filename == filename:\n                    end_lineno -= line_offset\n                frame_summary = traceback.FrameSummary(\n                    frame_summary.filename,\n                    lineno,\n                    frame_summary.name,\n                    line=line,\n                    end_lineno=end_lineno,\n                    colno=frame_summary.colno,\n                    end_colno=frame_summary.end_colno,\n                )\n            else:\n                frame_summary = traceback.FrameSummary(\n                    frame_summary.filename, lineno, frame_summary.name, line=line\n                )\n            stack_summary[idx] = frame_summary\n\n        return \"\".join(traceback_exc.format())",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "redbot/core/dev_commands.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/redbot/core/dev_commands.py\n+++ b/redbot/core/dev_commands.py\n@@ -307,19 +307,36 @@\n         py311_or_above = sys.version_info >= (3, 11)\n         stack_summary = traceback_exc.stack\n         for idx, frame_summary in enumerate(stack_summary):\n+            # Check if the frame is from our source code\n             if frame_summary.filename != filename:\n-                continue\n+                # Check if it's from another snippet in our source cache\n+                cached_source = self.source_cache.get(frame_summary.filename)\n+                if not cached_source:\n+                    continue\n+                # Use the cached source for this frame\n+                frame_source_lines = [f\"{line}\\n\" for line in cached_source.splitlines()]\n+            else:\n+                frame_source_lines = source_lines\n+            \n             lineno = frame_summary.lineno\n             if lineno is None:\n                 continue\n \n             # line numbers are 1-based, the list indexes are 0-based\n-            line = source_lines[lineno - 1]\n-            lineno -= line_offset\n+            try:\n+                line = frame_source_lines[lineno - 1]\n+            except IndexError:\n+                # If the line number is out of range, skip this frame\n+                continue\n+                \n+            # Only apply line offset for the current snippet\n+            if frame_summary.filename == filename:\n+                lineno -= line_offset\n+                \n             # support for enhanced error locations in tracebacks\n             if py311_or_above:\n                 end_lineno = frame_summary.end_lineno\n-                if end_lineno is not None:\n+                if end_lineno is not None and frame_summary.filename == filename:\n                     end_lineno -= line_offset\n                 frame_summary = traceback.FrameSummary(\n                     frame_summary.filename,\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "redbot/core/dev_commands.py",
+      "start_line": 161,
+      "end_line": 207
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "redbot/core/dev_commands.py",
+      "content": "        self._old_streams.append(sys.stdout)\n        sys.stdout = self._stream\n\n    def __exit__(\n        self,\n        exc_type: Optional[Type[BaseException]],\n        exc_value: Optional[BaseException],\n        exc_tb: Optional[TracebackType],\n        /,\n    ) -> None:\n        sys.stdout = self._old_streams.pop()\n\n    @classmethod\n    async def from_debug(\n        cls, ctx: commands.Context, *, source: str, env: Dict[str, Any]\n    ) -> DevOutput:\n        output = cls(ctx, source=source, filename=\"<debug command>\", env=env)\n        await output.run_debug()\n        return output\n\n    @classmethod\n    async def from_eval(\n        cls, ctx: commands.Context, *, source: str, env: Dict[str, Any]\n    ) -> DevOutput:\n        output = cls(ctx, source=source, filename=\"<eval command>\", env=env)\n        await output.run_eval()\n        return output\n\n    @classmethod\n    async def from_repl(\n        cls, ctx: commands.Context, *, source: str, env: Dict[str, Any]\n    ) -> DevOutput:\n        output = cls(ctx, source=source, filename=\"<repl session>\", env=env)\n        await output.run_repl()\n        return output\n\n    async def run_debug(self) -> None:\n        self.always_include_result = True\n        self._source = self.source\n        try:\n            compiled = self.async_compile_with_eval()\n        except SyntaxError as exc:\n            self.set_exception(exc, skip_frames=3)\n            return\n\n        try:\n            self.result = await maybe_await(eval(compiled, self.env))",
+      "start_line": 161,
+      "end_line": 207,
+      "total_lines": 606,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "redbot/core/dev_commands.py",
+      "old_string": "    @classmethod\n    async def from_debug(\n        cls, ctx: commands.Context, *, source: str, env: Dict[str, Any]\n    ) -> DevOutput:\n        output = cls(ctx, source=source, filename=\"<debug command>\", env=env)\n        await output.run_debug()\n        return output\n\n    @classmethod\n    async def from_eval(\n        cls, ctx: commands.Context, *, source: str, env: Dict[str, Any]\n    ) -> DevOutput:\n        output = cls(ctx, source=source, filename=\"<eval command>\", env=env)\n        await output.run_eval()\n        return output\n\n    @classmethod\n    async def from_repl(\n        cls, ctx: commands.Context, *, source: str, env: Dict[str, Any]\n    ) -> DevOutput:\n        output = cls(ctx, source=source, filename=\"<repl session>\", env=env)\n        await output.run_repl()\n        return output",
+      "new_string": "    @classmethod\n    async def from_debug(\n        cls, ctx: commands.Context, *, source: str, env: Dict[str, Any], source_cache: SourceCache = None\n    ) -> DevOutput:\n        source_cache = source_cache or SourceCache()\n        filename = f\"<debug command - snippet #{source_cache.take_next_index()}>\"\n        output = cls(ctx, source_cache=source_cache, source=source, filename=filename, env=env)\n        await output.run_debug()\n        return output\n\n    @classmethod\n    async def from_eval(\n        cls, ctx: commands.Context, *, source: str, env: Dict[str, Any], source_cache: SourceCache = None\n    ) -> DevOutput:\n        source_cache = source_cache or SourceCache()\n        filename = f\"<eval command - snippet #{source_cache.take_next_index()}>\"\n        output = cls(ctx, source_cache=source_cache, source=source, filename=filename, env=env)\n        await output.run_eval()\n        return output\n\n    @classmethod\n    async def from_repl(\n        cls, ctx: commands.Context, *, source: str, env: Dict[str, Any], source_cache: SourceCache = None\n    ) -> DevOutput:\n        source_cache = source_cache or SourceCache()\n        filename = f\"<repl session - snippet #{source_cache.take_next_index()}>\"\n        output = cls(ctx, source_cache=source_cache, source=source, filename=filename, env=env)\n        await output.run_repl()\n        return output",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "redbot/core/dev_commands.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/redbot/core/dev_commands.py\n+++ b/redbot/core/dev_commands.py\n@@ -172,25 +172,31 @@\n \n     @classmethod\n     async def from_debug(\n-        cls, ctx: commands.Context, *, source: str, env: Dict[str, Any]\n+        cls, ctx: commands.Context, *, source: str, env: Dict[str, Any], source_cache: SourceCache = None\n     ) -> DevOutput:\n-        output = cls(ctx, source=source, filename=\"<debug command>\", env=env)\n+        source_cache = source_cache or SourceCache()\n+        filename = f\"<debug command - snippet #{source_cache.take_next_index()}>\"\n+        output = cls(ctx, source_cache=source_cache, source=source, filename=filename, env=env)\n         await output.run_debug()\n         return output\n \n     @classmethod\n     async def from_eval(\n-        cls, ctx: commands.Context, *, source: str, env: Dict[str, Any]\n+        cls, ctx: commands.Context, *, source: str, env: Dict[str, Any], source_cache: SourceCache = None\n     ) -> DevOutput:\n-        output = cls(ctx, source=source, filename=\"<eval command>\", env=env)\n+        source_cache = source_cache or SourceCache()\n+        filename = f\"<eval command - snippet #{source_cache.take_next_index()}>\"\n+        output = cls(ctx, source_cache=source_cache, source=source, filename=filename, env=env)\n         await output.run_eval()\n         return output\n \n     @classmethod\n     async def from_repl(\n-        cls, ctx: commands.Context, *, source: str, env: Dict[str, Any]\n+        cls, ctx: commands.Context, *, source: str, env: Dict[str, Any], source_cache: SourceCache = None\n     ) -> DevOutput:\n-        output = cls(ctx, source=source, filename=\"<repl session>\", env=env)\n+        source_cache = source_cache or SourceCache()\n+        filename = f\"<repl session - snippet #{source_cache.take_next_index()}>\"\n+        output = cls(ctx, source_cache=source_cache, source=source, filename=filename, env=env)\n         await output.run_repl()\n         return output\n \n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "redbot/core/dev_commands.py",
+      "start_line": 364,
+      "end_line": 392
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "redbot/core/dev_commands.py",
+      "content": "\n@cog_i18n(_)\nclass Dev(commands.Cog):\n    \"\"\"Various development focused utilities.\"\"\"\n\n    async def red_delete_data_for_user(self, **kwargs: Any) -> None:\n        \"\"\"\n        Because despite my best efforts to advise otherwise,\n        people use ``--dev`` in production\n        \"\"\"\n        return\n\n    def __init__(self) -> None:\n        super().__init__()\n        self._last_result = None\n        self.sessions = {}\n        self.env_extensions = {}\n\n    def get_environment(self, ctx: commands.Context) -> dict:\n        env = {\n            \"bot\": ctx.bot,\n            \"ctx\": ctx,\n            \"channel\": ctx.channel,\n            \"author\": ctx.author,\n            \"guild\": ctx.guild,\n            \"message\": ctx.message,\n            \"asyncio\": asyncio,\n            \"aiohttp\": aiohttp,\n            \"discord\": discord,",
+      "start_line": 364,
+      "end_line": 392,
+      "total_lines": 612,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "redbot/core/dev_commands.py",
+      "old_string": "    def __init__(self) -> None:\n        super().__init__()\n        self._last_result = None\n        self.sessions = {}\n        self.env_extensions = {}",
+      "new_string": "    def __init__(self) -> None:\n        super().__init__()\n        self._last_result = None\n        self.sessions = {}\n        self.env_extensions = {}\n        self.source_cache = SourceCache()",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "redbot/core/dev_commands.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/redbot/core/dev_commands.py\n+++ b/redbot/core/dev_commands.py\n@@ -378,6 +378,7 @@\n         self._last_result = None\n         self.sessions = {}\n         self.env_extensions = {}\n+        self.source_cache = SourceCache()\n \n     def get_environment(self, ctx: commands.Context) -> dict:\n         env = {\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "redbot/core/dev_commands.py",
+      "start_line": 422,
+      "end_line": 451
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "redbot/core/dev_commands.py",
+      "content": "            `bot`      - the bot object\n            `channel`  - the current channel object\n            `author`   - the command author's member object\n            `guild`    - the current guild object\n            `message`  - the command's message object\n            `_`        - the result of the last dev command\n            `aiohttp`  - the aiohttp library\n            `asyncio`  - the asyncio library\n            `discord`  - the discord.py library\n            `commands` - the redbot.core.commands module\n            `cf`       - the redbot.core.utils.chat_formatting module\n        \"\"\"\n        env = self.get_environment(ctx)\n        source = cleanup_code(code)\n\n        output = await DevOutput.from_debug(ctx, source=source, env=env)\n        self._last_result = output.result\n        await output.send()\n\n    @commands.command(name=\"eval\")\n    @commands.is_owner()\n    async def _eval(self, ctx: commands.Context, *, body: str) -> None:\n        \"\"\"Execute asynchronous code.\n\n        This command wraps code into the body of an async function and then\n        calls and awaits it. The bot will respond with anything printed to\n        stdout, as well as the return value of the function.\n\n        The code can be within a codeblock, inline code or neither, as long\n        as they are not mixed and they are formatted correctly.",
+      "start_line": 422,
+      "end_line": 451,
+      "total_lines": 613,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "redbot/core/dev_commands.py",
+      "old_string": "        env = self.get_environment(ctx)\n        source = cleanup_code(code)\n\n        output = await DevOutput.from_debug(ctx, source=source, env=env)\n        self._last_result = output.result\n        await output.send()",
+      "new_string": "        env = self.get_environment(ctx)\n        source = cleanup_code(code)\n\n        output = await DevOutput.from_debug(ctx, source=source, env=env, source_cache=self.source_cache)\n        self._last_result = output.result\n        await output.send()",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "redbot/core/dev_commands.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/redbot/core/dev_commands.py\n+++ b/redbot/core/dev_commands.py\n@@ -434,7 +434,7 @@\n         env = self.get_environment(ctx)\n         source = cleanup_code(code)\n \n-        output = await DevOutput.from_debug(ctx, source=source, env=env)\n+        output = await DevOutput.from_debug(ctx, source=source, env=env, source_cache=self.source_cache)\n         self._last_result = output.result\n         await output.send()\n \n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "redbot/core/dev_commands.py",
+      "start_line": 455,
+      "end_line": 485
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "redbot/core/dev_commands.py",
+      "content": "            `bot`      - the bot object\n            `channel`  - the current channel object\n            `author`   - the command author's member object\n            `guild`    - the current guild object\n            `message`  - the command's message object\n            `_`        - the result of the last dev command\n            `aiohttp`  - the aiohttp library\n            `asyncio`  - the asyncio library\n            `discord`  - the discord.py library\n            `commands` - the redbot.core.commands module\n            `cf`       - the redbot.core.utils.chat_formatting module\n        \"\"\"\n        env = self.get_environment(ctx)\n        source = cleanup_code(body)\n\n        output = await DevOutput.from_eval(ctx, source=source, env=env)\n        if output.result is not None:\n            self._last_result = output.result\n        await output.send()\n\n    @commands.group(invoke_without_command=True)\n    @commands.is_owner()\n    async def repl(self, ctx: commands.Context) -> None:\n        \"\"\"Open an interactive REPL.\n\n        The REPL will only recognise code as messages which start with a\n        backtick. This includes codeblocks, and as such multiple lines can be\n        evaluated.\n\n        Use `exit()` or `quit` to exit the REPL session, prefixed with\n        a backtick so they may be interpreted.",
+      "start_line": 455,
+      "end_line": 485,
+      "total_lines": 613,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "redbot/core/dev_commands.py",
+      "old_string": "        env = self.get_environment(ctx)\n        source = cleanup_code(body)\n\n        output = await DevOutput.from_eval(ctx, source=source, env=env)\n        if output.result is not None:\n            self._last_result = output.result\n        await output.send()",
+      "new_string": "        env = self.get_environment(ctx)\n        source = cleanup_code(body)\n\n        output = await DevOutput.from_eval(ctx, source=source, env=env, source_cache=self.source_cache)\n        if output.result is not None:\n            self._last_result = output.result\n        await output.send()",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "redbot/core/dev_commands.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/redbot/core/dev_commands.py\n+++ b/redbot/core/dev_commands.py\n@@ -467,7 +467,7 @@\n         env = self.get_environment(ctx)\n         source = cleanup_code(body)\n \n-        output = await DevOutput.from_eval(ctx, source=source, env=env)\n+        output = await DevOutput.from_eval(ctx, source=source, env=env, source_cache=self.source_cache)\n         if output.result is not None:\n             self._last_result = output.result\n         await output.send()\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "redbot/core/dev_commands.py",
+      "start_line": 526,
+      "end_line": 556
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "redbot/core/dev_commands.py",
+      "content": "            env[\"message\"] = response\n\n            if not self.sessions[ctx.channel.id]:\n                continue\n\n            source = cleanup_code(response.content)\n\n            if source in (\"quit\", \"exit\", \"exit()\"):\n                await ctx.send(_(\"Exiting.\"))\n                del self.sessions[ctx.channel.id]\n                return\n\n            output = await DevOutput.from_repl(ctx, source=source, env=env)\n            try:\n                await output.send(tick=False)\n            except discord.Forbidden:\n                pass\n            except discord.HTTPException as exc:\n                await ctx.send(_(\"Unexpected error: \") + str(exc))\n\n    @repl.command(aliases=[\"resume\"])\n    async def pause(self, ctx: commands.Context, toggle: Optional[bool] = None) -> None:\n        \"\"\"Pauses/resumes the REPL running in the current channel.\"\"\"\n        if ctx.channel.id not in self.sessions:\n            await ctx.send(_(\"There is no currently running REPL session in this channel.\"))\n            return\n\n        if toggle is None:\n            toggle = not self.sessions[ctx.channel.id]\n        self.sessions[ctx.channel.id] = toggle\n",
+      "start_line": 526,
+      "end_line": 556,
+      "total_lines": 613,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "redbot/core/dev_commands.py",
+      "old_string": "            output = await DevOutput.from_repl(ctx, source=source, env=env)\n            try:\n                await output.send(tick=False)\n            except discord.Forbidden:\n                pass\n            except discord.HTTPException as exc:\n                await ctx.send(_(\"Unexpected error: \") + str(exc))",
+      "new_string": "            output = await DevOutput.from_repl(ctx, source=source, env=env, source_cache=self.source_cache)\n            try:\n                await output.send(tick=False)\n            except discord.Forbidden:\n                pass\n            except discord.HTTPException as exc:\n                await ctx.send(_(\"Unexpected error: \") + str(exc))",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "redbot/core/dev_commands.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/redbot/core/dev_commands.py\n+++ b/redbot/core/dev_commands.py\n@@ -535,7 +535,7 @@\n                 del self.sessions[ctx.channel.id]\n                 return\n \n-            output = await DevOutput.from_repl(ctx, source=source, env=env)\n+            output = await DevOutput.from_repl(ctx, source=source, env=env, source_cache=self.source_cache)\n             try:\n                 await output.send(tick=False)\n             except discord.Forbidden:\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "redbot/core/dev_commands.py",
+      "start_line": 261,
+      "end_line": 374
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "redbot/core/dev_commands.py",
+      "content": "        except Exception as exc:\n            self.set_exception(exc)\n        else:\n            if self.result is not None:\n                self.env[\"_\"] = self.result\n\n    def async_compile_with_exec(self) -> CodeType:\n        return async_compile(self._source, self.filename, \"exec\")\n\n    def async_compile_with_eval(self) -> CodeType:\n        return async_compile(self._source, self.filename, \"eval\")\n\n    def format_exception(\n        self, exc: Exception, *, line_offset: int = 0, skip_frames: int = 1\n    ) -> str:\n        \"\"\"\n        Format an exception to send to the user.\n\n        This function makes a few alterations to the traceback:\n        - First `skip_frames` frames are skipped so that we don't show the frames\n          that are part of Red's code to the user\n        - `FrameSummary` objects that we get from traceback module are updated\n          with the string for the corresponding line of code as otherwise\n          the generated traceback string wouldn't show user's code.\n        - If `line_offset` is passed, this function subtracts it from line numbers\n          in `FrameSummary` objects so that those numbers properly correspond to\n          the code that was provided by the user. This is needed for cases where\n          we wrap user's code in an async function before exec-ing it.\n        \"\"\"\n        exc_type = type(exc)\n        tb = exc.__traceback__\n        for x in range(skip_frames):\n            if tb is None:\n                break\n            tb = tb.tb_next\n\n        # To mimic linecache module's behavior,\n        # all lines (including the last one) should end with \\n.\n        source_lines = [f\"{line}\\n\" for line in self._source.splitlines()]\n        filename = self.filename\n        # sometimes SyntaxError.text is None, sometimes it isn't\n        if (\n            issubclass(exc_type, SyntaxError)\n            and exc.filename == filename\n            and exc.lineno is not None\n        ):\n            if exc.text is None:\n                # line numbers are 1-based, the list indexes are 0-based\n                exc.text = source_lines[exc.lineno - 1]\n            exc.lineno -= line_offset\n\n        traceback_exc = traceback.TracebackException(exc_type, exc, tb)\n        py311_or_above = sys.version_info >= (3, 11)\n        stack_summary = traceback_exc.stack\n        for idx, frame_summary in enumerate(stack_summary):\n            # Check if the frame is from our source code\n            if frame_summary.filename != filename:\n                # Check if it's from another snippet in our source cache\n                cached_source = self.source_cache.get(frame_summary.filename)\n                if not cached_source:\n                    continue\n                # Use the cached source for this frame\n                frame_source_lines = [f\"{line}\\n\" for line in cached_source.splitlines()]\n            else:\n                frame_source_lines = source_lines\n            \n            lineno = frame_summary.lineno\n            if lineno is None:\n                continue\n\n            # line numbers are 1-based, the list indexes are 0-based\n            try:\n                line = frame_source_lines[lineno - 1]\n            except IndexError:\n                # If the line number is out of range, skip this frame\n                continue\n                \n            # Only apply line offset for the current snippet\n            if frame_summary.filename == filename:\n                lineno -= line_offset\n                \n            # support for enhanced error locations in tracebacks\n            if py311_or_above:\n                end_lineno = frame_summary.end_lineno\n                if end_lineno is not None and frame_summary.filename == filename:\n                    end_lineno -= line_offset\n                frame_summary = traceback.FrameSummary(\n                    frame_summary.filename,\n                    lineno,\n                    frame_summary.name,\n                    line=line,\n                    end_lineno=end_lineno,\n                    colno=frame_summary.colno,\n                    end_colno=frame_summary.end_colno,\n                )\n            else:\n                frame_summary = traceback.FrameSummary(\n                    frame_summary.filename, lineno, frame_summary.name, line=line\n                )\n            stack_summary[idx] = frame_summary\n\n        return \"\".join(traceback_exc.format())\n\n\n@cog_i18n(_)\nclass Dev(commands.Cog):\n    \"\"\"Various development focused utilities.\"\"\"\n\n    async def red_delete_data_for_user(self, **kwargs: Any) -> None:\n        \"\"\"\n        Because despite my best efforts to advise otherwise,\n        people use ``--dev`` in production\n        \"\"\"\n        return",
+      "start_line": 261,
+      "end_line": 374,
+      "total_lines": 613,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "redbot/core/dev_commands.py",
+      "old_string": "    def format_exception(\n        self, exc: Exception, *, line_offset: int = 0, skip_frames: int = 1\n    ) -> str:\n        \"\"\"\n        Format an exception to send to the user.\n\n        This function makes a few alterations to the traceback:\n        - First `skip_frames` frames are skipped so that we don't show the frames\n          that are part of Red's code to the user\n        - `FrameSummary` objects that we get from traceback module are updated\n          with the string for the corresponding line of code as otherwise\n          the generated traceback string wouldn't show user's code.\n        - If `line_offset` is passed, this function subtracts it from line numbers\n          in `FrameSummary` objects so that those numbers properly correspond to\n          the code that was provided by the user. This is needed for cases where\n          we wrap user's code in an async function before exec-ing it.\n        \"\"\"\n        exc_type = type(exc)\n        tb = exc.__traceback__\n        for x in range(skip_frames):\n            if tb is None:\n                break\n            tb = tb.tb_next\n\n        # To mimic linecache module's behavior,\n        # all lines (including the last one) should end with \\n.\n        source_lines = [f\"{line}\\n\" for line in self._source.splitlines()]\n        filename = self.filename\n        # sometimes SyntaxError.text is None, sometimes it isn't\n        if (\n            issubclass(exc_type, SyntaxError)\n            and exc.filename == filename\n            and exc.lineno is not None\n        ):\n            if exc.text is None:\n                # line numbers are 1-based, the list indexes are 0-based\n                exc.text = source_lines[exc.lineno - 1]\n            exc.lineno -= line_offset\n\n        traceback_exc = traceback.TracebackException(exc_type, exc, tb)\n        py311_or_above = sys.version_info >= (3, 11)\n        stack_summary = traceback_exc.stack\n        for idx, frame_summary in enumerate(stack_summary):\n            # Check if the frame is from our source code\n            if frame_summary.filename != filename:\n                # Check if it's from another snippet in our source cache\n                cached_source = self.source_cache.get(frame_summary.filename)\n                if not cached_source:\n                    continue\n                # Use the cached source for this frame\n                frame_source_lines = [f\"{line}\\n\" for line in cached_source.splitlines()]\n            else:\n                frame_source_lines = source_lines\n            \n            lineno = frame_summary.lineno\n            if lineno is None:\n                continue\n\n            # line numbers are 1-based, the list indexes are 0-based\n            try:\n                line = frame_source_lines[lineno - 1]\n            except IndexError:\n                # If the line number is out of range, skip this frame\n                continue\n                \n            # Only apply line offset for the current snippet\n            if frame_summary.filename == filename:\n                lineno -= line_offset\n                \n            # support for enhanced error locations in tracebacks\n            if py311_or_above:\n                end_lineno = frame_summary.end_lineno\n                if end_lineno is not None and frame_summary.filename == filename:\n                    end_lineno -= line_offset\n                frame_summary = traceback.FrameSummary(\n                    frame_summary.filename,\n                    lineno,\n                    frame_summary.name,\n                    line=line,\n                    end_lineno=end_lineno,\n                    colno=frame_summary.colno,\n                    end_colno=frame_summary.end_colno,\n                )\n            else:\n                frame_summary = traceback.FrameSummary(\n                    frame_summary.filename, lineno, frame_summary.name, line=line\n                )\n            stack_summary[idx] = frame_summary\n\n        return \"\".join(traceback_exc.format())",
+      "new_string": "    def format_exception(\n        self, exc: Exception, *, line_offset: int = 0, skip_frames: int = 1\n    ) -> str:\n        \"\"\"\n        Format an exception to send to the user.\n\n        This function makes a few alterations to the traceback:\n        - First `skip_frames` frames are skipped so that we don't show the frames\n          that are part of Red's code to the user\n        - `FrameSummary` objects that we get from traceback module are updated\n          with the string for the corresponding line of code as otherwise\n          the generated traceback string wouldn't show user's code.\n        - If `line_offset` is passed, this function subtracts it from line numbers\n          in `FrameSummary` objects so that those numbers properly correspond to\n          the code that was provided by the user. This is needed for cases where\n          we wrap user's code in an async function before exec-ing it.\n        \"\"\"\n        exc_type = type(exc)\n        tb = exc.__traceback__\n        for x in range(skip_frames):\n            if tb is None:\n                break\n            tb = tb.tb_next\n\n        # To mimic linecache module's behavior,\n        # all lines (including the last one) should end with \\n.\n        source_lines = [f\"{line}\\n\" for line in self._source.splitlines()]\n        filename = self.filename\n        # sometimes SyntaxError.text is None, sometimes it isn't\n        if (\n            issubclass(exc_type, SyntaxError)\n            and exc.filename == filename\n            and exc.lineno is not None\n        ):\n            if exc.text is None:\n                # line numbers are 1-based, the list indexes are 0-based\n                exc.text = source_lines[exc.lineno - 1]\n            exc.lineno -= line_offset\n\n        traceback_exc = traceback.TracebackException(exc_type, exc, tb)\n        py311_or_above = sys.version_info >= (3, 11)\n        stack_summary = traceback_exc.stack\n        for idx, frame_summary in enumerate(stack_summary):\n            frame_filename = frame_summary.filename\n            # Check if the frame is from our source code\n            if frame_filename != filename:\n                # Check if it's from another snippet in our source cache\n                cached_source = self.source_cache.get(frame_filename)\n                if not cached_source:\n                    continue\n                # Use the cached source for this frame\n                frame_source_lines = [f\"{line}\\n\" for line in cached_source.splitlines()]\n                # For test compatibility, don't apply line offset to cached sources\n                current_line_offset = 0\n            else:\n                frame_source_lines = source_lines\n                current_line_offset = line_offset\n            \n            lineno = frame_summary.lineno\n            if lineno is None:\n                continue\n\n            # line numbers are 1-based, the list indexes are 0-based\n            try:\n                line = frame_source_lines[lineno - 1]\n            except IndexError:\n                # If the line number is out of range, skip this frame\n                continue\n                \n            # Apply line offset\n            adjusted_lineno = lineno - current_line_offset\n                \n            # support for enhanced error locations in tracebacks\n            if py311_or_above:\n                end_lineno = frame_summary.end_lineno\n                if end_lineno is not None:\n                    adjusted_end_lineno = end_lineno - current_line_offset\n                else:\n                    adjusted_end_lineno = None\n                    \n                frame_summary = traceback.FrameSummary(\n                    frame_filename,\n                    adjusted_lineno,\n                    frame_summary.name,\n                    line=line,\n                    end_lineno=adjusted_end_lineno,\n                    colno=frame_summary.colno,\n                    end_colno=frame_summary.end_colno,\n                )\n            else:\n                frame_summary = traceback.FrameSummary(\n                    frame_filename, adjusted_lineno, frame_summary.name, line=line\n                )\n            stack_summary[idx] = frame_summary\n\n        return \"\".join(traceback_exc.format())",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "redbot/core/dev_commands.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/redbot/core/dev_commands.py\n+++ b/redbot/core/dev_commands.py\n@@ -313,16 +313,20 @@\n         py311_or_above = sys.version_info >= (3, 11)\n         stack_summary = traceback_exc.stack\n         for idx, frame_summary in enumerate(stack_summary):\n+            frame_filename = frame_summary.filename\n             # Check if the frame is from our source code\n-            if frame_summary.filename != filename:\n+            if frame_filename != filename:\n                 # Check if it's from another snippet in our source cache\n-                cached_source = self.source_cache.get(frame_summary.filename)\n+                cached_source = self.source_cache.get(frame_filename)\n                 if not cached_source:\n                     continue\n                 # Use the cached source for this frame\n                 frame_source_lines = [f\"{line}\\n\" for line in cached_source.splitlines()]\n+                # For test compatibility, don't apply line offset to cached sources\n+                current_line_offset = 0\n             else:\n                 frame_source_lines = source_lines\n+                current_line_offset = line_offset\n             \n             lineno = frame_summary.lineno\n             if lineno is None:\n@@ -335,27 +339,29 @@\n                 # If the line number is out of range, skip this frame\n                 continue\n                 \n-            # Only apply line offset for the current snippet\n-            if frame_summary.filename == filename:\n-                lineno -= line_offset\n+            # Apply line offset\n+            adjusted_lineno = lineno - current_line_offset\n                 \n             # support for enhanced error locations in tracebacks\n             if py311_or_above:\n                 end_lineno = frame_summary.end_lineno\n-                if end_lineno is not None and frame_summary.filename == filename:\n-                    end_lineno -= line_offset\n+                if end_lineno is not None:\n+                    adjusted_end_lineno = end_lineno - current_line_offset\n+                else:\n+                    adjusted_end_lineno = None\n+                    \n                 frame_summary = traceback.FrameSummary(\n-                    frame_summary.filename,\n-                    lineno,\n+                    frame_filename,\n+                    adjusted_lineno,\n                     frame_summary.name,\n                     line=line,\n-                    end_lineno=end_lineno,\n+                    end_lineno=adjusted_end_lineno,\n                     colno=frame_summary.colno,\n                     end_colno=frame_summary.end_colno,\n                 )\n             else:\n                 frame_summary = traceback.FrameSummary(\n-                    frame_summary.filename, lineno, frame_summary.name, line=line\n+                    frame_filename, adjusted_lineno, frame_summary.name, line=line\n                 )\n             stack_summary[idx] = frame_summary\n \n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "submit_patch",
+    "arguments": {},
+    "response": {
+      "status": "ok",
+      "patch_size": 8274,
+      "files_changed": 1
+    }
+  }
+]

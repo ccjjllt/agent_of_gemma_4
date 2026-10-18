@@ -68,10 +68,14 @@ def check_base_family(name):
 
 
 def validate_config(raw):
-    unknown = set(raw) - set(DEFAULTS)
+    # Optional DDP-only batching choice. Omission preserves old configuration
+    # identities, including checkpoints created before length grouping existed.
+    unknown = set(raw) - set(DEFAULTS) - {'ddp_length_grouped_batches'}
     if unknown:
         raise TrainingError("unknown config keys: " + ", ".join(sorted(unknown)))
     cfg = dict(DEFAULTS, **raw)
+    if 'ddp_length_grouped_batches' in cfg:
+        require_bool(cfg['ddp_length_grouped_batches'], 'ddp_length_grouped_batches')
     for key in ("rank", "alpha", "max_sequence_length", "micro_batch_size",
                 "gradient_accumulation_steps", "epochs", "checkpoint_every_n_steps", "loss_chunk_size"):
         integer(cfg[key], key)

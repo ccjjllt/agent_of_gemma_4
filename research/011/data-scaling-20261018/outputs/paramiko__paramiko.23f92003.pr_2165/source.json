@@ -1,0 +1,35 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00005-of-00008.parquet",
+  "row_index": 1607,
+  "instance_id": "paramiko__paramiko.23f92003.pr_2165",
+  "repo": "paramiko/paramiko",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "paramiko__paramiko.23f92003.pr_2165.turvntk4",
+  "messages_sha256": "65078d5b8bdada04a097225ceee86f6d22c53db31ab2b33907c2928c0eb8d604",
+  "issue": "#### Issue: SFTP Connection Fails with Incompatible Protocol Error\n\nHello team,\n\nI've encountered an issue with the SFTP connection setup after recent changes. The connection fails with an \"Incompatible SFTP protocol\" error during the initial handshake. This seems to be related to the version negotiation process.\n\n#### Steps/Code to Reproduce\n\nHere's a minimal script to reproduce the issue:\n\n```python\nimport paramiko\nfrom paramiko import Transport, RSAKey\n\n# Setup server and client sockets\nsocks = paramiko.LoopSocket()\nsockc = paramiko.LoopSocket()\nsockc.link(socks)\n\n# Initialize transport\ntc = Transport(sockc)\nts = Transport(socks)\n\n# Load server key\nhost_key = RSAKey.from_private_key_file('path/to/rsa.key')\nts.add_server_key(host_key)\n\n# Start server\nevent = threading.Event()\nserver = paramiko.StubServer()\nts.set_subsystem_handler(\"sftp\", paramiko.SFTPServer, paramiko.StubSFTPServer)\nts.start_server(event, server)\nevent.wait(1.0)\n\n# Attempt to connect\ntry:\n    tc.connect(username=\"testuser\", password=\"testpass\")\nexcept Exception as e:\n    print(f\"Connection failed: {e}\")\n```\n\n#### Expected Results\n\nThe connection should establish successfully, allowing for SFTP operations.\n\n#### Actual Results\n\nThe connection fails with an error indicating an incompatible SFTP protocol version. This prevents any further SFTP operations from being performed.\n\n#### Additional Information\n\nThis issue seems to be affecting the initial version negotiation between the client and server. It would be great if someone could take a look at the recent changes to the SFTP packet handling to identify the root cause.\n\nThanks!",
+  "actions": [
+    {
+      "source_message_index": 54,
+      "filepath": "paramiko/packet.py",
+      "old_string": "\nimport errno\nimport os\nimport socket\nimport struct\nimport threading\nimport time\nfrom hmac import HMAC\n",
+      "new_string": "\nimport errno\nimport os\nimport socket\nimport struct\nimport threading\nimport time\nfrom hmac import HMAC\nfrom paramiko.util import asbytes\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 82,
+      "filepath": "paramiko/sftp.py",
+      "old_string": "\n    def _send_version(self):\n        self._send_packet(CMD_INIT, struct.pack(\">I\", _VERSION))\n        t, data = self._read_packet()\n        if t != CMD_VERSION:\n            raise SFTPError(\"Incompatible sftp protocol\")\n        version = struct.unpack(\">I\", data[:4])[0]\n        #        if version != _VERSION:\n        #            raise SFTPError('Incompatible sftp protocol')\n        return version\n",
+      "new_string": "\n    def _send_version(self):\n        self._send_packet(CMD_INIT, struct.pack(\">I\", _VERSION))\n        t, data = self._read_packet()\n        if t != CMD_VERSION:\n            raise SFTPError(\"Incompatible sftp protocol\")\n        version = struct.unpack(\">I\", data[:4])[0]\n        # Check for compatible versions\n        # We support version 3 and above for now\n        if version < 3:\n            raise SFTPError('Incompatible sftp protocol')\n        return version\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 96,
+      "filepath": "paramiko/sftp.py",
+      "old_string": "\n    def _send_version(self):\n        self._send_packet(CMD_INIT, struct.pack(\">I\", _VERSION))\n        t, data = self._read_packet()\n        if t != CMD_VERSION:\n            raise SFTPError(\"Incompatible sftp protocol\")\n        version = struct.unpack(\">I\", data[:4])[0]\n        # Check for compatible versions\n        # We support version 3 and above for now\n        if version < 3:\n            raise SFTPError('Incompatible sftp protocol')\n        return version\n",
+      "new_string": "\n    def _send_version(self):\n        self._send_packet(CMD_INIT, struct.pack(\">I\", _VERSION))\n        t, data = self._read_packet()\n        if t != CMD_VERSION:\n            raise SFTPError(\"Incompatible sftp protocol\")\n        \n        # Check if we have enough data for the version\n        if len(data) < 4:\n            raise SFTPError(\"Malformed SFTP version packet\")\n            \n        version = struct.unpack(\">I\", data[:4])[0]\n        \n        # Check for compatible versions\n        # We support version 3 and above for now\n        if version < 3:\n            raise SFTPError('Incompatible sftp protocol')\n            \n        return version\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

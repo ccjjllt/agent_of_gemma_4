@@ -1,0 +1,53 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "src/sqlfluff/rules/aliasing/AL04.py",
+      "start_line": 55,
+      "end_line": 113
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "src/sqlfluff/rules/aliasing/AL04.py",
+      "content": "            f1.a,\n            f2.b\n        FROM\n            2020.foo AS f1,\n            2021.foo AS f2\n\n    \"\"\"\n\n    name = \"aliasing.unique.table\"\n    aliases = (\"L020\",)\n    groups: Tuple[str, ...] = (\"all\", \"core\", \"aliasing\", \"aliasing.unique\")\n    crawl_behaviour = SegmentSeekerCrawler({\"select_statement\"})\n\n    def _lint_references_and_aliases(\n        self,\n        table_aliases: List[AliasInfo],\n        standalone_aliases: List[BaseSegment],\n        references: List[ObjectReferenceSegment],\n        col_aliases: List[ColumnAliasInfo],\n        using_cols: List[BaseSegment],\n        parent_select: Optional[BaseSegment],\n    ) -> Optional[List[LintResult]]:\n        \"\"\"Check whether any aliases are duplicates.\n\n        NB: Subclasses of this error should override this function.\n\n        \"\"\"\n        # Are any of the aliases the same?\n        duplicate = set()\n        for a1, a2 in itertools.combinations(table_aliases, 2):\n            # Compare the strings\n            if a1.ref_str == a2.ref_str and a1.ref_str:\n                duplicate.add(a2)\n        if duplicate:\n            return [\n                LintResult(\n                    # Reference the element, not the string.\n                    anchor=aliases.segment,\n                    description=(\n                        \"Duplicate table alias {!r}. Table \" \"aliases should be unique.\"\n                    ).format(aliases.ref_str),\n                )\n                for aliases in duplicate\n            ]\n        else:\n            return None\n\n    def _eval(self, context: RuleContext) -> EvalResultType:\n        \"\"\"Get References and Aliases and allow linting.\n\n        This rule covers a lot of potential cases of odd usages of\n        references, see the code for each of the potential cases.\n\n        Subclasses of this rule should override the\n        `_lint_references_and_aliases` method.\n        \"\"\"\n        assert context.segment.is_type(\"select_statement\")\n        select_info = get_select_statement_info(context.segment, context.dialect)\n        if not select_info:",
+      "start_line": 55,
+      "end_line": 113,
+      "total_lines": 132,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "src/sqlfluff/rules/aliasing/AL04.py",
+      "old_string": "\n    def _lint_references_and_aliases(\n        self,\n        table_aliases: List[AliasInfo],\n        standalone_aliases: List[BaseSegment],\n        references: List[ObjectReferenceSegment],\n        col_aliases: List[ColumnAliasInfo],\n        using_cols: List[BaseSegment],\n        parent_select: Optional[BaseSegment],\n    ) -> Optional[List[LintResult]]:\n        \"\"\"Check whether any aliases are duplicates.\n\n        NB: Subclasses of this error should override this function.\n\n        \"\"\"\n        # Are any of the aliases the same?\n        duplicate = set()\n        for a1, a2 in itertools.combinations(table_aliases, 2):\n            # Compare the strings\n            if a1.ref_str == a2.ref_str and a1.ref_str:\n                duplicate.add(a2)\n        if duplicate:\n            return [\n                LintResult(\n                    # Reference the element, not the string.\n                    anchor=aliases.segment,\n                    description=(\n                        \"Duplicate table alias {!r}. Table \" \"aliases should be unique.\"\n                    ).format(aliases.ref_str),\n                )\n                for aliases in duplicate\n            ]\n        else:\n            return None\n",
+      "new_string": "\n    def _lint_references_and_aliases(\n        self,\n        table_aliases: List[AliasInfo],\n        standalone_aliases: List[BaseSegment],\n        references: List[ObjectReferenceSegment],\n        col_aliases: List[ColumnAliasInfo],\n        using_cols: List[BaseSegment],\n        parent_select: Optional[BaseSegment],\n        rule_context: RuleContext,\n    ) -> Optional[List[LintResult]]:\n        \"\"\"Check whether any aliases are duplicates.\n\n        NB: Subclasses of this error should override this function.\n\n        \"\"\"\n        # Are any of the aliases the same?\n        duplicate = set()\n        for a1, a2 in itertools.combinations(table_aliases, 2):\n            # Compare the strings\n            if a1.ref_str == a2.ref_str and a1.ref_str:\n                duplicate.add(a2)\n        if duplicate:\n            return [\n                LintResult(\n                    # Reference the element, not the string.\n                    anchor=aliases.segment,\n                    description=(\n                        \"Duplicate table alias {!r}. Table \" \"aliases should be unique.\"\n                    ).format(aliases.ref_str),\n                )\n                for aliases in duplicate\n            ]\n        else:\n            return None\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "src/sqlfluff/rules/aliasing/AL04.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/src/sqlfluff/rules/aliasing/AL04.py\n+++ b/src/sqlfluff/rules/aliasing/AL04.py\n@@ -73,6 +73,7 @@\n         col_aliases: List[ColumnAliasInfo],\n         using_cols: List[BaseSegment],\n         parent_select: Optional[BaseSegment],\n+        rule_context: RuleContext,\n     ) -> Optional[List[LintResult]]:\n         \"\"\"Check whether any aliases are duplicates.\n \n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "src/sqlfluff/rules/aliasing/AL04.py",
+      "start_line": 1,
+      "end_line": 24
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "src/sqlfluff/rules/aliasing/AL04.py",
+      "content": "\"\"\"Implementation of Rule AL04.\"\"\"\n\nimport itertools\nfrom typing import List, Optional, Tuple\n\nfrom sqlfluff.core.dialects.common import AliasInfo, ColumnAliasInfo\nfrom sqlfluff.core.parser import BaseSegment\nfrom sqlfluff.core.rules import BaseRule, EvalResultType, LintResult, RuleContext\nfrom sqlfluff.core.rules.crawlers import SegmentSeekerCrawler\nfrom sqlfluff.dialects.dialect_ansi import ObjectReferenceSegment\nfrom sqlfluff.utils.analysis.select import get_select_statement_info\n\n\nclass Rule_AL04(BaseRule):\n    \"\"\"Table aliases should be unique within each clause.\n\n    Reusing table aliases is very likely a coding error.\n\n    **Anti-pattern**\n\n    In this example, the alias ``t`` is reused for two different tables:\n\n    .. code-block:: sql\n",
+      "start_line": 1,
+      "end_line": 24,
+      "total_lines": 133,
+      "is_truncated": false
+    }
+  }
+]

@@ -1,6 +1,6 @@
 # P010：联合收紧单次思考与总输出预算
 
-准备并执行于2026-10-18。UTC 08:41已通过CLI成功push V1，账号`ccjjllt`、4×L4、平台上限1800秒/30分钟，随后回读为`RUNNING`。尚未取得本轮结果；它是GPU研究作业，不是正式competition submission。P009原目录保持冻结。见[job-request.json](job-request.json)。
+准备并执行于2026-10-18。UTC 08:41通过CLI成功push V1，账号`ccjjllt`、4×L4；UTC 10:30回读为`COMPLETE`。实际六次任务全部完成，base 2/3、adapter 1/3，没有adapter净收益。监督器实际耗时1117.63秒，原件已下载，详见[result-review.md](result-review.md)。它是GPU研究作业，不是正式competition submission。P009原目录保持冻结。见[job-request.json](job-request.json)。
 
 P009 已证明 12B 真实短 SFT 的导出 adapter 能在官方 CT 服务路径上执行完整 Agent 任务，但三题中两臂均 1/3。长响应出现第一段思考到预算后，继续在正文或新思考通道循环的情况。本轮同时把 `thinking_budget` 从4096降到1024、`max_output_tokens` 从8192降到4096。这是**两个相配预算参数的联合处理**，不是单变量实验；与P009跨轮比较仍受生成随机性、并发、缓存和重复使用开发题影响。
 
@@ -36,4 +36,4 @@ P009 已证明 12B 真实短 SFT 的导出 adapter 能在官方 CT 服务路径�
 
 一次性手动核对：Python源码和生成bootstrap可解析；嵌入ZIP SHA与文件清单一致；两臂相较P009只有sampling.yaml两个数值变化；prompt/agent/eval_config、worker、模型pin和三题字节保持一致。核对旧checkpoint/agent镜像不会满足adapter选择条件。没有新建测试或check/verify/gate脚本，没有运行GPU。
 
-成功与否以之后真实run的六次结果、动作轨迹和耗时为准。预算截断能限制单次成本，但不保证模型选择正确编辑；总输出过小也可能截断工具参数。
+上述为执行前设计和CPU核对记录。执行结果表明预算截断能限制单次成本，但没有消除重复读取或不完整编辑；下一步转入批量训练数据与连续SFT，停止同样三题的独立GPU小探针。

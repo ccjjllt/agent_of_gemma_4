@@ -1,0 +1,45 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "dask/dataframe/io/csv.py",
+      "start_line": 503,
+      "end_line": 536
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "dask/dataframe/io/csv.py",
+      "content": "            \"Setting ``blocksize=None``\" % compression\n        )\n        blocksize = None\n    if compression not in compr:\n        raise NotImplementedError(\"Compression format %s not installed\" % compression)\n    if blocksize and sample and blocksize < sample and lastskiprow != 0:\n        warn(\n            \"Unexpected behavior can result from passing skiprows when\\n\"\n            \"blocksize is smaller than sample size.\\n\"\n            \"Setting ``sample=blocksize``\"\n        )\n        sample = blocksize\n    b_lineterminator = lineterminator.encode()\n    b_out = read_bytes(\n        urlpath,\n        delimiter=b_lineterminator,\n        blocksize=blocksize,\n        sample=sample,\n        compression=compression,\n        include_path=include_path_column,\n        **(storage_options or {}),\n    )\n\n    if include_path_column:\n        b_sample, values, paths = b_out\n        path = (include_path_column, path_converter)\n    else:\n        b_sample, values = b_out\n        path = None\n\n    if not isinstance(values[0], (tuple, list)):\n        values = [values]\n    # If we have not sampled, then use the first row of the first values\n    # as a representative sample.",
+      "start_line": 503,
+      "end_line": 536,
+      "total_lines": 961,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "dask/dataframe/io/csv.py",
+      "old_string": "    b_lineterminator = lineterminator.encode()\n    b_out = read_bytes(\n        urlpath,\n        delimiter=b_lineterminator,\n        blocksize=blocksize,\n        sample=sample,\n        compression=compression,\n        include_path=include_path_column,\n        **(storage_options or {}),\n    )",
+      "new_string": "    # Handle multi-byte encodings for the line terminator\n    encoding = kwargs.get('encoding', 'utf-8')\n    if encoding and encoding.lower().startswith(('utf-16', 'utf-32')):\n        # For multi-byte encodings, we need to encode the line terminator with the correct encoding\n        b_lineterminator = lineterminator.encode(encoding)\n        # For these encodings, we can't do chunked reads as they might break character boundaries\n        if blocksize:\n            blocksize = None\n    else:\n        # For single-byte encodings, we can use the default encoding\n        b_lineterminator = lineterminator.encode()\n    \n    b_out = read_bytes(\n        urlpath,\n        delimiter=b_lineterminator,\n        blocksize=blocksize,\n        sample=sample,\n        compression=compression,\n        include_path=include_path_column,\n        **(storage_options or {}),\n    )",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "dask/dataframe/io/csv.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/dask/dataframe/io/csv.py\n+++ b/dask/dataframe/io/csv.py\n@@ -512,7 +512,18 @@\n             \"Setting ``sample=blocksize``\"\n         )\n         sample = blocksize\n-    b_lineterminator = lineterminator.encode()\n+    # Handle multi-byte encodings for the line terminator\n+    encoding = kwargs.get('encoding', 'utf-8')\n+    if encoding and encoding.lower().startswith(('utf-16', 'utf-32')):\n+        # For multi-byte encodings, we need to encode the line terminator with the correct encoding\n+        b_lineterminator = lineterminator.encode(encoding)\n+        # For these encodings, we can't do chunked reads as they might break character boundaries\n+        if blocksize:\n+            blocksize = None\n+    else:\n+        # For single-byte encodings, we can use the default encoding\n+        b_lineterminator = lineterminator.encode()\n+    \n     b_out = read_bytes(\n         urlpath,\n         delimiter=b_lineterminator,\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "submit_patch",
+    "arguments": {},
+    "response": {
+      "status": "ok",
+      "patch_size": 1037,
+      "files_changed": 1
+    }
+  }
+]

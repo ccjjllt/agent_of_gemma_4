@@ -31,6 +31,27 @@ def trainable_hash(model):
     return h.hexdigest()
 
 
+def length_grouped_batches(rows, order, global_micro, seed):
+    """Group similarly sized sequences across ranks within shuffled windows.
+
+    Each index appears exactly once. Random windows and shuffled complete
+    batches avoid a length curriculum; the short final batch stays last.
+    This changes order only, without packing, truncation, or duplicated labels.
+    """
+    window = global_micro * 16
+    batches = []
+    for start in range(0, len(order), window):
+        indices = sorted(order[start:start + window],
+                         key=lambda i: len(rows[i]['input_ids']))
+        batches.extend(indices[i:i + global_micro]
+                       for i in range(0, len(indices), global_micro))
+    tail = batches.pop() if batches and len(batches[-1]) < global_micro else None
+    random.Random(seed).shuffle(batches)
+    if tail:
+        batches.append(tail)
+    return batches
+
+
 def run_ddp_loop(model, rows, cfg, output, torch, pad_token_id, signature, resume=None):
     dist = torch.distributed
     rank, world = dist.get_rank(), dist.get_world_size()
@@ -97,6 +118,8 @@ def run_ddp_loop(model, rows, cfg, output, torch, pad_token_id, signature, resum
     for epoch in range(epoch_start,cfg['epochs']):
         order=torch.randperm(len(rows),generator=torch.Generator().manual_seed(cfg['seed']+epoch)).tolist()
         batches=[order[i:i+global_micro] for i in range(0,len(order),global_micro)]
+        if cfg.get('ddp_length_grouped_batches', False):
+            batches=length_grouped_batches(rows,order,global_micro,cfg['seed']+epoch)
         offset=batch_start if epoch==epoch_start else 0
         if offset%cfg['gradient_accumulation_steps'] and offset!=len(batches):
             raise TrainingError('DDP resume is not at an optimizer boundary')
@@ -126,6 +149,7 @@ def run_ddp_loop(model, rows, cfg, output, torch, pad_token_id, signature, resum
                 loss_contribution.add_(loss.detach().double()*(count/denominator))
             scaler.unscale_(optimizer)
             norm=torch.nn.utils.clip_grad_norm_(params,cfg['max_grad_norm'],error_if_nonfinite=True)
+            learning_rate_used=optimizer.param_groups[0]['lr']
             scaler.step(optimizer);scaler.update();scheduler.step();step_no+=1
             dist.all_reduce(loss_contribution,op=dist.ReduceOp.SUM)
             last_loss=float(loss_contribution)
@@ -137,7 +161,17 @@ def run_ddp_loop(model, rows, cfg, output, torch, pad_token_id, signature, resum
                 metric={'step':step_no,'epoch':epoch,'loss':last_loss,'supervised_tokens':denominator,
                     'input_tokens':tokens,'world_size':world,'seconds':seconds,
                     'selected_tokens_per_second':denominator/seconds,'grad_norm':float(norm),
-                    'learning_rate':optimizer.param_groups[0]['lr']}
+                    'learning_rate':optimizer.param_groups[0]['lr'],
+                    'learning_rate_used':learning_rate_used,
+                    'input_tokens_by_rank':[
+                        sum(sum(rows[i]['attention_mask']) for indices in group
+                            for i in indices[r*cfg['micro_batch_size']:(r+1)*cfg['micro_batch_size']])
+                        for r in range(world)],
+                    'max_sequence_length_by_rank':[
+                        max((len(rows[i]['input_ids']) for indices in group
+                             for i in (indices[r*cfg['micro_batch_size']:(r+1)*cfg['micro_batch_size']]
+                                       or [indices[0]])), default=0)
+                        for r in range(world)]}
                 with (output/'metrics.jsonl').open('a') as f:f.write(json.dumps(metric)+'\n')
                 print(json.dumps(metric),flush=True)
             following=start+len(group)

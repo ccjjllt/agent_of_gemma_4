@@ -1,0 +1,45 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "tinydb/table.py",
+      "start_line": 270,
+      "end_line": 336
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "tinydb/table.py",
+      "content": "        # Note also that by default we expect custom query objects to be\n        # cacheable (which means they need to have a stable hash value).\n        # This is to keep consistency with TinyDB's behavior before\n        # `is_cacheable` was introduced which assumed that all queries\n        # are cacheable.\n        is_cacheable: Callable[[], bool] = getattr(cond, 'is_cacheable',\n                                                   lambda: True)\n        if is_cacheable():\n            # Update the query cache\n            self._query_cache[cond] = docs[:]\n\n        return docs\n\n    def get(\n        self,\n        cond: Optional[QueryLike] = None,\n        doc_id: Optional[int] = None,\n    ) -> Optional[Document]:\n        \"\"\"\n        Get exactly one document specified by a query or a document ID.\n        Returns ``None`` if the document doesn't exist.\n\n        :param cond: the condition to check against\n        :param doc_id: the document's ID\n\n        :returns: the document or ``None``\n        \"\"\"\n        table = self._read_table()\n\n        if doc_id is not None:\n            # Retrieve a document specified by its ID\n            raw_doc = table.get(str(doc_id), None)\n\n            if raw_doc is None:\n                return None\n\n            # Convert the raw data to the document class\n            return self.document_class(raw_doc, doc_id)\n        elif cond is not None:\n            # Find a document specified by a query\n            # The trailing underscore in doc_id_ is needed so MyPy\n            # doesn't think that `doc_id_` (which is a string) needs\n            # to have the same type as `doc_id` which is this function's\n            # parameter and is an optional `int`.\n            for doc_id_, doc in self._read_table().items():\n                if cond(doc):\n                    return self.document_class(\n                        doc,\n                        self.document_id_class(doc_id_)\n                    )\n\n            return None\n\n        raise RuntimeError('You have to pass either cond or doc_id')\n\n    def contains(\n        self,\n        cond: Optional[QueryLike] = None,\n        doc_id: Optional[int] = None\n    ) -> bool:\n        \"\"\"\n        Check whether the database contains a document matching a query or\n        an ID.\n\n        If ``doc_id`` is set, it checks if the db contains the specified ID.\n\n        :param cond: the condition use",
+      "start_line": 270,
+      "end_line": 336,
+      "total_lines": 752,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "tinydb/table.py",
+      "old_string": "\n    def get(\n        self,\n        cond: Optional[QueryLike] = None,\n        doc_id: Optional[int] = None,\n    ) -> Optional[Document]:\n        \"\"\"\n        Get exactly one document specified by a query or a document ID.\n        Returns ``None`` if the document doesn't exist.\n\n        :param cond: the condition to check against\n        :param doc_id: the document's ID\n\n        :returns: the document or ``None``\n        \"\"\"\n        table = self._read_table()\n\n        if doc_id is not None:\n            # Retrieve a document specified by its ID\n            raw_doc = table.get(str(doc_id), None)\n\n            if raw_doc is None:\n                return None\n\n            # Convert the raw data to the document class\n            return self.document_class(raw_doc, doc_id)\n        elif cond is not None:\n            # Find a document specified by a query\n            # The trailing underscore in doc_id_ is needed so MyPy\n            # doesn't think that `doc_id_` (which is a string) needs\n            # to have the same type as `doc_id` which is this function's\n            # parameter and is an optional `int`.\n            for doc_id_, doc in self._read_table().items():\n                if cond(doc):\n                    return self.document_class(\n                        doc,\n                        self.document_id_class(doc_id_)\n                    )\n\n            return None\n\n        raise RuntimeError('You have to pass either cond or doc_id')\n",
+      "new_string": "\n    def get(\n        self,\n        cond: Optional[QueryLike] = None,\n        doc_id: Optional[int] = None,\n        doc_ids: Optional[Iterable[int]] = None,\n    ) -> Union[Optional[Document], List[Document]]:\n        \"\"\"\n        Get document(s) specified by a query or document ID(s).\n        \n        When using doc_id, returns ``None`` if the document doesn't exist.\n        When using doc_ids, returns a list of documents that match the provided IDs.\n        When using cond, returns the first matching document or ``None`` if no match is found.\n\n        :param cond: the condition to check against\n        :param doc_id: a single document's ID\n        :param doc_ids: a list of document IDs\n\n        :returns: the document, a list of documents, or ``None``\n        \"\"\"\n        table = self._read_table()\n\n        if doc_ids is not None:\n            # Retrieve multiple documents specified by their IDs\n            result = []\n            for id in doc_ids:\n                raw_doc = table.get(str(id), None)\n                if raw_doc is not None:\n                    result.append(self.document_class(raw_doc, id))\n            return result\n        elif doc_id is not None:\n            # Retrieve a document specified by its ID\n            raw_doc = table.get(str(doc_id), None)\n\n            if raw_doc is None:\n                return None\n\n            # Convert the raw data to the document class\n            return self.document_class(raw_doc, doc_id)\n        elif cond is not None:\n            # Find a document specified by a query\n            # The trailing underscore in doc_id_ is needed so MyPy\n            # doesn't think that `doc_id_` (which is a string) needs\n            # to have the same type as `doc_id` which is this function's\n            # parameter and is an optional `int`.\n            for doc_id_, doc in self._read_table().items():\n                if cond(doc):\n                    return self.document_class(\n                        doc,\n                        self.document_id_class(doc_id_)\n                    )\n\n            return None\n\n        raise RuntimeError('You have to pass either cond, doc_id, or doc_ids')\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "tinydb/table.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/tinydb/table.py\n+++ b/tinydb/table.py\n@@ -284,19 +284,32 @@\n         self,\n         cond: Optional[QueryLike] = None,\n         doc_id: Optional[int] = None,\n-    ) -> Optional[Document]:\n-        \"\"\"\n-        Get exactly one document specified by a query or a document ID.\n-        Returns ``None`` if the document doesn't exist.\n+        doc_ids: Optional[Iterable[int]] = None,\n+    ) -> Union[Optional[Document], List[Document]]:\n+        \"\"\"\n+        Get document(s) specified by a query or document ID(s).\n+        \n+        When using doc_id, returns ``None`` if the document doesn't exist.\n+        When using doc_ids, returns a list of documents that match the provided IDs.\n+        When using cond, returns the first matching document or ``None`` if no match is found.\n \n         :param cond: the condition to check against\n-        :param doc_id: the document's ID\n-\n-        :returns: the document or ``None``\n+        :param doc_id: a single document's ID\n+        :param doc_ids: a list of document IDs\n+\n+        :returns: the document, a list of documents, or ``None``\n         \"\"\"\n         table = self._read_table()\n \n-        if doc_id is not None:\n+        if doc_ids is not None:\n+            # Retrieve multiple documents specified by their IDs\n+            result = []\n+            for id in doc_ids:\n+                raw_doc = table.get(str(id), None)\n+                if raw_doc is not None:\n+                    result.append(self.document_class(raw_doc, id))\n+            return result\n+        elif doc_id is not None:\n             # Retrieve a document specified by its ID\n             raw_doc = table.get(str(doc_id), None)\n \n@@ -320,7 +333,7 @@\n \n             return None\n \n-        raise RuntimeError('You have to pass either cond or doc_id')\n+        raise RuntimeError('You have to pass either cond, doc_id, or doc_ids')\n \n     def contains(\n         self,\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "submit_patch",
+    "arguments": {},
+    "response": {
+      "status": "ok",
+      "patch_size": 1985,
+      "files_changed": 1
+    }
+  }
+]

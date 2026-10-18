@@ -1,0 +1,35 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 74,
+  "instance_id": "tox-dev__pipdeptree.c31b6418.pr_366",
+  "repo": "tox-dev/pipdeptree",
+  "source_resolved": true,
+  "teacher_source": "claude-3-5-sonnet-20241022",
+  "traj_id": "tox-dev__pipdeptree.c31b6418.pr_366.5kr3t725",
+  "messages_sha256": "8308a5867807cd488dabacc0593eddbbbaf2cf3d65d1de6a18d591f332947bd1",
+  "issue": "Respect the active virtual environment instead of the installed location\n### Describe the feature\n\nIf `pipdeptree` is installed in the system python location (to make it always accessible), it will by default use the system python to look for packages. When a virtual environment is activated, this causes a confusing situation where packages listed do not correspond to the activated environment.\r\n\r\nTo work around this, a user has to manually provide the desired python:\r\n```shell\r\n# activate env\r\nconda activate <env>  # or other virtualenv equivalent\r\n# look for package\r\npipdeptree -p <package> --local-only --python \"$(which python)\"\r\n```\r\n\r\nInstalling `pipdeptree` as a system-wide utility seems relevant to avoid reinstalling it each time for each environment (similar to what `poetry` recommends). \r\n\r\nIt seems to me that `pipdeptree` should prioritize the \"active\" python rather than its installed location.",
+  "actions": [
+    {
+      "source_message_index": 14,
+      "filepath": "src/pipdeptree/_discovery.py",
+      "old_string": "\nfrom __future__ import annotations\n\nimport ast\nimport site\nimport subprocess  # noqa: S404\nimport sys\nfrom importlib.metadata import Distribution, distributions\nfrom pathlib import Path\nfrom typing import Iterable, Tuple\n\nfrom packaging.utils import canonicalize_name\n\nfrom pipdeptree._warning import get_warning_printer\n",
+      "new_string": "\nfrom __future__ import annotations\n\nimport ast\nimport os\nimport site\nimport subprocess  # noqa: S404\nimport sys\nfrom importlib.metadata import Distribution, distributions\nfrom pathlib import Path\nfrom typing import Iterable, Tuple\n\nfrom packaging.utils import canonicalize_name\n\nfrom pipdeptree._warning import get_warning_printer\n\n\ndef get_active_python() -> str:\n    \"\"\"Get the Python interpreter of the active environment.\n    \n    This function tries to detect if we're in a virtual environment and returns\n    the appropriate Python interpreter path:\n    - If VIRTUAL_ENV is set, use Python from that environment\n    - If we're in a conda environment, use its Python\n    - Otherwise fallback to sys.executable\n    \"\"\"\n    # Check for standard virtualenv/venv\n    if venv_path := os.getenv(\"VIRTUAL_ENV\"):\n        if sys.platform == \"win32\":\n            return str(Path(venv_path) / \"Scripts\" / \"python.exe\")\n        return str(Path(venv_path) / \"bin\" / \"python\")\n    \n    # Check for conda environment\n    if conda_prefix := os.getenv(\"CONDA_PREFIX\"):\n        if sys.platform == \"win32\":\n            return str(Path(conda_prefix) / \"python.exe\")\n        return str(Path(conda_prefix) / \"bin\" / \"python\")\n    \n    # Fallback to current Python\n    return sys.executable\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 16,
+      "filepath": "src/pipdeptree/_cli.py",
+      "old_string": "\nfrom __future__ import annotations\n\nimport enum\nimport sys\nfrom argparse import Action, ArgumentDefaultsHelpFormatter, ArgumentParser, Namespace\nfrom typing import Any, Sequence, cast\n\nfrom pipdeptree._warning import WarningType\n\nfrom .version import __version__\n",
+      "new_string": "\nfrom __future__ import annotations\n\nimport enum\nimport sys\nfrom argparse import Action, ArgumentDefaultsHelpFormatter, ArgumentParser, Namespace\nfrom typing import Any, Sequence, cast\n\nfrom pipdeptree._warning import WarningType\nfrom pipdeptree._discovery import get_active_python\n\nfrom .version import __version__\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 18,
+      "filepath": "src/pipdeptree/_cli.py",
+      "old_string": "\n    select = parser.add_argument_group(title=\"select\", description=\"choose what to render\")\n    select.add_argument(\"--python\", default=sys.executable, help=\"Python interpreter to inspect\")\n",
+      "new_string": "\n    select = parser.add_argument_group(title=\"select\", description=\"choose what to render\")\n    select.add_argument(\"--python\", default=get_active_python(), help=\"Python interpreter to inspect\")\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

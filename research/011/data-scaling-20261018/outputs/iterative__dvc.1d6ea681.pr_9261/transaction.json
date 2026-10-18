@@ -1,0 +1,174 @@
+{
+  "sample_id": "p011-iterative__dvc.1d6ea681.pr_9261",
+  "transaction_id": "p011-iterative__dvc.1d6ea681.pr_9261",
+  "producer_revision": "p011-local-2",
+  "synthetic": false,
+  "origin_kind": "cpu_replayed_source_edit_subset",
+  "group": {
+    "issue": "iterative__dvc.1d6ea681.pr_9261",
+    "repo": "iterative/dvc",
+    "commit": "159716de2812557bc2e7582daf89e062c52590cc",
+    "split": "train"
+  },
+  "source": {
+    "uri": "https://huggingface.co/datasets/SWE-bench/SWE-smith-trajectories/tree/08e109b4a59eaeebf80e4675cd125d42e7ac99a4",
+    "license": "MIT dataset; repository license in provenance.json",
+    "sha256": "1cd09c360f329d7175657fcbd42974a7be260deed99f3ab1033a4ea6c1f28670",
+    "teacher": "claude-3-7-sonnet-20250219",
+    "traj_id": "iterative__dvc.1d6ea681.pr_9261.0pivrkuh"
+  },
+  "protocol_id": "p005-harness-tools-v1",
+  "messages": [
+    {
+      "role": "system",
+      "content": "Use the supplied repository tools. Preserve unrelated behavior. Treat tool failures as observations and correct the action before retrying. Do not modify tests."
+    },
+    {
+      "role": "user",
+      "content": "Implement the following requested change in the repository.\n\nUntracked dvc.lock file not included in experiments\n\nWhen running experiments, untracked dvc.lock files are not being included in the experiment commit. This causes issues when trying to reproduce experiments or when examining experiment results.\n\nFor example:\n```\n# Create a stage and commit dvc.yaml\nstage = dvc.stage.add(cmd='echo foo', name='foo')\nscm.add_commit(['dvc.yaml'], message='add dvc.yaml')\n\n# Run the stage which creates dvc.lock\ndvc.reproduce(stage.addressing)\n\n# Reset to keep dvc.lock as untracked\nscm.reset()\n\n# Save experiment\nexp = dvc.experiments.save()\n\n# Check if dvc.lock exists in experiment - it doesn't!\nfs = scm.get_fs(exp)\nfs.exists('dvc.lock')  # Returns False, should be True\n```\n\nThis also affects other top-level files like metrics.json, params.yaml, and plots.csv that should be included in experiments but aren't being tracked properly.\n\nThe issue appears to be related to how untracked files are handled during experiment creation. Previously, untracked dvc.lock files were properly included in experiments, but this functionality seems to be broken now.\n\nScope of this editing session: update the following production files and submit the resulting local patch: dvc/repo/experiments/executor/base.py. No full task validation has been performed in this session."
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_00",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": {
+              "filepath": "dvc/repo/experiments/executor/base.py",
+              "start_line": 234,
+              "end_line": 268
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_00",
+      "name": "read_file",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"filepath\": \"dvc/repo/experiments/executor/base.py\", \"content\": \"        root_dir: str,\\n        **kwargs,\\n    ) -> \\\"Self\\\":\\n        return cls(\\n            root_dir=root_dir,\\n            dvc_dir=relpath(repo.dvc_dir, repo.scm.root_dir),\\n            baseline_rev=entry.baseline_rev,\\n            status=TaskStatus.PREPARING,\\n            name=entry.name,\\n            wdir=relpath(os.getcwd(), repo.scm.root_dir),\\n            **kwargs,\\n        )\\n\\n    @classmethod\\n    def _get_top_level_paths(cls, repo: \\\"Repo\\\") -> list[\\\"str\\\"]:\\n        return list(\\n            chain(\\n                _collect_top_level_metrics(repo),\\n                _collect_top_level_params(repo),\\n                repo.index._plot_sources,\\n            )\\n        )\\n\\n    @classmethod\\n    def save(\\n        cls,\\n        info: \\\"ExecutorInfo\\\",\\n        targets: Optional[Iterable[str]] = None,\\n        recursive: bool = False,\\n        force: bool = False,\\n        include_untracked: Optional[list[str]] = None,\\n        message: Optional[str] = None,\\n    ) -> ExecutorResult:\\n        from dvc.repo import Repo\\n\", \"start_line\": 234, \"end_line\": 268, \"total_lines\": 815, \"is_truncated\": false}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_01",
+          "type": "function",
+          "function": {
+            "name": "edit_file",
+            "arguments": {
+              "filepath": "dvc/repo/experiments/executor/base.py",
+              "old_string": "\n    @classmethod\n    def _get_top_level_paths(cls, repo: \"Repo\") -> list[\"str\"]:\n        return list(\n            chain(\n                _collect_top_level_metrics(repo),\n                _collect_top_level_params(repo),\n                repo.index._plot_sources,\n            )\n        )\n",
+              "new_string": "\n    @classmethod\n    def _get_top_level_paths(cls, repo: \"Repo\") -> list[\"str\"]:\n        # Include standard DVC files that should be part of experiments\n        dvc_files = [\"dvc.lock\"]\n        \n        # Add other important top-level files if they exist\n        for file in [\"metrics.json\", \"params.yaml\", \"plots.csv\"]:\n            if os.path.exists(os.path.join(repo.root_dir, file)):\n                dvc_files.append(file)\n        \n        return list(\n            chain(\n                dvc_files,\n                _collect_top_level_metrics(repo),\n                _collect_top_level_params(repo),\n                repo.index._plot_sources,\n            )\n        )\n",
+              "allow_multiple": false
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_01",
+      "name": "edit_file",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"filepath\": \"dvc/repo/experiments/executor/base.py\", \"occurrences\": 1, \"strategy\": \"exact\", \"diff\": \"--- a/dvc/repo/experiments/executor/base.py\\n+++ b/dvc/repo/experiments/executor/base.py\\n@@ -246,8 +246,17 @@\\n \\n     @classmethod\\n     def _get_top_level_paths(cls, repo: \\\"Repo\\\") -> list[\\\"str\\\"]:\\n+        # Include standard DVC files that should be part of experiments\\n+        dvc_files = [\\\"dvc.lock\\\"]\\n+        \\n+        # Add other important top-level files if they exist\\n+        for file in [\\\"metrics.json\\\", \\\"params.yaml\\\", \\\"plots.csv\\\"]:\\n+            if os.path.exists(os.path.join(repo.root_dir, file)):\\n+                dvc_files.append(file)\\n+        \\n         return list(\\n             chain(\\n+                dvc_files,\\n                 _collect_top_level_metrics(repo),\\n                 _collect_top_level_params(repo),\\n                 repo.index._plot_sources,\\n\", \"is_truncated\": false}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_02",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": {
+              "filepath": "dvc/repo/experiments/executor/base.py",
+              "start_line": 234,
+              "end_line": 277
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_02",
+      "name": "read_file",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"filepath\": \"dvc/repo/experiments/executor/base.py\", \"content\": \"        root_dir: str,\\n        **kwargs,\\n    ) -> \\\"Self\\\":\\n        return cls(\\n            root_dir=root_dir,\\n            dvc_dir=relpath(repo.dvc_dir, repo.scm.root_dir),\\n            baseline_rev=entry.baseline_rev,\\n            status=TaskStatus.PREPARING,\\n            name=entry.name,\\n            wdir=relpath(os.getcwd(), repo.scm.root_dir),\\n            **kwargs,\\n        )\\n\\n    @classmethod\\n    def _get_top_level_paths(cls, repo: \\\"Repo\\\") -> list[\\\"str\\\"]:\\n        # Include standard DVC files that should be part of experiments\\n        dvc_files = [\\\"dvc.lock\\\"]\\n        \\n        # Add other important top-level files if they exist\\n        for file in [\\\"metrics.json\\\", \\\"params.yaml\\\", \\\"plots.csv\\\"]:\\n            if os.path.exists(os.path.join(repo.root_dir, file)):\\n                dvc_files.append(file)\\n        \\n        return list(\\n            chain(\\n                dvc_files,\\n                _collect_top_level_metrics(repo),\\n                _collect_top_level_params(repo),\\n                repo.index._plot_sources,\\n            )\\n        )\\n\\n    @classmethod\\n    def save(\\n        cls,\\n        info: \\\"ExecutorInfo\\\",\\n        targets: Optional[Iterable[str]] = None,\\n        recursive: bool = False,\\n        force: bool = False,\\n        include_untracked: Optional[list[str]] = None,\\n        message: Optional[str] = None,\\n    ) -> ExecutorResult:\\n        from dvc.repo import Repo\\n\", \"start_line\": 234, \"end_line\": 277, \"total_lines\": 824, \"is_truncated\": false}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_03",
+          "type": "function",
+          "function": {
+            "name": "edit_file",
+            "arguments": {
+              "filepath": "dvc/repo/experiments/executor/base.py",
+              "old_string": "\n    @classmethod\n    def _get_top_level_paths(cls, repo: \"Repo\") -> list[\"str\"]:\n        # Include standard DVC files that should be part of experiments\n        dvc_files = [\"dvc.lock\"]\n        \n        # Add other important top-level files if they exist\n        for file in [\"metrics.json\", \"params.yaml\", \"plots.csv\"]:\n            if os.path.exists(os.path.join(repo.root_dir, file)):\n                dvc_files.append(file)\n        \n        return list(\n            chain(\n                dvc_files,\n                _collect_top_level_metrics(repo),\n                _collect_top_level_params(repo),\n                repo.index._plot_sources,\n            )\n        )\n",
+              "new_string": "\n    @classmethod\n    def _get_top_level_paths(cls, repo: \"Repo\") -> list[\"str\"]:\n        # Always include dvc.lock if it exists\n        dvc_files = []\n        dvc_lock_path = os.path.join(repo.root_dir, \"dvc.lock\")\n        if os.path.exists(dvc_lock_path):\n            dvc_files.append(\"dvc.lock\")\n        \n        # Add other important top-level files if they exist\n        important_files = [\"metrics.json\", \"params.yaml\", \"plots.csv\"]\n        for file in important_files:\n            if os.path.exists(os.path.join(repo.root_dir, file)):\n                dvc_files.append(file)\n        \n        # Check for any untracked DVC-related files in the root directory\n        scm = repo.scm\n        if hasattr(scm, \"untracked_files\"):\n            untracked = scm.untracked_files()\n            for file in untracked:\n                # Only include files in the root directory\n                if os.path.dirname(file) == \"\":\n                    # Include DVC-related files and other important files\n                    if (file.endswith(\".dvc\") or \n                        file == \"dvc.lock\" or \n                        file in important_files):\n                        if file not in dvc_files:\n                            dvc_files.append(file)\n        \n        return list(\n            chain(\n                dvc_files,\n                _collect_top_level_metrics(repo),\n                _collect_top_level_params(repo),\n                repo.index._plot_sources,\n            )\n        )\n",
+              "allow_multiple": false
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_03",
+      "name": "edit_file",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"filepath\": \"dvc/repo/experiments/executor/base.py\", \"occurrences\": 1, \"strategy\": \"exact\", \"diff\": \"--- a/dvc/repo/experiments/executor/base.py\\n+++ b/dvc/repo/experiments/executor/base.py\\n@@ -246,13 +246,31 @@\\n \\n     @classmethod\\n     def _get_top_level_paths(cls, repo: \\\"Repo\\\") -> list[\\\"str\\\"]:\\n-        # Include standard DVC files that should be part of experiments\\n-        dvc_files = [\\\"dvc.lock\\\"]\\n+        # Always include dvc.lock if it exists\\n+        dvc_files = []\\n+        dvc_lock_path = os.path.join(repo.root_dir, \\\"dvc.lock\\\")\\n+        if os.path.exists(dvc_lock_path):\\n+            dvc_files.append(\\\"dvc.lock\\\")\\n         \\n         # Add other important top-level files if they exist\\n-        for file in [\\\"metrics.json\\\", \\\"params.yaml\\\", \\\"plots.csv\\\"]:\\n+        important_files = [\\\"metrics.json\\\", \\\"params.yaml\\\", \\\"plots.csv\\\"]\\n+        for file in important_files:\\n             if os.path.exists(os.path.join(repo.root_dir, file)):\\n                 dvc_files.append(file)\\n+        \\n+        # Check for any untracked DVC-related files in the root directory\\n+        scm = repo.scm\\n+        if hasattr(scm, \\\"untracked_files\\\"):\\n+            untracked = scm.untracked_files()\\n+            for file in untracked:\\n+                # Only include files in the root directory\\n+                if os.path.dirname(file) == \\\"\\\":\\n+                    # Include DVC-related files and other important files\\n+                    if (file.endswith(\\\".dvc\\\") or \\n+                        file == \\\"dvc.lock\\\" or \\n+                        file in important_files):\\n+                        if file not in dvc_files:\\n+                            dvc_files.append(file)\\n         \\n         return list(\\n             chain(\\n\", \"is_truncated\": false}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_04",
+          "type": "function",
+          "function": {
+            "name": "submit_patch",
+            "arguments": {}
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_04",
+      "name": "submit_patch",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"patch_size\": 1748, \"files_changed\": 1}"
+    }
+  ],
+  "target_assistant_steps": [
+    1,
+    3,
+    4
+  ],
+  "behavior": "local_edit",
+  "needs_replay": false,
+  "attempt_status": "local_edits_applied",
+  "observed_outcome": {
+    "action_succeeded": true,
+    "task_resolved": null,
+    "behavior_verified": false,
+    "syntax_parse_passed": true,
+    "official_patch_nonempty": true,
+    "scope": "All selected structured production str_replace actions replayed from fixed buggy snapshot; source shell/create/insert and tests excluded. This is local edit supervision, not a resolved task or full trajectory."
+  },
+  "source_resolved_label": true,
+  "source_label_not_revalidated": true,
+  "replay_boundary": "Unchanged official v31 tools with macOS local transport, production subset. Read locations derived from source edit targets; this is edit/action SFT, not search-policy supervision.",
+  "continuation_policy": "New read/edit/submit tool observations only; no old assistant future or tool observations reused."
+}

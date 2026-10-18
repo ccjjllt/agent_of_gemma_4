@@ -1,0 +1,42 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 2525,
+  "instance_id": "python-trio__trio.cfbbe2c1.pr_2932",
+  "repo": "python-trio/trio",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "python-trio__trio.cfbbe2c1.pr_2932.40o1rcbf",
+  "messages_sha256": "2188e7d23af4a0e7f5275b4c8f591a59d8e0d25612d06d8ae33f8f83aa7c167c",
+  "issue": "Circular Import Error in trio._subprocess_platform\n\nHey team,\n\nI've encountered an issue with the `trio` library after applying the latest changes. It seems there's a circular import problem that's causing an `AttributeError`. Specifically, when trying to use `create_pipe_to_child_stdin`, the module `trio` appears to be partially initialized, leading to the error: `AttributeError: partially initialized module 'trio' has no attribute 'lowlevel'`.\n\nHere's a quick way to reproduce the issue:\n\n```python\nfrom trio._subprocess_platform import create_pipe_to_child_stdin\n\n# Attempt to call the function\ncreate_pipe_to_child_stdin()\n```\n\nRunning this snippet should trigger the error. It seems like the import structure might be causing a loop, preventing `trio.lowlevel` from being fully available when needed.\n\nAny insights or suggestions on how to resolve this would be greatly appreciated! Thanks!",
+  "actions": [
+    {
+      "source_message_index": 20,
+      "filepath": "src/trio/_subprocess_platform/__init__.py",
+      "old_string": "import os\nimport sys\nfrom typing import TYPE_CHECKING, Optional, Tuple\n\nimport trio\n\nfrom .. import _core, _subprocess\nfrom .._abc import ReceiveStream, SendStream  # noqa: TC001",
+      "new_string": "import os\nimport sys\nfrom typing import TYPE_CHECKING, Optional, Tuple\n\n# Import specific modules instead of the entire trio package\nfrom .. import _core, _subprocess\nfrom .._abc import ReceiveStream, SendStream  # noqa: TC001",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 22,
+      "filepath": "src/trio/_subprocess_platform/__init__.py",
+      "old_string": "    elif os.name == \"posix\":\n\n        def create_pipe_to_child_stdin() -> tuple[trio.lowlevel.FdStream, int]:\n            rfd, wfd = os.pipe()\n            return trio.lowlevel.FdStream(wfd), rfd\n\n        def create_pipe_from_child_output() -> tuple[trio.lowlevel.FdStream, int]:\n            rfd, wfd = os.pipe()\n            return trio.lowlevel.FdStream(rfd), wfd",
+      "new_string": "    elif os.name == \"posix\":\n        # Import FdStream directly to avoid circular import\n        from .._core import FdStream\n\n        def create_pipe_to_child_stdin() -> tuple[FdStream, int]:\n            rfd, wfd = os.pipe()\n            return FdStream(wfd), rfd\n\n        def create_pipe_from_child_output() -> tuple[FdStream, int]:\n            rfd, wfd = os.pipe()\n            return FdStream(rfd), wfd",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 28,
+      "filepath": "src/trio/_subprocess_platform/__init__.py",
+      "old_string": "    elif os.name == \"posix\":\n        # Import FdStream directly to avoid circular import\n        from .._core import FdStream",
+      "new_string": "    elif os.name == \"posix\":\n        # Import FdStream directly to avoid circular import\n        from .._unix_pipes import FdStream",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 40,
+      "filepath": "src/trio/_subprocess_platform/__init__.py",
+      "old_string": "if TYPE_CHECKING:\n    # internal types for the pipe representations used in type checking only\n    class ClosableSendStream(SendStream):\n        def close(self) -> None: ...\n\n    class ClosableReceiveStream(ReceiveStream):\n        def close(self) -> None: ...",
+      "new_string": "if TYPE_CHECKING:\n    # internal types for the pipe representations used in type checking only\n    class ClosableSendStream(SendStream):\n        def close(self) -> None: ...\n\n    class ClosableReceiveStream(ReceiveStream):\n        def close(self) -> None: ...\n        \n    # Import for type checking only\n    from .._unix_pipes import FdStream",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

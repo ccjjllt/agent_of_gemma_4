@@ -1,0 +1,42 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 307,
+  "instance_id": "cantools__cantools.0c6a7871.pr_630",
+  "repo": "cantools/cantools",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "cantools__cantools.0c6a7871.pr_630.0v27ybc6",
+  "messages_sha256": "d4b0deba120e1b652f71ae79fe976fb3c1169727ffec17a5b0cb9e1f3d7d3f72",
+  "issue": "# CAN log parsing fails with R/T flags in candump format\n\nWhen parsing candump log files that include the R (remote) or T (transmit) flags at the end of the line, the parser fails to correctly extract the data.\n\n## Description\n\nThe regular expression pattern used to parse candump log files doesn't properly handle the R/T flags that can appear at the end of candump lines. This affects both the logreader module and the plot functionality.\n\n## Reproduction\n\nUsing a candump log file with R/T flags:\n\n```\n(1594172461.968006) vcan0 0C8#F000000000000000 T\n(1594172463.968006) vcan0 0C8#F000000000000000 R\n```\n\nWhen trying to parse these lines, the data extraction fails because the regex pattern doesn't account for the trailing flags.\n\nSimilarly, when trying to plot data from a log file with these flags:\n\n```\n(1609395080.446193) vcan0 00000343#B504CB04AE04BC04 R\n(1609395081.447989) vcan0 00000343#650457045E047404 R\n(1609395082.449807) vcan0 00000343#1504240415043204 T\n```\n\nThe plotting functionality doesn't correctly handle the data.",
+  "actions": [
+    {
+      "source_message_index": 20,
+      "filepath": "src/cantools/logreader.py",
+      "old_string": "\nclass CandumpDefaultLogPattern(BasePattern):\n    # (1579857014.345944) can2 486#82967A6B006B07F8\n    # (1613656104.501098) can2 14C##16A0FFE00606E022400000000000000A0FFFF00FFFF25000600000000000000FE\n    pattern = re.compile(\n        r'^\\s*?\\((?P<timestamp>[\\d.]+?)\\)\\s+?(?P<channel>[a-zA-Z0-9]+)\\s+?(?P<can_id>[0-9A-F]+?)#(#[0-9A-F])?(?P<can_data>([0-9A-Fa-f]{2})*?$).*?$')\n",
+      "new_string": "\nclass CandumpDefaultLogPattern(BasePattern):\n    # (1579857014.345944) can2 486#82967A6B006B07F8\n    # (1613656104.501098) can2 14C##16A0FFE00606E022400000000000000A0FFFF00FFFF25000600000000000000FE\n    # (1594172461.968006) vcan0 0C8#F000000000000000 T\n    # (1594172463.968006) vcan0 0C8#F000000000000000 R\n    pattern = re.compile(\n        r'^\\s*?\\((?P<timestamp>[\\d.]+?)\\)\\s+?(?P<channel>[a-zA-Z0-9]+)\\s+?(?P<can_id>[0-9A-F]+?)#(#[0-9A-F])?(?P<can_data>([0-9A-Fa-f]{2})*?)(?:\\s+[RT])?$')\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 22,
+      "filepath": "src/cantools/subparsers/plot.py",
+      "old_string": "\n# Matches 'candump -l' (or -L) output, i.e. \"(1594172461.968006) vcan0 1F0#0000000000001BC1\"\nRE_CANDUMP_LOG = re.compile(r'^\\((?P<time>\\d+\\.\\d+)\\)\\s+\\S+\\s+(?P<frameid>[\\dA-F]+)#(?P<data>[\\dA-F]*)$')\n",
+      "new_string": "\n# Matches 'candump -l' (or -L) output, i.e. \"(1594172461.968006) vcan0 1F0#0000000000001BC1\"\n# Also handles R/T flags, i.e. \"(1594172461.968006) vcan0 0C8#F000000000000000 T\"\nRE_CANDUMP_LOG = re.compile(r'^\\((?P<time>\\d+\\.\\d+)\\)\\s+\\S+\\s+(?P<frameid>[\\dA-F]+)#(?P<data>[\\dA-F]*)(?:\\s+[RT])?$')\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 30,
+      "filepath": "src/cantools/logreader.py",
+      "old_string": "\nclass CandumpDefaultLogPattern(BasePattern):\n    # (1579857014.345944) can2 486#82967A6B006B07F8\n    # (1613656104.501098) can2 14C##16A0FFE00606E022400000000000000A0FFFF00FFFF25000600000000000000FE\n    # (1594172461.968006) vcan0 0C8#F000000000000000 T\n    # (1594172463.968006) vcan0 0C8#F000000000000000 R\n    pattern = re.compile(\n        r'^\\s*?\\((?P<timestamp>[\\d.]+?)\\)\\s+?(?P<channel>[a-zA-Z0-9]+)\\s+?(?P<can_id>[0-9A-F]+?)#(#[0-9A-F])?(?P<can_data>([0-9A-Fa-f]{2})*?)(?:\\s+[RT])?$')\n",
+      "new_string": "\nclass CandumpDefaultLogPattern(BasePattern):\n    # (1579857014.345944) can2 486#82967A6B006B07F8\n    # (1613656104.501098) can2 14C##16A0FFE00606E022400000000000000A0FFFF00FFFF25000600000000000000FE\n    # (1594172461.968006) vcan0 0C8#F000000000000000 T\n    # (1594172463.968006) vcan0 0C8#F000000000000000 R\n    pattern = re.compile(\n        r'^\\s*?\\((?P<timestamp>[\\d.]+?)\\)\\s+?(?P<channel>[a-zA-Z0-9]+)\\s+?(?P<can_id>[0-9A-F]+?)#(#[0-9A-F])?(?P<can_data>([0-9A-Fa-f]{2})*?)(?:\\s+\\S)?$')\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 32,
+      "filepath": "src/cantools/subparsers/plot.py",
+      "old_string": "\n# Matches 'candump -l' (or -L) output, i.e. \"(1594172461.968006) vcan0 1F0#0000000000001BC1\"\n# Also handles R/T flags, i.e. \"(1594172461.968006) vcan0 0C8#F000000000000000 T\"\nRE_CANDUMP_LOG = re.compile(r'^\\((?P<time>\\d+\\.\\d+)\\)\\s+\\S+\\s+(?P<frameid>[\\dA-F]+)#(?P<data>[\\dA-F]*)(?:\\s+[RT])?$')\n",
+      "new_string": "\n# Matches 'candump -l' (or -L) output, i.e. \"(1594172461.968006) vcan0 1F0#0000000000001BC1\"\n# Also handles R/T flags, i.e. \"(1594172461.968006) vcan0 0C8#F000000000000000 T\"\n# And any other single character flag at the end\nRE_CANDUMP_LOG = re.compile(r'^\\((?P<time>\\d+\\.\\d+)\\)\\s+\\S+\\s+(?P<frameid>[\\dA-F]+)#(?P<data>[\\dA-F]*)(?:\\s+\\S)?$')\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

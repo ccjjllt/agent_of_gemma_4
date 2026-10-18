@@ -1,0 +1,122 @@
+{
+  "sample_id": "p011-benoitc__gunicorn.bacbf8aa.pr_3258",
+  "transaction_id": "p011-benoitc__gunicorn.bacbf8aa.pr_3258",
+  "producer_revision": "p011-local-2",
+  "synthetic": false,
+  "origin_kind": "cpu_replayed_source_edit_subset",
+  "group": {
+    "issue": "benoitc__gunicorn.bacbf8aa.pr_3258",
+    "repo": "benoitc/gunicorn",
+    "commit": "01da1beedd4f032726b919ecd983502917798c01",
+    "split": "train"
+  },
+  "source": {
+    "uri": "https://huggingface.co/datasets/SWE-bench/SWE-smith-trajectories/tree/08e109b4a59eaeebf80e4675cd125d42e7ac99a4",
+    "license": "MIT dataset; repository license in provenance.json",
+    "sha256": "3b355c152cd7cb5880266a7d8360264adc882d527ede30a86ee621e798833e33",
+    "teacher": "claude-3-7-sonnet-20250219",
+    "traj_id": "benoitc__gunicorn.bacbf8aa.pr_3258.t8hdwnuu"
+  },
+  "protocol_id": "p005-harness-tools-v1",
+  "messages": [
+    {
+      "role": "system",
+      "content": "Use the supplied repository tools. Preserve unrelated behavior. Treat tool failures as observations and correct the action before retrying. Do not modify tests."
+    },
+    {
+      "role": "user",
+      "content": "Implement the following requested change in the repository.\n\n# Empty chunk size in HTTP chunked encoding not properly validated\n\n## Description\n\nWhen processing HTTP chunked encoding, the current implementation fails to properly validate empty chunk sizes. The code is supposed to raise an `InvalidChunkSize` exception when a chunk size is empty, but this validation has been removed.\n\n## How to Reproduce\n\nThis issue can be reproduced when handling HTTP requests with chunked encoding that contain empty chunk sizes. For example:\n\n```python\nfrom gunicorn.http.body import ChunkedReader\nfrom io import BytesIO\n\n# Create a request with an empty chunk size\ndata = BytesIO(b\"\\r\\n0\\r\\n\\r\\n\")  # Empty chunk size followed by terminating chunk\nreader = ChunkedReader(data, 8192)\n\n# This should raise an InvalidChunkSize exception but doesn't\ntry:\n    content = reader.read()\n    print(\"Error: Empty chunk size was accepted\")\nexcept Exception as e:\n    print(f\"Correctly raised: {e}\")\n```\n\nThe expected behavior is for the code to raise an `InvalidChunkSize` exception when it encounters an empty chunk size, but after the recent changes, it incorrectly accepts empty chunk sizes.\n\n## Expected Behavior\n\nThe code should validate that chunk sizes are not empty and raise an `InvalidChunkSize` exception when an empty chunk size is encountered, as per the HTTP specification.\n\nThis issue affects the handling of malformed HTTP requests and could potentially lead to security vulnerabilities by allowing improperly formatted chunked requests to be processed.\n\nScope of this editing session: update the following production files and submit the resulting local patch: gunicorn/http/body.py. No full task validation has been performed in this session."
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_00",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": {
+              "filepath": "gunicorn/http/body.py",
+              "start_line": 77,
+              "end_line": 109
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_00",
+      "name": "read_file",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"filepath\": \"gunicorn/http/body.py\", \"content\": \"    def parse_chunk_size(self, unreader, data=None):\\n        buf = io.BytesIO()\\n        if data is not None:\\n            buf.write(data)\\n\\n        idx = buf.getvalue().find(b\\\"\\\\r\\\\n\\\")\\n        while idx < 0:\\n            self.get_data(unreader, buf)\\n            idx = buf.getvalue().find(b\\\"\\\\r\\\\n\\\")\\n\\n        data = buf.getvalue()\\n        line, rest_chunk = data[:idx], data[idx + 2:]\\n\\n        # RFC9112 7.1.1: BWS before chunk-ext - but ONLY then\\n        chunk_size, *chunk_ext = line.split(b\\\";\\\", 1)\\n        if chunk_ext:\\n            chunk_size = chunk_size.rstrip(b\\\" \\\\t\\\")\\n        if any(n not in b\\\"0123456789abcdefABCDEF\\\" for n in chunk_size):\\n            raise InvalidChunkSize(chunk_size)\\n        chunk_size = int(chunk_size, 16)\\n\\n        if chunk_size == 0:\\n            try:\\n                self.parse_trailers(unreader, rest_chunk)\\n            except NoMoreData:\\n                pass\\n            return (0, None)\\n        return (chunk_size, rest_chunk)\\n\\n    def get_data(self, unreader, buf):\\n        data = unreader.read()\\n        if not data:\\n            raise NoMoreData()\", \"start_line\": 77, \"end_line\": 109, \"total_lines\": 266, \"is_truncated\": false}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_01",
+          "type": "function",
+          "function": {
+            "name": "edit_file",
+            "arguments": {
+              "filepath": "gunicorn/http/body.py",
+              "old_string": "\n        # RFC9112 7.1.1: BWS before chunk-ext - but ONLY then\n        chunk_size, *chunk_ext = line.split(b\";\", 1)\n        if chunk_ext:\n            chunk_size = chunk_size.rstrip(b\" \\t\")\n        if any(n not in b\"0123456789abcdefABCDEF\" for n in chunk_size):\n            raise InvalidChunkSize(chunk_size)\n        chunk_size = int(chunk_size, 16)\n",
+              "new_string": "\n        # RFC9112 7.1.1: BWS before chunk-ext - but ONLY then\n        chunk_size, *chunk_ext = line.split(b\";\", 1)\n        if chunk_ext:\n            chunk_size = chunk_size.rstrip(b\" \\t\")\n        if not chunk_size or any(n not in b\"0123456789abcdefABCDEF\" for n in chunk_size):\n            raise InvalidChunkSize(chunk_size)\n        chunk_size = int(chunk_size, 16)\n",
+              "allow_multiple": false
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_01",
+      "name": "edit_file",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"filepath\": \"gunicorn/http/body.py\", \"occurrences\": 1, \"strategy\": \"exact\", \"diff\": \"--- a/gunicorn/http/body.py\\n+++ b/gunicorn/http/body.py\\n@@ -91,7 +91,7 @@\\n         chunk_size, *chunk_ext = line.split(b\\\";\\\", 1)\\n         if chunk_ext:\\n             chunk_size = chunk_size.rstrip(b\\\" \\\\t\\\")\\n-        if any(n not in b\\\"0123456789abcdefABCDEF\\\" for n in chunk_size):\\n+        if not chunk_size or any(n not in b\\\"0123456789abcdefABCDEF\\\" for n in chunk_size):\\n             raise InvalidChunkSize(chunk_size)\\n         chunk_size = int(chunk_size, 16)\\n \\n\", \"is_truncated\": false}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_02",
+          "type": "function",
+          "function": {
+            "name": "submit_patch",
+            "arguments": {}
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_02",
+      "name": "submit_patch",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"patch_size\": 569, \"files_changed\": 1}"
+    }
+  ],
+  "target_assistant_steps": [
+    1,
+    2
+  ],
+  "behavior": "local_edit",
+  "needs_replay": false,
+  "attempt_status": "local_edits_applied",
+  "observed_outcome": {
+    "action_succeeded": true,
+    "task_resolved": null,
+    "behavior_verified": false,
+    "syntax_parse_passed": true,
+    "official_patch_nonempty": true,
+    "scope": "All selected structured production str_replace actions replayed from fixed buggy snapshot; source shell/create/insert and tests excluded. This is local edit supervision, not a resolved task or full trajectory."
+  },
+  "source_resolved_label": true,
+  "source_label_not_revalidated": true,
+  "replay_boundary": "Unchanged official v31 tools with macOS local transport, production subset. Read locations derived from source edit targets; this is edit/action SFT, not search-policy supervision.",
+  "continuation_policy": "New read/edit/submit tool observations only; no old assistant future or tool observations reused."
+}

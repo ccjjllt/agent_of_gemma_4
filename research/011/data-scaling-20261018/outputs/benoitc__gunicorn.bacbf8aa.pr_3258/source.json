@@ -1,0 +1,21 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 993,
+  "instance_id": "benoitc__gunicorn.bacbf8aa.pr_3258",
+  "repo": "benoitc/gunicorn",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "benoitc__gunicorn.bacbf8aa.pr_3258.t8hdwnuu",
+  "messages_sha256": "3b355c152cd7cb5880266a7d8360264adc882d527ede30a86ee621e798833e33",
+  "issue": "# Empty chunk size in HTTP chunked encoding not properly validated\n\n## Description\n\nWhen processing HTTP chunked encoding, the current implementation fails to properly validate empty chunk sizes. The code is supposed to raise an `InvalidChunkSize` exception when a chunk size is empty, but this validation has been removed.\n\n## How to Reproduce\n\nThis issue can be reproduced when handling HTTP requests with chunked encoding that contain empty chunk sizes. For example:\n\n```python\nfrom gunicorn.http.body import ChunkedReader\nfrom io import BytesIO\n\n# Create a request with an empty chunk size\ndata = BytesIO(b\"\\r\\n0\\r\\n\\r\\n\")  # Empty chunk size followed by terminating chunk\nreader = ChunkedReader(data, 8192)\n\n# This should raise an InvalidChunkSize exception but doesn't\ntry:\n    content = reader.read()\n    print(\"Error: Empty chunk size was accepted\")\nexcept Exception as e:\n    print(f\"Correctly raised: {e}\")\n```\n\nThe expected behavior is for the code to raise an `InvalidChunkSize` exception when it encounters an empty chunk size, but after the recent changes, it incorrectly accepts empty chunk sizes.\n\n## Expected Behavior\n\nThe code should validate that chunk sizes are not empty and raise an `InvalidChunkSize` exception when an empty chunk size is encountered, as per the HTTP specification.\n\nThis issue affects the handling of malformed HTTP requests and could potentially lead to security vulnerabilities by allowing improperly formatted chunked requests to be processed.",
+  "actions": [
+    {
+      "source_message_index": 22,
+      "filepath": "gunicorn/http/body.py",
+      "old_string": "\n        # RFC9112 7.1.1: BWS before chunk-ext - but ONLY then\n        chunk_size, *chunk_ext = line.split(b\";\", 1)\n        if chunk_ext:\n            chunk_size = chunk_size.rstrip(b\" \\t\")\n        if any(n not in b\"0123456789abcdefABCDEF\" for n in chunk_size):\n            raise InvalidChunkSize(chunk_size)\n        chunk_size = int(chunk_size, 16)\n",
+      "new_string": "\n        # RFC9112 7.1.1: BWS before chunk-ext - but ONLY then\n        chunk_size, *chunk_ext = line.split(b\";\", 1)\n        if chunk_ext:\n            chunk_size = chunk_size.rstrip(b\" \\t\")\n        if not chunk_size or any(n not in b\"0123456789abcdefABCDEF\" for n in chunk_size):\n            raise InvalidChunkSize(chunk_size)\n        chunk_size = int(chunk_size, 16)\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

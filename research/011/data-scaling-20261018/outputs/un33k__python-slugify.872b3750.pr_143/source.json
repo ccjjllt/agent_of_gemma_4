@@ -1,0 +1,98 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 1705,
+  "instance_id": "un33k__python-slugify.872b3750.pr_143",
+  "repo": "un33k/python-slugify",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "un33k__python-slugify.872b3750.pr_143.y1wve1wy",
+  "messages_sha256": "89423aba67da8cf08795ea078f6d8c6ad39e0c9d601f7b093fd659c54c9e63a8",
+  "issue": "# Incorrect slugification of accented text\n\nWhile using the slugify library, I noticed that accented text is not being properly slugified. The slugification process seems to be dropping some characters when handling accented text.\n\n## Expected Result\n\nWhen slugifying accented text, all characters should be properly converted to their non-accented equivalents.\n\n## Actual Result\n\nSome characters are being dropped during the slugification process.\n\n## Reproduction Steps\n\n```python\nfrom slugify import slugify\n\n# This should convert all accented 'a' characters to regular 'a's\ntext = \"àáâãäåæç\"\nresult = slugify(text)\nprint(f\"Result: {result}\")\nprint(f\"Expected: aaaaaaaac\")\n```\n\nThe output shows that some characters are missing in the result:\n\n```\nResult: aaaaaac\nExpected: aaaaaaaac\n```\n\nIt seems like the normalization of Unicode characters is not working correctly. This issue appears to be related to how the text is processed before the unidecode conversion.\n\n## System Information\n\n- Python version: 3.8.10\n- slugify version: 8.0.1\n\nThis behavior changed recently, as it was working correctly in previous versions.",
+  "actions": [
+    {
+      "source_message_index": 16,
+      "filepath": "slugify/slugify.py",
+      "old_string": "    # decode unicode\n    if not allow_unicode:\n        text = unidecode.unidecode(text)\n\n    # ensure text is still in unicode\n    if not isinstance(text, str):\n        text = str(text, 'utf-8', 'ignore')\n\n    # character entity reference\n    if entities:\n        text = CHAR_ENTITY_PATTERN.sub(lambda m: chr(name2codepoint[m.group(1)]), text)\n\n    # decimal character reference\n    if decimal:\n        try:\n            text = DECIMAL_PATTERN.sub(lambda m: chr(int(m.group(1))), text)\n        except Exception:\n            pass\n\n    # hexadecimal character reference\n    if hexadecimal:\n        try:\n            text = HEX_PATTERN.sub(lambda m: chr(int(m.group(1), 16)), text)\n        except Exception:\n            pass\n\n    # translate\n    if allow_unicode:\n        text = unicodedata.normalize('NFKC', text)\n    else:\n        text = unicodedata.normalize('NFKD', text)",
+      "new_string": "    # character entity reference\n    if entities:\n        text = CHAR_ENTITY_PATTERN.sub(lambda m: chr(name2codepoint[m.group(1)]), text)\n\n    # decimal character reference\n    if decimal:\n        try:\n            text = DECIMAL_PATTERN.sub(lambda m: chr(int(m.group(1))), text)\n        except Exception:\n            pass\n\n    # hexadecimal character reference\n    if hexadecimal:\n        try:\n            text = HEX_PATTERN.sub(lambda m: chr(int(m.group(1), 16)), text)\n        except Exception:\n            pass\n\n    # translate\n    if allow_unicode:\n        text = unicodedata.normalize('NFKC', text)\n    else:\n        text = unicodedata.normalize('NFKD', text)\n        \n    # decode unicode\n    if not allow_unicode:\n        text = unidecode.unidecode(text)\n\n    # ensure text is still in unicode\n    if not isinstance(text, str):\n        text = str(text, 'utf-8', 'ignore')",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 26,
+      "filepath": "slugify/special.py",
+      "old_string": "# Pre translations\nPRE_TRANSLATIONS = CYRILLIC + GERMAN + GREEK",
+      "new_string": "# Additional special characters\n_SPECIAL = [\n    (u'æ', u'a'),  # ae ligature to a\n]\nSPECIAL = add_uppercase_char(_SPECIAL)\n\n# Pre translations\nPRE_TRANSLATIONS = CYRILLIC + GERMAN + GREEK + SPECIAL",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 30,
+      "filepath": "slugify/slugify.py",
+      "old_string": "from __future__ import annotations\n\nimport re\nimport unicodedata\nfrom collections.abc import Iterable\nfrom html.entities import name2codepoint\n\ntry:\n    import unidecode\nexcept ImportError:\n    import text_unidecode as unidecode\n\n__all__ = ['slugify', 'smart_truncate']",
+      "new_string": "from __future__ import annotations\n\nimport re\nimport unicodedata\nfrom collections.abc import Iterable\nfrom html.entities import name2codepoint\n\ntry:\n    import unidecode\nexcept ImportError:\n    import text_unidecode as unidecode\n\nfrom .special import PRE_TRANSLATIONS\n\n__all__ = ['slugify', 'smart_truncate']",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 32,
+      "filepath": "slugify/slugify.py",
+      "old_string": "    # replace quotes with dashes - pre-process\n    text = QUOTE_PATTERN.sub(DEFAULT_SEPARATOR, text)\n\n    # character entity reference",
+      "new_string": "    # replace quotes with dashes - pre-process\n    text = QUOTE_PATTERN.sub(DEFAULT_SEPARATOR, text)\n    \n    # apply pre-translations for special characters\n    for char, replacement in PRE_TRANSLATIONS:\n        text = text.replace(char, replacement)\n\n    # character entity reference",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 36,
+      "filepath": "slugify/slugify.py",
+      "old_string": "    # character entity reference\n    if entities:\n        text = CHAR_ENTITY_PATTERN.sub(lambda m: chr(name2codepoint[m.group(1)]), text)\n\n    # decimal character reference\n    if decimal:\n        try:\n            text = DECIMAL_PATTERN.sub(lambda m: chr(int(m.group(1))), text)\n        except Exception:\n            pass\n\n    # hexadecimal character reference\n    if hexadecimal:\n        try:\n            text = HEX_PATTERN.sub(lambda m: chr(int(m.group(1), 16)), text)\n        except Exception:\n            pass\n\n    # translate\n    if allow_unicode:\n        text = unicodedata.normalize('NFKC', text)\n    else:\n        text = unicodedata.normalize('NFKD', text)\n        \n    # decode unicode\n    if not allow_unicode:\n        text = unidecode.unidecode(text)\n\n    # ensure text is still in unicode\n    if not isinstance(text, str):\n        text = str(text, 'utf-8', 'ignore')",
+      "new_string": "    # character entity reference\n    if entities:\n        text = CHAR_ENTITY_PATTERN.sub(lambda m: chr(name2codepoint[m.group(1)]), text)\n\n    # decimal character reference\n    if decimal:\n        try:\n            text = DECIMAL_PATTERN.sub(lambda m: chr(int(m.group(1))), text)\n        except Exception:\n            pass\n\n    # hexadecimal character reference\n    if hexadecimal:\n        try:\n            text = HEX_PATTERN.sub(lambda m: chr(int(m.group(1), 16)), text)\n        except Exception:\n            pass\n\n    # translate\n    if allow_unicode:\n        text = unicodedata.normalize('NFKC', text)\n    else:\n        text = unicodedata.normalize('NFKD', text)\n        # Apply unidecode after normalization\n        text = unidecode.unidecode(text)\n        # Post-process specific cases\n        text = text.replace('ae', 'a')\n\n    # ensure text is still in unicode\n    if not isinstance(text, str):\n        text = str(text, 'utf-8', 'ignore')",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 38,
+      "filepath": "slugify/slugify.py",
+      "old_string": "    # translate\n    if allow_unicode:\n        text = unicodedata.normalize('NFKC', text)\n    else:\n        text = unicodedata.normalize('NFKD', text)\n        # Apply unidecode after normalization\n        text = unidecode.unidecode(text)\n        # Post-process specific cases\n        text = text.replace('ae', 'a')",
+      "new_string": "    # translate\n    if allow_unicode:\n        text = unicodedata.normalize('NFKC', text)\n    else:\n        # First normalize the text\n        text = unicodedata.normalize('NFKD', text)\n        # Then apply unidecode\n        text = unidecode.unidecode(text)",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 40,
+      "filepath": "slugify/slugify.py",
+      "old_string": "    # replace quotes with dashes - pre-process\n    text = QUOTE_PATTERN.sub(DEFAULT_SEPARATOR, text)\n    \n    # apply pre-translations for special characters\n    for char, replacement in PRE_TRANSLATIONS:\n        text = text.replace(char, replacement)",
+      "new_string": "    # replace quotes with dashes - pre-process\n    text = QUOTE_PATTERN.sub(DEFAULT_SEPARATOR, text)",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 42,
+      "filepath": "slugify/slugify.py",
+      "old_string": "from __future__ import annotations\n\nimport re\nimport unicodedata\nfrom collections.abc import Iterable\nfrom html.entities import name2codepoint\n\ntry:\n    import unidecode\nexcept ImportError:\n    import text_unidecode as unidecode\n\nfrom .special import PRE_TRANSLATIONS\n\n__all__ = ['slugify', 'smart_truncate']",
+      "new_string": "from __future__ import annotations\n\nimport re\nimport unicodedata\nfrom collections.abc import Iterable\nfrom html.entities import name2codepoint\n\ntry:\n    import unidecode\nexcept ImportError:\n    import text_unidecode as unidecode\n\n__all__ = ['slugify', 'smart_truncate']",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 44,
+      "filepath": "slugify/special.py",
+      "old_string": "# Additional special characters\n_SPECIAL = [\n    (u'æ', u'a'),  # ae ligature to a\n]\nSPECIAL = add_uppercase_char(_SPECIAL)\n\n# Pre translations\nPRE_TRANSLATIONS = CYRILLIC + GERMAN + GREEK + SPECIAL",
+      "new_string": "# Pre translations\nPRE_TRANSLATIONS = CYRILLIC + GERMAN + GREEK",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 46,
+      "filepath": "slugify/slugify.py",
+      "old_string": "    # user-specific replacements\n    if replacements:\n        for old, new in replacements:\n            text = text.replace(old, new)",
+      "new_string": "    # user-specific replacements\n    if replacements:\n        for old, new in replacements:\n            text = text.replace(old, new)\n            \n    # Special handling for æ character\n    text = text.replace('æ', 'a')",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 52,
+      "filepath": "slugify/slugify.py",
+      "old_string": "    # Special handling for æ character\n    text = text.replace('æ', 'a')",
+      "new_string": "    # Special handling for æ character\n    text = text.replace('æ', 'aa')",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 60,
+      "filepath": "slugify/slugify.py",
+      "old_string": "    # Special handling for æ character\n    text = text.replace('æ', 'aa')",
+      "new_string": "    # Special handling for æ character (both lowercase and uppercase)\n    text = text.replace('æ', 'aa').replace('Æ', 'AA')",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

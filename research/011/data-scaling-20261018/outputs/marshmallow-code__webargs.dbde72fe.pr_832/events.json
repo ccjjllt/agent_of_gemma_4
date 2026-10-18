@@ -1,0 +1,45 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "src/webargs/fields.py",
+      "start_line": 37,
+      "end_line": 93
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "src/webargs/fields.py",
+      "content": "    .. note::\n\n        The schema class here will always be `marshmallow.Schema`, regardless\n        of whether a custom schema class is set on the parser. Pass an explicit schema\n        class if necessary.\n    \"\"\"\n\n    def __init__(self, nested, *args, **kwargs):\n        if isinstance(nested, dict):\n            nested = ma.Schema.from_dict(nested)\n        super().__init__(nested, *args, **kwargs)\n\n\nclass DelimitedFieldMixin:\n    \"\"\"\n    This is a mixin class for subclasses of ma.fields.List and ma.fields.Tuple\n    which split on a pre-specified delimiter. By default, the delimiter will be \",\"\n\n    Because we want the MRO to reach this class before the List or Tuple class,\n    it must be listed first in the superclasses\n\n    For example, a DelimitedList-like type can be defined like so:\n\n    >>> class MyDelimitedList(DelimitedFieldMixin, ma.fields.List):\n    >>>     pass\n    \"\"\"\n\n    delimiter: str = \",\"\n    # delimited fields set is_multiple=False for webargs.core.is_multiple\n    is_multiple: bool = False\n\n    def _serialize(self, value, attr, obj, **kwargs):\n        # serializing will start with parent-class serialization, so that we correctly\n        # output lists of non-primitive types, e.g. DelimitedList(DateTime)\n        return self.delimiter.join(\n            format(each) for each in super()._serialize(value, attr, obj, **kwargs)\n        )\n\n    def _deserialize(self, value, attr, data, **kwargs):\n        # attempting to deserialize from a non-string source is an error\n        if not isinstance(value, (str, bytes)):\n            raise self.make_error(\"invalid\")\n        values = value.split(self.delimiter) if value else []\n        return super()._deserialize(values, attr, data, **kwargs)\n\n\nclass DelimitedList(DelimitedFieldMixin, ma.fields.List):\n    \"\"\"A field which is similar to a List, but takes its input as a delimited\n    string (e.g. \"foo,bar,baz\").\n\n    Like List, it can be given a nested field type which it will use to\n    de/serialize each element of the list.\n\n    :param Field cls_or_instance: A field class or instance.\n    :param str delimiter: Delimiter between values.\n    \"\"\"\n",
+      "start_line": 37,
+      "end_line": 93,
+      "total_lines": 122,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "src/webargs/fields.py",
+      "old_string": "\nclass DelimitedFieldMixin:\n    \"\"\"\n    This is a mixin class for subclasses of ma.fields.List and ma.fields.Tuple\n    which split on a pre-specified delimiter. By default, the delimiter will be \",\"\n\n    Because we want the MRO to reach this class before the List or Tuple class,\n    it must be listed first in the superclasses\n\n    For example, a DelimitedList-like type can be defined like so:\n\n    >>> class MyDelimitedList(DelimitedFieldMixin, ma.fields.List):\n    >>>     pass\n    \"\"\"\n\n    delimiter: str = \",\"\n    # delimited fields set is_multiple=False for webargs.core.is_multiple\n    is_multiple: bool = False\n\n    def _serialize(self, value, attr, obj, **kwargs):\n        # serializing will start with parent-class serialization, so that we correctly\n        # output lists of non-primitive types, e.g. DelimitedList(DateTime)\n        return self.delimiter.join(\n            format(each) for each in super()._serialize(value, attr, obj, **kwargs)\n        )\n\n    def _deserialize(self, value, attr, data, **kwargs):\n        # attempting to deserialize from a non-string source is an error\n        if not isinstance(value, (str, bytes)):\n            raise self.make_error(\"invalid\")\n        values = value.split(self.delimiter) if value else []\n        return super()._deserialize(values, attr, data, **kwargs)\n",
+      "new_string": "\nclass DelimitedFieldMixin:\n    \"\"\"\n    This is a mixin class for subclasses of ma.fields.List and ma.fields.Tuple\n    which split on a pre-specified delimiter. By default, the delimiter will be \",\"\n\n    Because we want the MRO to reach this class before the List or Tuple class,\n    it must be listed first in the superclasses\n\n    For example, a DelimitedList-like type can be defined like so:\n\n    >>> class MyDelimitedList(DelimitedFieldMixin, ma.fields.List):\n    >>>     pass\n    \"\"\"\n\n    delimiter: str = \",\"\n    # delimited fields set is_multiple=False for webargs.core.is_multiple\n    is_multiple: bool = False\n    # Default value to use for empty values in delimited strings\n    empty_value: str = \"\"\n\n    def _serialize(self, value, attr, obj, **kwargs):\n        # serializing will start with parent-class serialization, so that we correctly\n        # output lists of non-primitive types, e.g. DelimitedList(DateTime)\n        return self.delimiter.join(\n            format(each) for each in super()._serialize(value, attr, obj, **kwargs)\n        )\n\n    def _deserialize(self, value, attr, data, **kwargs):\n        # attempting to deserialize from a non-string source is an error\n        if not isinstance(value, (str, bytes)):\n            raise self.make_error(\"invalid\")\n        \n        if not value:\n            values = []\n        else:\n            # Handle empty values in the delimited string\n            values = []\n            for val in value.split(self.delimiter):\n                if val == \"\":\n                    values.append(self.empty_value)\n                else:\n                    values.append(val)\n                    \n        return super()._deserialize(values, attr, data, **kwargs)\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "src/webargs/fields.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/src/webargs/fields.py\n+++ b/src/webargs/fields.py\n@@ -64,6 +64,8 @@\n     delimiter: str = \",\"\n     # delimited fields set is_multiple=False for webargs.core.is_multiple\n     is_multiple: bool = False\n+    # Default value to use for empty values in delimited strings\n+    empty_value: str = \"\"\n \n     def _serialize(self, value, attr, obj, **kwargs):\n         # serializing will start with parent-class serialization, so that we correctly\n@@ -76,7 +78,18 @@\n         # attempting to deserialize from a non-string source is an error\n         if not isinstance(value, (str, bytes)):\n             raise self.make_error(\"invalid\")\n-        values = value.split(self.delimiter) if value else []\n+        \n+        if not value:\n+            values = []\n+        else:\n+            # Handle empty values in the delimited string\n+            values = []\n+            for val in value.split(self.delimiter):\n+                if val == \"\":\n+                    values.append(self.empty_value)\n+                else:\n+                    values.append(val)\n+                    \n         return super()._deserialize(values, attr, data, **kwargs)\n \n \n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "submit_patch",
+    "arguments": {},
+    "response": {
+      "status": "ok",
+      "patch_size": 1288,
+      "files_changed": 1
+    }
+  }
+]

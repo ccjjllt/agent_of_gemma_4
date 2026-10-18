@@ -1,0 +1,45 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "gunicorn/http/message.py",
+      "start_line": 202,
+      "end_line": 232
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "gunicorn/http/message.py",
+      "content": "            # two potentially dangerous cases:\n            #  a) CL + TE (TE overrides CL.. only safe if the recipient sees it that way too)\n            #  b) chunked HTTP/1.0 (always faulty)\n            if self.version < (1, 1):\n                # framing wonky, see RFC 9112 Section 6.1\n                raise InvalidHeader(\"TRANSFER-ENCODING\", req=self)\n            if content_length is not None:\n                # we cannot be certain the message framing we understood matches proxy intent\n                #  -> whatever happens next, remaining input must not be trusted\n                raise InvalidHeader(\"CONTENT-LENGTH\", req=self)\n            self.body = Body(ChunkedReader(self, self.unreader))\n        elif content_length is not None:\n            try:\n                content_length = int(content_length)\n            except ValueError:\n                raise InvalidHeader(\"CONTENT-LENGTH\", req=self)\n\n            if content_length < 0:\n                raise InvalidHeader(\"CONTENT-LENGTH\", req=self)\n\n            self.body = Body(LengthReader(self.unreader, content_length))\n        else:\n            self.body = Body(EOFReader(self.unreader))\n\n    def should_close(self):\n        if self.must_close:\n            return True\n        for (h, v) in self.headers:\n            if h == \"CONNECTION\":\n                v = v.lower().strip(\" \\t\")\n                if v == \"close\":",
+      "start_line": 202,
+      "end_line": 232,
+      "total_lines": 460,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "gunicorn/http/message.py",
+      "old_string": "            try:\n                content_length = int(content_length)\n            except ValueError:\n                raise InvalidHeader(\"CONTENT-LENGTH\", req=self)\n\n            if content_length < 0:\n                raise InvalidHeader(\"CONTENT-LENGTH\", req=self)",
+      "new_string": "            # Validate that content_length contains only ASCII digits\n            if not content_length.isdigit():\n                raise InvalidHeader(\"CONTENT-LENGTH\", req=self)\n            \n            content_length = int(content_length)\n            if content_length < 0:  # This check is now redundant but kept for safety\n                raise InvalidHeader(\"CONTENT-LENGTH\", req=self)",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "gunicorn/http/message.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/gunicorn/http/message.py\n+++ b/gunicorn/http/message.py\n@@ -211,12 +211,12 @@\n                 raise InvalidHeader(\"CONTENT-LENGTH\", req=self)\n             self.body = Body(ChunkedReader(self, self.unreader))\n         elif content_length is not None:\n-            try:\n-                content_length = int(content_length)\n-            except ValueError:\n+            # Validate that content_length contains only ASCII digits\n+            if not content_length.isdigit():\n                 raise InvalidHeader(\"CONTENT-LENGTH\", req=self)\n-\n-            if content_length < 0:\n+            \n+            content_length = int(content_length)\n+            if content_length < 0:  # This check is now redundant but kept for safety\n                 raise InvalidHeader(\"CONTENT-LENGTH\", req=self)\n \n             self.body = Body(LengthReader(self.unreader, content_length))\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "submit_patch",
+    "arguments": {},
+    "response": {
+      "status": "ok",
+      "patch_size": 984,
+      "files_changed": 1
+    }
+  }
+]

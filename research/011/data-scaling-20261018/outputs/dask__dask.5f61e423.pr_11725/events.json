@@ -1,0 +1,45 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "dask/dataframe/dask_expr/io/io.py",
+      "start_line": 654,
+      "end_line": 685
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "dask/dataframe/dask_expr/io/io.py",
+      "content": "            return slice(0, len(self.original_columns))\n        return [\n            i\n            for i, col in enumerate(self.original_columns)\n            if col in self.operand(\"columns\")\n        ]\n\n    def _divisions(self):\n        divisions = tuple(range(0, len(self.frame), self.chunksize))\n        divisions = divisions + (len(self.frame) - 1,)\n        return divisions\n\n    def _filtered_task(self, name: Key, index: int) -> Task:\n        data = self.frame[slice(index * self.chunksize, (index + 1) * self.chunksize)]\n        if index == len(self.divisions) - 2:\n            idx = range(self.divisions[index], self.divisions[index + 1] + 1)\n        else:\n            idx = range(self.divisions[index], self.divisions[index + 1])\n\n        if is_series_like(self._meta):\n            return Task(\n                name,\n                type(self._meta),\n                data,\n                idx,\n                self._meta.dtype,\n                self._meta.name,\n                _data_producer=True,\n            )\n        else:\n            if data.ndim == 2:\n                data = data[:, self._column_indices]",
+      "start_line": 654,
+      "end_line": 685,
+      "total_lines": 693,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "dask/dataframe/dask_expr/io/io.py",
+      "old_string": "    def _filtered_task(self, name: Key, index: int) -> Task:\n        data = self.frame[slice(index * self.chunksize, (index + 1) * self.chunksize)]\n        if index == len(self.divisions) - 2:\n            idx = range(self.divisions[index], self.divisions[index + 1] + 1)\n        else:\n            idx = range(self.divisions[index], self.divisions[index + 1])\n\n        if is_series_like(self._meta):",
+      "new_string": "    def _filtered_task(self, name: Key, index: int) -> Task:\n        data = self.frame[slice(index * self.chunksize, (index + 1) * self.chunksize)]\n        \n        # When working with filtered partitions (e.g. during persist of a single partition),\n        # we need to handle divisions differently\n        if hasattr(self, \"_filtered\") and self._filtered:\n            start = index * self.chunksize\n            end = min((index + 1) * self.chunksize, len(self.frame))\n            idx = range(start, end)\n        else:\n            if index == len(self.divisions) - 2:\n                idx = range(self.divisions[index], self.divisions[index + 1] + 1)\n            else:\n                idx = range(self.divisions[index], self.divisions[index + 1])\n\n        if is_series_like(self._meta):",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "dask/dataframe/dask_expr/io/io.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/dask/dataframe/dask_expr/io/io.py\n+++ b/dask/dataframe/dask_expr/io/io.py\n@@ -665,10 +665,18 @@\n \n     def _filtered_task(self, name: Key, index: int) -> Task:\n         data = self.frame[slice(index * self.chunksize, (index + 1) * self.chunksize)]\n-        if index == len(self.divisions) - 2:\n-            idx = range(self.divisions[index], self.divisions[index + 1] + 1)\n-        else:\n-            idx = range(self.divisions[index], self.divisions[index + 1])\n+        \n+        # When working with filtered partitions (e.g. during persist of a single partition),\n+        # we need to handle divisions differently\n+        if hasattr(self, \"_filtered\") and self._filtered:\n+            start = index * self.chunksize\n+            end = min((index + 1) * self.chunksize, len(self.frame))\n+            idx = range(start, end)\n+        else:\n+            if index == len(self.divisions) - 2:\n+                idx = range(self.divisions[index], self.divisions[index + 1] + 1)\n+            else:\n+                idx = range(self.divisions[index], self.divisions[index + 1])\n \n         if is_series_like(self._meta):\n             return Task(\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "submit_patch",
+    "arguments": {},
+    "response": {
+      "status": "ok",
+      "patch_size": 1296,
+      "files_changed": 1
+    }
+  }
+]
