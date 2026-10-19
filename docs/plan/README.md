@@ -1,6 +1,6 @@
 # 首批研究计划
 
-**当前入口（2026-10-19）：[011批量SFT进展](../progress/011-batch-sft.md)，[010实际结果](../progress/010-budget-transfer.md)。** P010已完成，base 2/3、adapter 1/3，没有adapter净收益。P011首批139个独立问题/58repo已冻结；V1错误删除比赛关联，实际2×T4，训练0步失败。V2已修复并跑完：平台COMPLETE，运行时4×L4，70/70步、两轮完成并导出adapter（SHA `71687cf9…`，本地复算一致），supervisor墙钟约20.9分钟，配额剩21.13h。诊断与submission尚未运行，不声称修复收益。此前[009](../progress/009-real-sft-and-agent-transfer.md)只有8题/7repo、4次更新，下一档扩至512。31B正式提交57340172截至UTC10:30仍待评分，已确认成绩仍是旧提交的0.13。下文为历史索引与当时官方限制，不能覆盖最新事实。
+**当前入口（2026-10-19）：[012架构与后训练双线交接](012-agent-posttraining-handoff.md)。** 正式提交57340172已COMPLETE，公榜 **0.15**（旧0.13），来自31B无adapter的P008方案。P011已完成139题/58repo、4×L4两轮70步、导出step70 adapter，真实修复收益尚未评测；step34 adapter已补取。下一轮明确交付新Agent、新行为SFT、12新开发题四配置完整评测与可提交候选；不是只评旧权重或反复跑旧三题。最新共享GPU余量约20.8724小时。[P011结果](../../research/011/training-run-20261018/result-review.md)、[评分原件](../../research/012/status-20261019/submissions.json)。下文为历史索引与当时官方限制，不能覆盖最新事实。
 
 状态更新：2026-10-10；早期官方资料记录的日期另见各节。
 

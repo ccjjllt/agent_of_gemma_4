@@ -1,8 +1,8 @@
 # P011：按独立问题数量运行完整两轮 SFT
 
-此目录的真实连续训练载体已构建、冻结。最终数据为 **139个独立issue、58个仓库**：128条新local-edit加11条旧行为事务，451,974输入token、101,823监督token，长度中位2847、P95 6824、最大8080，完整两轮为 **70个optimizer steps**。这些是已冻结训练输入，不是已完成训练的结果。
+此目录的连续训练已经完成并归档。数据为 **139个独立issue、58个仓库**：128条新local-edit加11条旧行为事务，451,974输入token、101,823监督token，长度中位2847、P95 6824、最大8080，实际完成两轮 **70/70个optimizer steps**。具体证据见[result-review.md](result-review.md)，尚未证明真实修复收益。
 
-**当前是V2重跑，平台RUNNING，已从运行时日志确认4×NVIDIA L4、每卡23034MiB。** [实际作业](https://www.kaggle.com/code/ccjjllt/p011-12b-continuous-sft-139-issues)、[V2回执与硬件证据](job-request-v2.json)。V1虽然请求NvidiaL4，但载体错误地删掉比赛关联，实际得到2×T4，在75.15秒后退出，训练0步、无checkpoint；[故障说明](failure-v1.md)保存了原始证据与官方资源条件。V2恢复比赛关联，显卡记录与检查移到安装依赖前，数据和训练配方不变；目前优化进度仍待日志确认。
+**V2已COMPLETE，实际4×NVIDIA L4、每卡23034MiB，训练及导出成功，总耗时约20.9分钟。** [实际作业](https://www.kaggle.com/code/ccjjllt/p011-12b-continuous-sft-139-issues)、[V2回执与硬件证据](job-request-v2.json)。V1因缺少比赛关联实际得到2×T4，75.15秒后退出、训练0步；该失败仍保留于[故障说明](failure-v1.md)。step70完整checkpoint已取回；step34 adapter也已补取，主效果参照仍用step70。
 
 data SHA256为 `ebfa8d1357c413e467fc71295c371f178f08932b10fb179b95a2014b1c8638b0`。V1原载体已归档到 `submitted-v1/`；不得将V1的RUNNING请求记录当作训练完成或四L4运行证明。
 
@@ -18,7 +18,7 @@ data SHA256为 `ebfa8d1357c413e467fc71295c371f178f08932b10fb179b95a2014b1c8638b0
 
 要求数据 manifest 为 `status=frozen, split=train`，包含 `encoded.path`（仓库相对路径）及 SHA256、rows、independent_issues、independent_repos、max_sequence_length、provenance。载体核对实际编码数据、全train、同一协议指纹、**至少128个独立issue且每issue一行**。不以旧8条数据填充，不重复采样伪造规模，不截断历史，不读竞赛 tasks 或 heldout。
 
-provenance 延用已验证12B CT v2 tokenizer/template与完整工具schema；新数据 max length 上限8192，运行 config 取实际最大长度向128对齐。8192是载体接受上限，不是已有最大长度实测容量结论；P009实跑最大长度为6089。
+provenance沿用12B CT v2 tokenizer/template与完整六工具schema；载体长度上限8192，运行config取实际最大长度向128对齐。P011实际已训练最长8080的完整序列，不将此推断为更长序列必定可用。P012改修复角色工具子集后须另建协议、数据与运行版本，不覆盖本目录冻结输入。
 
 ## 训练与资产保留
 
@@ -48,7 +48,7 @@ P009真实训练四步计算合计100.37秒，约25.09秒/step；包含模型加
 
 ## 诊断与当前完成边界
 
-载体默认**只训练和导出**，不在尾部重复旧三题，也不提交。输出 `diagnostic-handoff.json` 提供adapter身份，可在完整训练之后交给既有P010固定诊断载体，是否运行及正式submission由后续真实结果决定。
+载体只训练和导出，没有尾部诊断或正式提交。下一轮按用户指定的[P012双线交接](../../../docs/plan/012-agent-posttraining-handoff.md)推进：新Agent、新行为SFT与四配置完整评测，P011 step70用于C组，旧三题仅诊断，不作为新训练前置。
 
 已完成139行真实数据冻结、实际build、V1失败定位与V2资源配置修复，以及**V2完整两轮训练与导出（2026-10-19确认平台COMPLETE）**。
 V2服务器回读的源码SHA与本地一致，competition_sources与NvidiaL4正确保存，运行时日志实际确认四张L4。
