@@ -103,3 +103,22 @@
 10/12 题四组全灭；几乎所有 attempt 打满 28 tool calls。
 结论：机制证据（新架构+repair adapter 可解 469）成立，但无配置占优，
 不能换算公榜；事后裁判与提交决策待定。基线仍是正式 0.15（31B）。
+
+## 事后裁判范围裁定（2026-10-19/20，诚实记录）
+
+- plan-48 §4 要求对“已生成候选”做独立副本事后裁判（区分：无正确候选 /
+  选错 / 验收误判 / 恢复错版本）。该项**未能完整执行**，原因是我方 carrier
+  的打捞钩子指错了目录：worker 只复制了 `SPEC['scratch']/p005_*`，而
+  working_state/patch_store 实际落在 sandbox 系统临时目录（随沙箱销毁）。
+  `candidate-stores` 在 48 个 attempt 输出中一个都不存在；trace 里也无
+  diff（selector 交接的双候选 diff 只存在过沙箱内存）。
+- 因此“未选中候选”的判定永久缺失：缺失裁判写可判定分母与未知数——此处为
+  B/C/D 三臂 × 有候选的 attempt（候选存在过，有 trace 旁证：patch_store/
+  snapshot/restore 词频），但内容不可恢复。
+- 可判部分：已提交 patch（`patches/*.patch`，48 个）= 在线 FAIL_TO_PASS 已判。
+  抽到的 B-334 patch 为真修复（`import datetime` + 冗余 `import time` +
+  无害的 reproduce_issue.py），非空洞通过——harness 自带 test_patch 且剥离
+  agent 侧测试文件，空洞通过路径不存在。
+- 教训：候选打捞必须以 selector 交接文件为 attempt 级强制产物（落盘到
+  attempt dir，不经过沙箱 temp），或钩子直接定位 sandbox_temp(toplevel)。
+  下次 carrier 先修钩子再跑。
