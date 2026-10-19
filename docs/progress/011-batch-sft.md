@@ -28,6 +28,16 @@ P009实测4次更新用100.37秒，加载等额外约6分钟。简单按更新�
 
 首批数据已经制成并冻结。V1因载体错误移除比赛关联，虽然请求NvidiaL4，实际得到2×T4，75.15秒后主动退出、训练0步；账号同期配额增加82.592秒。[故障说明](../../research/011/training-run-20261018/failure-v1.md)包含日志及官方L4资格条件。不是OOM，也没有丢失已训练权重。
 
-已修复比赛关联并提交同一作业V2，平台回读 **RUNNING**，且通过真实运行时日志确认 **4×NVIDIA L4，每卡23034MiB**。[实际训练作业](https://www.kaggle.com/code/ccjjllt/p011-12b-continuous-sft-139-issues)、[V2回执](../../research/011/training-run-20261018/job-request-v2.json)。显卡检查已提前到安装依赖前，139条数据与70步计划不变。目前优化进度待日志确认，不提前声称训练完成。
+已修复比赛关联并提交同一作业V2，平台回读 **COMPLETE**（2026-10-19确认），运行时日志实际为 **4×NVIDIA L4，每卡23034MiB**。
+[实际训练作业](https://www.kaggle.com/code/ccjjllt/p011-12b-continuous-sft-139-issues)、[V2回执](../../research/011/training-run-20261018/job-request-v2.json)。
+显卡检查已提前到安装依赖前，139条数据与70步计划不变。
+
+**训练已完成（2026-10-19取回确认）：70/70 optimizer steps，两轮，末步loss 0.1025（epoch均值0.2425→0.1335，仅训练集拟合证据）；**
+supervisor墙钟1254.94秒（约20.9分钟），optimizer循环约14.0秒/step；导出adapter 115,020,728字节，
+SHA256 `71687cf933c3570284521485466cb089bf44b7a01458809386eef6716e6530e2`（本地复算一致）。
+5个完整checkpoint（000017/34/51/68/70），峰值分配13.83–14.63GiB/rank。配额名义支出约2542秒（约0.706额度小时），
+完成后剩余21.13h。详见[结果复核](../../research/011/training-run-20261018/result-review.md)，
+本地原件 `gpu-output-v2/results/011/run-011-continuous-sft-20261018T110137Z-383c69c3/`（权重本地存、不进git）。
+诊断与submission尚未运行，不声称修复收益；下一步用handoff接P010载体做三题诊断再定。
 
 此次直接安排连续训练，没有等待另一个小探针或待评分submission。最终是否提交新adapter，取决于新训练真实结果，不能根据三题诊断比例预测排行榜成绩。

@@ -50,6 +50,10 @@ P009真实训练四步计算合计100.37秒，约25.09秒/step；包含模型加
 
 载体默认**只训练和导出**，不在尾部重复旧三题，也不提交。输出 `diagnostic-handoff.json` 提供adapter身份，可在完整训练之后交给既有P010固定诊断载体，是否运行及正式submission由后续真实结果决定。
 
-已完成139行真实数据冻结、实际build，以及V1失败定位与V2资源配置修复。V2服务器回读的源码SHA与本地一致，competition_sources与NvidiaL4正确保存，且运行时日志实际确认四张L4。没有执行额外模型容量探针或新增测试文件。待确认的是实际优化进度与训练结果，不能把平台RUNNING写成导出已经完成。
+已完成139行真实数据冻结、实际build、V1失败定位与V2资源配置修复，以及**V2完整两轮训练与导出（2026-10-19确认平台COMPLETE）**。
+V2服务器回读的源码SHA与本地一致，competition_sources与NvidiaL4正确保存，运行时日志实际确认四张L4。
+70/70 optimizer steps、5个完整checkpoint、导出adapter SHA `71687cf933c3570284521485466cb089bf44b7a01458809386eef6716e6530e2`
+（本地复算一致），supervisor墙钟1254.94秒。详见[结果复核](result-review.md)与本地原件 `gpu-output-v2/results/011/run-011-continuous-sft-20261018T110137Z-383c69c3/`。
+没有执行额外模型容量探针或新增测试文件。诊断与submission尚未运行，不声称修复收益。
 
 V2 `kernel/train.py` SHA256为 `94fec02e238e739b5ebe009794948aec4bc4c6379b0f2cb93c235bb52df9e75a`。V1旧SHA与carrier manifest保存在 `submitted-v1/`。README不在嵌入payload内。
