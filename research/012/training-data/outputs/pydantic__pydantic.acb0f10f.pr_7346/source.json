@@ -1,0 +1,42 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00001-of-00008.parquet",
+  "row_index": 2712,
+  "instance_id": "pydantic__pydantic.acb0f10f.pr_7346",
+  "repo": "pydantic/pydantic",
+  "source_resolved": true,
+  "teacher_source": "claude-3-5-sonnet-20241022",
+  "traj_id": "pydantic__pydantic.acb0f10f.pr_7346.7p1ianlb",
+  "messages_sha256": "1ddd2b7bba001b7ad8217615a6be1ade53a7ba109dea9d8ac1250592fc464408",
+  "issue": "Failure to override an inherited field with a computed field\n### Initial Checks\r\n\r\n- [X] I confirm that I'm using Pydantic V2\r\n\r\n### Description\r\n\r\nIt seems that overriding a regular field with a computed field doesn't behave as expected. Instead of a value being returned by accessing the property the property object itself is returned. And as for `@cached_property` causes an exception within `pydantic/_internal/_utils.py:smart_deepcopy`.\r\n\r\n### Example Code\r\n\r\n```Python\r\nfrom pydantic import BaseModel, computed_field\r\nfrom functools import cached_property\r\n\r\nclass Foo(BaseModel):\r\n    name: str = \"Foo\"\r\n\r\nclass Bar(Foo):\r\n    @computed_field\r\n    @property\r\n    def name(self) -> str:\r\n        return \"Bar\"\r\n\r\nprint(Foo().name)  # Foo\r\nprint(Bar().name)  # <property object at 0x...>\r\n\r\n# Upon definition:\r\n# > TypeError: cannot pickle '_thread.RLock' object\r\nclass Baz(Foo):\r\n    @computed_field\r\n    @cached_property\r\n    def name(self) -> str:\r\n        return \"Baz\"\r\n```\r\n\r\nEdit: After some further playing around, removing the default `name = \"Foo\"` from `Foo` it's clear that `name` within `Bar` is in some kind of weird hybrid state.\r\n\r\n```Python\r\nclass Foo(BaseModel):\r\n    name: str\r\n\r\nclass Bar(Foo):\r\n    @computed_field\r\n    @property\r\n    def name(self) -> str:\r\n        print(\"from property\")\r\n        return \"Bar\"\r\n\r\n# Pyright complains:\r\n# 1. Pyright: Argument missing for parameter \"name\" [reportGeneralTypeIssues]\r\n# But runs and I get the same result\r\nprint(Bar().name)  # <property object at 0x...>\r\n\r\n# Prints name as inherited from Foo, and without the `\"from property\"`\r\nprint(Bar(name=\"Bar\"))  # Bar\r\n```\r\n\r\n\r\n### Python, Pydantic & OS Version\r\n\r\n```Text\r\npydantic version: 2.1.1\r\n        pydantic-core version: 2.4.0\r\n          pydantic-core build: profile=release pgo=false mimalloc=true\r\n                 install path: /Users/.../.pyenv/versions/3.11.1/lib/python3.11/site-packages/pydantic\r\n               python version: 3.11.1 (main, Jan 14 2023, 16:44:31) [Clang 13.1.6 (clang-1316.0.21.2.5)]\r\n                     platform: macOS-13.4-arm64-arm-64bit\r\n     optional deps. installed: ['email-validator', 'typing-extensions']\r\n```\r\n\r\n\r\nSelected Assignee: @hramezani",
+  "actions": [
+    {
+      "source_message_index": 124,
+      "filepath": "pydantic/_internal/_model_construction.py",
+      "old_string": "\n    def __setitem__(self, k: str, v: object) -> None:\n        existing: Any = self.get(k, None)\n        if existing and v is not existing and isinstance(existing, PydanticDescriptorProxy):\n            warnings.warn(f'`{k}` overrides an existing Pydantic `{existing.decorator_info.decorator_repr}` decorator')\n\n        return super().__setitem__(k, v)\n",
+      "new_string": "\n    def __setitem__(self, k: str, v: object) -> None:\n        existing: Any = self.get(k, None)\n        if existing and v is not existing and isinstance(existing, PydanticDescriptorProxy):\n            warnings.warn(f'`{k}` overrides an existing Pydantic `{existing.decorator_info.decorator_repr}` decorator')\n\n        # Check if we're trying to override a field with a computed field\n        if isinstance(v, PydanticDescriptorProxy) and hasattr(v, 'decorator_info') and v.decorator_info.decorator_repr == '@computed_field':\n            # Check if this name exists in any parent class's fields\n            for base in self.get('__bases__', ()):\n                if hasattr(base, '__pydantic_fields__') and k in base.__pydantic_fields__:\n                    raise TypeError(f\"Field '{k}' of class '{self.get('__qualname__', '<unknown>')}' overrides symbol of same name in a parent class. This override with a computed_field is incompatible.\")\n\n        return super().__setitem__(k, v)\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 140,
+      "filepath": "pydantic/_internal/_decorators.py",
+      "old_string": "\n    def __get__(self, obj: object | None, obj_type: type[object] | None = None) -> PydanticDescriptorProxy[ReturnType]:\n        try:\n            return self.wrapped.__get__(obj, obj_type)\n        except AttributeError:\n            # not a descriptor, e.g. a partial object\n            return self.wrapped  # type: ignore[return-value]\n",
+      "new_string": "\n    def __get__(self, obj: object | None, obj_type: type[object] | None = None) -> PydanticDescriptorProxy[ReturnType]:\n        # Check if this is a computed field trying to override a parent field\n        if obj_type is not None and isinstance(self.decorator_info, ComputedFieldInfo):\n            # Get the name of this property\n            for name, value in obj_type.__dict__.items():\n                if value is self:\n                    # Check if this name exists in any parent class's fields\n                    for base in obj_type.__bases__:\n                        if hasattr(base, '__pydantic_fields__') and name in base.__pydantic_fields__:\n                            raise TypeError(f\"Field '{name}' of class '{obj_type.__name__}' overrides symbol of same name in a parent class. This override with a computed_field is incompatible.\")\n                    break\n\n        try:\n            return self.wrapped.__get__(obj, obj_type)\n        except AttributeError:\n            # not a descriptor, e.g. a partial object\n            return self.wrapped  # type: ignore[return-value]\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 144,
+      "filepath": "pydantic/_internal/_decorators.py",
+      "old_string": "\nfrom typing import TYPE_CHECKING, Any, Callable, TypeVar\n\nif TYPE_CHECKING:\n    from ..fields import ComputedFieldInfo\n\n    from ..main import BaseModel\n    from ._dataclasses import StandardDataclass\n",
+      "new_string": "\nfrom typing import TYPE_CHECKING, Any, Callable, TypeVar\n\nif TYPE_CHECKING:\n    from ..main import BaseModel\n    from ._dataclasses import StandardDataclass\n\nfrom ..fields import ComputedFieldInfo\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 148,
+      "filepath": "pydantic/_internal/_decorators.py",
+      "old_string": "\nif TYPE_CHECKING:\n    from ..fields import ComputedFieldInfo\n    from ..functional_validators import FieldValidatorModes\n",
+      "new_string": "\nif TYPE_CHECKING:\n    from ..functional_validators import FieldValidatorModes\n\nfrom ..fields import ComputedFieldInfo\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

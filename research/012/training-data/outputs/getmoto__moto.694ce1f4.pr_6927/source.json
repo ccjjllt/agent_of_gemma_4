@@ -1,0 +1,28 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 355,
+  "instance_id": "getmoto__moto.694ce1f4.pr_6927",
+  "repo": "getmoto/moto",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "getmoto__moto.694ce1f4.pr_6927.omd3j7sn",
+  "messages_sha256": "b8cf1629fd245e5a6ce8f51adeac478822b168fb2645e3ff16ff0113e67c5296",
+  "issue": "# HTML emails not working in SESv2 client\n\n**Describe the bug**\nWhen trying to send an HTML email using the SESv2 client, I get a KeyError: 'Text' error. The issue appears to be that the code is always trying to access the Text data even when sending HTML content.\n\n**To Reproduce**\nSteps to reproduce the behavior:\n1. Create an SESv2 client\n2. Try to send an email with HTML content\n\n```python\nimport boto3\n\nconn = boto3.client('sesv2', region_name='us-east-1')\nkwargs = dict(\n    FromEmailAddress='test@example.com', \n    Destination={'ToAddresses': ['test_to@example.com']}, \n    Content={\n        'Simple': {\n            'Subject': {'Data': 'test subject'}, \n            'Body': {\n                'Html': {'Data': '<h1>Test HTML</h1>'}\n            }\n        }\n    }\n)\nconn.send_email(**kwargs)\n```\n\n**Expected behavior**\nThe email should be sent successfully with the HTML content.\n\n**Actual behavior**\n```\nKeyError: 'Text'\n```\n\nThe code is trying to access `content[\"Simple\"][\"Body\"][\"Text\"][\"Data\"]` but when sending an HTML email, there is no 'Text' key in the Body dictionary, only 'Html'.\n\n**Environment info**\n- Python version: 3.8\n- Boto3 version: 1.26.0\n- Moto version: latest",
+  "actions": [
+    {
+      "source_message_index": 38,
+      "filepath": "moto/sesv2/responses.py",
+      "old_string": "\n        elif \"Simple\" in content:\n            message = self.sesv2_backend.send_email(  # type: ignore\n                source=from_email_address,\n                destinations=destination,\n                subject=content[\"Simple\"][\"Subject\"][\"Data\"],\n                body=content[\"Simple\"][\"Body\"][\"Text\"][\"Data\"],\n            )\n",
+      "new_string": "\n        elif \"Simple\" in content:\n            body_content = \"\"\n            # Check if Text content is provided\n            if \"Text\" in content[\"Simple\"][\"Body\"]:\n                body_content = content[\"Simple\"][\"Body\"][\"Text\"][\"Data\"]\n            # Check if Html content is provided\n            elif \"Html\" in content[\"Simple\"][\"Body\"]:\n                body_content = content[\"Simple\"][\"Body\"][\"Html\"][\"Data\"]\n            \n            message = self.sesv2_backend.send_email(  # type: ignore\n                source=from_email_address,\n                destinations=destination,\n                subject=content[\"Simple\"][\"Subject\"][\"Data\"],\n                body=body_content,\n            )\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 44,
+      "filepath": "moto/sesv2/responses.py",
+      "old_string": "\n        elif \"Simple\" in content:\n            body_content = \"\"\n            # Check if Text content is provided\n            if \"Text\" in content[\"Simple\"][\"Body\"]:\n                body_content = content[\"Simple\"][\"Body\"][\"Text\"][\"Data\"]\n            # Check if Html content is provided\n            elif \"Html\" in content[\"Simple\"][\"Body\"]:\n                body_content = content[\"Simple\"][\"Body\"][\"Html\"][\"Data\"]\n            \n            message = self.sesv2_backend.send_email(  # type: ignore\n                source=from_email_address,\n                destinations=destination,\n                subject=content[\"Simple\"][\"Subject\"][\"Data\"],\n                body=body_content,\n            )\n",
+      "new_string": "\n        elif \"Simple\" in content:\n            body_content = \"\"\n            body = content[\"Simple\"][\"Body\"]\n            \n            # Check for content in this priority order: Text, Html\n            # If both are provided, Text takes precedence (matching AWS behavior)\n            if \"Text\" in body and \"Data\" in body[\"Text\"]:\n                body_content = body[\"Text\"][\"Data\"]\n            elif \"Html\" in body and \"Data\" in body[\"Html\"]:\n                body_content = body[\"Html\"][\"Data\"]\n            # If neither Text nor Html is provided, use empty string\n            \n            message = self.sesv2_backend.send_email(  # type: ignore\n                source=from_email_address,\n                destinations=destination,\n                subject=content[\"Simple\"][\"Subject\"][\"Data\"],\n                body=body_content,\n            )\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

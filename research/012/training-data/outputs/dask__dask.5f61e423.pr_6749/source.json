@@ -1,0 +1,35 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00001-of-00008.parquet",
+  "row_index": 2074,
+  "instance_id": "dask__dask.5f61e423.pr_6749",
+  "repo": "dask/dask",
+  "source_resolved": true,
+  "teacher_source": "claude-3-5-sonnet-20241022",
+  "traj_id": "dask__dask.5f61e423.pr_6749.87igi3sy",
+  "messages_sha256": "95974d91984a4d1d8d365ca42d9a65e18960be106087f445d5289b6cfff5f2d0",
+  "issue": "lstsq() function doesn't support 2D arrays for b parameter\nDescription\n\t\nI found an issue with the `lstsq()` function in dask.array.linalg. While the docstring claims it supports 2D arrays for the `b` parameter, the implementation doesn't actually handle this case correctly.\n\nLet's consider the following example:\n```python\nimport numpy as np\nimport dask.array as da\n\n# Create sample data\nnrow, ncol = 20, 10\nA = np.random.randint(1, 20, (nrow, ncol))\nb2D = np.random.randint(1, 20, (nrow, ncol // 2))\n\n# Create dask arrays\ndA = da.from_array(A, (5, ncol))\ndb2D = da.from_array(b2D, (5, ncol // 2))\n\n# This works fine with numpy\nx_np, r_np, rank_np, s_np = np.linalg.lstsq(A, b2D, rcond=-1)\n\n# But fails with dask\nx_da, r_da, rank_da, s_da = da.linalg.lstsq(dA, db2D)\n```\n\nWhen I run this code, I get an error because the residuals calculation doesn't properly handle 2D arrays. The shape of the residuals is incorrect - it's coming out as (1, 1) when it should be (5,) for the 2D case.\n\nThe docstring says:\n```\nb : {(M,), (M, K)} array_like\n    Ordinate or \"dependent variable\" values. If `b` is two-dimensional,\n    the least-squares solution is calculated for each of the `K` columns\n    of `b`.\n```\n\nBut the implementation doesn't properly handle the 2D case, particularly in the residuals calculation where it's using a fixed `keepdims=True` instead of respecting the dimensionality of the input array `b`.",
+  "actions": [
+    {
+      "source_message_index": 12,
+      "filepath": "dask/array/linalg.py",
+      "old_string": "    residuals = b - a.dot(x)\n    residuals = abs(residuals**2).sum(keepdims=True)\n\n    token = tokenize(a, b)",
+      "new_string": "    residuals = b - a.dot(x)\n    # For 2D arrays, sum only along axis 0 to get residuals per column\n    # For 1D arrays, sum all to get a single residual value\n    if residuals.ndim > 1:\n        residuals = abs(residuals**2).sum(axis=0)\n    else:\n        residuals = abs(residuals**2).sum(keepdims=True)\n\n    token = tokenize(a, b)",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 14,
+      "filepath": "dask/array/linalg.py",
+      "old_string": "    Parameters\n    ----------\n    a : (M, N) array_like\n        \"Coefficient\" matrix.\n    b : (M,) array_like\n        Ordinate or \"dependent variable\" values.",
+      "new_string": "    Parameters\n    ----------\n    a : (M, N) array_like\n        \"Coefficient\" matrix.\n    b : {(M,), (M, K)} array_like\n        Ordinate or \"dependent variable\" values. If `b` is two-dimensional,\n        the least-squares solution is calculated for each of the `K` columns\n        of `b`.",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 16,
+      "filepath": "dask/array/linalg.py",
+      "old_string": "    residuals : (1,) Array\n        Sums of residuals; squared Euclidean 2-norm for each column in\n        ``b - a*x``.",
+      "new_string": "    residuals : {(1,), (K,)} Array\n        Sums of residuals; squared Euclidean 2-norm for each column in\n        ``b - a*x``. For 1D input `b`, shape is (1,). For 2D input `b`,\n        shape is (K,) where K is the number of columns in `b`.",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

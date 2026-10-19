@@ -1,0 +1,83 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/dynamodb/parsing/validators.py",
+      "start_line": 406,
+      "end_line": 452
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/dynamodb/parsing/validators.py",
+      "content": "        assert isinstance(node, UpdateExpressionSetAction)\n        assert len(node.children) == 2\n        key = node.children[0].children[0].children[0]\n        val_node = node.children[1].children[0]\n        for dct in self.key_attributes_type:\n            if dct[\"AttributeName\"] == key and dct[\"AttributeType\"] != val_node.type:\n                raise InvalidAttributeTypeError(\n                    key, dct[\"AttributeType\"], val_node.type\n                )\n        return node\n\n\nclass UpdateHashRangeKeyValidator(DepthFirstTraverser):  # type: ignore[misc]\n    def __init__(\n        self,\n        table_key_attributes: List[str],\n    ):\n        self.table_key_attributes = table_key_attributes\n\n    def _processing_map(\n        self,\n    ) -> Dict[\n        Type[UpdateExpressionPath],\n        Callable[[UpdateExpressionPath], UpdateExpressionPath],\n    ]:\n        return {UpdateExpressionPath: self.check_for_hash_or_range_key}\n\n    def check_for_hash_or_range_key(\n        self, node: UpdateExpressionPath\n    ) -> UpdateExpressionPath:\n        \"\"\"Check that hash and range keys are not updated\"\"\"\n        key_to_update = node.children[0].children[0]\n        if key_to_update in self.table_key_attributes:\n            raise UpdateHashRangeKeyException(key_to_update)\n        return node\n\n\nclass Validator:\n    \"\"\"\n    A validator is used to validate expressions which are passed in as an AST.\n    \"\"\"\n\n    def __init__(\n        self,\n        expression: Node,\n        expression_attribute_names: Dict[str, str],\n        expression_attribute_values: Dict[str, Dict[str, Any]],",
+      "start_line": 406,
+      "end_line": 452,
+      "total_lines": 499,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/dynamodb/parsing/validators.py",
+      "old_string": "class UpdateHashRangeKeyValidator(DepthFirstTraverser):  # type: ignore[misc]\n    def __init__(\n        self,\n        table_key_attributes: List[str],\n    ):\n        self.table_key_attributes = table_key_attributes\n\n    def _processing_map(\n        self,\n    ) -> Dict[\n        Type[UpdateExpressionPath],\n        Callable[[UpdateExpressionPath], UpdateExpressionPath],\n    ]:\n        return {UpdateExpressionPath: self.check_for_hash_or_range_key}\n\n    def check_for_hash_or_range_key(\n        self, node: UpdateExpressionPath\n    ) -> UpdateExpressionPath:\n        \"\"\"Check that hash and range keys are not updated\"\"\"\n        key_to_update = node.children[0].children[0]\n        if key_to_update in self.table_key_attributes:\n            raise UpdateHashRangeKeyException(key_to_update)\n        return node",
+      "new_string": "class UpdateHashRangeKeyValidator(DepthFirstTraverser):  # type: ignore[misc]\n    def __init__(\n        self,\n        table_key_attributes: List[str],\n        expression_attribute_names: Dict[str, str] = None,\n    ):\n        self.table_key_attributes = table_key_attributes\n        self.expression_attribute_names = expression_attribute_names or {}\n\n    def _processing_map(\n        self,\n    ) -> Dict[\n        Type[UpdateExpressionPath],\n        Callable[[UpdateExpressionPath], UpdateExpressionPath],\n    ]:\n        return {UpdateExpressionPath: self.check_for_hash_or_range_key}\n\n    def check_for_hash_or_range_key(\n        self, node: UpdateExpressionPath\n    ) -> UpdateExpressionPath:\n        \"\"\"Check that hash and range keys are not updated\"\"\"\n        first_child = node.children[0]\n        \n        # Handle direct attribute names\n        if isinstance(first_child, ExpressionAttribute):\n            key_to_update = first_child.children[0]\n            if key_to_update in self.table_key_attributes:\n                raise UpdateHashRangeKeyException(key_to_update)\n        \n        # Handle ExpressionAttributeNames\n        elif isinstance(first_child, ExpressionAttributeName):\n            attr_placeholder = first_child.get_attribute_name_placeholder()\n            if attr_placeholder in self.expression_attribute_names:\n                resolved_name = self.expression_attribute_names[attr_placeholder]\n                if resolved_name in self.table_key_attributes:\n                    raise UpdateHashRangeKeyException(resolved_name)\n        \n        return node",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/dynamodb/parsing/validators.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/dynamodb/parsing/validators.py\n+++ b/moto/dynamodb/parsing/validators.py\n@@ -419,8 +419,10 @@\n     def __init__(\n         self,\n         table_key_attributes: List[str],\n+        expression_attribute_names: Dict[str, str] = None,\n     ):\n         self.table_key_attributes = table_key_attributes\n+        self.expression_attribute_names = expression_attribute_names or {}\n \n     def _processing_map(\n         self,\n@@ -434,9 +436,22 @@\n         self, node: UpdateExpressionPath\n     ) -> UpdateExpressionPath:\n         \"\"\"Check that hash and range keys are not updated\"\"\"\n-        key_to_update = node.children[0].children[0]\n-        if key_to_update in self.table_key_attributes:\n-            raise UpdateHashRangeKeyException(key_to_update)\n+        first_child = node.children[0]\n+        \n+        # Handle direct attribute names\n+        if isinstance(first_child, ExpressionAttribute):\n+            key_to_update = first_child.children[0]\n+            if key_to_update in self.table_key_attributes:\n+                raise UpdateHashRangeKeyException(key_to_update)\n+        \n+        # Handle ExpressionAttributeNames\n+        elif isinstance(first_child, ExpressionAttributeName):\n+            attr_placeholder = first_child.get_attribute_name_placeholder()\n+            if attr_placeholder in self.expression_attribute_names:\n+                resolved_name = self.expression_attribute_names[attr_placeholder]\n+                if resolved_name in self.table_key_attributes:\n+                    raise UpdateHashRangeKeyException(resolved_name)\n+        \n         return node\n \n \n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/dynamodb/parsing/validators.py",
+      "start_line": 487,
+      "end_line": 526
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/dynamodb/parsing/validators.py",
+      "content": "\n    @abstractmethod\n    def get_ast_processors(self) -> List[DepthFirstTraverser]:  # type: ignore[misc]\n        \"\"\"Get the different processors that go through the AST tree and processes the nodes.\"\"\"\n\n    def validate(self) -> Node:\n        n = self.node_to_validate\n        for processor in self.processors:\n            n = processor.traverse(n)\n        return n\n\n\nclass UpdateExpressionValidator(Validator):\n    def get_ast_processors(self) -> List[DepthFirstTraverser]:\n        \"\"\"Get the different processors that go through the AST tree and processes the nodes.\"\"\"\n        processors = [\n            UpdateHashRangeKeyValidator(self.table.table_key_attrs),\n            ExpressionAttributeValueProcessor(self.expression_attribute_values),\n            ExpressionAttributeResolvingProcessor(\n                self.expression_attribute_names, self.item\n            ),\n            UpdateExpressionFunctionEvaluator(),\n            NoneExistingPathChecker(),\n            ExecuteOperations(),\n            TypeMismatchValidator(self.table.attr),\n            EmptyStringKeyValueValidator(self.table.attribute_keys),\n        ]\n        return processors",
+      "start_line": 487,
+      "end_line": 514,
+      "total_lines": 514,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/dynamodb/parsing/validators.py",
+      "old_string": "class UpdateExpressionValidator(Validator):\n    def get_ast_processors(self) -> List[DepthFirstTraverser]:\n        \"\"\"Get the different processors that go through the AST tree and processes the nodes.\"\"\"\n        processors = [\n            UpdateHashRangeKeyValidator(self.table.table_key_attrs),\n            ExpressionAttributeValueProcessor(self.expression_attribute_values),\n            ExpressionAttributeResolvingProcessor(\n                self.expression_attribute_names, self.item\n            ),\n            UpdateExpressionFunctionEvaluator(),\n            NoneExistingPathChecker(),\n            ExecuteOperations(),\n            TypeMismatchValidator(self.table.attr),\n            EmptyStringKeyValueValidator(self.table.attribute_keys),\n        ]\n        return processors",
+      "new_string": "class UpdateExpressionValidator(Validator):\n    def get_ast_processors(self) -> List[DepthFirstTraverser]:\n        \"\"\"Get the different processors that go through the AST tree and processes the nodes.\"\"\"\n        processors = [\n            UpdateHashRangeKeyValidator(\n                self.table.table_key_attrs,\n                expression_attribute_names=self.expression_attribute_names\n            ),\n            ExpressionAttributeValueProcessor(self.expression_attribute_values),\n            ExpressionAttributeResolvingProcessor(\n                self.expression_attribute_names, self.item\n            ),\n            UpdateExpressionFunctionEvaluator(),\n            NoneExistingPathChecker(),\n            ExecuteOperations(),\n            TypeMismatchValidator(self.table.attr),\n            EmptyStringKeyValueValidator(self.table.attribute_keys),\n        ]\n        return processors",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/dynamodb/parsing/validators.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/dynamodb/parsing/validators.py\n+++ b/moto/dynamodb/parsing/validators.py\n@@ -500,7 +500,10 @@\n     def get_ast_processors(self) -> List[DepthFirstTraverser]:\n         \"\"\"Get the different processors that go through the AST tree and processes the nodes.\"\"\"\n         processors = [\n-            UpdateHashRangeKeyValidator(self.table.table_key_attrs),\n+            UpdateHashRangeKeyValidator(\n+                self.table.table_key_attrs,\n+                expression_attribute_names=self.expression_attribute_names\n+            ),\n             ExpressionAttributeValueProcessor(self.expression_attribute_values),\n             ExpressionAttributeResolvingProcessor(\n                 self.expression_attribute_names, self.item\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "get_status",
+    "arguments": {},
+    "response": {
+      "status": "ok",
+      "tool_calls_used": 4,
+      "patch_submitted": false,
+      "patch_size": 0,
+      "tool_calls_remaining": 96,
+      "max_tool_calls": 100,
+      "command_timeout_seconds": 30
+    }
+  }
+]

@@ -1,0 +1,83 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "yamllint/rules/key_duplicates.py",
+      "start_line": 80,
+      "end_line": 111
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "yamllint/rules/key_duplicates.py",
+      "content": "                            yaml.FlowSequenceStartToken)):\n        context['stack'].append(Parent(SEQ))\n    elif isinstance(token, (yaml.BlockEndToken,\n                            yaml.FlowMappingEndToken,\n                            yaml.FlowSequenceEndToken)):\n        if len(context['stack']) > 0:\n            context['stack'].pop()\n    elif (isinstance(token, yaml.KeyToken) and\n          isinstance(next, yaml.ScalarToken)):\n        # This check is done because KeyTokens can be found inside flow\n        # sequences... strange, but allowed.\n        if len(context['stack']) > 0 and context['stack'][-1].type == MAP:\n            if (next.value in context['stack'][-1].keys and\n                    # `<<` is \"merge key\", see http://yaml.org/type/merge.html\n                    next.value != '<<'):\n                yield LintProblem(\n                    next.start_mark.line + 1, next.start_mark.column + 1,\n                    f'duplication of key \"{next.value}\" in mapping')\n            else:\n                context['stack'][-1].keys.append(next.value)",
+      "start_line": 80,
+      "end_line": 99,
+      "total_lines": 99,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "yamllint/rules/key_duplicates.py",
+      "old_string": "            if (next.value in context['stack'][-1].keys and\n                    # `<<` is \"merge key\", see http://yaml.org/type/merge.html\n                    next.value != '<<'):\n                yield LintProblem(\n                    next.start_mark.line + 1, next.start_mark.column + 1,\n                    f'duplication of key \"{next.value}\" in mapping')\n            else:\n                context['stack'][-1].keys.append(next.value)",
+      "new_string": "            # Check if the key is a duplicate\n            if next.value in context['stack'][-1].keys:\n                # `<<` is \"merge key\", see http://yaml.org/type/merge.html\n                # Allow multiple merge keys unless explicitly forbidden\n                if next.value == '<<' and not conf.get('forbid-duplicated-merge-keys', False):\n                    # Allow multiple merge keys\n                    context['stack'][-1].keys.append(next.value)\n                else:\n                    yield LintProblem(\n                        next.start_mark.line + 1, next.start_mark.column + 1,\n                        f'duplication of key \"{next.value}\" in mapping')\n            else:\n                context['stack'][-1].keys.append(next.value)",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "yamllint/rules/key_duplicates.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/yamllint/rules/key_duplicates.py\n+++ b/yamllint/rules/key_duplicates.py\n@@ -89,11 +89,16 @@\n         # This check is done because KeyTokens can be found inside flow\n         # sequences... strange, but allowed.\n         if len(context['stack']) > 0 and context['stack'][-1].type == MAP:\n-            if (next.value in context['stack'][-1].keys and\n-                    # `<<` is \"merge key\", see http://yaml.org/type/merge.html\n-                    next.value != '<<'):\n-                yield LintProblem(\n-                    next.start_mark.line + 1, next.start_mark.column + 1,\n-                    f'duplication of key \"{next.value}\" in mapping')\n+            # Check if the key is a duplicate\n+            if next.value in context['stack'][-1].keys:\n+                # `<<` is \"merge key\", see http://yaml.org/type/merge.html\n+                # Allow multiple merge keys unless explicitly forbidden\n+                if next.value == '<<' and not conf.get('forbid-duplicated-merge-keys', False):\n+                    # Allow multiple merge keys\n+                    context['stack'][-1].keys.append(next.value)\n+                else:\n+                    yield LintProblem(\n+                        next.start_mark.line + 1, next.start_mark.column + 1,\n+                        f'duplication of key \"{next.value}\" in mapping')\n             else:\n                 context['stack'][-1].keys.append(next.value)",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "yamllint/rules/key_duplicates.py",
+      "start_line": 48,
+      "end_line": 75
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "yamllint/rules/key_duplicates.py",
+      "content": "\n    other duplication: 1\n    ? >-\n        other\n        duplication\n    : 2\n\"\"\"\n\nimport yaml\n\nfrom yamllint.linter import LintProblem\n\nID = 'key-duplicates'\nTYPE = 'token'\n\nMAP, SEQ = range(2)\n\n\nclass Parent:\n    def __init__(self, type):\n        self.type = type\n        self.keys = []\n\n\ndef check(conf, token, prev, next, nextnext, context):\n    if 'stack' not in context:\n        context['stack'] = []\n",
+      "start_line": 48,
+      "end_line": 75,
+      "total_lines": 104,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "yamllint/rules/key_duplicates.py",
+      "old_string": "ID = 'key-duplicates'\nTYPE = 'token'\n\nMAP, SEQ = range(2)",
+      "new_string": "ID = 'key-duplicates'\nTYPE = 'token'\nCONF = {'forbid-duplicated-merge-keys': bool}\nDEFAULT = {'forbid-duplicated-merge-keys': False}\n\nMAP, SEQ = range(2)",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "yamllint/rules/key_duplicates.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/yamllint/rules/key_duplicates.py\n+++ b/yamllint/rules/key_duplicates.py\n@@ -59,6 +59,8 @@\n \n ID = 'key-duplicates'\n TYPE = 'token'\n+CONF = {'forbid-duplicated-merge-keys': bool}\n+DEFAULT = {'forbid-duplicated-merge-keys': False}\n \n MAP, SEQ = range(2)\n \n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "get_status",
+    "arguments": {},
+    "response": {
+      "status": "ok",
+      "tool_calls_used": 4,
+      "patch_submitted": false,
+      "patch_size": 0,
+      "tool_calls_remaining": 96,
+      "max_tool_calls": 100,
+      "command_timeout_seconds": 30
+    }
+  }
+]

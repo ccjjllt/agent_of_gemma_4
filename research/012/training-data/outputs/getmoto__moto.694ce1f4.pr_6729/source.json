@@ -1,0 +1,42 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 1766,
+  "instance_id": "getmoto__moto.694ce1f4.pr_6729",
+  "repo": "getmoto/moto",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "getmoto__moto.694ce1f4.pr_6729.y1wve1wy",
+  "messages_sha256": "221f2bc9fb76d32d3650af8c25dc243ff263d268369f4dcd1f1b869cf57b46dc",
+  "issue": "RSA signature verification fails with PKCS1v15 padding\n\n### Bug description\n\nWhen using RSA signature verification with PKCS1v15 padding, the verification fails. The issue appears to be in the `verify` method of the `RSAPrivateKey` class.\n\n```python\n# Example to reproduce the issue\nfrom moto.kms.utils import RSAPrivateKey, SigningAlgorithm\n\n# Create an RSA key\nkey = RSAPrivateKey(key_size=2048)\n\n# Sign a message\nmessage = b\"test message\"\nsignature = key.sign(message, SigningAlgorithm.RSASSA_PKCS1_V1_5_SHA_256)\n\n# Try to verify - this will fail\nresult = key.verify(message, signature, SigningAlgorithm.RSASSA_PKCS1_V1_5_SHA_256)\nprint(f\"Verification result: {result}\")  # Should be True but returns False\n```\n\nThe issue also affects encryption/decryption cycles when using encryption contexts:\n\n```python\nfrom moto.kms.utils import encrypt, decrypt, Key\n\nplaintext = b'some secret plaintext'\nmaster_key = Key('nop', 'nop', 'nop', 'nop', 'nop', 'nop')\nmaster_key_map = {master_key.id: master_key}\n\n# This will work\nciphertext_blob = encrypt(master_keys=master_key_map, key_id=master_key.id, plaintext=plaintext, encryption_context={})\n\n# But this will fail\n(decrypted, decrypting_key_id) = decrypt(master_keys=master_key_map, ciphertext_blob=ciphertext_blob, encryption_context={})\n```\n\nIt seems that the PKCS1v15 padding algorithms are not being handled correctly in the verification process.",
+  "actions": [
+    {
+      "source_message_index": 28,
+      "filepath": "moto/kms/utils.py",
+      "old_string": "    def __padding_and_hash_algorithm(\n        self, signing_algorithm: str\n    ) -> Tuple[Any, Any]:\n        if signing_algorithm == SigningAlgorithm.RSASSA_PSS_SHA_256:\n            pad = padding.PSS(\n                mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH\n            )\n            algorithm = hashes.SHA256()  # type: Any\n        elif signing_algorithm == SigningAlgorithm.RSASSA_PSS_SHA_384:\n            pad = padding.PSS(\n                mgf=padding.MGF1(hashes.SHA384()), salt_length=padding.PSS.MAX_LENGTH\n            )\n            algorithm = hashes.SHA384()\n        else:\n            pad = padding.PSS(\n                mgf=padding.MGF1(hashes.SHA512()), salt_length=padding.PSS.MAX_LENGTH\n            )\n            algorithm = hashes.SHA512()\n        return self.private_key.sign(message, pad, algorithm)",
+      "new_string": "    def __padding_and_hash_algorithm(\n        self, signing_algorithm: str\n    ) -> Tuple[Any, Any]:\n        if signing_algorithm == SigningAlgorithm.RSASSA_PSS_SHA_256:\n            pad = padding.PSS(\n                mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH\n            )\n            algorithm = hashes.SHA256()  # type: Any\n        elif signing_algorithm == SigningAlgorithm.RSASSA_PSS_SHA_384:\n            pad = padding.PSS(\n                mgf=padding.MGF1(hashes.SHA384()), salt_length=padding.PSS.MAX_LENGTH\n            )\n            algorithm = hashes.SHA384()\n        elif signing_algorithm == SigningAlgorithm.RSASSA_PSS_SHA_512:\n            pad = padding.PSS(\n                mgf=padding.MGF1(hashes.SHA512()), salt_length=padding.PSS.MAX_LENGTH\n            )\n            algorithm = hashes.SHA512()\n        elif signing_algorithm == SigningAlgorithm.RSASSA_PKCS1_V1_5_SHA_256:\n            pad = padding.PKCS1v15()\n            algorithm = hashes.SHA256()\n        elif signing_algorithm == SigningAlgorithm.RSASSA_PKCS1_V1_5_SHA_384:\n            pad = padding.PKCS1v15()\n            algorithm = hashes.SHA384()\n        elif signing_algorithm == SigningAlgorithm.RSASSA_PKCS1_V1_5_SHA_512:\n            pad = padding.PKCS1v15()\n            algorithm = hashes.SHA512()\n        else:\n            # Default case, should not reach here due to validation\n            pad = padding.PSS(\n                mgf=padding.MGF1(hashes.SHA512()), salt_length=padding.PSS.MAX_LENGTH\n            )\n            algorithm = hashes.SHA512()\n        return pad, algorithm",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 30,
+      "filepath": "moto/kms/utils.py",
+      "old_string": "    def sign(self, message: bytes, signing_algorithm: str) -> bytes:\n        validate_signing_algorithm(\n            signing_algorithm, SigningAlgorithm.rsa_signing_algorithms()\n        )",
+      "new_string": "    def sign(self, message: bytes, signing_algorithm: str) -> bytes:\n        validate_signing_algorithm(\n            signing_algorithm, SigningAlgorithm.rsa_signing_algorithms()\n        )\n        pad, algorithm = self.__padding_and_hash_algorithm(signing_algorithm)\n        return self.private_key.sign(message, pad, algorithm)",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 32,
+      "filepath": "moto/kms/utils.py",
+      "old_string": "    def verify(self, message: bytes, signature: bytes, signing_algorithm: str) -> bool:\n        validate_signing_algorithm(\n            signing_algorithm, SigningAlgorithm.rsa_signing_algorithms()\n        )\n        pad, hash_algorithm = self.__padding_and_hash_algorithm(signing_algorithm)\n        public_key = self.private_key.public_key()\n        try:\n            public_key.verify(signature, message, pad, algorithm)\n            return True\n        except InvalidSignature:\n            return False",
+      "new_string": "    def verify(self, message: bytes, signature: bytes, signing_algorithm: str) -> bool:\n        validate_signing_algorithm(\n            signing_algorithm, SigningAlgorithm.rsa_signing_algorithms()\n        )\n        pad, algorithm = self.__padding_and_hash_algorithm(signing_algorithm)\n        public_key = self.private_key.public_key()\n        try:\n            public_key.verify(signature, message, pad, algorithm)\n            return True\n        except InvalidSignature:\n            return False",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 48,
+      "filepath": "moto/kms/utils.py",
+      "old_string": "from cryptography.hazmat.backends import default_backend\nfrom cryptography.hazmat.primitives import hashes, serialization\nfrom cryptography.hazmat.primitives.asymmetric import ec, padding, rsa",
+      "new_string": "from cryptography.hazmat.backends import default_backend\nfrom cryptography.hazmat.primitives import hashes, serialization\nfrom cryptography.hazmat.primitives.asymmetric import ec, padding, rsa\nfrom cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

@@ -1,0 +1,35 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 344,
+  "instance_id": "getmoto__moto.694ce1f4.pr_5096",
+  "repo": "getmoto/moto",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "getmoto__moto.694ce1f4.pr_5096.u7rhfa64",
+  "messages_sha256": "ed8214e381f89031f6b5adf28697b32dd09066c13d9ffaacfbbf730852290238",
+  "issue": "TypeError when creating flow with outputs=None in MediaConnect\n\nWhen creating a flow in MediaConnect with outputs=None, the operation fails with a TypeError. This happens when trying to create a flow with sources but no outputs.\n\nTo reproduce:\n```python\nimport boto3\n\nclient = boto3.client('mediaconnect', region_name='us-east-1')\nresponse = client.create_flow(\n    Name='test-flow',\n    Sources=[\n        {\n            'Name': 'Source-A',\n            'Description': 'Test Source',\n            'Protocol': 'zixi-push',\n            'MaxBitrate': 100000000,\n            'MaxLatency': 1000\n        }\n    ],\n    Outputs=None  # This causes the error\n)\n```\n\nThe error occurs because the code tries to enumerate over None, which is not iterable. The expected behavior should be to handle the case when outputs is None.",
+  "actions": [
+    {
+      "source_message_index": 16,
+      "filepath": "moto/mediaconnect/models.py",
+      "old_string": "\n    def _create_flow_add_details(self, flow: Flow) -> None:\n        for index, _source in enumerate(flow.sources):\n            self._add_source_details(_source, flow.id, f\"127.0.0.{index}\")\n\n        for index, output in enumerate(flow.outputs):\n            if output.get(\"protocol\") in [\"srt-listener\", \"zixi-pull\"]:\n                output[\"listenerAddress\"] = f\"{index}.0.0.0\"\n            output_id = random.uuid4().hex\n            arn = (\n                f\"arn:{get_partition(self.region_name)}:mediaconnect:{self.region_name}\"\n                f\":{self.account_id}:output:{output_id}:{output['name']}\"\n            )\n            output[\"outputArn\"] = arn\n\n        for _, entitlement in enumerate(flow.entitlements):\n            entitlement_id = random.uuid4().hex\n            self._add_entitlement_details(entitlement, entitlement_id)\n",
+      "new_string": "\n    def _create_flow_add_details(self, flow: Flow) -> None:\n        for index, _source in enumerate(flow.sources):\n            self._add_source_details(_source, flow.id, f\"127.0.0.{index}\")\n\n        # Handle the case when outputs is None\n        if flow.outputs is not None:\n            for index, output in enumerate(flow.outputs):\n                if output.get(\"protocol\") in [\"srt-listener\", \"zixi-pull\"]:\n                    output[\"listenerAddress\"] = f\"{index}.0.0.0\"\n                output_id = random.uuid4().hex\n                arn = (\n                    f\"arn:{get_partition(self.region_name)}:mediaconnect:{self.region_name}\"\n                    f\":{self.account_id}:output:{output_id}:{output['name']}\"\n                )\n                output[\"outputArn\"] = arn\n\n        for _, entitlement in enumerate(flow.entitlements):\n            entitlement_id = random.uuid4().hex\n            self._add_entitlement_details(entitlement, entitlement_id)\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 20,
+      "filepath": "moto/mediaconnect/models.py",
+      "old_string": "\n        self.entitlements = kwargs.get(\"entitlements\", [])\n        self.name = kwargs.get(\"name\")\n        self.outputs = kwargs.get(\"outputs\", [])\n        self.source = kwargs.get(\"source\", {})\n        self.source_failover_config = kwargs.get(\"source_failover_config\", {})\n",
+      "new_string": "\n        self.entitlements = kwargs.get(\"entitlements\", [])\n        self.name = kwargs.get(\"name\")\n        # Ensure outputs is always a list, even if None is explicitly passed\n        outputs = kwargs.get(\"outputs\", [])\n        self.outputs = outputs if outputs is not None else []\n        self.source = kwargs.get(\"source\", {})\n        self.source_failover_config = kwargs.get(\"source_failover_config\", {})\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 28,
+      "filepath": "moto/mediaconnect/models.py",
+      "old_string": "\nclass Flow(BaseModel):\n    def __init__(self, account_id: str, region_name: str, **kwargs: Any):\n        self.id = random.uuid4().hex\n        self.availability_zone = kwargs.get(\"availability_zone\")\n        self.entitlements = kwargs.get(\"entitlements\", [])\n        self.name = kwargs.get(\"name\")\n        # Ensure outputs is always a list, even if None is explicitly passed\n        outputs = kwargs.get(\"outputs\", [])\n        self.outputs = outputs if outputs is not None else []\n        self.source = kwargs.get(\"source\", {})\n        self.source_failover_config = kwargs.get(\"source_failover_config\", {})\n        self.sources = kwargs.get(\"sources\", [])\n        self.vpc_interfaces = kwargs.get(\"vpc_interfaces\", [])\n",
+      "new_string": "\nclass Flow(BaseModel):\n    def __init__(self, account_id: str, region_name: str, **kwargs: Any):\n        self.id = random.uuid4().hex\n        self.availability_zone = kwargs.get(\"availability_zone\")\n        \n        # Ensure all list parameters are always lists, even if None is explicitly passed\n        entitlements = kwargs.get(\"entitlements\", [])\n        self.entitlements = entitlements if entitlements is not None else []\n        \n        self.name = kwargs.get(\"name\")\n        \n        outputs = kwargs.get(\"outputs\", [])\n        self.outputs = outputs if outputs is not None else []\n        \n        self.source = kwargs.get(\"source\", {})\n        self.source_failover_config = kwargs.get(\"source_failover_config\", {})\n        \n        sources = kwargs.get(\"sources\", [])\n        self.sources = sources if sources is not None else []\n        \n        vpc_interfaces = kwargs.get(\"vpc_interfaces\", [])\n        self.vpc_interfaces = vpc_interfaces if vpc_interfaces is not None else []\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

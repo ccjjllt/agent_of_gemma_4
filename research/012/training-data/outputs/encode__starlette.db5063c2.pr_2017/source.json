@@ -1,0 +1,35 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00003-of-00008.parquet",
+  "row_index": 2525,
+  "instance_id": "encode__starlette.db5063c2.pr_2017",
+  "repo": "encode/starlette",
+  "source_resolved": true,
+  "teacher_source": "claude-3-5-sonnet-20241022",
+  "traj_id": "encode__starlette.db5063c2.pr_2017.mdjjg1cu",
+  "messages_sha256": "84044fa82d6eccfaee47f3669ffa36a677cb9633f0328fddf6b32a35bdc9046a",
+  "issue": "Middleware stacking and recursive initialization\n### Discussed in https://github.com/encode/starlette/discussions/1161\r\n\r\n<div type='discussions-op-text'>\r\n\r\n<sup>Originally posted by **euri10** April  1, 2021</sup>\r\nlong story short I was writing a logging middleware whose handlers are initialized in the `__init__` of the middleware and ended up with multiple logs.\r\n\r\nit seems to me the `__init__` of the middlewarea are recursively called  because of the `build_middleware_stack` method and I'm not sure if this is intended or a bug.\r\n\r\nhere's a test case that shows what I think is an issue:\r\n\r\n```\r\nclass SimpleInitializableMiddleware:\r\n    def __init__(self, app, counter: int):\r\n        self.app = app\r\n        self.counter = counter\r\n        print(self.counter)\r\n\r\n\r\ndef test_middleware_stack_init():\r\n    app = Starlette()\r\n    app.add_middleware(SimpleInitializableMiddleware, counter=1)\r\n    app.add_middleware(SimpleInitializableMiddleware, counter=2)\r\n    app.add_middleware(SimpleInitializableMiddleware, counter=3)\r\n    app.add_middleware(SimpleInitializableMiddleware, counter=4)\r\n```\r\n\r\nI would expect to see `1 2 3 4` as the output.\r\nhowever it prints `1 1 2 1 2 3 1 2 3 4` because for each add_middlware call it goes down the stack and reinitialize it.\r\n\r\nwhat you think @tomchristie ?</div>",
+  "actions": [
+    {
+      "source_message_index": 12,
+      "filepath": "starlette/applications.py",
+      "old_string": "\n        self.state = State()\n        self.router = Router(routes, on_startup=on_startup, on_shutdown=on_shutdown, lifespan=lifespan)\n        self.exception_handlers = {} if exception_handlers is None else dict(exception_handlers)\n        self.user_middleware = [] if middleware is None else list(middleware)\n        self.middleware_stack = self.build_middleware_stack()\n",
+      "new_string": "\n        self.state = State()\n        self.router = Router(routes, on_startup=on_startup, on_shutdown=on_shutdown, lifespan=lifespan)\n        self.exception_handlers = {} if exception_handlers is None else dict(exception_handlers)\n        self.user_middleware = [] if middleware is None else list(middleware)\n        self.middleware_stack = None\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 14,
+      "filepath": "starlette/applications.py",
+      "old_string": "\n    def add_middleware(\n        self,\n        middleware_class: _MiddlewareFactory[P],\n        *args: P.args,\n        **kwargs: P.kwargs,\n    ) -> None:\n        if self.middleware_stack is not None:  # pragma: no cover\n            raise RuntimeError(\"Cannot add middleware after an application has started\")\n        self.user_middleware.insert(0, Middleware(middleware_class, *args, **kwargs))\n        self.middleware_stack = self.build_middleware_stack()\n",
+      "new_string": "\n    def add_middleware(\n        self,\n        middleware_class: _MiddlewareFactory[P],\n        *args: P.args,\n        **kwargs: P.kwargs,\n    ) -> None:\n        self.user_middleware.insert(0, Middleware(middleware_class, *args, **kwargs))\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 16,
+      "filepath": "starlette/applications.py",
+      "old_string": "\n    @debug.setter\n    def debug(self, value: bool) -> None:\n        self._debug = value\n        self.middleware_stack = self.build_middleware_stack()\n",
+      "new_string": "\n    @debug.setter\n    def debug(self, value: bool) -> None:\n        self._debug = value\n        self.middleware_stack = None\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

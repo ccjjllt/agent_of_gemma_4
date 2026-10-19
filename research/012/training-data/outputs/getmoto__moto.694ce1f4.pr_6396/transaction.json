@@ -1,0 +1,214 @@
+{
+  "sample_id": "p012-getmoto__moto.694ce1f4.pr_6396",
+  "transaction_id": "p012-getmoto__moto.694ce1f4.pr_6396",
+  "producer_revision": "p012-local-2",
+  "synthetic": false,
+  "origin_kind": "cpu_replayed_source_edit_subset",
+  "group": {
+    "issue": "getmoto__moto.694ce1f4.pr_6396",
+    "repo": "getmoto/moto",
+    "commit": "d482fd7f80c8ca85444dc1b4530aceb609edadd9",
+    "split": "train"
+  },
+  "source": {
+    "uri": "https://huggingface.co/datasets/SWE-bench/SWE-smith-trajectories/tree/08e109b4a59eaeebf80e4675cd125d42e7ac99a4",
+    "license": "MIT dataset; repository license in provenance.json",
+    "sha256": "6e5a70af9be954cc51521a42d27aca816d7411d07a779650ddc8834b9bb5fda2",
+    "teacher": "claude-3-7-sonnet-20250219",
+    "traj_id": "getmoto__moto.694ce1f4.pr_6396.08ii12wr"
+  },
+  "protocol_id": "p012-repair-v1",
+  "tool_schema": {
+    "path": "research/012/agent/repair_tools_v1.json",
+    "canonical_sha256": "91ec82b15fe0961b3ef9e686fac268706ce954a69cabaa0d705c63d41088e267",
+    "names": [
+      "run_command",
+      "read_file",
+      "edit_file",
+      "write_file",
+      "get_status"
+    ],
+    "repair_role_holds_submit_patch": false
+  },
+  "messages": [
+    {
+      "role": "system",
+      "content": "Use the supplied repository tools. Preserve unrelated behavior. Treat tool failures as observations and correct the action before retrying. Do not modify tests."
+    },
+    {
+      "role": "user",
+      "content": "Implement the following requested change in the repository.\n\n# TableMappings and ReplicationTaskSettings are double-encoded in DMS replication tasks\n\n## Description\n\nWhen creating a replication task in DMS and then retrieving it, the `TableMappings` and `ReplicationTaskSettings` fields are being double-encoded as JSON strings.\n\nLet's consider the following code:\n\n```python\nclient = boto3.client('dms', region_name='us-east-1')\nclient.create_replication_task(\n    ReplicationTaskIdentifier='test', \n    SourceEndpointArn='source-endpoint-arn', \n    TargetEndpointArn='target-endpoint-arn', \n    ReplicationInstanceArn='replication-instance-arn', \n    MigrationType='full-load', \n    TableMappings='{\"rules\":[]}', \n    ReplicationTaskSettings='{\"Logging\":{} }'\n)\n\ntasks = client.describe_replication_tasks(\n    Filters=[{'Name': 'replication-task-id', 'Values': ['test']}]\n)\n```\n\nWhen I retrieve the task, the `TableMappings` and `ReplicationTaskSettings` fields are double-encoded JSON strings. For example, instead of getting:\n\n```\n\"TableMappings\": '{\"rules\":[]}'\n```\n\nI'm getting:\n\n```\n\"TableMappings\": '\"{\\\\\"rules\\\\\":[]}\"'\n```\n\nThis makes it impossible to properly parse the JSON content as it's being double-encoded. The issue appears to be in the `to_json` method of the `FakeReplicationTask` class where the values are being JSON-encoded a second time.\n\nScope of this editing session: update the following production files and report the resulting local change for handover: moto/dms/models.py. No full task validation has been performed in this session."
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_00",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": {
+              "filepath": "moto/dms/models.py",
+              "start_line": 118,
+              "end_line": 173
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_00",
+      "name": "read_file",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"filepath\": \"moto/dms/models.py\", \"content\": \"        self.replication_instance_arn = replication_instance_arn\\n        self.source_endpoint_arn = source_endpoint_arn\\n        self.target_endpoint_arn = target_endpoint_arn\\n        self.table_mappings = table_mappings\\n        self.replication_task_settings = replication_task_settings\\n\\n        self.arn = f\\\"arn:{get_partition(region_name)}:dms:{region_name}:{account_id}:task:{self.id}\\\"\\n        self.status = \\\"creating\\\"\\n\\n        self.creation_date = utcnow()\\n        self.start_date: Optional[datetime] = None\\n        self.stop_date: Optional[datetime] = None\\n\\n    def to_dict(self) -> Dict[str, Any]:\\n        start_date = self.start_date.isoformat() if self.start_date else None\\n        stop_date = self.stop_date.isoformat() if self.stop_date else None\\n\\n        return {\\n            \\\"ReplicationTaskIdentifier\\\": self.id,\\n            \\\"SourceEndpointArn\\\": self.source_endpoint_arn,\\n            \\\"TargetEndpointArn\\\": self.target_endpoint_arn,\\n            \\\"ReplicationInstanceArn\\\": self.replication_instance_arn,\\n            \\\"MigrationType\\\": self.migration_type,\\n            \\\"TableMappings\\\": json.dumps(self.table_mappings),\\n            \\\"ReplicationTaskSettings\\\": json.dumps(self.replication_task_settings),\\n            \\\"Status\\\": self.status,\\n            \\\"ReplicationTaskCreationDate\\\": self.creation_date.isoformat(),\\n            \\\"ReplicationTaskStartDate\\\": start_date,\\n            \\\"ReplicationTaskArn\\\": self.arn,\\n            \\\"ReplicationTaskStats\\\": {\\n                \\\"FullLoadProgressPercent\\\": 100,\\n                \\\"ElapsedTimeMillis\\\": 100,\\n                \\\"TablesLoaded\\\": 1,\\n                \\\"TablesLoading\\\": 0,\\n                \\\"TablesQueued\\\": 0,\\n                \\\"TablesErrored\\\": 0,\\n                \\\"FreshStartDate\\\": start_date,\\n                \\\"StartDate\\\": start_date,\\n                \\\"StopDate\\\": stop_date,\\n                \\\"FullLoadStartDate\\\": start_date,\\n                \\\"FullLoadFinishDate\\\": stop_date,\\n            },\\n        }\\n\\n    def ready(self) -> \\\"FakeReplicationTask\\\":\\n        self.status = \\\"ready\\\"\\n        return self\\n\\n    def start(self) -> \\\"FakeReplicationTask\\\":\\n        self.status = \\\"starting\\\"\\n        self.start_date = utcnow()\\n        self.run()\\n        return self\\n\\n    def stop(self) -> \\\"FakeReplicationTask\\\":\\n        if self.status != \\\"running\\\":\", \"start_line\": 118, \"end_line\": 173, \"total_lines\": 189, \"is_truncated\": false}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_01",
+          "type": "function",
+          "function": {
+            "name": "edit_file",
+            "arguments": {
+              "filepath": "moto/dms/models.py",
+              "old_string": "\n    def to_dict(self) -> Dict[str, Any]:\n        start_date = self.start_date.isoformat() if self.start_date else None\n        stop_date = self.stop_date.isoformat() if self.stop_date else None\n\n        return {\n            \"ReplicationTaskIdentifier\": self.id,\n            \"SourceEndpointArn\": self.source_endpoint_arn,\n            \"TargetEndpointArn\": self.target_endpoint_arn,\n            \"ReplicationInstanceArn\": self.replication_instance_arn,\n            \"MigrationType\": self.migration_type,\n            \"TableMappings\": json.dumps(self.table_mappings),\n            \"ReplicationTaskSettings\": json.dumps(self.replication_task_settings),\n            \"Status\": self.status,\n            \"ReplicationTaskCreationDate\": self.creation_date.isoformat(),\n            \"ReplicationTaskStartDate\": start_date,\n            \"ReplicationTaskArn\": self.arn,\n            \"ReplicationTaskStats\": {\n                \"FullLoadProgressPercent\": 100,\n                \"ElapsedTimeMillis\": 100,\n                \"TablesLoaded\": 1,\n                \"TablesLoading\": 0,\n                \"TablesQueued\": 0,\n                \"TablesErrored\": 0,\n                \"FreshStartDate\": start_date,\n                \"StartDate\": start_date,\n                \"StopDate\": stop_date,\n                \"FullLoadStartDate\": start_date,\n                \"FullLoadFinishDate\": stop_date,\n            },\n        }\n",
+              "new_string": "\n    def to_dict(self) -> Dict[str, Any]:\n        start_date = self.start_date.isoformat() if self.start_date else None\n        stop_date = self.stop_date.isoformat() if self.stop_date else None\n\n        return {\n            \"ReplicationTaskIdentifier\": self.id,\n            \"SourceEndpointArn\": self.source_endpoint_arn,\n            \"TargetEndpointArn\": self.target_endpoint_arn,\n            \"ReplicationInstanceArn\": self.replication_instance_arn,\n            \"MigrationType\": self.migration_type,\n            \"TableMappings\": self.table_mappings,\n            \"ReplicationTaskSettings\": self.replication_task_settings,\n            \"Status\": self.status,\n            \"ReplicationTaskCreationDate\": self.creation_date.isoformat(),\n            \"ReplicationTaskStartDate\": start_date,\n            \"ReplicationTaskArn\": self.arn,\n            \"ReplicationTaskStats\": {\n                \"FullLoadProgressPercent\": 100,\n                \"ElapsedTimeMillis\": 100,\n                \"TablesLoaded\": 1,\n                \"TablesLoading\": 0,\n                \"TablesQueued\": 0,\n                \"TablesErrored\": 0,\n                \"FreshStartDate\": start_date,\n                \"StartDate\": start_date,\n                \"StopDate\": stop_date,\n                \"FullLoadStartDate\": start_date,\n                \"FullLoadFinishDate\": stop_date,\n            },\n        }\n",
+              "allow_multiple": false
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_01",
+      "name": "edit_file",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"filepath\": \"moto/dms/models.py\", \"occurrences\": 1, \"strategy\": \"exact\", \"diff\": \"--- a/moto/dms/models.py\\n+++ b/moto/dms/models.py\\n@@ -138,8 +138,8 @@\\n             \\\"TargetEndpointArn\\\": self.target_endpoint_arn,\\n             \\\"ReplicationInstanceArn\\\": self.replication_instance_arn,\\n             \\\"MigrationType\\\": self.migration_type,\\n-            \\\"TableMappings\\\": json.dumps(self.table_mappings),\\n-            \\\"ReplicationTaskSettings\\\": json.dumps(self.replication_task_settings),\\n+            \\\"TableMappings\\\": self.table_mappings,\\n+            \\\"ReplicationTaskSettings\\\": self.replication_task_settings,\\n             \\\"Status\\\": self.status,\\n             \\\"ReplicationTaskCreationDate\\\": self.creation_date.isoformat(),\\n             \\\"ReplicationTaskStartDate\\\": start_date,\\n\", \"is_truncated\": false}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_02",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": {
+              "filepath": "moto/dms/models.py",
+              "start_line": 90,
+              "end_line": 142
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_02",
+      "name": "read_file",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"filepath\": \"moto/dms/models.py\", \"content\": \"    ) -> Iterable[\\\"FakeReplicationTask\\\"]:\\n        \\\"\\\"\\\"\\n        The parameter WithoutSettings has not yet been implemented\\n        \\\"\\\"\\\"\\n        replication_tasks = filter_tasks(self.replication_tasks.values(), filters)\\n\\n        if max_records and max_records > 0:\\n            replication_tasks = replication_tasks[:max_records]\\n\\n        return replication_tasks\\n\\n\\nclass FakeReplicationTask(BaseModel):\\n    def __init__(\\n        self,\\n        replication_task_identifier: str,\\n        migration_type: str,\\n        replication_instance_arn: str,\\n        source_endpoint_arn: str,\\n        target_endpoint_arn: str,\\n        table_mappings: str,\\n        replication_task_settings: str,\\n        account_id: str,\\n        region_name: str,\\n    ):\\n        self.id = replication_task_identifier\\n        self.region = region_name\\n        self.migration_type = migration_type\\n        self.replication_instance_arn = replication_instance_arn\\n        self.source_endpoint_arn = source_endpoint_arn\\n        self.target_endpoint_arn = target_endpoint_arn\\n        self.table_mappings = table_mappings\\n        self.replication_task_settings = replication_task_settings\\n\\n        self.arn = f\\\"arn:{get_partition(region_name)}:dms:{region_name}:{account_id}:task:{self.id}\\\"\\n        self.status = \\\"creating\\\"\\n\\n        self.creation_date = utcnow()\\n        self.start_date: Optional[datetime] = None\\n        self.stop_date: Optional[datetime] = None\\n\\n    def to_dict(self) -> Dict[str, Any]:\\n        start_date = self.start_date.isoformat() if self.start_date else None\\n        stop_date = self.stop_date.isoformat() if self.stop_date else None\\n\\n        return {\\n            \\\"ReplicationTaskIdentifier\\\": self.id,\\n            \\\"SourceEndpointArn\\\": self.source_endpoint_arn,\\n            \\\"TargetEndpointArn\\\": self.target_endpoint_arn,\\n            \\\"ReplicationInstanceArn\\\": self.replication_instance_arn,\\n            \\\"MigrationType\\\": self.migration_type,\\n            \\\"TableMappings\\\": self.table_mappings,\\n            \\\"ReplicationTaskSettings\\\": self.replication_task_settings,\", \"start_line\": 90, \"end_line\": 142, \"total_lines\": 189, \"is_truncated\": false}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_03",
+          "type": "function",
+          "function": {
+            "name": "edit_file",
+            "arguments": {
+              "filepath": "moto/dms/models.py",
+              "old_string": "\n    def __init__(\n        self,\n        replication_task_identifier: str,\n        migration_type: str,\n        replication_instance_arn: str,\n        source_endpoint_arn: str,\n        target_endpoint_arn: str,\n        table_mappings: str,\n        replication_task_settings: str,\n        account_id: str,\n        region_name: str,\n    ):\n        self.id = replication_task_identifier\n        self.region = region_name\n        self.migration_type = migration_type\n        self.replication_instance_arn = replication_instance_arn\n        self.source_endpoint_arn = source_endpoint_arn\n        self.target_endpoint_arn = target_endpoint_arn\n        self.table_mappings = table_mappings\n        self.replication_task_settings = replication_task_settings\n\n        self.arn = f\"arn:{get_partition(region_name)}:dms:{region_name}:{account_id}:task:{self.id}\"\n        self.status = \"creating\"\n\n        self.creation_date = utcnow()\n        self.start_date: Optional[datetime] = None\n        self.stop_date: Optional[datetime] = None\n",
+              "new_string": "\n    def __init__(\n        self,\n        replication_task_identifier: str,\n        migration_type: str,\n        replication_instance_arn: str,\n        source_endpoint_arn: str,\n        target_endpoint_arn: str,\n        table_mappings: str,\n        replication_task_settings: str,\n        account_id: str,\n        region_name: str,\n    ):\n        self.id = replication_task_identifier\n        self.region = region_name\n        self.migration_type = migration_type\n        self.replication_instance_arn = replication_instance_arn\n        self.source_endpoint_arn = source_endpoint_arn\n        self.target_endpoint_arn = target_endpoint_arn\n        \n        # Validate JSON inputs\n        try:\n            # Just to validate, we parse and then keep the original string\n            json.loads(table_mappings)\n            self.table_mappings = table_mappings\n        except (ValueError, TypeError):\n            # In real AWS, this would probably raise an exception\n            # For now, we'll just store it as is, which is what the original code did\n            self.table_mappings = table_mappings\n            \n        try:\n            # Just to validate, we parse and then keep the original string\n            json.loads(replication_task_settings)\n            self.replication_task_settings = replication_task_settings\n        except (ValueError, TypeError):\n            # In real AWS, this would probably raise an exception\n            # For now, we'll just store it as is, which is what the original code did\n            self.replication_task_settings = replication_task_settings\n\n        self.arn = f\"arn:{get_partition(region_name)}:dms:{region_name}:{account_id}:task:{self.id}\"\n        self.status = \"creating\"\n\n        self.creation_date = utcnow()\n        self.start_date: Optional[datetime] = None\n        self.stop_date: Optional[datetime] = None\n",
+              "allow_multiple": false
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_03",
+      "name": "edit_file",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"filepath\": \"moto/dms/models.py\", \"occurrences\": 1, \"strategy\": \"exact\", \"diff\": \"--- a/moto/dms/models.py\\n+++ b/moto/dms/models.py\\n@@ -118,8 +118,25 @@\\n         self.replication_instance_arn = replication_instance_arn\\n         self.source_endpoint_arn = source_endpoint_arn\\n         self.target_endpoint_arn = target_endpoint_arn\\n-        self.table_mappings = table_mappings\\n-        self.replication_task_settings = replication_task_settings\\n+        \\n+        # Validate JSON inputs\\n+        try:\\n+            # Just to validate, we parse and then keep the original string\\n+            json.loads(table_mappings)\\n+            self.table_mappings = table_mappings\\n+        except (ValueError, TypeError):\\n+            # In real AWS, this would probably raise an exception\\n+            # For now, we'll just store it as is, which is what the original code did\\n+            self.table_mappings = table_mappings\\n+            \\n+        try:\\n+            # Just to validate, we parse and then keep the original string\\n+            json.loads(replication_task_settings)\\n+            self.replication_task_settings = replication_task_settings\\n+        except (ValueError, TypeError):\\n+            # In real AWS, this would probably raise an exception\\n+            # For now, we'll just store it as is, which is what the original code did\\n+            self.replication_task_settings = replication_task_settings\\n \\n         self.arn = f\\\"arn:{get_partition(region_name)}:dms:{region_name}:{account_id}:task:{self.id}\\\"\\n         self.status = \\\"creating\\\"\\n\", \"is_truncated\": false}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_04",
+          "type": "function",
+          "function": {
+            "name": "get_status",
+            "arguments": {}
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_04",
+      "name": "get_status",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"tool_calls_used\": 4, \"patch_submitted\": false, \"patch_size\": 0, \"tool_calls_remaining\": 96, \"max_tool_calls\": 100, \"command_timeout_seconds\": 30}"
+    },
+    {
+      "role": "assistant",
+      "content": "{\n  \"candidate_id\": \"p012-getmoto__moto.694ce1f4.pr_6396\",\n  \"files\": [\n    {\n      \"path\": \"moto/dms/models.py\",\n      \"after_sha256\": \"f6fb51f2db62b564f41ce776fafac0fc111d969756e7e5f72de50589ee7dca69\"\n    }\n  ],\n  \"requirement_done\": true,\n  \"requirement_scope\": \"local production edits applied and syntactically parsed; full-task validation NOT performed in this session\",\n  \"verification\": {\n    \"observation\": \"get_status\",\n    \"status\": \"ok\",\n    \"scope\": \"post-edit local patch status of the same workspace; no repository test suite or whole-issue oracle executed\"\n  },\n  \"unresolved\": [\n    \"no whole-issue oracle executed; task_resolved=null\",\n    \"behavior recovery chain to be upgraded by a later step, not fabricated here\"\n  ],\n  \"needs_other_route\": false\n}",
+      "tool_calls": []
+    }
+  ],
+  "target_assistant_steps": [
+    1,
+    3,
+    4,
+    5
+  ],
+  "behavior": "local_edit",
+  "needs_replay": false,
+  "attempt_status": "local_edits_applied",
+  "observed_outcome": {
+    "action_succeeded": true,
+    "task_resolved": null,
+    "behavior_verified": false,
+    "syntax_parse_passed": true,
+    "local_patch_nonempty": true,
+    "handover_reported": true,
+    "scope": "All selected structured production str_replace actions replayed from fixed buggy snapshot with five official tools (no submit_patch); post-edit status observed via get_status; session ends with a handover report, not a submission. This is local edit supervision, not a resolved task or full trajectory."
+  },
+  "handover": {
+    "candidate_id": "p012-getmoto__moto.694ce1f4.pr_6396",
+    "files": [
+      {
+        "path": "moto/dms/models.py",
+        "after_sha256": "f6fb51f2db62b564f41ce776fafac0fc111d969756e7e5f72de50589ee7dca69"
+      }
+    ],
+    "requirement_done": true,
+    "requirement_scope": "local production edits applied and syntactically parsed; full-task validation NOT performed in this session",
+    "verification": {
+      "observation": "get_status",
+      "status": "ok",
+      "scope": "post-edit local patch status of the same workspace; no repository test suite or whole-issue oracle executed"
+    },
+    "unresolved": [
+      "no whole-issue oracle executed; task_resolved=null",
+      "behavior recovery chain to be upgraded by a later step, not fabricated here"
+    ],
+    "needs_other_route": false
+  },
+  "source_resolved_label": true,
+  "source_label_not_revalidated": true,
+  "replay_boundary": "Unchanged official v31 tool functions minus submit_patch, with macOS local transport, production subset. Read locations derived from source edit targets; this is edit/action SFT, not search-policy supervision.",
+  "continuation_policy": "New read/edit/status tool observations only; no old assistant future or old tool observations reused."
+}

@@ -1,0 +1,21 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 837,
+  "instance_id": "pydantic__pydantic.acb0f10f.pr_10984",
+  "repo": "pydantic/pydantic",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "pydantic__pydantic.acb0f10f.pr_10984.efxz0yhf",
+  "messages_sha256": "55255388c0cbc0ed150252a2f2dca5b0520e467452268a9bce6a3d81e075f347",
+  "issue": "# [Bug]: Deferred dataclass fields not available when `defer_build=True`\n\n## Description\n\nWhen creating a dataclass with `defer_build=True` in the config, the fields are not properly set up and `__pydantic_fields__` is not populated correctly. This causes issues when trying to access the fields of the dataclass before it's fully built.\n\n## Code for reproduction\n\n```python\nimport pydantic\n\n@pydantic.dataclasses.dataclass(config={'defer_build': True})\nclass A:\n    a: int\n\n# This will fail because __pydantic_fields__ doesn't contain 'a'\nprint('a' in A.__pydantic_fields__)  # Should be True, but returns False\n```\n\n## Actual outcome\n\nWhen creating a dataclass with `defer_build=True`, the `__pydantic_fields__` attribute doesn't contain the fields defined in the dataclass. This means you can't access or validate the fields until the model is fully built.\n\n## Expected outcome\n\nThe `__pydantic_fields__` attribute should contain all the fields defined in the dataclass, even when `defer_build=True` is set in the config. This would allow accessing field information before the model is fully built.\n\n## Additional information\n\nThis issue appears to be related to the order of operations when setting up a dataclass with deferred building. The fields should be set up before returning from the function, even if the build is deferred.\n\n## Pydantic Version\n\n2.1.1\n\n## Python version\n\n3.10.16",
+  "actions": [
+    {
+      "source_message_index": 28,
+      "filepath": "pydantic/_internal/_dataclasses.py",
+      "old_string": "\n    if not _force_build and config_wrapper.defer_build:\n        set_dataclass_mocks(cls)\n        return False\n",
+      "new_string": "\n    if not _force_build and config_wrapper.defer_build:\n        # Set up the fields even when deferring the build\n        set_dataclass_fields(cls, ns_resolver, config_wrapper=config_wrapper)\n        set_dataclass_mocks(cls)\n        return False\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

@@ -1,0 +1,28 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 386,
+  "instance_id": "facebookresearch__hydra.0f03eb60.pr_2361",
+  "repo": "facebookresearch/hydra",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "facebookresearch__hydra.0f03eb60.pr_2361.zdfqhr82",
+  "messages_sha256": "acb6da03a7f5613bde2ad467d6fdfef94a75042708410a4c7ca469d39e9b0e11",
+  "issue": "# on_job_start callback no longer receives task_function parameter\n\n### What happened?\n\nWhen using a custom callback with Hydra, the `on_job_start` method no longer receives the `task_function` parameter. This breaks existing callbacks that rely on this parameter.\n\n```python\nimport hydra\nfrom hydra.experimental.callback import Callback\nfrom omegaconf import DictConfig\n\nclass MyCallback(Callback):\n    def on_job_start(self, config: DictConfig, **kwargs):\n        # This used to have access to task_function\n        # Now task_function is missing from kwargs\n        print(f\"on_job_start task_function: {kwargs.get('task_function')}\")\n\n@hydra.main(config_path=\"conf\", config_name=\"config\")\ndef my_app(cfg: DictConfig) -> None:\n    print(f\"foo: {cfg.foo}\")\n\nif __name__ == \"__main__\":\n    my_app()\n```\n\nWhen running this code, the callback no longer prints the task_function information.\n\n### What did you expect to happen?\n\nThe `on_job_start` callback should receive the `task_function` parameter as it did before, allowing callbacks to access the function decorated with `@hydra.main`.\n\n### Reproduction\n\nCreate a simple app with a callback that tries to access the task_function:\n\n```python\n# my_callback.py\nfrom hydra.experimental.callback import Callback\nfrom omegaconf import DictConfig\n\nclass MyCallback(Callback):\n    def on_job_start(self, config: DictConfig, **kwargs):\n        # This will now print None instead of the function\n        print(f\"Task function: {kwargs.get('task_function')}\")\n\n# my_app.py\nimport hydra\nfrom omegaconf import DictConfig\nfrom my_callback import MyCallback\n\n@hydra.main(config_path=\"conf\", config_name=\"config\")\ndef my_app(cfg: DictConfig) -> None:\n    print(f\"App running with config: {cfg}\")\n\nif __name__ == \"__main__\":\n    hydra.callbacks(MyCallback())\n    my_app()\n```\n\n### Environment\n\nHydra 1.4.0.dev1",
+  "actions": [
+    {
+      "source_message_index": 82,
+      "filepath": "my_app.py",
+      "old_string": "\nimport hydra\nfrom omegaconf import DictConfig\nfrom my_callback import MyCallback\n\n@hydra.main(config_path=\"conf\", config_name=\"config\", version_base=None)\ndef my_app(cfg: DictConfig) -> None:\n    print(f\"App running with config: {cfg}\")\n\nif __name__ == \"__main__\":\n    # Register the callback\n    hydra.core.global_hydra.GlobalHydra.instance().clear()\n    hydra.core.config_store.ConfigStore.instance().store(\n        name=\"my_callback\",\n        node={\n            \"hydra/callbacks\": {\n                \"my_callback\": {\n                    \"_target_\": \"my_callback.MyCallback\"\n                }\n            }\n        }\n    )\n    my_app()\n",
+      "new_string": "\nimport hydra\nfrom omegaconf import DictConfig\n\n@hydra.main(config_path=\"conf\", config_name=\"config\", version_base=None)\ndef my_app(cfg: DictConfig) -> None:\n    print(f\"App running with config: {cfg}\")\n\nif __name__ == \"__main__\":\n    my_app()\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 122,
+      "filepath": "hydra/core/utils.py",
+      "old_string": "\n        with env_override(hydra_cfg.hydra.job.env_set):\n            callbacks.on_job_start(config=config)\n            try:\n                ret.return_value = task_function(task_cfg)\n                ret.status = JobStatus.COMPLETED\n            except Exception as e:\n                ret.return_value = e\n                ret.status = JobStatus.FAILED\n",
+      "new_string": "\n        with env_override(hydra_cfg.hydra.job.env_set):\n            callbacks.on_job_start(config=config, task_function=task_function)\n            try:\n                ret.return_value = task_function(task_cfg)\n                ret.status = JobStatus.COMPLETED\n            except Exception as e:\n                ret.return_value = e\n                ret.status = JobStatus.FAILED\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

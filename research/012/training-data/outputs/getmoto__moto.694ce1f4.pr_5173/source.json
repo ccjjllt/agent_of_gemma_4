@@ -1,0 +1,28 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 1898,
+  "instance_id": "getmoto__moto.694ce1f4.pr_5173",
+  "repo": "getmoto/moto",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "getmoto__moto.694ce1f4.pr_5173.y1wve1wy",
+  "messages_sha256": "59620d1a409757822e09d49f7a1cf7a7860e09b279c34e9ff56f3bd0e5b80c54",
+  "issue": "# Incorrect ARN format for scaling policies in Application Auto Scaling\n\nWhen creating scaling policies in Application Auto Scaling, the ARN format is hardcoded incorrectly. The policy ARN is being generated with a fixed service namespace (sagemaker) instead of using the actual service namespace provided in the request.\n\n## Reproduction\n\nThe issue can be reproduced with the following code:\n\n```python\nimport boto3\n\nclient = boto3.client('application-autoscaling', region_name='us-east-1')\n\n# Register a scalable target for a non-sagemaker service\nnamespace = 'ecs'\nresource_id = 'service/my-cluster/my-service'\nscalable_dimension = 'ecs:service:DesiredCount'\n\nclient.register_scalable_target(\n    ServiceNamespace=namespace,\n    ResourceId=resource_id,\n    ScalableDimension=scalable_dimension,\n    MinCapacity=1,\n    MaxCapacity=10\n)\n\n# Create a scaling policy\npolicy_name = 'MyEcsPolicy'\npolicy_type = 'TargetTrackingScaling'\npolicy_body = {\n    'TargetValue': 75.0,\n    'PredefinedMetricSpecification': {\n        'PredefinedMetricType': 'ECSServiceAverageCPUUtilization'\n    }\n}\n\nresponse = client.put_scaling_policy(\n    PolicyName=policy_name,\n    ServiceNamespace=namespace,\n    ResourceId=resource_id,\n    ScalableDimension=scalable_dimension,\n    PolicyType=policy_type,\n    TargetTrackingScalingPolicyConfiguration=policy_body\n)\n\n# The ARN in the response will incorrectly contain 'sagemaker' instead of 'ecs'\nprint(response['PolicyARN'])\n# Expected: arn:aws:autoscaling:{region}:{account_id}:scalingPolicy:{uuid}:resource/ecs/service/my-cluster/my-service:policyName/MyEcsPolicy\n# Actual: arn:aws:autoscaling:{region}:{uuid}:resource/sagemaker/service/my-cluster/my-service:policyName/MyEcsPolicy\n```\n\nAdditionally, the ARN format is missing the account ID and partition information is not being properly included.\n\nThis issue affects all operations that rely on the policy ARN, such as describing and deleting scaling policies.",
+  "actions": [
+    {
+      "source_message_index": 38,
+      "filepath": "moto/applicationautoscaling/models.py",
+      "old_string": "import re\nimport time\nfrom collections import OrderedDict\nfrom enum import Enum, unique\nfrom typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union\n\nfrom moto.core.base_backend import BackendDict, BaseBackend\nfrom moto.core.common_models import BaseModel\nfrom moto.ecs import ecs_backends\nfrom moto.moto_api._internal import mock_random\nfrom moto.utilities.utils import ARN_PARTITION_REGEX, get_partition",
+      "new_string": "import re\nimport time\nimport uuid\nfrom collections import OrderedDict\nfrom enum import Enum, unique\nfrom typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union\n\nfrom moto.core.base_backend import BackendDict, BaseBackend\nfrom moto.core.common_models import BaseModel\nfrom moto.ecs import ecs_backends\nfrom moto.moto_api._internal import mock_random\nfrom moto.utilities.utils import ARN_PARTITION_REGEX, get_partition",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 42,
+      "filepath": "moto/applicationautoscaling/models.py",
+      "old_string": "        self.policy_name = policy_name\n        self.policy_type = policy_type\n        self._guid = uuid.uuid4()\n        self.policy_arn = \"arn:aws:autoscaling:{}:scalingPolicy:{}:resource/sagemaker/{}:policyName/{}\".format(\n            region_name, self._guid, self.resource_id, self.policy_name\n        )",
+      "new_string": "        self.policy_name = policy_name\n        self.policy_type = policy_type\n        self._guid = uuid.uuid4()\n        partition = get_partition(region_name)\n        self.policy_arn = \"arn:{}:autoscaling:{}:{}:scalingPolicy:{}:resource/{}/{}:policyName/{}\".format(\n            partition, region_name, account_id, self._guid, self.service_namespace, self.resource_id, self.policy_name\n        )",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

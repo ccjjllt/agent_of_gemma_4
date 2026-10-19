@@ -1,0 +1,42 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 1808,
+  "instance_id": "dask__dask.5f61e423.pr_11094",
+  "repo": "dask/dask",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "dask__dask.5f61e423.pr_11094.y1wve1wy",
+  "messages_sha256": "ca4755b423ca661a16a470d812fd4988c95cf68a607e3f83dc5033409a441165",
+  "issue": "# NameError: name '_percentile' is not defined when working with string data in DataFrames\n\n## Description\n\nWhen trying to convert data with string values from xarray to a dask dataframe, I'm getting a NameError saying that `_percentile` is not defined. This happens specifically when working with string data.\n\nHere's a simple reproduction case:\n\n```python\nimport numpy as np\nimport dask.array as da\nimport xarray as xr\nimport dask.dataframe as dd\n\n# Create sample data with string values\nx = np.random.randn(10)\ny = np.arange(10, dtype='uint8')\nt = list('abcdefghij')  # string values here\n\n# Create xarray dataset\nds = xr.Dataset({'a': ('t', da.from_array(x, chunks=4)), \n                 'b': ('t', y), \n                 't': ('t', t)})\n\n# This fails with NameError: name '_percentile' is not defined\ndf = ds.to_dask_dataframe(set_index=True)\n```\n\nI'm also seeing similar errors when trying to set an index with non-numeric values that contain nulls:\n\n```python\nimport pandas as pd\nimport dask.dataframe as dd\n\ndf = pd.DataFrame({'numeric': [1, 2, 3, 4], \n                  'non_numeric': ['foo', 'bar', 'foo', 'bar']})\nddf = dd.from_pandas(df, npartitions=2)\n\n# This also fails with the same error\nddf.set_index(ddf['non_numeric'].map({'foo': 'foo', 'bar': None})).compute()\n```\n\nThe error occurs in the partitionquantiles.py file when trying to handle string data types.",
+  "actions": [
+    {
+      "source_message_index": 28,
+      "filepath": "dask/dataframe/partitionquantiles.py",
+      "old_string": "from __future__ import annotations\n\nimport math\n\nimport numpy as np\nimport pandas as pd\nfrom pandas.api.types import is_datetime64_dtype, is_integer_dtype\nfrom tlz import merge_sorted, take\n\nfrom dask.dataframe.dispatch import tolist_dispatch\nfrom dask.utils import is_cupy_type, random_state_data",
+      "new_string": "from __future__ import annotations\n\nimport math\n\nimport numpy as np\nimport pandas as pd\nfrom pandas.api.types import is_datetime64_dtype, is_integer_dtype\nfrom tlz import merge_sorted, take\n\nfrom dask.array.percentile import _percentile\nfrom dask.dataframe.dispatch import tolist_dispatch\nfrom dask.utils import is_cupy_type, random_state_data",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 36,
+      "filepath": "dask/dataframe/partitionquantiles.py",
+      "old_string": "from __future__ import annotations\n\nimport math\n\nimport numpy as np\nimport pandas as pd\nfrom pandas.api.types import is_datetime64_dtype, is_integer_dtype\nfrom tlz import merge_sorted, take\n\nfrom dask.array.percentile import _percentile\nfrom dask.dataframe.dispatch import tolist_dispatch\nfrom dask.utils import is_cupy_type, random_state_data",
+      "new_string": "from __future__ import annotations\n\nimport math\n\nimport numpy as np\nimport pandas as pd\nfrom pandas.api.types import is_datetime64_dtype, is_integer_dtype\nfrom tlz import merge_sorted, take\n\nfrom dask.array.percentile import _percentile\nfrom dask.array.utils import array_safe\nfrom dask.dataframe.dispatch import tolist_dispatch\nfrom dask.utils import is_cupy_type, random_state_data",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 42,
+      "filepath": "dask/dataframe/partitionquantiles.py",
+      "old_string": "from dask.array.percentile import _percentile\nfrom dask.array.utils import array_safe\nfrom dask.dataframe.dispatch import tolist_dispatch\nfrom dask.utils import is_cupy_type, random_state_data",
+      "new_string": "from dask.array.percentile import _percentile\nfrom dask.array.utils import array_safe\nfrom dask.dataframe.dispatch import tolist_dispatch\nfrom dask.utils import is_cupy_type, is_series_like, random_state_data",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 56,
+      "filepath": "dask/dataframe/partitionquantiles.py",
+      "old_string": "    # FIXME: pandas quantile doesn't work with some data types (e.g. strings).\n    # We fall back to an ndarray as a workaround.\n    try:\n        vals = data.quantile(q=qs / 100, interpolation=interpolation).values\n    except (TypeError, NotImplementedError):\n        try:\n            vals, _ = _percentile(array_safe(data, like=data.values), qs, interpolation)\n        except (TypeError, NotImplementedError):\n            # `data.values` doesn't work for cudf, so we need to\n            # use `quantile(..., method=\"table\")` as a fallback\n            pass\n    # Convert to array if necessary (and possible)",
+      "new_string": "    # FIXME: pandas quantile doesn't work with some data types (e.g. strings).\n    # We fall back to an ndarray as a workaround.\n    try:\n        vals = data.quantile(q=qs / 100, interpolation=interpolation).values\n    except (TypeError, NotImplementedError):\n        try:\n            vals, _ = _percentile(array_safe(data, like=data.values), qs, interpolation)\n        except (TypeError, NotImplementedError):\n            # Handle case where both methods fail (e.g., with nulls in string data)\n            # Use a simple approach: drop nulls and then use _percentile\n            if data.isna().any():\n                clean_data = data.dropna()\n                if len(clean_data) > 0:\n                    vals, _ = _percentile(array_safe(clean_data, like=clean_data.values), qs, interpolation)\n                else:\n                    # All values are null, return empty array with correct dtype\n                    vals = np.array([], dtype=data.dtype)\n            else:\n                # If there's another issue, raise the error\n                raise\n    # Convert to array if necessary (and possible)",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

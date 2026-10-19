@@ -1,0 +1,35 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 2057,
+  "instance_id": "encode__starlette.db5063c2.pr_2576",
+  "repo": "encode/starlette",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "encode__starlette.db5063c2.pr_2576.y1wve1wy",
+  "messages_sha256": "e6d2d16ef025a9ef55297b99ec4e3b429e27ce92fa0ea24b7ffdfc6b6fc9addd",
+  "issue": "StreamingResponse no longer supports memoryview objects\n\nI just upgraded to the latest version and noticed that my code that was previously working now fails when I try to stream memoryview objects.\n\nHere's a minimal example that reproduces the issue:\n\n```python\nfrom starlette.responses import StreamingResponse\n\nasync def app(scope, receive, send):\n    # This used to work in previous versions\n    response = StreamingResponse(content=iter([memoryview(b'\\xc0'), memoryview(b'\\xf5')]))\n    await response(scope, receive, send)\n```\n\nWhen I run this code, I get an error because the StreamingResponse no longer accepts memoryview objects as valid content. Looking at the code, it seems that memoryview was removed from the Content type definition.\n\nThis is a regression from previous versions where memoryview objects were explicitly supported. Our application uses memoryview objects extensively for efficient memory handling when streaming large binary files, and this change breaks our existing code.\n\nIs there a reason why memoryview support was removed? It's a very useful feature for performance-sensitive applications that need to handle binary data efficiently.",
+  "actions": [
+    {
+      "source_message_index": 30,
+      "filepath": "starlette/responses.py",
+      "old_string": "Content = typing.Union[str, bytes]\nSyncContentStream = typing.Iterable[Content]\nAsyncContentStream = typing.AsyncIterable[Content]\nContentStream = typing.Union[AsyncContentStream, SyncContentStream]",
+      "new_string": "Content = typing.Union[str, bytes, memoryview]\nSyncContentStream = typing.Iterable[Content]\nAsyncContentStream = typing.AsyncIterable[Content]\nContentStream = typing.Union[AsyncContentStream, SyncContentStream]",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 32,
+      "filepath": "starlette/responses.py",
+      "old_string": "        async for chunk in self.body_iterator:\n            if not isinstance(chunk, bytes):\n                chunk = chunk.encode(self.charset)\n            await send({\"type\": \"http.response.body\", \"body\": chunk, \"more_body\": True})",
+      "new_string": "        async for chunk in self.body_iterator:\n            if isinstance(chunk, str):\n                chunk = chunk.encode(self.charset)\n            # bytes and memoryview objects can be used directly\n            await send({\"type\": \"http.response.body\", \"body\": chunk, \"more_body\": True})",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 54,
+      "filepath": "starlette/responses.py",
+      "old_string": "        async for chunk in self.body_iterator:\n            if isinstance(chunk, str):\n                chunk = chunk.encode(self.charset)\n            # bytes and memoryview objects can be used directly\n            await send({\"type\": \"http.response.body\", \"body\": chunk, \"more_body\": True})",
+      "new_string": "        async for chunk in self.body_iterator:\n            if isinstance(chunk, str):\n                chunk = chunk.encode(self.charset)\n            # bytes and memoryview objects can be used directly\n            # For other objects, try to convert to bytes if possible\n            elif not isinstance(chunk, (bytes, memoryview)):\n                chunk = bytes(chunk)\n            await send({\"type\": \"http.response.body\", \"body\": chunk, \"more_body\": True})",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

@@ -1,0 +1,35 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00000-of-00008.parquet",
+  "row_index": 1223,
+  "instance_id": "getmoto__moto.694ce1f4.pr_6374",
+  "repo": "getmoto/moto",
+  "source_resolved": true,
+  "teacher_source": "claude-3-5-sonnet-20241022",
+  "traj_id": "getmoto__moto.694ce1f4.pr_6374.1cm1w3ln",
+  "messages_sha256": "931b6b867c1dcf213fb835c3b9bb558d06726777916a73e5011f79a5e4a37b63",
+  "issue": "There are bug(s) in this codebase, likely located in the following file(s).\n- moto/ec2/models/flow_logs.py\n\nI think these function(s) are relevant to the bug:\n- class FlowLogsBackend:\n\nPlease look into them and fix any bugs that you find.",
+  "actions": [
+    {
+      "source_message_index": 16,
+      "filepath": "moto/ec2/models/flow_logs.py",
+      "old_string": "    def delete_flow_logs(self, flow_log_ids: List[str]) -> None:\n        non_existing = []\n        for flow_log in flow_log_ids:\n            if flow_log in self.flow_logs:\n                self.flow_logs.pop(flow_log, None)\n            else:\n                non_existing.append(flow_log)\n\n        if non_existing:\n            raise InvalidFlowLogIdError(\n                len(flow_log_ids), \" \".join(x for x in flow_log_ids)\n            )",
+      "new_string": "    def delete_flow_logs(self, flow_log_ids: List[str]) -> None:\n        deleted = []\n        non_existing = []\n        for flow_log in flow_log_ids:\n            if flow_log in self.flow_logs:\n                self.flow_logs.pop(flow_log, None)\n                deleted.append(flow_log)\n            else:\n                non_existing.append(flow_log)\n\n        # Only raise error if no valid flow logs were found\n        if len(non_existing) == len(flow_log_ids):\n            raise InvalidFlowLogIdError(\n                len(flow_log_ids), \" \".join(x for x in flow_log_ids)\n            )",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 18,
+      "filepath": "moto/ec2/models/flow_logs.py",
+      "old_string": "    def describe_flow_logs(\n        self, flow_log_ids: Optional[List[str]] = None, filters: Any = None\n    ) -> List[FlowLogs]:\n        matches = list(itertools.chain([i for i in self.flow_logs.values()]))\n        if flow_log_ids:\n            matches = [flow_log for flow_log in matches if flow_log.id in flow_log_ids]\n        if filters:\n            matches = generic_filter(filters, matches)\n        return matches",
+      "new_string": "    def describe_flow_logs(\n        self, flow_log_ids: Optional[List[str]] = None, filters: Any = None\n    ) -> List[FlowLogs]:\n        matches = list(self.flow_logs.values())\n        if flow_log_ids:\n            matches = [flow_log for flow_log in matches if flow_log.id in flow_log_ids]\n        if filters:\n            matches = generic_filter(filters, matches)\n        return matches",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 20,
+      "filepath": "moto/ec2/models/flow_logs.py",
+      "old_string": "            all_flow_logs = self.describe_flow_logs()\n            if any(\n                fl.resource_id == resource_id\n                and (\n                    fl.log_group_name == log_group_name\n                    or fl.log_destination == log_destination\n                )\n                for fl in all_flow_logs\n            ):\n                raise FlowLogAlreadyExists()",
+      "new_string": "            all_flow_logs = self.describe_flow_logs()\n            for fl in all_flow_logs:\n                if fl.resource_id == resource_id:\n                    if log_destination_type == \"cloud-watch-logs\" and fl.log_group_name == log_group_name:\n                        raise FlowLogAlreadyExists()\n                    elif log_destination_type == \"s3\" and fl.log_destination == log_destination:\n                        raise FlowLogAlreadyExists()",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

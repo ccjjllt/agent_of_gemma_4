@@ -1,0 +1,63 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 1339,
+  "instance_id": "python__mypy.e93f06ce.pr_16061",
+  "repo": "python/mypy",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "python__mypy.e93f06ce.pr_16061.y1wve1wy",
+  "messages_sha256": "a054134fe21acc574f5e4004e395df647243455f149b84ed859dc58d613e3aaf",
+  "issue": "Missing OVERLOAD_OVERLAP error code causes internal error\n\nI'm getting an internal error when working with overloaded functions in mypy. When I have overlapping overloads, instead of getting a proper warning, mypy crashes with an AttributeError.\n\nHere's a simple example that reproduces the issue:\n\n```python\nfrom typing import overload\n\n@overload\ndef func(x: int) -> int: ...\n\n@overload\ndef func(x: int) -> str: ...  # overlaps with the first overload\n\ndef func(x: int) -> int:\n    return x\n```\n\nWhen I run mypy on this code, instead of getting a warning about overlapping overloads, I get:\n\n```\nmain:3: error: INTERNAL ERROR -- Please try using mypy master on GitHub:\nhttps://mypy.readthedocs.io/en/stable/common_issues.html#using-a-development-mypy-build\nPlease report a bug at https://github.com/python/mypy/issues\nAttributeError: module 'mypy.errorcodes' has no attribute 'OVERLOAD_OVERLAP'\n```\n\nIt looks like mypy is trying to use an error code that doesn't exist. This happens when I have multiple overloads that overlap in unsafe ways.\n\nI'm using mypy version 1.16.0+dev. This issue doesn't appear in older versions of mypy, so it seems like a recent regression.",
+  "actions": [
+    {
+      "source_message_index": 48,
+      "filepath": "mypy/messages.py",
+      "old_string": "    def overloaded_signatures_overlap(\n        self, index1: int, index2: int, flip_note: bool, context: Context\n    ) -> None:\n        self.fail(\n            \"Overloaded function signatures {} and {} overlap with \"\n            \"incompatible return types\".format(index1, index2),\n            context,\n            code=codes.OVERLOAD_OVERLAP,\n        )\n        if flip_note:\n            self.note(\n                \"Flipping the order of overloads will fix this error\",\n                context,\n            )",
+      "new_string": "    def overloaded_signatures_overlap(\n        self, index1: int, index2: int, flip_note: bool, context: Context\n    ) -> None:\n        print(\"DEBUG: overloaded_signatures_overlap called!\")\n        try:\n            self.fail(\n                \"Overloaded function signatures {} and {} overlap with \"\n                \"incompatible return types\".format(index1, index2),\n                context,\n                code=codes.OVERLOAD_OVERLAP,\n            )\n        except AttributeError as e:\n            print(f\"DEBUG: AttributeError caught: {e}\")\n            raise\n        if flip_note:\n            self.note(\n                \"Flipping the order of overloads will fix this error\",\n                context,\n            )",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 56,
+      "filepath": "mypy/errorcodes.py",
+      "old_string": "OVERLOAD_CANNOT_MATCH: Final[ErrorCode] = ErrorCode(\n    \"overload-cannot-match\",\n    \"Warn if an @overload signature can never be matched\",\n    \"General\",\n    sub_code_of=MISC,\n)",
+      "new_string": "OVERLOAD_CANNOT_MATCH: Final[ErrorCode] = ErrorCode(\n    \"overload-cannot-match\",\n    \"Warn if an @overload signature can never be matched\",\n    \"General\",\n    sub_code_of=MISC,\n)\n\nOVERLOAD_OVERLAP: Final[ErrorCode] = ErrorCode(\n    \"overload-overlap\",\n    \"Warn if overloaded function signatures overlap with incompatible return types\",\n    \"General\",\n    sub_code_of=MISC,\n)",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 74,
+      "filepath": "call_overlap.py",
+      "old_string": "from mypy.messages import MessageBuilder\nfrom mypy.errors import Errors\nfrom mypy.nodes import Context\n\n# Create a MessageBuilder instance\nerrors = Errors()\nmsg = MessageBuilder(errors, {})",
+      "new_string": "from mypy.messages import MessageBuilder\nfrom mypy.errors import Errors\nfrom mypy.nodes import Context\nfrom mypy.options import Options\n\n# Create a MessageBuilder instance\noptions = Options()\nerrors = Errors(options)\nmsg = MessageBuilder(errors, {})",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 78,
+      "filepath": "call_overlap.py",
+      "old_string": "class DummyContext(Context):\n    def __init__(self):\n        self.line = 1\n        self.column = 0\n    \n    def get_line(self) -> int:\n        return self.line\n    \n    def get_column(self) -> int:\n        return self.column",
+      "new_string": "class DummyContext(Context):\n    def __init__(self):\n        self.line = 1\n        self.column = 0\n        self.end_line = 1\n        self.end_column = 10\n    \n    def get_line(self) -> int:\n        return self.line\n    \n    def get_column(self) -> int:\n        return self.column",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 102,
+      "filepath": "call_overlap.py",
+      "old_string": "from mypy.messages import MessageBuilder\nfrom mypy.errors import Errors\nfrom mypy.nodes import Context\nfrom mypy.options import Options\n\n# Create a MessageBuilder instance\noptions = Options()\nerrors = Errors(options)\nmsg = MessageBuilder(errors, {})\n\n# Create a dummy context\nclass DummyContext(Context):\n    def __init__(self):\n        self.line = 1\n        self.column = 0\n        self.end_line = 1\n        self.end_column = 10\n    \n    def get_line(self) -> int:\n        return self.line\n    \n    def get_column(self) -> int:\n        return self.column\n\n# Call the overloaded_signatures_overlap function\ncontext = DummyContext()\nmsg.overloaded_signatures_overlap(1, 2, False, context)\n\n# Print the errors\nfor error in errors.new_messages():\n    print(error)",
+      "new_string": "from mypy.messages import MessageBuilder\nfrom mypy.errors import Errors\nfrom mypy.nodes import Context\nfrom mypy.options import Options\nfrom mypy import errorcodes\n\n# Print the error code to confirm it exists\nprint(f\"OVERLOAD_OVERLAP error code exists: {errorcodes.OVERLOAD_OVERLAP}\")\nprint(f\"Error code value: {errorcodes.OVERLOAD_OVERLAP.code}\")\nprint(f\"Error code description: {errorcodes.OVERLOAD_OVERLAP.description}\")\nprint(f\"Error code category: {errorcodes.OVERLOAD_OVERLAP.category}\")\nprint(f\"Error code is sub-code of: {errorcodes.OVERLOAD_OVERLAP.sub_code_of.code if errorcodes.OVERLOAD_OVERLAP.sub_code_of else 'None'}\")\n\n# Create a MessageBuilder instance\noptions = Options()\nerrors = Errors(options)\nmsg = MessageBuilder(errors, {})\n\n# Create a dummy context\nclass DummyContext(Context):\n    def __init__(self):\n        self.line = 1\n        self.column = 0\n        self.end_line = 1\n        self.end_column = 10\n    \n    def get_line(self) -> int:\n        return self.line\n    \n    def get_column(self) -> int:\n        return self.column\n\n# Call the overloaded_signatures_overlap function\ncontext = DummyContext()\nmsg.overloaded_signatures_overlap(1, 2, False, context)\n\n# Print the errors\nfor error in errors.new_messages():\n    print(f\"Error message: {error}\")\n    print(f\"Error code: {error.code}\")",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 106,
+      "filepath": "call_overlap.py",
+      "old_string": "# Print the errors\nfor error in errors.new_messages():\n    print(f\"Error message: {error}\")\n    print(f\"Error code: {error.code}\")",
+      "new_string": "# Print the errors\nfor error in errors.new_messages():\n    print(f\"Error message: {error}\")\n    # The error message is a string, not an object with a code attribute\n    # We can see that the error code is included in the message as [overload-overlap]",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 110,
+      "filepath": "mypy/messages.py",
+      "old_string": "    def overloaded_signatures_overlap(\n        self, index1: int, index2: int, flip_note: bool, context: Context\n    ) -> None:\n        print(\"DEBUG: overloaded_signatures_overlap called!\")\n        try:\n            self.fail(\n                \"Overloaded function signatures {} and {} overlap with \"\n                \"incompatible return types\".format(index1, index2),\n                context,\n                code=codes.OVERLOAD_OVERLAP,\n            )\n        except AttributeError as e:\n            print(f\"DEBUG: AttributeError caught: {e}\")\n            raise\n        if flip_note:\n            self.note(\n                \"Flipping the order of overloads will fix this error\",\n                context,\n            )",
+      "new_string": "    def overloaded_signatures_overlap(\n        self, index1: int, index2: int, flip_note: bool, context: Context\n    ) -> None:\n        self.fail(\n            \"Overloaded function signatures {} and {} overlap with \"\n            \"incompatible return types\".format(index1, index2),\n            context,\n            code=codes.OVERLOAD_OVERLAP,\n        )\n        if flip_note:\n            self.note(\n                \"Flipping the order of overloads will fix this error\",\n                context,\n            )",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

@@ -1,0 +1,49 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 224,
+  "instance_id": "getmoto__moto.694ce1f4.pr_5487",
+  "repo": "getmoto/moto",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "getmoto__moto.694ce1f4.pr_5487.h0ergv19",
+  "messages_sha256": "06b9d19ecb1402f6be0d5e12255eaa9b6c36d58d163d8cf4848e788554637150",
+  "issue": "[Bug]: CloudFront distribution update fails after creating distribution\n\n### Bug summary\n\nWhen creating a CloudFront distribution and then trying to update it, the update operation fails. This happens when using the AWS SDK to first create a distribution and then update its properties.\n\n### Code for reproduction\n\n```python\nimport boto3\nfrom moto import mock_aws\n\n@mock_aws\ndef reproduce_issue():\n    client = boto3.client('cloudfront', region_name='us-east-1')\n    \n    # Create a basic distribution config\n    distribution_config = {\n        'CallerReference': 'test-ref-123',\n        'Origins': {\n            'Quantity': 1,\n            'Items': [\n                {\n                    'Id': 'origin1',\n                    'DomainName': 'example-bucket.s3.amazonaws.com',\n                    'S3OriginConfig': {\n                        'OriginAccessIdentity': ''\n                    }\n                }\n            ]\n        },\n        'DefaultCacheBehavior': {\n            'TargetOriginId': 'origin1',\n            'ViewerProtocolPolicy': 'allow-all',\n            'MinTTL': 0,\n            'ForwardedValues': {\n                'QueryString': False,\n                'Cookies': {'Forward': 'none'}\n            }\n        },\n        'Comment': 'Test distribution',\n        'Enabled': False\n    }\n    \n    # Create the distribution\n    response = client.create_distribution(DistributionConfig=distribution_config)\n    dist_id = response['Distribution']['Id']\n    etag = response['ETag']\n    \n    # Get the distribution config to update it\n    config_response = client.get_distribution_config(Id=dist_id)\n    updated_config = config_response['DistributionConfig']\n    \n    # Make a simple change\n    updated_config['Enabled'] = True\n    \n    # Try to update the distribution\n    client.update_distribution(\n        DistributionConfig=updated_config,\n        Id=dist_id,\n        IfMatch=etag\n    )\n    \n    print(\"Update successful\")\n\nreproduce_issue()\n```\n\n### Actual outcome\n\nThe code fails with an error when trying to update the distribution. The error suggests that there's an issue with the update operation after creating the distribution.\n\n### Expected outcome\n\nThe distribution should be successfully updated with the new configuration (in this case, changing `Enabled` from `False` to `True`).\n\n### Additional information\n\nThis issue appears to be related to how the CloudFront distribution is created and then updated. The create operation works fine, but subsequent update operations fail.\n\n### Operating system\n\nUbuntu 20.04\n\n### Python version\n\nPython 3.8.10\n\n### Installation\n\npip install moto boto3",
+  "actions": [
+    {
+      "source_message_index": 32,
+      "filepath": "moto/cloudfront/models.py",
+      "old_string": "\n    def create_distribution(\n        self, distribution_config: Dict[str, Any], tags: List[Dict[str, str]]\n    ) -> Tuple[Distribution, str, str]:\n        \"\"\"\n        Not all configuration options are supported yet.  Please raise an issue if\n        we're not persisting/returning the correct attributes for your\n        use-case.\n        \"\"\"\n        dist = Distribution(self.account_id, distribution_config)\n        caller_reference = dist.distribution_config.caller_reference\n        existing_dist = self._distribution_with_caller_reference(caller_reference)\n        if existing_dist is not None:\n            raise DistributionAlreadyExists(existing_dist.distribution_id)\n        self.distributions[dist.distribution_id] = dist\n        self.tagger.tag_resource(dist.arn, tags)\n        return dist, dist.location, dist.etag\n",
+      "new_string": "\n    def create_distribution(\n        self, distribution_config: Dict[str, Any], tags: List[Dict[str, str]]\n    ) -> Tuple[Distribution, str, str]:\n        \"\"\"\n        Not all configuration options are supported yet.  Please raise an issue if\n        we're not persisting/returning the correct attributes for your\n        use-case.\n        \"\"\"\n        dist = Distribution(self.account_id, self.region_name, distribution_config)\n        caller_reference = dist.distribution_config.caller_reference\n        existing_dist = self._distribution_with_caller_reference(caller_reference)\n        if existing_dist is not None:\n            raise DistributionAlreadyExists(existing_dist.distribution_id)\n        self.distributions[dist.distribution_id] = dist\n        self.tagger.tag_resource(dist.arn, tags)\n        return dist, dist.location, dist.etag\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 46,
+      "filepath": "moto/cloudfront/models.py",
+      "old_string": "\n    def update_distribution(\n        self, dist_config: Dict[str, Any], _id: str, if_match: bool\n    ) -> Tuple[Distribution, str, str]:\n        \"\"\"\n        The IfMatch-value is ignored - any value is considered valid.\n        Calling this function without a value is invalid, per AWS' behaviour\n        \"\"\"\n        if _id not in self.distributions or _id is None:\n            raise NoSuchDistribution\n        if not if_match:\n            raise InvalidIfMatchVersion\n        if not dist_config:\n            raise NoSuchDistribution\n        dist = self.distributions[_id]\n\n        dist.distribution_config = DistributionConfig(dist_config)\n        self.distributions[_id] = dist\n        dist.advance()\n        return dist, dist.location, dist.etag\n",
+      "new_string": "\n    def update_distribution(\n        self, dist_config: Dict[str, Any], _id: str, if_match: bool\n    ) -> Tuple[Distribution, str, str]:\n        \"\"\"\n        The IfMatch-value is ignored - any value is considered valid.\n        Calling this function without a value is invalid, per AWS' behaviour\n        \"\"\"\n        if _id not in self.distributions or _id is None:\n            raise NoSuchDistribution\n        if not if_match:\n            raise InvalidIfMatchVersion\n        if not dist_config:\n            raise NoSuchDistribution\n        dist = self.distributions[_id]\n\n        # Check if the ETag matches\n        if if_match != dist.etag:\n            raise InvalidIfMatchVersion\n\n        dist.distribution_config = DistributionConfig(dist_config)\n        # Generate a new ETag for the updated distribution\n        dist.etag = random_id()\n        self.distributions[_id] = dist\n        dist.advance()\n        return dist, dist.location, dist.etag\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 62,
+      "filepath": "moto/cloudfront/exceptions.py",
+      "old_string": "\nclass InvalidIfMatchVersion(CloudFrontException):\n    def __init__(self) -> None:\n        super().__init__(\n            \"InvalidIfMatchVersion\",\n            message=\"The If-Match version is missing or not valid for the resource.\",\n        )\n",
+      "new_string": "\nclass InvalidIfMatchVersion(CloudFrontException):\n    def __init__(self) -> None:\n        super().__init__(\n            \"InvalidIfMatchVersion\",\n            message=\"The If-Match version is missing or not valid for the resource.\",\n        )\n\n\nclass PreconditionFailed(CloudFrontException):\n    code = 412\n    \n    def __init__(self) -> None:\n        super().__init__(\n            \"PreconditionFailed\",\n            message=\"The precondition given in one or more of the request-header fields evaluated to false.\",\n        )\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 64,
+      "filepath": "moto/cloudfront/models.py",
+      "old_string": "\nfrom .exceptions import (\n    DistributionAlreadyExists,\n    DomainNameNotAnS3Bucket,\n    InvalidIfMatchVersion,\n    NoSuchDistribution,\n    NoSuchInvalidation,\n    NoSuchOriginAccessControl,\n    OriginDoesNotExist,\n)\n",
+      "new_string": "\nfrom .exceptions import (\n    DistributionAlreadyExists,\n    DomainNameNotAnS3Bucket,\n    InvalidIfMatchVersion,\n    NoSuchDistribution,\n    NoSuchInvalidation,\n    NoSuchOriginAccessControl,\n    OriginDoesNotExist,\n    PreconditionFailed,\n)\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 66,
+      "filepath": "moto/cloudfront/models.py",
+      "old_string": "\n        # Check if the ETag matches\n        if if_match != dist.etag:\n            raise InvalidIfMatchVersion\n",
+      "new_string": "\n        # Check if the ETag matches\n        if if_match != dist.etag:\n            raise PreconditionFailed()\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

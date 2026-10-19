@@ -1,0 +1,35 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 734,
+  "instance_id": "pylint-dev__astroid.b114f6b5.pr_2002",
+  "repo": "pylint-dev/astroid",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "pylint-dev__astroid.b114f6b5.pr_2002.9356zr3k",
+  "messages_sha256": "a72297c6be647fc566bf6d60ecf6b81649389953247e9a04d0568bf5e7d9cd8b",
+  "issue": "# typing.cast() function doesn't work correctly with multiple inference calls\n\n## Description\n\nI've discovered an issue with the `typing.cast()` function in astroid. When using `typing.cast()` inside a function that's called multiple times with different types, only the first type is correctly inferred.\n\nFor example, take this code with a generic function using `typing.cast()`:\n\n```python\nfrom typing import TypeVar, cast\nT = TypeVar(\"T\")\ndef ident(var: T) -> T:\n    return cast(T, var)\n\nident(2)\nident(\"Hello\")\n```\n\nWhen inferring the result of the first call `ident(2)`, it correctly returns `2` as an integer. However, when inferring the second call `ident(\"Hello\")`, it incorrectly returns `2` again instead of the string `\"Hello\"`.\n\nIt seems like the inference result for `cast()` is being cached or stored somewhere, and subsequent calls to the same function are reusing the first inference result instead of evaluating each call independently.\n\n## Steps to reproduce\n\n1. Create a function that uses `typing.cast()` with a type variable\n2. Call the function multiple times with different types\n3. Try to infer the result of each call\n\nExpected behavior: Each call should infer to the correct type that was passed in.\nActual behavior: All calls infer to the type of the first call.\n\nThis is problematic for static analysis tools that rely on astroid for type inference, as it will lead to incorrect type information being reported for functions using `typing.cast()`.",
+  "actions": [
+    {
+      "source_message_index": 80,
+      "filepath": "cast_brain.py",
+      "old_string": "\nfrom typing import TypeVar, cast\nimport astroid\nfrom astroid import builder, nodes, context, inference_tip\n",
+      "new_string": "\nfrom typing import TypeVar, cast\nimport astroid\nfrom astroid import builder, nodes, context\nfrom astroid.inference_tip import inference_tip\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 82,
+      "filepath": "cast_brain.py",
+      "old_string": "\n# Register the brain\nmanager = astroid.MANAGER\nmanager.register_transform(\n    nodes.Call,\n    inference_tip.inference_tip(infer_typing_cast),\n    lambda node: isinstance(node.func, nodes.Name) and node.func.name == 'cast'\n)\n",
+      "new_string": "\n# Register the brain\nmanager = astroid.MANAGER\nmanager.register_transform(\n    nodes.Call,\n    inference_tip(infer_typing_cast),\n    lambda node: isinstance(node.func, nodes.Name) and node.func.name == 'cast'\n)\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 86,
+      "filepath": "astroid/brain/brain_typing.py",
+      "old_string": "\ndef register(manager: AstroidManager) -> None:\n    manager.register_transform(\n        Call,\n        inference_tip(infer_typing_typevar_or_newtype),\n        looks_like_typing_typevar_or_newtype,\n    )\n    manager.register_transform(\n        Subscript, inference_tip(infer_typing_attr), _looks_like_typing_subscript\n    )\n\n    manager.register_transform(\n        FunctionDef, inference_tip(infer_typedDict), _looks_like_typedDict\n    )\n\n    manager.register_transform(\n        Call, inference_tip(infer_typing_alias), _looks_like_typing_alias\n    )\n    manager.register_transform(\n        Call, inference_tip(infer_special_alias), _looks_like_special_alias\n    )\n\n    if PY312_PLUS:\n        register_module_extender(manager, \"typing\", _typing_transform)\n        manager.register_transform(\n            ClassDef,\n            inference_tip(infer_typing_generic_class_pep695),\n            _looks_like_generic_class_pep695,\n        )\n",
+      "new_string": "\ndef _looks_like_typing_cast(node: Call) -> bool:\n    \"\"\"Check if the node represents a typing.cast call.\"\"\"\n    if not isinstance(node.func, (Name, Attribute)):\n        return False\n    \n    if isinstance(node.func, Name):\n        return node.func.name == \"cast\"\n    \n    return node.func.attrname == \"cast\"\n\n\ndef infer_typing_cast(node: Call, context: InferenceContext | None = None) -> Iterator[InferenceResult]:\n    \"\"\"Infer typing.cast call.\n    \n    The typing.cast function returns its second argument unchanged, so we just\n    need to infer the second argument.\n    \"\"\"\n    if len(node.args) != 2:\n        raise UseInferenceDefault\n    \n    # The second argument is the value to be returned\n    yield from node.args[1].infer(context)\n\n\ndef register(manager: AstroidManager) -> None:\n    manager.register_transform(\n        Call,\n        inference_tip(infer_typing_typevar_or_newtype),\n        looks_like_typing_typevar_or_newtype,\n    )\n    manager.register_transform(\n        Subscript, inference_tip(infer_typing_attr), _looks_like_typing_subscript\n    )\n\n    manager.register_transform(\n        FunctionDef, inference_tip(infer_typedDict), _looks_like_typedDict\n    )\n\n    manager.register_transform(\n        Call, inference_tip(infer_typing_cast), _looks_like_typing_cast\n    )\n\n    manager.register_transform(\n        Call, inference_tip(infer_typing_alias), _looks_like_typing_alias\n    )\n    manager.register_transform(\n        Call, inference_tip(infer_special_alias), _looks_like_special_alias\n    )\n\n    if PY312_PLUS:\n        register_module_extender(manager, \"typing\", _typing_transform)\n        manager.register_transform(\n            ClassDef,\n            inference_tip(infer_typing_generic_class_pep695),\n            _looks_like_generic_class_pep695,\n        )\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

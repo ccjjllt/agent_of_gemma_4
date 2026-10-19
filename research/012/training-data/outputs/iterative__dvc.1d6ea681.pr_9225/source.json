@@ -1,0 +1,42 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00000-of-00008.parquet",
+  "row_index": 1432,
+  "instance_id": "iterative__dvc.1d6ea681.pr_9225",
+  "repo": "iterative/dvc",
+  "source_resolved": true,
+  "teacher_source": "claude-3-5-sonnet-20241022",
+  "traj_id": "iterative__dvc.1d6ea681.pr_9225.1cm1w3ln",
+  "messages_sha256": "775cf6a4c08dcf4fc6d28930af7b17aabccf3e0b3a45b37fd741feab7f572d7b",
+  "issue": "There are bug(s) in this codebase, likely located in the following file(s).\n- dvc/repo/experiments/__init__.py\n- dvc/repo/experiments/queue/celery.py\n\nI think these function(s) are relevant to the bug:\n- class LocalCeleryQueue(BaseStashQueue):\n- class Experiments:\n\nPlease look into them and fix any bugs that you find.",
+  "actions": [
+    {
+      "source_message_index": 14,
+      "filepath": "dvc/repo/experiments/queue/celery.py",
+      "old_string": "from typing import TYPE_CHECKING, NamedTuple, Optional, Union\n\nfrom celery.result import AsyncResult\nfrom funcy import first\n\nfrom dvc.daemon import daemonize\nfrom dvc.exceptions import DvcException\nfrom dvc.log import logger\nfrom dvc.repo.experiments.exceptions import (\n    UnresolvedQueueExpNamesError,\n    UnresolvedRunningExpNamesError,\n)\nfrom dvc.repo.experiments.executor.base import ExecutorInfo\nfrom dvc.repo.experiments.refs import CELERY_STASH\nfrom dvc.repo.experiments.utils import EXEC_TMP_DIR, get_exp_rwlock\nfrom dvc.ui import ui\nfrom dvc.utils.objects import cached_property",
+      "new_string": "from typing import TYPE_CHECKING, NamedTuple, Optional, Union\n\nfrom celery.result import AsyncResult\nfrom funcy import first\n\nfrom dvc.daemon import daemonize\nfrom dvc.exceptions import DvcException\nfrom dvc.log import logger\nfrom dvc.repo.experiments.exceptions import (\n    UnresolvedQueueExpNamesError,\n    UnresolvedRunningExpNamesError,\n)\nfrom dvc.repo.experiments.executor.base import ExecutorInfo\nfrom dvc.repo.experiments.refs import CELERY_STASH\nfrom dvc.repo.experiments.serialize import ExpRange\nfrom dvc.repo.experiments.utils import EXEC_TMP_DIR, get_exp_rwlock\nfrom dvc.ui import ui\nfrom dvc.utils.objects import cached_property",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 16,
+      "filepath": "dvc/repo/experiments/queue/celery.py",
+      "old_string": "    def get(self) -> \"QueueGetResult\":\n        raise NotImplementedError",
+      "new_string": "    def get(self) -> \"QueueGetResult\":\n        \"\"\"Get the next queued experiment.\n        \n        Returns:\n            QueueGetResult containing the queue entry and executor.\n        \"\"\"\n        for msg, entry in self._iter_queued():\n            msg.ack()  # Remove from queue\n            executor = self.init_executor(self.repo.experiments, entry)\n            return QueueGetResult(entry, executor)\n        return None",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 18,
+      "filepath": "dvc/repo/experiments/queue/celery.py",
+      "old_string": "    def reproduce(\n        self, copy_paths: Optional[list[str]] = None, message: Optional[str] = None\n    ) -> Mapping[str, Mapping[str, str]]:\n        raise NotImplementedError",
+      "new_string": "    def reproduce(\n        self, copy_paths: Optional[list[str]] = None, message: Optional[str] = None\n    ) -> Mapping[str, Mapping[str, str]]:\n        \"\"\"Reproduce queued experiments using celery workers.\n        \n        Args:\n            copy_paths: Optional list of paths to copy into the experiment workspace\n            message: Optional commit message template\n            \n        Returns:\n            Mapping of experiment revisions to their results\n        \"\"\"\n        results = {}\n        for entry in self.iter_queued():\n            result = self.get_result(entry)\n            if result and result.exp_hash and result.ref_info:\n                results[entry.stash_rev] = {str(result.ref_info): result.exp_hash}\n        return results",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 20,
+      "filepath": "dvc/repo/experiments/__init__.py",
+      "old_string": "                # wait for task execution to start\n                while not self.celery_queue.proc.get(entry.stash_rev):\n                    time.sleep(1)\n                self.celery_queue.follow(entry)\n                # wait for task collection to complete\n                try:\n                    result = self.celery_queue.get_result(entry)\n                except FileNotFoundError:\n                    result = None\n                if result is None or result.exp_hash is None:\n                    name = entry.name or entry.stash_rev[:7]\n                    failed.append(name)\n                elif result.ref_info:\n                    exp_rev = self.scm.get_ref(str(result.ref_info))\n                    results[exp_rev] = result.exp_hash",
+      "new_string": "                # wait for task execution to start with timeout\n                max_retries = 60  # 1 minute timeout\n                retries = 0\n                while not self.celery_queue.proc.get(entry.stash_rev):\n                    time.sleep(1)\n                    retries += 1\n                    if retries >= max_retries:\n                        logger.warning(\n                            \"Timeout waiting for task %s to start\", entry.stash_rev\n                        )\n                        name = entry.name or entry.stash_rev[:7]\n                        failed.append(name)\n                        break\n                else:\n                    self.celery_queue.follow(entry)\n                    # wait for task collection to complete\n                    try:\n                        result = self.celery_queue.get_result(entry)\n                    except FileNotFoundError:\n                        result = None\n                    if result is None or result.exp_hash is None:\n                        name = entry.name or entry.stash_rev[:7]\n                        failed.append(name)\n                    elif result.ref_info:\n                        exp_rev = self.scm.get_ref(str(result.ref_info))\n                        results[exp_rev] = result.exp_hash",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

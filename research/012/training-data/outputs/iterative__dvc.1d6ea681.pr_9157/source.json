@@ -1,0 +1,35 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00005-of-00008.parquet",
+  "row_index": 1314,
+  "instance_id": "iterative__dvc.1d6ea681.pr_9157",
+  "repo": "iterative/dvc",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "iterative__dvc.1d6ea681.pr_9157.od544cct",
+  "messages_sha256": "4dab4ed258daaacd093e7f6fe9bed2a17fbcb07a62bf4369d795763d6d60b0cc",
+  "issue": "# Data index not properly closed when index_db_dir is None\n\n## Description\n\nI'm encountering an issue with the data index in DVC. When trying to use the data index functionality in a repository where `index_db_dir` is not set, I get an `AttributeError`.\n\n## Steps to reproduce\n\n1. Create a DVC repository without setting `index_db_dir`\n2. Try to access the data property of an Index object\n\n```python\nfrom dvc.repo import Repo\n\n# Create a repo without index_db_dir\nrepo = Repo.init()\n\n# Try to access data property of an Index\nindex = repo.index\ndata = index.data  # This raises an AttributeError\n```\n\n## Error\n\n```\nAttributeError: 'NoneType' object has no attribute 'close'\n```\n\nThe error occurs because when `index_db_dir` is None, the `data_index` property returns None, but later in the code there's an attempt to call `index.close()` in a finally block, which fails because `index` is None.\n\n## Expected behavior\n\nThe code should handle the case when `index_db_dir` is None and not try to call methods on a None object. Either the `data_index` property should return a valid object that has a `close()` method, or the code should check if the index is None before trying to close it.",
+  "actions": [
+    {
+      "source_message_index": 50,
+      "filepath": "dvc/repo/index.py",
+      "old_string": "\n        try:\n            if not loaded:\n                _load_data_from_outs(index, prefix, self.outs)\n                index.commit()\n\n            by_workspace = {}\n            by_workspace[\"repo\"] = index.view((*prefix, \"repo\"))\n            by_workspace[\"local\"] = index.view((*prefix, \"local\"))\n            for out in self.outs:\n                if not out.use_cache:\n                    continue\n                ws, key = out.index_key\n                if ws not in by_workspace:\n                    by_workspace[ws] = index.view((*prefix, ws))\n                data_index = by_workspace[ws]\n                _load_storage_from_out(data_index.storage_map, key, out)\n            return by_workspace\n        finally:\n            index.close()\n",
+      "new_string": "\n        try:\n            if not loaded:\n                _load_data_from_outs(index, prefix, self.outs)\n                index.commit()\n\n            by_workspace = {}\n            by_workspace[\"repo\"] = index.view((*prefix, \"repo\"))\n            by_workspace[\"local\"] = index.view((*prefix, \"local\"))\n            for out in self.outs:\n                if not out.use_cache:\n                    continue\n                ws, key = out.index_key\n                if ws not in by_workspace:\n                    by_workspace[ws] = index.view((*prefix, ws))\n                data_index = by_workspace[ws]\n                _load_storage_from_out(data_index.storage_map, key, out)\n            return by_workspace\n        finally:\n            # Only try to close the index if it's not None\n            if index is not None:\n                index.close()\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 54,
+      "filepath": "dvc/repo/__init__.py",
+      "old_string": "\n    @property\n    def data_index(self) -> Optional[\"DataIndex\"]:\n        from dvc_data.index import DataIndex\n        if not self.index_db_dir:\n            return None\n        if self._data_index is None:\n            index_dir = os.path.join(self.index_db_dir, \"index\", \"data\")\n            os.makedirs(index_dir, exist_ok=True)\n            self._data_index = DataIndex.open(os.path.join(index_dir, \"db.db\"))\n        return self._data_index\n",
+      "new_string": "\n    @property\n    def index_db_dir(self) -> Optional[str]:\n        \"\"\"Directory where index database files are stored.\"\"\"\n        return getattr(self, \"site_cache_dir\", None)\n\n    @property\n    def data_index(self) -> Optional[\"DataIndex\"]:\n        from dvc_data.index import DataIndex\n        if not self.index_db_dir:\n            return None\n        if self._data_index is None:\n            index_dir = os.path.join(self.index_db_dir, \"index\", \"data\")\n            os.makedirs(index_dir, exist_ok=True)\n            self._data_index = DataIndex.open(os.path.join(index_dir, \"db.db\"))\n        return self._data_index\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 62,
+      "filepath": "dvc/repo/__init__.py",
+      "old_string": "\n    def drop_data_index(self) -> None:\n        for key in self.data_index.ls((), detail=False):\n            try:\n                self.data_index.delete_node(key)\n            except KeyError:\n                pass\n        self.data_index.commit()\n        self.data_index.close()\n        self._reset()\n",
+      "new_string": "\n    def drop_data_index(self) -> None:\n        if self.data_index is None:\n            return\n        \n        for key in self.data_index.ls((), detail=False):\n            try:\n                self.data_index.delete_node(key)\n            except KeyError:\n                pass\n        self.data_index.commit()\n        self.data_index.close()\n        self._reset()\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

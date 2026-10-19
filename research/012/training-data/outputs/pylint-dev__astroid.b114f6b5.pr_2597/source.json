@@ -1,0 +1,21 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 1728,
+  "instance_id": "pylint-dev__astroid.b114f6b5.pr_2597",
+  "repo": "pylint-dev/astroid",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "pylint-dev__astroid.b114f6b5.pr_2597.y1wve1wy",
+  "messages_sha256": "584a7ec479063d87348c415e25f402d84b049c4e7ede22c2ada52ed778c3e745",
+  "issue": "# Empty list multiplication with large integer doesn't work correctly\n\n## Description\n\nI found a bug when multiplying an empty list by a very large integer. The operation should always return an empty list, but it seems to be causing unexpected behavior.\n\n## Steps to Reproduce\n\n```python\n# This should return an empty list\nresult = [] * 1163845194457646539560\nprint(result)  # Expected: []\n```\n\nWhen I try to multiply an empty list by a very large integer, I'm getting unexpected behavior. The operation should always return an empty list regardless of the multiplier size, but it seems the code is not handling this edge case correctly.\n\n## Expected Results\n\nMultiplying an empty list by any integer (including very large ones) should always return an empty list.\n\n```python\n[] * 5  # Returns []\n[] * 0  # Returns []\n[] * -1  # Returns []\n[] * 1163845194457646539560  # Should return []\n```\n\n## Actual Results\n\nWhen multiplying an empty list by a very large integer, the operation doesn't correctly return an empty list. It seems the code is not properly handling the case where the list is empty but the multiplier is extremely large.\n\n## Environment\n- Python 3.10\n- astroid version: latest\n\nThis behavior is inconsistent with Python's standard behavior where multiplying an empty list by any integer always returns an empty list.",
+  "actions": [
+    {
+      "source_message_index": 62,
+      "filepath": "astroid/protocols.py",
+      "old_string": "def _multiply_seq_by_int(\n    self: _TupleListNodeT,\n    opnode: nodes.AugAssign | nodes.BinOp,\n    value: int,\n    context: InferenceContext,\n) -> _TupleListNodeT:\n    node = self.__class__(parent=opnode)\n    if value <= 0:\n        node.elts = []\n        return node\n    if len(self.elts) * value > 1e8:\n        node.elts = [util.Uninferable]\n        return node\n    filtered_elts = (\n        util.safe_infer(elt, context) or util.Uninferable\n        for elt in self.elts\n        if not isinstance(elt, util.UninferableBase)\n    )\n    node.elts = list(filtered_elts) * value\n    return node",
+      "new_string": "def _multiply_seq_by_int(\n    self: _TupleListNodeT,\n    opnode: nodes.AugAssign | nodes.BinOp,\n    value: int,\n    context: InferenceContext,\n) -> _TupleListNodeT:\n    node = self.__class__(parent=opnode)\n    if value <= 0 or not self.elts:\n        # Return empty list for non-positive multiplier or empty list\n        node.elts = []\n        return node\n    if len(self.elts) * value > 1e8:\n        node.elts = [util.Uninferable]\n        return node\n    filtered_elts = (\n        util.safe_infer(elt, context) or util.Uninferable\n        for elt in self.elts\n        if not isinstance(elt, util.UninferableBase)\n    )\n    try:\n        node.elts = list(filtered_elts) * value\n    except (OverflowError, MemoryError):\n        # Handle case where value is too large to be used as a multiplier\n        # For an empty list, this should still be an empty list\n        if not self.elts:\n            node.elts = []\n        else:\n            # For non-empty lists with very large multipliers, mark as uninferable\n            node.elts = [util.Uninferable]\n    return node",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

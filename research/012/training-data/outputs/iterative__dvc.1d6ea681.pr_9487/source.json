@@ -1,0 +1,42 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 1100,
+  "instance_id": "iterative__dvc.1d6ea681.pr_9487",
+  "repo": "iterative/dvc",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "iterative__dvc.1d6ea681.pr_9487.kgbhgj6h",
+  "messages_sha256": "b1bd9efd45ffe6bcffae788d2f5e5fa77053b6d097b79355c91cd8b62c10c7d7",
+  "issue": "# `--run` flag removed from `dvc stage add` command\n\nI noticed that the `--run` flag has been removed from the `dvc stage add` command. This flag was previously used to execute the stage immediately after generating it.\n\n```py\n>>> from dvc.repo import Repo\n>>> repo = Repo()\n>>> # Create a stage file\n>>> stage = repo.stage.add(cmd=\"echo hello\", deps=[], outs=[\"output.txt\"], name=\"hello\")\n>>> # Try to run it immediately\n>>> # This used to work with --run flag\n```\n\nWhen trying to run a stage immediately after creating it, there's no longer a way to do this in a single command. Previously, this was possible with:\n\n```\n$ dvc stage add --name hello --deps data.txt --outs output.txt --run \"python script.py\"\n```\n\nNow it requires two separate commands:\n```\n$ dvc stage add --name hello --deps data.txt --outs output.txt \"python script.py\"\n$ dvc repro hello\n```\n\nThis also affects the behavior of the stage creation process, as the stage is no longer executed immediately after being created when using the `--run` flag.\n\n<END WRITING>",
+  "actions": [
+    {
+      "source_message_index": 28,
+      "filepath": "dvc/commands/stage.py",
+      "old_string": "\nclass CmdStageAdd(CmdBase):\n    def run(self):\n        kwargs = vars(self.args)\n        kwargs.update(\n            {\n                \"cmd\": parse_cmd(kwargs.pop(\"command\")),\n                \"params\": parse_params(self.args.params),\n            }\n        )\n        self.repo.stage.add(**kwargs)\n\n        return 0\n",
+      "new_string": "\nclass CmdStageAdd(CmdBase):\n    def run(self):\n        kwargs = vars(self.args)\n        run_stage = kwargs.pop(\"run\", False)\n        kwargs.update(\n            {\n                \"cmd\": parse_cmd(kwargs.pop(\"command\")),\n                \"params\": parse_params(self.args.params),\n            }\n        )\n        stage = self.repo.stage.add(**kwargs)\n        \n        if run_stage:\n            stage.run()\n            stage.dump(update_pipeline=False)\n\n        return 0\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 30,
+      "filepath": "dvc/commands/stage.py",
+      "old_string": "\n    stage_add_parser.add_argument(\n        \"-n\", \"--name\", help=\"Name of the stage to add\", required=True\n    )\n    _add_common_args(stage_add_parser)\n    stage_add_parser.set_defaults(func=CmdStageAdd)\n",
+      "new_string": "\n    stage_add_parser.add_argument(\n        \"-n\", \"--name\", help=\"Name of the stage to add\", required=True\n    )\n    stage_add_parser.add_argument(\n        \"--run\",\n        action=\"store_true\",\n        default=False,\n        help=\"Execute the stage after adding\",\n    )\n    _add_common_args(stage_add_parser)\n    stage_add_parser.set_defaults(func=CmdStageAdd)\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 32,
+      "filepath": "dvc/repo/stage.py",
+      "old_string": "\n    @locked\n    def add(\n        self,\n        single_stage: bool = False,\n        fname: Optional[str] = None,\n        validate: bool = True,\n        force: bool = False,\n        update_lock: bool = False,\n        **stage_data,\n    ):\n        stage = self.create(\n            single_stage=single_stage,\n            fname=fname,\n            validate=validate,\n            force=force,\n            **stage_data,\n        )\n        with self.repo.scm_context:\n            stage.dump(update_lock=update_lock)\n            try:\n                stage.ignore_outs()\n            except FileNotFoundError as exc:\n                ui.warn(\n                    f\"Could not create .gitignore entry in {exc.filename}.\"\n                    \" DVC will attempt to create .gitignore entry again when\"\n                    \" the stage is run.\"\n                )\n\n        return stage\n",
+      "new_string": "\n    @locked\n    def add(\n        self,\n        single_stage: bool = False,\n        fname: Optional[str] = None,\n        validate: bool = True,\n        force: bool = False,\n        update_lock: bool = False,\n        run: bool = False,\n        **stage_data,\n    ):\n        stage = self.create(\n            single_stage=single_stage,\n            fname=fname,\n            validate=validate,\n            force=force,\n            **stage_data,\n        )\n        with self.repo.scm_context:\n            stage.dump(update_lock=update_lock)\n            try:\n                stage.ignore_outs()\n            except FileNotFoundError as exc:\n                ui.warn(\n                    f\"Could not create .gitignore entry in {exc.filename}.\"\n                    \" DVC will attempt to create .gitignore entry again when\"\n                    \" the stage is run.\"\n                )\n        \n        if run:\n            stage.run()\n            stage.dump(update_pipeline=False)\n\n        return stage\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 44,
+      "filepath": "dvc/commands/stage.py",
+      "old_string": "\nimport argparse\nimport logging\nfrom collections.abc import Iterable\nfrom itertools import chain, filterfalse\nfrom typing import TYPE_CHECKING\n",
+      "new_string": "\nimport argparse\nimport logging\nfrom collections.abc import Iterable\nfrom contextlib import contextmanager\nfrom itertools import chain, filterfalse\nfrom typing import TYPE_CHECKING\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

@@ -1,0 +1,21 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00001-of-00008.parquet",
+  "row_index": 2622,
+  "instance_id": "pydantic__pydantic.acb0f10f.pr_7046",
+  "repo": "pydantic/pydantic",
+  "source_resolved": true,
+  "teacher_source": "claude-3-5-sonnet-20241022",
+  "traj_id": "pydantic__pydantic.acb0f10f.pr_7046.1ewbxh2m",
+  "messages_sha256": "94d39f7aab02f5014e29a20b0bffc67d39a5015d2e590653e84f5a26c8e7d0a5",
+  "issue": "@validate_call fails on async fn return value\n### Initial Checks\n\n- [X] I confirm that I'm using Pydantic V2\n\n### Description\n\n`@validate_call` with `validate_return=True` chokes on async functions, with a validation error on type mismatch (coroutine vs whatever specified type was).\n\n### Example Code\n\n```Python\nimport asyncio\r\nfrom pydantic import validate_call\r\n\r\n\r\n@validate_call(validate_return=True)\r\nasync def fn(x: int) -> int:\r\n    return x\r\n\r\n\r\nloop = asyncio.get_event_loop()\r\n\r\n# Expected - no validation error\r\n# Current - validation error on return type\r\n# Input should be a valid integer [type=int_type, input_value=<coroutine object check at 0x1074bdc40>, input_type=coroutine]\r\n\r\nloop.run_until_complete(fn(0))\n```\n\n\n### Python, Pydantic & OS Version\n\n```Text\npydantic version: 2.1.0\r\n        pydantic-core version: 2.4.0\r\n          pydantic-core build: profile=release pgo=false mimalloc=true\r\n                 install path: ./.venv/lib/python3.10/site-packages/pydantic\r\n               python version: 3.10.12 (main, Jul  3 2023, 04:12:54) [Clang 14.0.3 (clang-1403.0.22.14.1)]\r\n                     platform: macOS-13.4.1-arm64-arm-64bit\r\n     optional deps. installed: ['typing-extensions']\n```\n\n\nSelected Assignee: @adriangb",
+  "actions": [
+    {
+      "source_message_index": 20,
+      "filepath": "pydantic/_internal/_validate_call.py",
+      "old_string": "    def __call__(self, *args: Any, **kwargs: Any) -> Any:\n        res = self.__pydantic_validator__.validate_python(pydantic_core.ArgsKwargs(args, kwargs))\n        if self.__return_pydantic_validator__:\n            return self.__return_pydantic_validator__.validate_python(res)\n        return res",
+      "new_string": "    def __call__(self, *args: Any, **kwargs: Any) -> Any:\n        res = self.__pydantic_validator__.validate_python(pydantic_core.ArgsKwargs(args, kwargs))\n        if self.__return_pydantic_validator__:\n            if isinstance(self.__return_pydantic_validator__, Callable) and not hasattr(self.__return_pydantic_validator__, 'validate_python'):\n                # This is an async wrapper function\n                return self.__return_pydantic_validator__(res)\n            else:\n                # This is a regular validator\n                return self.__return_pydantic_validator__.validate_python(res)\n        return res",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

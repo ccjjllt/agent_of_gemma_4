@@ -1,0 +1,42 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 1126,
+  "instance_id": "pylint-dev__astroid.b114f6b5.pr_2254",
+  "repo": "pylint-dev/astroid",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "pylint-dev__astroid.b114f6b5.pr_2254.d7nh5p8f",
+  "messages_sha256": "8f87b564ef93e6bf07df246d2c4d6b1a6da4b801d346d4efb08e073912e06004",
+  "issue": "# TypeVar with invalid name causes silent failure\n\nI'm trying to use TypeVar with a name that contains a dot, but it's failing silently. This seems like a regression.\n\n## Description\n\nWhen creating a TypeVar with a name that contains a dot, like `'My.Type'`, the code fails silently instead of raising a proper error. This makes debugging difficult as there's no indication of what went wrong.\n\n## Steps to reproduce\n\n```python\nfrom typing import TypeVar\n\n# This fails silently\nTypeVar('My.Type')\n\n# Regular TypeVar works fine\nTypeVar('MyType')\n```\n\nWhen using a name with a dot, the code doesn't raise any error but the TypeVar isn't created properly. This behavior is unexpected since either it should work or raise a clear error message about invalid names.\n\nI suspect this is related to how the name is processed when creating the TypeVar. The dot in the name is likely causing issues when it's used to generate the class definition.",
+  "actions": [
+    {
+      "source_message_index": 18,
+      "filepath": "astroid/brain/brain_typing.py",
+      "old_string": "\ndef infer_typing_typevar_or_newtype(node, context_itton=None):\n    \"\"\"Infer a typing.TypeVar(...) or typing.NewType(...) call.\"\"\"\n    try:\n        func = next(node.func.infer(context=context_itton))\n    except (InferenceError, StopIteration) as exc:\n        raise UseInferenceDefault from exc\n\n    if func.qname() not in TYPING_TYPEVARS_QUALIFIED:\n        raise UseInferenceDefault\n    if not node.args:\n        raise UseInferenceDefault\n    # Cannot infer from a dynamic class name (f-string)\n    if isinstance(node.args[0], JoinedStr):\n        raise UseInferenceDefault\n\n    typename = node.args[0].as_string().strip(\"'\")\n    node = extract_node(TYPING_TYPE_TEMPLATE.format(typename))\n    return node.infer(context=context_itton)\n",
+      "new_string": "\ndef infer_typing_typevar_or_newtype(node, context_itton=None):\n    \"\"\"Infer a typing.TypeVar(...) or typing.NewType(...) call.\"\"\"\n    try:\n        func = next(node.func.infer(context=context_itton))\n    except (InferenceError, StopIteration) as exc:\n        raise UseInferenceDefault from exc\n\n    if func.qname() not in TYPING_TYPEVARS_QUALIFIED:\n        raise UseInferenceDefault\n    if not node.args:\n        raise UseInferenceDefault\n    # Cannot infer from a dynamic class name (f-string)\n    if isinstance(node.args[0], JoinedStr):\n        raise UseInferenceDefault\n\n    typename = node.args[0].as_string().strip(\"'\")\n    \n    # Check if the typename contains a dot, which is invalid for TypeVar names\n    if '.' in typename and func.qname() in {\"typing.TypeVar\", \"typing_extensions.TypeVar\"}:\n        raise AstroidSyntaxError(f\"TypeVar name cannot contain dots: {typename}\")\n    \n    node = extract_node(TYPING_TYPE_TEMPLATE.format(typename))\n    return node.infer(context=context_itton)\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 26,
+      "filepath": "astroid/brain/brain_typing.py",
+      "old_string": "\n    typename = node.args[0].as_string().strip(\"'\")\n    \n    # Check if the typename contains a dot, which is invalid for TypeVar names\n    if '.' in typename and func.qname() in {\"typing.TypeVar\", \"typing_extensions.TypeVar\"}:\n        raise AstroidSyntaxError(f\"TypeVar name cannot contain dots: {typename}\")\n    \n    node = extract_node(TYPING_TYPE_TEMPLATE.format(typename))\n",
+      "new_string": "\n    typename = node.args[0].as_string().strip(\"'\")\n    \n    # Check if the typename contains a dot, which is invalid for TypeVar names\n    if '.' in typename and func.qname() in {\"typing.TypeVar\", \"typing_extensions.TypeVar\"}:\n        raise InferenceError(f\"TypeVar name cannot contain dots: {typename}\")\n    \n    node = extract_node(TYPING_TYPE_TEMPLATE.format(typename))\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 30,
+      "filepath": "astroid/brain/brain_typing.py",
+      "old_string": "\n    typename = node.args[0].as_string().strip(\"'\")\n    \n    # Check if the typename contains a dot, which is invalid for TypeVar names\n    if '.' in typename and func.qname() in {\"typing.TypeVar\", \"typing_extensions.TypeVar\"}:\n        raise InferenceError(f\"TypeVar name cannot contain dots: {typename}\")\n    \n    node = extract_node(TYPING_TYPE_TEMPLATE.format(typename))\n",
+      "new_string": "\n    typename = node.args[0].as_string().strip(\"'\")\n    \n    # Check if the typename contains invalid characters for TypeVar names\n    if func.qname() in {\"typing.TypeVar\", \"typing_extensions.TypeVar\"}:\n        # TypeVar names should follow the rules for valid Python identifiers\n        if not typename.isidentifier():\n            raise InferenceError(f\"TypeVar name must be a valid identifier: {typename}\")\n    \n    node = extract_node(TYPING_TYPE_TEMPLATE.format(typename))\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 44,
+      "filepath": "astroid/brain/brain_typing.py",
+      "old_string": "\n    typename = node.args[0].as_string().strip(\"'\")\n    \n    # Check if the typename contains invalid characters for TypeVar names\n    if func.qname() in {\"typing.TypeVar\", \"typing_extensions.TypeVar\"}:\n        # TypeVar names should follow the rules for valid Python identifiers\n        if not typename.isidentifier():\n            raise InferenceError(f\"TypeVar name must be a valid identifier: {typename}\")\n    \n    node = extract_node(TYPING_TYPE_TEMPLATE.format(typename))\n",
+      "new_string": "\n    typename = node.args[0].as_string().strip(\"'\")\n    \n    # Check if the typename contains invalid characters\n    if func.qname() in {\"typing.TypeVar\", \"typing_extensions.TypeVar\"}:\n        # TypeVar names should follow the rules for valid Python identifiers\n        if not typename.isidentifier():\n            raise InferenceError(f\"TypeVar name must be a valid identifier: {typename}\")\n    elif func.qname() == \"typing.NewType\":\n        # NewType names should also be valid identifiers to avoid unexpected behavior\n        if not typename.isidentifier():\n            raise InferenceError(f\"NewType name should be a valid identifier: {typename}\")\n    \n    node = extract_node(TYPING_TYPE_TEMPLATE.format(typename))\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

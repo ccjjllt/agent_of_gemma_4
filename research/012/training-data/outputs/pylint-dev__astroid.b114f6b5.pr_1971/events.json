@@ -1,0 +1,83 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "astroid/brain/brain_namedtuple_enum.py",
+      "start_line": 165,
+      "end_line": 202
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "astroid/brain/brain_namedtuple_enum.py",
+      "content": "        class_node.instance_attrs[attr] = [fake_node]\n    return class_node, name, attributes\n\n\ndef _has_namedtuple_base(node):\n    \"\"\"Predicate for class inference tip.\n\n    :type node: ClassDef\n    :rtype: bool\n    \"\"\"\n    return set(node.basenames) & TYPING_NAMEDTUPLE_BASENAMES\n\n\ndef _looks_like(node, name) -> bool:\n    func = node.func\n    if isinstance(func, nodes.Attribute):\n        return func.attrname == name\n    if isinstance(func, nodes.Name):\n        return func.name == name\n    return False\n\n\n_looks_like_namedtuple = functools.partial(_looks_like, name=\"namedtuple\")\n_looks_like_enum = functools.partial(_looks_like, name=\"Enum\")\n_looks_like_typing_namedtuple = functools.partial(_looks_like, name=\"NamedTuple\")\n\n\ndef infer_named_tuple(\n    node: nodes.Call, context: InferenceContext | None = None\n) -> Iterator[nodes.ClassDef]:\n    \"\"\"Specific inference function for namedtuple Call node.\"\"\"\n    tuple_base: nodes.Name = _extract_single_node(\"tuple\")\n    class_node, name, attributes = infer_func_form(\n        node, tuple_base, parent=SYNTHETIC_ROOT, context=context\n    )\n\n    call_site = arguments.CallSite.from_call(node, context=context)\n    func = util.safe_infer(",
+      "start_line": 165,
+      "end_line": 202,
+      "total_lines": 663,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "astroid/brain/brain_namedtuple_enum.py",
+      "old_string": "\ndef _looks_like(node, name) -> bool:\n    func = node.func\n    if isinstance(func, nodes.Attribute):\n        return func.attrname == name\n    if isinstance(func, nodes.Name):\n        return func.name == name\n    return False\n\n\n_looks_like_namedtuple = functools.partial(_looks_like, name=\"namedtuple\")\n_looks_like_enum = functools.partial(_looks_like, name=\"Enum\")\n_looks_like_typing_namedtuple = functools.partial(_looks_like, name=\"NamedTuple\")\n",
+      "new_string": "\ndef _looks_like(node, name) -> bool:\n    func = node.func\n    if isinstance(func, nodes.Attribute):\n        return func.attrname == name\n    if isinstance(func, nodes.Name):\n        return func.name == name\n    return False\n\n\ndef _looks_like_enum(node) -> bool:\n    \"\"\"Check if the node looks like an enum.Enum call.\n    \n    This function checks if the node is a call to enum.Enum, not just any class named Enum.\n    \"\"\"\n    func = node.func\n    if isinstance(func, nodes.Attribute):\n        # Check if it's something like enum.Enum or module.Enum\n        if func.attrname != \"Enum\":\n            return False\n        # Check if the expression is the name 'enum'\n        expr = func.expr\n        if isinstance(expr, nodes.Name) and expr.name == \"enum\":\n            return True\n        return False\n    if isinstance(func, nodes.Name) and func.name == \"Enum\":\n        # For a simple Name node, we need to check if it's referring to enum.Enum\n        # We can check the imports in the scope\n        scope = node.scope()\n        for import_node in scope.nodes_of_class(nodes.ImportFrom):\n            if import_node.modname == \"enum\" and \"Enum\" in import_node.names:\n                # Check if Enum is imported from enum module\n                for name, alias in import_node.names:\n                    if name == \"Enum\" and (not alias or alias == \"Enum\"):\n                        return True\n        return False\n    return False\n\n\n_looks_like_namedtuple = functools.partial(_looks_like, name=\"namedtuple\")\n_looks_like_typing_namedtuple = functools.partial(_looks_like, name=\"NamedTuple\")\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "astroid/brain/brain_namedtuple_enum.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/astroid/brain/brain_namedtuple_enum.py\n+++ b/astroid/brain/brain_namedtuple_enum.py\n@@ -184,8 +184,36 @@\n     return False\n \n \n+def _looks_like_enum(node) -> bool:\n+    \"\"\"Check if the node looks like an enum.Enum call.\n+    \n+    This function checks if the node is a call to enum.Enum, not just any class named Enum.\n+    \"\"\"\n+    func = node.func\n+    if isinstance(func, nodes.Attribute):\n+        # Check if it's something like enum.Enum or module.Enum\n+        if func.attrname != \"Enum\":\n+            return False\n+        # Check if the expression is the name 'enum'\n+        expr = func.expr\n+        if isinstance(expr, nodes.Name) and expr.name == \"enum\":\n+            return True\n+        return False\n+    if isinstance(func, nodes.Name) and func.name == \"Enum\":\n+        # For a simple Name node, we need to check if it's referring to enum.Enum\n+        # We can check the imports in the scope\n+        scope = node.scope()\n+        for import_node in scope.nodes_of_class(nodes.ImportFrom):\n+            if import_node.modname == \"enum\" and \"Enum\" in import_node.names:\n+                # Check if Enum is imported from enum module\n+                for name, alias in import_node.names:\n+                    if name == \"Enum\" and (not alias or alias == \"Enum\"):\n+                        return True\n+        return False\n+    return False\n+\n+\n _looks_like_namedtuple = functools.partial(_looks_like, name=\"namedtuple\")\n-_looks_like_enum = functools.partial(_looks_like, name=\"Enum\")\n _looks_like_typing_namedtuple = functools.partial(_looks_like, name=\"NamedTuple\")\n \n \n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "astroid/brain/brain_namedtuple_enum.py",
+      "start_line": 174,
+      "end_line": 226
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "astroid/brain/brain_namedtuple_enum.py",
+      "content": "    \"\"\"\n    return set(node.basenames) & TYPING_NAMEDTUPLE_BASENAMES\n\n\ndef _looks_like(node, name) -> bool:\n    func = node.func\n    if isinstance(func, nodes.Attribute):\n        return func.attrname == name\n    if isinstance(func, nodes.Name):\n        return func.name == name\n    return False\n\n\ndef _looks_like_enum(node) -> bool:\n    \"\"\"Check if the node looks like an enum.Enum call.\n    \n    This function checks if the node is a call to enum.Enum, not just any class named Enum.\n    \"\"\"\n    func = node.func\n    if isinstance(func, nodes.Attribute):\n        # Check if it's something like enum.Enum or module.Enum\n        if func.attrname != \"Enum\":\n            return False\n        # Check if the expression is the name 'enum'\n        expr = func.expr\n        if isinstance(expr, nodes.Name) and expr.name == \"enum\":\n            return True\n        return False\n    if isinstance(func, nodes.Name) and func.name == \"Enum\":\n        # For a simple Name node, we need to check if it's referring to enum.Enum\n        # We can check the imports in the scope\n        scope = node.scope()\n        for import_node in scope.nodes_of_class(nodes.ImportFrom):\n            if import_node.modname == \"enum\" and \"Enum\" in import_node.names:\n                # Check if Enum is imported from enum module\n                for name, alias in import_node.names:\n                    if name == \"Enum\" and (not alias or alias == \"Enum\"):\n                        return True\n        return False\n    return False\n\n\n_looks_like_namedtuple = functools.partial(_looks_like, name=\"namedtuple\")\n_looks_like_typing_namedtuple = functools.partial(_looks_like, name=\"NamedTuple\")\n\n\ndef infer_named_tuple(\n    node: nodes.Call, context: InferenceContext | None = None\n) -> Iterator[nodes.ClassDef]:\n    \"\"\"Specific inference function for namedtuple Call node.\"\"\"\n    tuple_base: nodes.Name = _extract_single_node(\"tuple\")\n    class_node, name, attributes = infer_func_form(\n        node, tuple_base, parent=SYNTHETIC_ROOT, context=context",
+      "start_line": 174,
+      "end_line": 226,
+      "total_lines": 691,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "astroid/brain/brain_namedtuple_enum.py",
+      "old_string": "\ndef _looks_like_enum(node) -> bool:\n    \"\"\"Check if the node looks like an enum.Enum call.\n    \n    This function checks if the node is a call to enum.Enum, not just any class named Enum.\n    \"\"\"\n    func = node.func\n    if isinstance(func, nodes.Attribute):\n        # Check if it's something like enum.Enum or module.Enum\n        if func.attrname != \"Enum\":\n            return False\n        # Check if the expression is the name 'enum'\n        expr = func.expr\n        if isinstance(expr, nodes.Name) and expr.name == \"enum\":\n            return True\n        return False\n    if isinstance(func, nodes.Name) and func.name == \"Enum\":\n        # For a simple Name node, we need to check if it's referring to enum.Enum\n        # We can check the imports in the scope\n        scope = node.scope()\n        for import_node in scope.nodes_of_class(nodes.ImportFrom):\n            if import_node.modname == \"enum\" and \"Enum\" in import_node.names:\n                # Check if Enum is imported from enum module\n                for name, alias in import_node.names:\n                    if name == \"Enum\" and (not alias or alias == \"Enum\"):\n                        return True\n        return False\n    return False\n",
+      "new_string": "\ndef _looks_like_enum(node) -> bool:\n    \"\"\"Check if the node looks like an enum.Enum call.\n    \n    This function checks if the node is a call to enum.Enum, not just any class named Enum.\n    \"\"\"\n    func = node.func\n    if isinstance(func, nodes.Attribute):\n        # Check if it's something like enum.Enum or module.Enum\n        if func.attrname != \"Enum\":\n            return False\n        # Check if the expression is the name 'enum'\n        expr = func.expr\n        if isinstance(expr, nodes.Name) and expr.name == \"enum\":\n            return True\n        return False\n    if isinstance(func, nodes.Name) and func.name == \"Enum\":\n        # For a simple Name node, we need to check if it's referring to enum.Enum\n        # We can check the imports in the scope\n        scope = node.scope()\n        \n        # Check for 'from enum import Enum'\n        for import_node in scope.nodes_of_class(nodes.ImportFrom):\n            if import_node.modname == \"enum\":\n                for name, alias in import_node.names:\n                    if name == \"Enum\" and (not alias or alias == \"Enum\"):\n                        return True\n        \n        # Check for 'import enum' and then using enum.Enum\n        for import_node in scope.nodes_of_class(nodes.Import):\n            for name, alias in import_node.names:\n                if name == \"enum\" and (not alias or alias == \"enum\"):\n                    # If 'enum' is imported, we need to check if Enum is used as enum.Enum\n                    # This is harder to determine statically, so we'll be conservative\n                    # and assume it's not the built-in enum.Enum\n                    return False\n        \n        return False\n    return False\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "astroid/brain/brain_namedtuple_enum.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/astroid/brain/brain_namedtuple_enum.py\n+++ b/astroid/brain/brain_namedtuple_enum.py\n@@ -203,12 +203,23 @@\n         # For a simple Name node, we need to check if it's referring to enum.Enum\n         # We can check the imports in the scope\n         scope = node.scope()\n+        \n+        # Check for 'from enum import Enum'\n         for import_node in scope.nodes_of_class(nodes.ImportFrom):\n-            if import_node.modname == \"enum\" and \"Enum\" in import_node.names:\n-                # Check if Enum is imported from enum module\n+            if import_node.modname == \"enum\":\n                 for name, alias in import_node.names:\n                     if name == \"Enum\" and (not alias or alias == \"Enum\"):\n                         return True\n+        \n+        # Check for 'import enum' and then using enum.Enum\n+        for import_node in scope.nodes_of_class(nodes.Import):\n+            for name, alias in import_node.names:\n+                if name == \"enum\" and (not alias or alias == \"enum\"):\n+                    # If 'enum' is imported, we need to check if Enum is used as enum.Enum\n+                    # This is harder to determine statically, so we'll be conservative\n+                    # and assume it's not the built-in enum.Enum\n+                    return False\n+        \n         return False\n     return False\n \n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "get_status",
+    "arguments": {},
+    "response": {
+      "status": "ok",
+      "tool_calls_used": 4,
+      "patch_submitted": false,
+      "patch_size": 0,
+      "tool_calls_remaining": 96,
+      "max_tool_calls": 100,
+      "command_timeout_seconds": 30
+    }
+  }
+]

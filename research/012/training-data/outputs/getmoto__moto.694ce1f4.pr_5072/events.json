@@ -1,0 +1,121 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/organizations/models.py",
+      "start_line": 77,
+      "end_line": 101
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/organizations/models.py",
+      "content": "\nclass FakeAccount(BaseModel):\n    def __init__(self, organization: FakeOrganization, **kwargs: Any):\n        self.type = \"ACCOUNT\"\n        self.region = organization.region\n        self.organization_id = organization.id\n        self.master_account_id = organization.master_account_id\n        self.create_account_status_id = utils.make_random_create_account_status_id()\n        self.id = utils.make_random_account_id()\n        self.name = kwargs[\"AccountName\"]\n        self.email = kwargs[\"Email\"]\n        self.create_time = utcnow()\n        self.status = \"ACTIVE\"\n        self.joined_method = \"CREATED\"\n        self.parent_id = organization.root_id\n        self.attached_policies: List[FakePolicy] = []\n        self.tags = {tag[\"Key\"]: tag[\"Value\"] for tag in kwargs.get(\"Tags\", [])}\n\n        role_name = kwargs.get(\"RoleName\", \"OrganizationAccountAccessRole\")\n\n        from moto.iam import iam_backends\n        from moto.iam.exceptions import EntityAlreadyExists\n\n        trust_policy = {\n            \"Version\": \"2012-10-17\",",
+      "start_line": 77,
+      "end_line": 101,
+      "total_lines": 1059,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/organizations/models.py",
+      "old_string": "        self.status = \"ACTIVE\"",
+      "new_string": "        self.status = \"ACTIVE\"  # Can be ACTIVE, PENDING_CLOSURE, or SUSPENDED",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/organizations/models.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/organizations/models.py\n+++ b/moto/organizations/models.py\n@@ -86,7 +86,7 @@\n         self.name = kwargs[\"AccountName\"]\n         self.email = kwargs[\"Email\"]\n         self.create_time = utcnow()\n-        self.status = \"ACTIVE\"\n+        self.status = \"ACTIVE\"  # Can be ACTIVE, PENDING_CLOSURE, or SUSPENDED\n         self.joined_method = \"CREATED\"\n         self.parent_id = organization.root_id\n         self.attached_policies: List[FakePolicy] = []\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/organizations/models.py",
+      "start_line": 556,
+      "end_line": 593
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/organizations/models.py",
+      "content": "        if self.org is None:\n            raise AWSOrganizationsNotInUseException\n\n        new_account = FakeAccount(self.org, **kwargs)  # type: ignore\n        self.accounts.append(new_account)\n        self.attach_policy(PolicyId=utils.DEFAULT_POLICY_ID, TargetId=new_account.id)\n        organizations_backends.master_accounts[new_account.id] = (\n            self.account_id,\n            self.partition,\n        )\n        return new_account.create_account_status\n\n    def close_account(self, **kwargs: Any) -> None:\n        if self.org is None:\n            raise AWSOrganizationsNotInUseException\n\n        for account_index in range(len(self.accounts)):\n            if kwargs[\"AccountId\"] == self.accounts[account_index].id:\n                closed_account_status = self.accounts[\n                    account_index\n                ].close_account_status\n                del self.accounts[account_index]\n                return closed_account_status\n\n        organizations_backends.master_accounts.pop(kwargs[\"AccountId\"], None)\n        raise AccountNotFoundException\n\n    def get_account_by_id(self, account_id: str) -> FakeAccount:\n        account = next(\n            (account for account in self.accounts if account.id == account_id), None\n        )\n        if account is None:\n            raise AccountNotFoundException\n        return account\n\n    def get_account_by_attr(self, attr: str, value: Any) -> FakeAccount:\n        account = next(\n            (",
+      "start_line": 556,
+      "end_line": 593,
+      "total_lines": 1059,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/organizations/models.py",
+      "old_string": "    def close_account(self, **kwargs: Any) -> None:\n        if self.org is None:\n            raise AWSOrganizationsNotInUseException\n\n        for account_index in range(len(self.accounts)):\n            if kwargs[\"AccountId\"] == self.accounts[account_index].id:\n                closed_account_status = self.accounts[\n                    account_index\n                ].close_account_status\n                del self.accounts[account_index]\n                return closed_account_status\n\n        organizations_backends.master_accounts.pop(kwargs[\"AccountId\"], None)\n        raise AccountNotFoundException",
+      "new_string": "    def close_account(self, **kwargs: Any) -> None:\n        \"\"\"Close an account in the organization.\n        \n        The account will first enter PENDING_CLOSURE state and then transition to SUSPENDED.\n        According to AWS docs, this API returns an empty response.\n        \"\"\"\n        if self.org is None:\n            raise AWSOrganizationsNotInUseException\n\n        for account in self.accounts:\n            if kwargs[\"AccountId\"] == account.id:\n                if account.status == \"SUSPENDED\":\n                    raise AccountAlreadyClosedException\n                account.status = \"PENDING_CLOSURE\"\n                # In a real implementation we would start an async process here\n                # For now, we'll immediately transition to SUSPENDED\n                account.status = \"SUSPENDED\"\n                return None\n\n        organizations_backends.master_accounts.pop(kwargs[\"AccountId\"], None)\n        raise AccountNotFoundException",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/organizations/models.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/organizations/models.py\n+++ b/moto/organizations/models.py\n@@ -566,16 +566,23 @@\n         return new_account.create_account_status\n \n     def close_account(self, **kwargs: Any) -> None:\n+        \"\"\"Close an account in the organization.\n+        \n+        The account will first enter PENDING_CLOSURE state and then transition to SUSPENDED.\n+        According to AWS docs, this API returns an empty response.\n+        \"\"\"\n         if self.org is None:\n             raise AWSOrganizationsNotInUseException\n \n-        for account_index in range(len(self.accounts)):\n-            if kwargs[\"AccountId\"] == self.accounts[account_index].id:\n-                closed_account_status = self.accounts[\n-                    account_index\n-                ].close_account_status\n-                del self.accounts[account_index]\n-                return closed_account_status\n+        for account in self.accounts:\n+            if kwargs[\"AccountId\"] == account.id:\n+                if account.status == \"SUSPENDED\":\n+                    raise AccountAlreadyClosedException\n+                account.status = \"PENDING_CLOSURE\"\n+                # In a real implementation we would start an async process here\n+                # For now, we'll immediately transition to SUSPENDED\n+                account.status = \"SUSPENDED\"\n+                return None\n \n         organizations_backends.master_accounts.pop(kwargs[\"AccountId\"], None)\n         raise AccountNotFoundException\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/organizations/models.py",
+      "start_line": 133,
+      "end_line": 168
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/organizations/models.py",
+      "content": "        return {\n            \"CreateAccountStatus\": {\n                \"Id\": self.create_account_status_id,\n                \"AccountName\": self.name,\n                \"State\": \"SUCCEEDED\",\n                \"RequestedTimestamp\": unix_time(self.create_time),\n                \"CompletedTimestamp\": unix_time(self.create_time),\n                \"AccountId\": self.id,\n            }\n        }\n\n\n    @property\n    def close_account_status(self):\n        return {\n            \"CloseAccountStatus\": {\n                \"Id\": self.create_account_status_id,\n                \"AccountName\": self.name,\n                \"State\": \"SUCCEEDED\",\n                \"RequestedTimestamp\": unix_time(datetime.datetime.utcnow()),\n                \"CompletedTimestamp\": unix_time(datetime.datetime.utcnow()),\n                \"AccountId\": self.id,\n            }\n        }\n\n\n    def describe(self) -> Dict[str, Any]:\n        return {\n            \"Id\": self.id,\n            \"Arn\": self.arn,\n            \"Email\": self.email,\n            \"Name\": self.name,\n            \"Status\": self.status,\n            \"JoinedMethod\": self.joined_method,\n            \"JoinedTimestamp\": unix_time(self.create_time),\n        }",
+      "start_line": 133,
+      "end_line": 168,
+      "total_lines": 1066,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/organizations/models.py",
+      "old_string": "    @property\n    def close_account_status(self):\n        return {\n            \"CloseAccountStatus\": {\n                \"Id\": self.create_account_status_id,\n                \"AccountName\": self.name,\n                \"State\": \"SUCCEEDED\",\n                \"RequestedTimestamp\": unix_time(datetime.datetime.utcnow()),\n                \"CompletedTimestamp\": unix_time(datetime.datetime.utcnow()),\n                \"AccountId\": self.id,\n            }\n        }",
+      "new_string": "",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/organizations/models.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/organizations/models.py\n+++ b/moto/organizations/models.py\n@@ -142,18 +142,7 @@\n         }\n \n \n-    @property\n-    def close_account_status(self):\n-        return {\n-            \"CloseAccountStatus\": {\n-                \"Id\": self.create_account_status_id,\n-                \"AccountName\": self.name,\n-                \"State\": \"SUCCEEDED\",\n-                \"RequestedTimestamp\": unix_time(datetime.datetime.utcnow()),\n-                \"CompletedTimestamp\": unix_time(datetime.datetime.utcnow()),\n-                \"AccountId\": self.id,\n-            }\n-        }\n+\n \n \n     def describe(self) -> Dict[str, Any]:\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/organizations/models.py",
+      "start_line": 1,
+      "end_line": 18
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/organizations/models.py",
+      "content": "import datetime\nimport json\nimport re\nfrom typing import Any, Dict, List, Optional, Tuple\n\nfrom moto.core.base_backend import BackendDict, BaseBackend\nfrom moto.core.common_models import BaseModel\nfrom moto.core.exceptions import RESTError\nfrom moto.core.utils import unix_time, utcnow\nfrom moto.organizations import utils\nfrom moto.organizations.exceptions import (\n    AccountAlreadyClosedException,\n    AccountAlreadyRegisteredException,\n    AccountNotFoundException,\n    AccountNotRegisteredException,\n    AlreadyInOrganizationException,\n    AWSOrganizationsNotInUseException,\n    ConstraintViolationException,",
+      "start_line": 1,
+      "end_line": 18,
+      "total_lines": 1055,
+      "is_truncated": false
+    }
+  }
+]

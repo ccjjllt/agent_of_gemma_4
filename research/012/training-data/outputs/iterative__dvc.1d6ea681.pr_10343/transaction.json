@@ -1,0 +1,162 @@
+{
+  "sample_id": "p012-iterative__dvc.1d6ea681.pr_10343",
+  "transaction_id": "p012-iterative__dvc.1d6ea681.pr_10343",
+  "producer_revision": "p012-local-2",
+  "synthetic": false,
+  "origin_kind": "cpu_replayed_source_edit_subset",
+  "group": {
+    "issue": "iterative__dvc.1d6ea681.pr_10343",
+    "repo": "iterative/dvc",
+    "commit": "5e3792b90a82a41b21d01376c4b5a5d0c65a5e43",
+    "split": "train"
+  },
+  "source": {
+    "uri": "https://huggingface.co/datasets/SWE-bench/SWE-smith-trajectories/tree/08e109b4a59eaeebf80e4675cd125d42e7ac99a4",
+    "license": "MIT dataset; repository license in provenance.json",
+    "sha256": "c8ca381b7a1c01fcd5c9a75b1e7456058aa2a551fcc91c26628610486e20996d",
+    "teacher": "claude-3-7-sonnet-20250219",
+    "traj_id": "iterative__dvc.1d6ea681.pr_10343.y1wve1wy"
+  },
+  "protocol_id": "p012-repair-v1",
+  "tool_schema": {
+    "path": "research/012/agent/repair_tools_v1.json",
+    "canonical_sha256": "91ec82b15fe0961b3ef9e686fac268706ce954a69cabaa0d705c63d41088e267",
+    "names": [
+      "run_command",
+      "read_file",
+      "edit_file",
+      "write_file",
+      "get_status"
+    ],
+    "repair_role_holds_submit_patch": false
+  },
+  "messages": [
+    {
+      "role": "system",
+      "content": "Use the supplied repository tools. Preserve unrelated behavior. Treat tool failures as observations and correct the action before retrying. Do not modify tests."
+    },
+    {
+      "role": "user",
+      "content": "Implement the following requested change in the repository.\n\n# Git config not copied to temporary directory experiments\n\nWhen running experiments with `tmp_dir=True`, the Git configuration from the original repository is not being copied to the temporary directory. This causes issues when trying to use features that depend on Git configuration, such as auto-pushing experiments.\n\n## Steps to reproduce\n\n1. Set up a DVC repository with a Git remote\n2. Configure experiment auto-push:\n```python\nwith dvc.config.edit() as conf:\n    conf['exp']['auto_push'] = True\n    conf['exp']['git_remote'] = 'my-remote'\n```\n3. Run an experiment with `tmp_dir=True`:\n```python\ndvc.experiments.run(stage_name, params=['param=value'], name='exp-name', tmp_dir=True)\n```\n4. Try to push the experiment:\n```python\ndvc.experiments.push(name='exp-name', git_remote='my-remote')\n```\n\n## Expected behavior\nThe experiment should be automatically pushed to the remote repository.\n\n## Actual behavior\nThe experiment fails to push properly because the Git configuration from the original repository is not copied to the temporary directory where the experiment is run.\n\nThis only happens when using `tmp_dir=True`. Experiments run in the workspace directly work fine with auto-push.\n\nScope of this editing session: update the following production files and report the resulting local change for handover: dvc/repo/experiments/executor/local.py. No full task validation has been performed in this session."
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_00",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": {
+              "filepath": "dvc/repo/experiments/executor/local.py",
+              "start_line": 58,
+              "end_line": 145
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_00",
+      "name": "read_file",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"filepath\": \"dvc/repo/experiments/executor/local.py\", \"content\": \"        \\\"\\\"\\\"Collect DVC cache.\\\"\\\"\\\"\\n\\n\\nclass TempDirExecutor(BaseLocalExecutor):\\n    \\\"\\\"\\\"Temp directory experiment executor.\\\"\\\"\\\"\\n\\n    # Temp dir executors should warn if untracked files exist (to help with\\n    # debugging user code), and suppress other DVC hints (like `git add`\\n    # suggestions) that are not applicable outside of workspace runs\\n    WARN_UNTRACKED = True\\n    DEFAULT_LOCATION = \\\"tempdir\\\"\\n\\n    @retry(180, errors=LockError, timeout=1)\\n    def init_git(\\n        self,\\n        repo: \\\"Repo\\\",\\n        scm: \\\"Git\\\",\\n        stash_rev: str,\\n        entry: \\\"ExpStashEntry\\\",\\n        infofile: Optional[str],\\n        branch: Optional[str] = None,\\n    ):\\n        from dulwich.repo import Repo as DulwichRepo\\n\\n        from dvc.repo.experiments.utils import push_refspec\\n\\n        DulwichRepo.init(os.fspath(self.root_dir))\\n\\n        self.status = TaskStatus.PREPARING\\n        if infofile:\\n            self.info.dump_json(infofile)\\n\\n        temp_head = f\\\"{TEMP_NAMESPACE}/head-{uuid()}\\\"\\n        temp_merge = f\\\"{TEMP_NAMESPACE}/merge-{uuid()}\\\"\\n        temp_baseline = f\\\"{TEMP_NAMESPACE}/baseline-{uuid()}\\\"\\n\\n        temp_ref_dict = {\\n            temp_head: entry.head_rev,\\n            temp_merge: stash_rev,\\n            temp_baseline: entry.baseline_rev,\\n        }\\n        with (\\n            get_exp_rwlock(repo, writes=[temp_head, temp_merge, temp_baseline]),\\n            self.set_temp_refs(scm, temp_ref_dict),\\n        ):\\n            # Executor will be initialized with an empty git repo that\\n            # we populate by pushing:\\n            #   EXEC_HEAD - the base commit for this experiment\\n            #   EXEC_MERGE - the unmerged changes (from our stash)\\n            #       to be reproduced\\n            #   EXEC_BASELINE - the baseline commit for this experiment\\n            refspec = [\\n                (temp_head, EXEC_HEAD),\\n                (temp_merge, EXEC_MERGE),\\n                (temp_baseline, EXEC_BASELINE),\\n            ]\\n\\n            if branch:\\n                refspec.append((branch, branch))\\n                with get_exp_rwlock(repo, reads=[branch]):\\n                    push_refspec(scm, self.git_url, refspec)\\n                self.scm.set_ref(EXEC_BRANCH, branch, symbolic=True)\\n            else:\\n                push_refspec(scm, self.git_url, refspec)\\n                if self.scm.get_ref(EXEC_BRANCH):\\n                    self.scm.remove_ref(EXEC_BRANCH)\\n\\n        # checkout EXEC_HEAD and apply EXEC_MERGE on top of it without\\n        # committing\\n        assert isinstance(self.scm, Git)\\n        head = EXEC_BRANCH if branch else EXEC_HEAD\\n        self.scm.checkout(head, detach=True)\\n        merge_rev = self.scm.get_ref(EXEC_MERGE)\\n\\n        self.scm.stash.apply(merge_rev)\\n        self._update_config(repo.config.read(\\\"local\\\"))\\n\\n    def _update_config(self, update):\\n        local_config = os.path.join(self.root_dir, self.dvc_dir, \\\"config.local\\\")\\n        logger.debug(\\\"Writing experiments local config '%s'\\\", local_config)\\n        if os.path.exists(local_config):\\n            conf_obj = ConfigObj(local_config)\\n            conf_obj.merge(update)\\n        else:\\n            conf_obj = ConfigObj(update)\\n        if conf_obj:\\n            with open(local_config, \\\"wb\\\") as fobj:\\n                conf_obj.write(fobj)\", \"start_line\": 58, \"end_line\": 145, \"total_lines\": 241, \"is_truncated\": false}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_01",
+          "type": "function",
+          "function": {
+            "name": "edit_file",
+            "arguments": {
+              "filepath": "dvc/repo/experiments/executor/local.py",
+              "old_string": "    @retry(180, errors=LockError, timeout=1)\n    def init_git(\n        self,\n        repo: \"Repo\",\n        scm: \"Git\",\n        stash_rev: str,\n        entry: \"ExpStashEntry\",\n        infofile: Optional[str],\n        branch: Optional[str] = None,\n    ):\n        from dulwich.repo import Repo as DulwichRepo\n\n        from dvc.repo.experiments.utils import push_refspec\n\n        DulwichRepo.init(os.fspath(self.root_dir))\n\n        self.status = TaskStatus.PREPARING\n        if infofile:\n            self.info.dump_json(infofile)\n\n        temp_head = f\"{TEMP_NAMESPACE}/head-{uuid()}\"\n        temp_merge = f\"{TEMP_NAMESPACE}/merge-{uuid()}\"\n        temp_baseline = f\"{TEMP_NAMESPACE}/baseline-{uuid()}\"\n\n        temp_ref_dict = {\n            temp_head: entry.head_rev,\n            temp_merge: stash_rev,\n            temp_baseline: entry.baseline_rev,\n        }\n        with (\n            get_exp_rwlock(repo, writes=[temp_head, temp_merge, temp_baseline]),\n            self.set_temp_refs(scm, temp_ref_dict),\n        ):\n            # Executor will be initialized with an empty git repo that\n            # we populate by pushing:\n            #   EXEC_HEAD - the base commit for this experiment\n            #   EXEC_MERGE - the unmerged changes (from our stash)\n            #       to be reproduced\n            #   EXEC_BASELINE - the baseline commit for this experiment\n            refspec = [\n                (temp_head, EXEC_HEAD),\n                (temp_merge, EXEC_MERGE),\n                (temp_baseline, EXEC_BASELINE),\n            ]\n\n            if branch:\n                refspec.append((branch, branch))\n                with get_exp_rwlock(repo, reads=[branch]):\n                    push_refspec(scm, self.git_url, refspec)\n                self.scm.set_ref(EXEC_BRANCH, branch, symbolic=True)\n            else:\n                push_refspec(scm, self.git_url, refspec)\n                if self.scm.get_ref(EXEC_BRANCH):\n                    self.scm.remove_ref(EXEC_BRANCH)\n\n        # checkout EXEC_HEAD and apply EXEC_MERGE on top of it without\n        # committing\n        assert isinstance(self.scm, Git)\n        head = EXEC_BRANCH if branch else EXEC_HEAD\n        self.scm.checkout(head, detach=True)\n        merge_rev = self.scm.get_ref(EXEC_MERGE)\n\n        self.scm.stash.apply(merge_rev)\n        self._update_config(repo.config.read(\"local\"))",
+              "new_string": "    @retry(180, errors=LockError, timeout=1)\n    def init_git(\n        self,\n        repo: \"Repo\",\n        scm: \"Git\",\n        stash_rev: str,\n        entry: \"ExpStashEntry\",\n        infofile: Optional[str],\n        branch: Optional[str] = None,\n    ):\n        from dulwich.repo import Repo as DulwichRepo\n\n        from dvc.repo.experiments.utils import push_refspec\n\n        DulwichRepo.init(os.fspath(self.root_dir))\n\n        self.status = TaskStatus.PREPARING\n        if infofile:\n            self.info.dump_json(infofile)\n\n        # Copy Git configuration from the original repository\n        self._copy_git_config(scm)\n\n        temp_head = f\"{TEMP_NAMESPACE}/head-{uuid()}\"\n        temp_merge = f\"{TEMP_NAMESPACE}/merge-{uuid()}\"\n        temp_baseline = f\"{TEMP_NAMESPACE}/baseline-{uuid()}\"\n\n        temp_ref_dict = {\n            temp_head: entry.head_rev,\n            temp_merge: stash_rev,\n            temp_baseline: entry.baseline_rev,\n        }\n        with (\n            get_exp_rwlock(repo, writes=[temp_head, temp_merge, temp_baseline]),\n            self.set_temp_refs(scm, temp_ref_dict),\n        ):\n            # Executor will be initialized with an empty git repo that\n            # we populate by pushing:\n            #   EXEC_HEAD - the base commit for this experiment\n            #   EXEC_MERGE - the unmerged changes (from our stash)\n            #       to be reproduced\n            #   EXEC_BASELINE - the baseline commit for this experiment\n            refspec = [\n                (temp_head, EXEC_HEAD),\n                (temp_merge, EXEC_MERGE),\n                (temp_baseline, EXEC_BASELINE),\n            ]\n\n            if branch:\n                refspec.append((branch, branch))\n                with get_exp_rwlock(repo, reads=[branch]):\n                    push_refspec(scm, self.git_url, refspec)\n                self.scm.set_ref(EXEC_BRANCH, branch, symbolic=True)\n            else:\n                push_refspec(scm, self.git_url, refspec)\n                if self.scm.get_ref(EXEC_BRANCH):\n                    self.scm.remove_ref(EXEC_BRANCH)\n\n        # checkout EXEC_HEAD and apply EXEC_MERGE on top of it without\n        # committing\n        assert isinstance(self.scm, Git)\n        head = EXEC_BRANCH if branch else EXEC_HEAD\n        self.scm.checkout(head, detach=True)\n        merge_rev = self.scm.get_ref(EXEC_MERGE)\n\n        self.scm.stash.apply(merge_rev)\n        self._update_config(repo.config.read(\"local\"))\n        \n    def _copy_git_config(self, scm: \"Git\"):\n        \"\"\"Copy Git configuration from the original repository to the temporary directory.\"\"\"\n        import subprocess\n        import shutil\n        \n        # Path to the original Git config file\n        original_config = os.path.join(scm.root_dir, \".git\", \"config\")\n        \n        # Path to the new Git config file\n        new_config = os.path.join(self.root_dir, \".git\", \"config\")\n        \n        if os.path.exists(original_config):\n            logger.debug(\"Copying Git config from '%s' to '%s'\", original_config, new_config)\n            shutil.copy2(original_config, new_config)",
+              "allow_multiple": false
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_01",
+      "name": "edit_file",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"filepath\": \"dvc/repo/experiments/executor/local.py\", \"occurrences\": 1, \"strategy\": \"exact\", \"diff\": \"--- a/dvc/repo/experiments/executor/local.py\\n+++ b/dvc/repo/experiments/executor/local.py\\n@@ -86,6 +86,9 @@\\n         self.status = TaskStatus.PREPARING\\n         if infofile:\\n             self.info.dump_json(infofile)\\n+\\n+        # Copy Git configuration from the original repository\\n+        self._copy_git_config(scm)\\n \\n         temp_head = f\\\"{TEMP_NAMESPACE}/head-{uuid()}\\\"\\n         temp_merge = f\\\"{TEMP_NAMESPACE}/merge-{uuid()}\\\"\\n@@ -131,6 +134,21 @@\\n \\n         self.scm.stash.apply(merge_rev)\\n         self._update_config(repo.config.read(\\\"local\\\"))\\n+        \\n+    def _copy_git_config(self, scm: \\\"Git\\\"):\\n+        \\\"\\\"\\\"Copy Git configuration from the original repository to the temporary directory.\\\"\\\"\\\"\\n+        import subprocess\\n+        import shutil\\n+        \\n+        # Path to the original Git config file\\n+        original_config = os.path.join(scm.root_dir, \\\".git\\\", \\\"config\\\")\\n+        \\n+        # Path to the new Git config file\\n+        new_config = os.path.join(self.root_dir, \\\".git\\\", \\\"config\\\")\\n+        \\n+        if os.path.exists(original_config):\\n+            logger.debug(\\\"Copying Git config from '%s' to '%s'\\\", original_config, new_config)\\n+            shutil.copy2(original_config, new_config)\\n \\n     def _update_config(self, update):\\n         local_config = os.path.join(self.root_dir, self.dvc_dir, \\\"config.local\\\")\\n\", \"is_truncated\": false}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_02",
+          "type": "function",
+          "function": {
+            "name": "get_status",
+            "arguments": {}
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_02",
+      "name": "get_status",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"tool_calls_used\": 2, \"patch_submitted\": false, \"patch_size\": 0, \"tool_calls_remaining\": 98, \"max_tool_calls\": 100, \"command_timeout_seconds\": 30}"
+    },
+    {
+      "role": "assistant",
+      "content": "{\n  \"candidate_id\": \"p012-iterative__dvc.1d6ea681.pr_10343\",\n  \"files\": [\n    {\n      \"path\": \"dvc/repo/experiments/executor/local.py\",\n      \"after_sha256\": \"57ddf1f41ea5eb19b6777d118fbec7ace3f0490f75d2dceed7314797b976d365\"\n    }\n  ],\n  \"requirement_done\": true,\n  \"requirement_scope\": \"local production edits applied and syntactically parsed; full-task validation NOT performed in this session\",\n  \"verification\": {\n    \"observation\": \"get_status\",\n    \"status\": \"ok\",\n    \"scope\": \"post-edit local patch status of the same workspace; no repository test suite or whole-issue oracle executed\"\n  },\n  \"unresolved\": [\n    \"no whole-issue oracle executed; task_resolved=null\",\n    \"behavior recovery chain to be upgraded by a later step, not fabricated here\"\n  ],\n  \"needs_other_route\": false\n}",
+      "tool_calls": []
+    }
+  ],
+  "target_assistant_steps": [
+    1,
+    2,
+    3
+  ],
+  "behavior": "local_edit",
+  "needs_replay": false,
+  "attempt_status": "local_edits_applied",
+  "observed_outcome": {
+    "action_succeeded": true,
+    "task_resolved": null,
+    "behavior_verified": false,
+    "syntax_parse_passed": true,
+    "local_patch_nonempty": true,
+    "handover_reported": true,
+    "scope": "All selected structured production str_replace actions replayed from fixed buggy snapshot with five official tools (no submit_patch); post-edit status observed via get_status; session ends with a handover report, not a submission. This is local edit supervision, not a resolved task or full trajectory."
+  },
+  "handover": {
+    "candidate_id": "p012-iterative__dvc.1d6ea681.pr_10343",
+    "files": [
+      {
+        "path": "dvc/repo/experiments/executor/local.py",
+        "after_sha256": "57ddf1f41ea5eb19b6777d118fbec7ace3f0490f75d2dceed7314797b976d365"
+      }
+    ],
+    "requirement_done": true,
+    "requirement_scope": "local production edits applied and syntactically parsed; full-task validation NOT performed in this session",
+    "verification": {
+      "observation": "get_status",
+      "status": "ok",
+      "scope": "post-edit local patch status of the same workspace; no repository test suite or whole-issue oracle executed"
+    },
+    "unresolved": [
+      "no whole-issue oracle executed; task_resolved=null",
+      "behavior recovery chain to be upgraded by a later step, not fabricated here"
+    ],
+    "needs_other_route": false
+  },
+  "source_resolved_label": true,
+  "source_label_not_revalidated": true,
+  "replay_boundary": "Unchanged official v31 tool functions minus submit_patch, with macOS local transport, production subset. Read locations derived from source edit targets; this is edit/action SFT, not search-policy supervision.",
+  "continuation_policy": "New read/edit/status tool observations only; no old assistant future or old tool observations reused."
+}

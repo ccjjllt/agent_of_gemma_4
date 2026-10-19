@@ -1,0 +1,21 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 1098,
+  "instance_id": "pydantic__pydantic.acb0f10f.pr_6155",
+  "repo": "pydantic/pydantic",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "pydantic__pydantic.acb0f10f.pr_6155.uqw6comx",
+  "messages_sha256": "3cd9a89c700f5d74368c321aa87cd781b3c0bdae5162e931a03ee6cb08f1a332",
+  "issue": "# Circular import in expand_grouped_metadata function\n\n## Description\n\nThere's an issue with the `expand_grouped_metadata` function in `pydantic/_internal/_known_annotated_metadata.py`. The function has been modified to use a direct import of `FieldInfo` from `pydantic.fields` instead of using the cached import function.\n\n```python\n# Current problematic code\nfrom pydantic.fields import FieldInfo  # circular import\n```\n\nThis creates a circular import problem. The original implementation was using `import_cached_field_info()` to avoid this circular dependency:\n\n```python\n# Original working code\nFieldInfo = import_cached_field_info()\n```\n\nAdditionally, the import of `annotated_types` has been moved inside the loop, which is inefficient as it will be imported multiple times unnecessarily.\n\n## How to reproduce\n\nThis issue can be reproduced by using the `expand_grouped_metadata` function with annotations that include `FieldInfo` instances. The circular import will cause problems when the module is loaded.\n\nHere's a simple reproduction script:\n\n```python\nfrom pydantic import Field\nfrom pydantic._internal._known_annotated_metadata import expand_grouped_metadata\nfrom annotated_types import Ge, Len\n\n# This will trigger the circular import issue\nresult = list(expand_grouped_metadata([Ge(4), Len(5), Field(default=10)]))\nprint(result)\n```\n\nWhen running this script, you'll encounter import-related errors due to the circular dependency between modules.\n\nThe issue affects any code that uses annotations with `FieldInfo` instances and relies on the `expand_grouped_metadata` function.",
+  "actions": [
+    {
+      "source_message_index": 28,
+      "filepath": "pydantic/_internal/_known_annotated_metadata.py",
+      "old_string": "\ndef expand_grouped_metadata(annotations: Iterable[Any]) -> Iterable[Any]:\n    from pydantic.fields import FieldInfo  # circular import\n\n    for annotation in annotations:\n        import annotated_types as at\n        if isinstance(annotation, at.GroupedMetadata):\n            yield from annotation\n        elif isinstance(annotation, FieldInfo):\n            yield from annotation.metadata\n            # this is a bit problematic in that it results in duplicate metadata\n            # all of our \"consumers\" can handle it, but it is not ideal\n            # we probably should split up FieldInfo into:\n            # - annotated types metadata\n            # - individual metadata known only to Pydantic\n            annotation = copy(annotation)\n            annotation.metadata = []\n            yield annotation\n        else:\n            yield annotation\n",
+      "new_string": "\ndef expand_grouped_metadata(annotations: Iterable[Any]) -> Iterable[Any]:\n    # Use the cached import function to avoid circular imports\n    FieldInfo = import_cached_field_info()\n    # Import annotated_types outside the loop for efficiency\n    import annotated_types as at\n\n    for annotation in annotations:\n        if isinstance(annotation, at.GroupedMetadata):\n            yield from annotation\n        elif isinstance(annotation, FieldInfo):\n            yield from annotation.metadata\n            # this is a bit problematic in that it results in duplicate metadata\n            # all of our \"consumers\" can handle it, but it is not ideal\n            # we probably should split up FieldInfo into:\n            # - annotated types metadata\n            # - individual metadata known only to Pydantic\n            annotation = copy(annotation)\n            annotation.metadata = []\n            yield annotation\n        else:\n            yield annotation\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

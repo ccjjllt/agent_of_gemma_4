@@ -1,0 +1,83 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/codepipeline/models.py",
+      "start_line": 80,
+      "end_line": 116
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/codepipeline/models.py",
+      "content": "    @property\n    def iam_backend(self) -> IAMBackend:\n        return iam_backends[self.account_id][self.partition]\n\n    def create_pipeline(\n        self, pipeline: Dict[str, Any], tags: List[Dict[str, str]]\n    ) -> Tuple[Dict[str, Any], List[Dict[str, str]]]:\n        name = pipeline[\"name\"]\n        if name in self.pipelines:\n            raise InvalidStructureException(\n                f\"A pipeline with the name '{name}' already exists in account '{self.account_id}'\"\n            )\n\n        try:\n            role = self.iam_backend.get_role_by_arn(pipeline[\"roleArn\"])\n            service_principal = json.loads(role.assume_role_policy_document)[\n                \"Statement\"\n            ][0][\"Principal\"][\"Service\"]\n            if \"codepipeline.amazonaws.com\" not in service_principal:\n                raise IAMNotFoundException(\"\")\n        except IAMNotFoundException:\n            raise InvalidStructureException(\n                f\"CodePipeline is not authorized to perform AssumeRole on role {pipeline['roleArn']}\"\n            )\n\n        if len(pipeline[\"stages\"]) < 2:\n            raise InvalidStructureException(\n                \"Pipeline has only 1 stage(s). There should be a minimum of 2 stages in a pipeline\"\n            )\n\n        self.pipelines[pipeline[\"name\"]] = CodePipeline(\n            self.account_id, self.region_name, pipeline\n        )\n\n        if tags:\n            self.pipelines[pipeline[\"name\"]].validate_tags(tags)\n",
+      "start_line": 80,
+      "end_line": 116,
+      "total_lines": 205,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/codepipeline/models.py",
+      "old_string": "\n        try:\n            role = self.iam_backend.get_role_by_arn(pipeline[\"roleArn\"])\n            service_principal = json.loads(role.assume_role_policy_document)[\n                \"Statement\"\n            ][0][\"Principal\"][\"Service\"]\n            if \"codepipeline.amazonaws.com\" not in service_principal:\n                raise IAMNotFoundException(\"\")\n        except IAMNotFoundException:\n            raise InvalidStructureException(\n                f\"CodePipeline is not authorized to perform AssumeRole on role {pipeline['roleArn']}\"\n            )\n",
+      "new_string": "\n        try:\n            role = self.iam_backend.get_role_by_arn(pipeline[\"roleArn\"])\n            service_principal = json.loads(role.assume_role_policy_document)[\n                \"Statement\"\n            ][0][\"Principal\"][\"Service\"]\n            \n            # Handle both string and list service principals\n            if isinstance(service_principal, str):\n                has_codepipeline = service_principal == \"codepipeline.amazonaws.com\"\n            elif isinstance(service_principal, list):\n                has_codepipeline = \"codepipeline.amazonaws.com\" in service_principal\n            else:\n                has_codepipeline = False\n                \n            if not has_codepipeline:\n                raise IAMNotFoundException(\"\")\n        except IAMNotFoundException:\n            raise InvalidStructureException(\n                f\"CodePipeline is not authorized to perform AssumeRole on role {pipeline['roleArn']}\"\n            )\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/codepipeline/models.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/codepipeline/models.py\n+++ b/moto/codepipeline/models.py\n@@ -95,7 +95,16 @@\n             service_principal = json.loads(role.assume_role_policy_document)[\n                 \"Statement\"\n             ][0][\"Principal\"][\"Service\"]\n-            if \"codepipeline.amazonaws.com\" not in service_principal:\n+            \n+            # Handle both string and list service principals\n+            if isinstance(service_principal, str):\n+                has_codepipeline = service_principal == \"codepipeline.amazonaws.com\"\n+            elif isinstance(service_principal, list):\n+                has_codepipeline = \"codepipeline.amazonaws.com\" in service_principal\n+            else:\n+                has_codepipeline = False\n+                \n+            if not has_codepipeline:\n                 raise IAMNotFoundException(\"\")\n         except IAMNotFoundException:\n             raise InvalidStructureException(\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/codepipeline/models.py",
+      "start_line": 80,
+      "end_line": 125
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/codepipeline/models.py",
+      "content": "    @property\n    def iam_backend(self) -> IAMBackend:\n        return iam_backends[self.account_id][self.partition]\n\n    def create_pipeline(\n        self, pipeline: Dict[str, Any], tags: List[Dict[str, str]]\n    ) -> Tuple[Dict[str, Any], List[Dict[str, str]]]:\n        name = pipeline[\"name\"]\n        if name in self.pipelines:\n            raise InvalidStructureException(\n                f\"A pipeline with the name '{name}' already exists in account '{self.account_id}'\"\n            )\n\n        try:\n            role = self.iam_backend.get_role_by_arn(pipeline[\"roleArn\"])\n            service_principal = json.loads(role.assume_role_policy_document)[\n                \"Statement\"\n            ][0][\"Principal\"][\"Service\"]\n            \n            # Handle both string and list service principals\n            if isinstance(service_principal, str):\n                has_codepipeline = service_principal == \"codepipeline.amazonaws.com\"\n            elif isinstance(service_principal, list):\n                has_codepipeline = \"codepipeline.amazonaws.com\" in service_principal\n            else:\n                has_codepipeline = False\n                \n            if not has_codepipeline:\n                raise IAMNotFoundException(\"\")\n        except IAMNotFoundException:\n            raise InvalidStructureException(\n                f\"CodePipeline is not authorized to perform AssumeRole on role {pipeline['roleArn']}\"\n            )\n\n        if len(pipeline[\"stages\"]) < 2:\n            raise InvalidStructureException(\n                \"Pipeline has only 1 stage(s). There should be a minimum of 2 stages in a pipeline\"\n            )\n\n        self.pipelines[pipeline[\"name\"]] = CodePipeline(\n            self.account_id, self.region_name, pipeline\n        )\n\n        if tags:\n            self.pipelines[pipeline[\"name\"]].validate_tags(tags)\n",
+      "start_line": 80,
+      "end_line": 125,
+      "total_lines": 214,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/codepipeline/models.py",
+      "old_string": "\n        try:\n            role = self.iam_backend.get_role_by_arn(pipeline[\"roleArn\"])\n            service_principal = json.loads(role.assume_role_policy_document)[\n                \"Statement\"\n            ][0][\"Principal\"][\"Service\"]\n            \n            # Handle both string and list service principals\n            if isinstance(service_principal, str):\n                has_codepipeline = service_principal == \"codepipeline.amazonaws.com\"\n            elif isinstance(service_principal, list):\n                has_codepipeline = \"codepipeline.amazonaws.com\" in service_principal\n            else:\n                has_codepipeline = False\n                \n            if not has_codepipeline:\n                raise IAMNotFoundException(\"\")\n        except IAMNotFoundException:\n            raise InvalidStructureException(\n                f\"CodePipeline is not authorized to perform AssumeRole on role {pipeline['roleArn']}\"\n            )\n",
+      "new_string": "\n        try:\n            role = self.iam_backend.get_role_by_arn(pipeline[\"roleArn\"])\n            policy_doc = json.loads(role.assume_role_policy_document)\n            statements = policy_doc[\"Statement\"]\n            \n            # Check all statements in the trust policy\n            has_codepipeline = False\n            for statement in statements:\n                if statement.get(\"Effect\") == \"Allow\" and \"Principal\" in statement and \"Service\" in statement[\"Principal\"]:\n                    service_principal = statement[\"Principal\"][\"Service\"]\n                    \n                    # Handle both string and list service principals\n                    if isinstance(service_principal, str):\n                        if service_principal == \"codepipeline.amazonaws.com\":\n                            has_codepipeline = True\n                            break\n                    elif isinstance(service_principal, list):\n                        if \"codepipeline.amazonaws.com\" in service_principal:\n                            has_codepipeline = True\n                            break\n                \n            if not has_codepipeline:\n                raise IAMNotFoundException(\"\")\n        except IAMNotFoundException:\n            raise InvalidStructureException(\n                f\"CodePipeline is not authorized to perform AssumeRole on role {pipeline['roleArn']}\"\n            )\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/codepipeline/models.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/codepipeline/models.py\n+++ b/moto/codepipeline/models.py\n@@ -92,17 +92,24 @@\n \n         try:\n             role = self.iam_backend.get_role_by_arn(pipeline[\"roleArn\"])\n-            service_principal = json.loads(role.assume_role_policy_document)[\n-                \"Statement\"\n-            ][0][\"Principal\"][\"Service\"]\n+            policy_doc = json.loads(role.assume_role_policy_document)\n+            statements = policy_doc[\"Statement\"]\n             \n-            # Handle both string and list service principals\n-            if isinstance(service_principal, str):\n-                has_codepipeline = service_principal == \"codepipeline.amazonaws.com\"\n-            elif isinstance(service_principal, list):\n-                has_codepipeline = \"codepipeline.amazonaws.com\" in service_principal\n-            else:\n-                has_codepipeline = False\n+            # Check all statements in the trust policy\n+            has_codepipeline = False\n+            for statement in statements:\n+                if statement.get(\"Effect\") == \"Allow\" and \"Principal\" in statement and \"Service\" in statement[\"Principal\"]:\n+                    service_principal = statement[\"Principal\"][\"Service\"]\n+                    \n+                    # Handle both string and list service principals\n+                    if isinstance(service_principal, str):\n+                        if service_principal == \"codepipeline.amazonaws.com\":\n+                            has_codepipeline = True\n+                            break\n+                    elif isinstance(service_principal, list):\n+                        if \"codepipeline.amazonaws.com\" in service_principal:\n+                            has_codepipeline = True\n+                            break\n                 \n             if not has_codepipeline:\n                 raise IAMNotFoundException(\"\")\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "get_status",
+    "arguments": {},
+    "response": {
+      "status": "ok",
+      "tool_calls_used": 4,
+      "patch_submitted": false,
+      "patch_size": 0,
+      "tool_calls_remaining": 96,
+      "max_tool_calls": 100,
+      "command_timeout_seconds": 30
+    }
+  }
+]

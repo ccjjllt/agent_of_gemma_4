@@ -1,0 +1,21 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00001-of-00008.parquet",
+  "row_index": 2159,
+  "instance_id": "getmoto__moto.694ce1f4.pr_5020",
+  "repo": "getmoto/moto",
+  "source_resolved": true,
+  "teacher_source": "claude-3-5-sonnet-20241022",
+  "traj_id": "getmoto__moto.694ce1f4.pr_5020.87igi3sy",
+  "messages_sha256": "52ebeef5acbadd3c69a9a52a3380d833757fb1041c0540140aba85801225fef8",
+  "issue": "# Search Transit Gateway Routes by route-search.exact-match filter not working\n\n### Bug summary\n\nWhen using the `search_transit_gateway_routes` API with the `route-search.exact-match` filter, the filter is not being applied correctly. The filter appears to have been removed from the supported filters list.\n\n### Code for reproduction\n\n```python\nimport boto3\n\n# Set up resources\nclient = boto3.client('ec2', region_name='us-west-2')\nvpc = client.create_vpc(CidrBlock='10.0.0.0/16')['Vpc']\nsubnet = client.create_subnet(VpcId=vpc['VpcId'], CidrBlock='10.0.1.0/24')['Subnet']\ntgw = client.create_transit_gateway(Description='test gateway')\ntgw_id = tgw['TransitGateway']['TransitGatewayId']\n\n# Create route table and attachment\nroute_table = client.create_transit_gateway_route_table(TransitGatewayId=tgw_id)\nroute_table_id = route_table['TransitGatewayRouteTable']['TransitGatewayRouteTableId']\nattachment = client.create_transit_gateway_vpc_attachment(\n    TransitGatewayId=tgw_id, \n    VpcId=vpc['VpcId'], \n    SubnetIds=[subnet['SubnetId']]\n)\nattachment_id = attachment['TransitGatewayVpcAttachment']['TransitGatewayAttachmentId']\n\n# Create routes\ncidr_block = '172.17.0.0/24'\nclient.create_transit_gateway_route(\n    DestinationCidrBlock=cidr_block,\n    TransitGatewayRouteTableId=route_table_id,\n    TransitGatewayAttachmentId=attachment_id\n)\n\n# Try to search for the route using route-search.exact-match filter\nresult = client.search_transit_gateway_routes(\n    TransitGatewayRouteTableId=route_table_id,\n    Filters=[{'Name': 'route-search.exact-match', 'Values': [cidr_block]}]\n)\n\nprint(result)\n```\n\n### Actual outcome\n\nThe search doesn't filter by the CIDR block specified in the `route-search.exact-match` filter. It returns all routes in the transit gateway route table instead of just the one matching the specified CIDR block.\n\n### Expected outcome\n\nThe search should return only the route that matches the exact CIDR block specified in the `route-search.exact-match` filter.\n\n### Environment information\n- Python version: 3.8\n- Boto3 version: 1.26.0\n- AWS region: us-west-2\n\n### Additional context\n\nLooking at the code, it appears that the `route-search.exact-match` filter was removed from the supported filters list in the `search_transit_gateway_routes` method. The documentation still indicates this filter should be supported.",
+  "actions": [
+    {
+      "source_message_index": 28,
+      "filepath": "moto/ec2/models/transit_gateway_route_tables.py",
+      "old_string": "        attr_pairs = ((\"type\", \"type\"), (\"state\", \"state\"))\n\n        routes = transit_gateway_route_table.routes.copy()\n        for key in transit_gateway_route_table.routes:\n            for attrs in attr_pairs:\n                values = filters.get(attrs[0]) or None\n                if values:\n                    if routes[key].get(attrs[1]) not in values:\n                        routes.pop(key)\n                        break",
+      "new_string": "        attr_pairs = ((\"type\", \"type\"), (\"state\", \"state\"))\n\n        routes = transit_gateway_route_table.routes.copy()\n        for key in transit_gateway_route_table.routes:\n            # Handle route-search.exact-match filter\n            exact_match = filters.get(\"route-search.exact-match\")\n            if exact_match:\n                if key not in exact_match:\n                    routes.pop(key)\n                    continue\n\n            # Handle other filters\n            for attrs in attr_pairs:\n                values = filters.get(attrs[0]) or None\n                if values:\n                    if routes[key].get(attrs[1]) not in values:\n                        routes.pop(key)\n                        break",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

@@ -1,0 +1,21 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00006-of-00008.parquet",
+  "row_index": 711,
+  "instance_id": "getmoto__moto.694ce1f4.pr_8132",
+  "repo": "getmoto/moto",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "getmoto__moto.694ce1f4.pr_8132.7755xenp",
+  "messages_sha256": "b8062c8ff44b2cd0befed1e4c74b5a1b411fb6e131982c7d0ccb310edf4ae836",
+  "issue": "### Description\n\nIt seems there's an issue with the state transition of a global network when it's created. After creating a global network, the expected state should transition from `PENDING` to `AVAILABLE`, but it remains `PENDING`.\n\n### Steps to Reproduce\n\n1. Use the `boto3` client to create a global network with a description and tags:\n   ```python\n   client = boto3.client('networkmanager')\n   resp = client.create_global_network(Description='Test global network', Tags=[{'Key': 'Name', 'Value': 'TestNetwork'}])\n   ```\n2. Check the initial state of the global network:\n   ```python\n   global_network = resp['GlobalNetwork']\n   assert global_network['State'] == 'PENDING'\n   ```\n3. Retrieve the global network details:\n   ```python\n   global_network = client.describe_global_networks()['GlobalNetworks'][0]\n   ```\n4. Verify the state transition:\n   ```python\n   assert global_network['State'] == 'AVAILABLE'\n   ```\n\n### Expected Behavior\n\nThe global network's state should transition to `AVAILABLE` after creation.\n\n### Actual Behavior\n\nThe global network's state remains `PENDING`, which is not expected.\n\n### Additional Context\n\nThis issue might affect workflows that rely on the state transition to `AVAILABLE` for further operations.",
+  "actions": [
+    {
+      "source_message_index": 26,
+      "filepath": "moto/networkmanager/models.py",
+      "old_string": "\n    @paginate(pagination_model=PAGINATION_MODEL)\n    def describe_global_networks(\n        self, global_network_ids: List[str]\n    ) -> List[GlobalNetwork]:\n        queried_global_networks = []\n        if not global_network_ids:\n            queried_global_networks = list(self.global_networks.values())\n        elif isinstance(global_network_ids, str):\n            if global_network_ids not in self.global_networks:\n                raise ResourceNotFound(global_network_ids)\n            queried_global_networks.append(self.global_networks[global_network_ids])\n        else:\n            for id in global_network_ids:\n                if id in self.global_networks:\n                    global_network = self.global_networks[id]\n                    queried_global_networks.append(global_network)\n        return queried_global_networks\n",
+      "new_string": "\n    @paginate(pagination_model=PAGINATION_MODEL)\n    def describe_global_networks(\n        self, global_network_ids: List[str]\n    ) -> List[GlobalNetwork]:\n        queried_global_networks = []\n        if not global_network_ids:\n            queried_global_networks = list(self.global_networks.values())\n        elif isinstance(global_network_ids, str):\n            if global_network_ids not in self.global_networks:\n                raise ResourceNotFound(global_network_ids)\n            queried_global_networks.append(self.global_networks[global_network_ids])\n        else:\n            for id in global_network_ids:\n                if id in self.global_networks:\n                    global_network = self.global_networks[id]\n                    queried_global_networks.append(global_network)\n        \n        # Update the state of global networks from PENDING to AVAILABLE\n        for global_network in queried_global_networks:\n            if global_network.state == \"PENDING\":\n                global_network.state = \"AVAILABLE\"\n                \n        return queried_global_networks\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

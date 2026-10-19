@@ -1,0 +1,49 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "astroid/builder.py",
+      "start_line": 459,
+      "end_line": 500
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "astroid/builder.py",
+      "content": "        return extracted_without_none[0]\n    return extracted_without_none\n\n\ndef _extract_single_node(code: str, module_name: str = \"\") -> nodes.NodeNG:\n    \"\"\"Call extract_node while making sure that only one value is returned.\"\"\"\n    ret = extract_node(code, module_name)\n    if isinstance(ret, list):\n        return ret[0]\n    return ret\n\n\ndef _parse_string(\n    data: str, type_comments: bool = True, modname: str | None = None\n) -> tuple[ast.Module, ParserModule]:\n    parser_module = get_parser_module(type_comments=type_comments)\n    try:\n        parsed = parser_module.parse(\n            data + \"\\n\", type_comments=type_comments, filename=modname\n        )\n    except SyntaxError as exc:\n        # If the type annotations are misplaced for some reason, we do not want\n        # to fail the entire parsing of the file, so we need to retry the parsing without\n        # type comment support.\n        if exc.args[0] != MISPLACED_TYPE_ANNOTATION_ERROR or not type_comments:\n            raise\n\n        parser_module = get_parser_module(type_comments=False)\n        parsed = parser_module.parse(data + \"\\n\", type_comments=False)\n    return parsed, parser_module",
+      "start_line": 459,
+      "end_line": 488,
+      "total_lines": 488,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "astroid/builder.py",
+      "old_string": "def _parse_string(\n    data: str, type_comments: bool = True, modname: str | None = None\n) -> tuple[ast.Module, ParserModule]:\n    parser_module = get_parser_module(type_comments=type_comments)\n    try:\n        parsed = parser_module.parse(\n            data + \"\\n\", type_comments=type_comments, filename=modname\n        )\n    except SyntaxError as exc:\n        # If the type annotations are misplaced for some reason, we do not want\n        # to fail the entire parsing of the file, so we need to retry the parsing without\n        # type comment support.\n        if exc.args[0] != MISPLACED_TYPE_ANNOTATION_ERROR or not type_comments:\n            raise\n\n        parser_module = get_parser_module(type_comments=False)\n        parsed = parser_module.parse(data + \"\\n\", type_comments=False)\n    return parsed, parser_module",
+      "new_string": "def _parse_string(\n    data: str, type_comments: bool = True, modname: str | None = None\n) -> tuple[ast.Module, ParserModule]:\n    parser_module = get_parser_module(type_comments=type_comments)\n    try:\n        parsed = parser_module.parse(\n            data + \"\\n\", type_comments=type_comments, filename=modname\n        )\n    except SyntaxError as exc:\n        # If the type annotations are misplaced or invalid for some reason, we do not want\n        # to fail the entire parsing of the file, so we need to retry the parsing without\n        # type comment support.\n        if not type_comments:\n            # If type_comments is already False, we can't recover from this syntax error\n            raise\n            \n        # Try parsing without type comments to see if that resolves the issue\n        try:\n            parser_module = get_parser_module(type_comments=False)\n            parsed = parser_module.parse(data + \"\\n\", type_comments=False)\n            return parsed, parser_module\n        except SyntaxError:\n            # If we still get a syntax error without type comments, then it's not related to type comments\n            # So we should raise the original error\n            raise exc\n    return parsed, parser_module",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "astroid/builder.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/astroid/builder.py\n+++ b/astroid/builder.py\n@@ -477,12 +477,20 @@\n             data + \"\\n\", type_comments=type_comments, filename=modname\n         )\n     except SyntaxError as exc:\n-        # If the type annotations are misplaced for some reason, we do not want\n+        # If the type annotations are misplaced or invalid for some reason, we do not want\n         # to fail the entire parsing of the file, so we need to retry the parsing without\n         # type comment support.\n-        if exc.args[0] != MISPLACED_TYPE_ANNOTATION_ERROR or not type_comments:\n+        if not type_comments:\n+            # If type_comments is already False, we can't recover from this syntax error\n             raise\n-\n-        parser_module = get_parser_module(type_comments=False)\n-        parsed = parser_module.parse(data + \"\\n\", type_comments=False)\n+            \n+        # Try parsing without type comments to see if that resolves the issue\n+        try:\n+            parser_module = get_parser_module(type_comments=False)\n+            parsed = parser_module.parse(data + \"\\n\", type_comments=False)\n+            return parsed, parser_module\n+        except SyntaxError:\n+            # If we still get a syntax error without type comments, then it's not related to type comments\n+            # So we should raise the original error\n+            raise exc\n     return parsed, parser_module\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "get_status",
+    "arguments": {},
+    "response": {
+      "status": "ok",
+      "tool_calls_used": 2,
+      "patch_submitted": false,
+      "patch_size": 0,
+      "tool_calls_remaining": 98,
+      "max_tool_calls": 100,
+      "command_timeout_seconds": 30
+    }
+  }
+]

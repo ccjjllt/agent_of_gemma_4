@@ -1,0 +1,105 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00006-of-00008.parquet",
+  "row_index": 2613,
+  "instance_id": "tox-dev__pipdeptree.c31b6418.pr_357",
+  "repo": "tox-dev/pipdeptree",
+  "source_resolved": true,
+  "teacher_source": "claude-3-5-sonnet-20241022",
+  "traj_id": "tox-dev__pipdeptree.c31b6418.pr_357.23wqg8im",
+  "messages_sha256": "eae08e3795b6dadf9ada80334cde684cdb90d733a07db8c44cc5c626d051dcb9",
+  "issue": "Consider --warn option when dealing with duplicate metadata and invalid requirement string warnings\n### What pipdeptree version are you using?\n\n2.18.1\n\n### Are you running pipdeptree in a virtual environment?\n\n- [ ] Yes\n\n### Describe the problem\n\nThe new duplicate metadata warning text and invalid requirement string warning text (which I both added) do not account for the --warn option. An example:\r\n```console\r\nvscode ➜ /workspaces/pipdeptree (main) $ pipdeptree --warn silence\r\nWarning!!! Duplicate package metadata found:\r\n\"/usr/local/lib/python3.8/site-packages\"\r\n  pip                              23.0.1           (using 24.0, \"/home/vscode/.local/lib/python3.8/site-packages\")\r\n------------------------------------------------------------------------\r\ncovdefaults==2.3.0\r\n└── coverage [required: >=6.0.2, installed: 7.4.4]\r\n. . .\r\n```",
+  "actions": [
+    {
+      "source_message_index": 24,
+      "filepath": "src/pipdeptree/_discovery.py",
+      "old_string": "\ndef filter_valid_distributions(iterable_dists: Iterable[Distribution]) -> list[Distribution]:\n    warning_printer = get_warning_printer()\n\n    # Since importlib.metadata.distributions() can return duplicate packages, we need to handle this. pip's approach is to\n    # keep track of each package metadata it finds, and if it encounters one again it will simply just ignore it. We take\n    # it one step further and warn the user that there are duplicate packages in their environment.\n    # See https://github.com/pypa/pip/blob/7c49d06ea4be4635561f16a524e3842817d1169a/src/pip/_internal/metadata/importlib/_envs.py#L34\n    seen_dists: dict[str, Distribution] = {}\n",
+      "new_string": "\ndef get_warning_printer(warn_option: str = \"suppress\") -> bool:\n    \"\"\"Return whether warnings should be printed based on the --warn option.\"\"\"\n    return warn_option != \"silence\"\n\ndef filter_valid_distributions(iterable_dists: Iterable[Distribution], warn_option: str = \"suppress\") -> list[Distribution]:\n    \"\"\"Filter out invalid distributions and handle duplicates.\n    \n    Args:\n        iterable_dists: Iterable of Distribution objects to filter\n        warn_option: The --warn option value (\"silence\", \"suppress\", or \"fail\")\n    \n    Returns:\n        List of valid Distribution objects with duplicates removed\n    \"\"\"\n    # Since importlib.metadata.distributions() can return duplicate packages, we need to handle this. pip's approach is to\n    # keep track of each package metadata it finds, and if it encounters one again it will simply just ignore it. We take\n    # it one step further and warn the user that there are duplicate packages in their environment.\n    # See https://github.com/pypa/pip/blob/7c49d06ea4be4635561f16a524e3842817d1169a/src/pip/_internal/metadata/importlib/_envs.py#L34\n    seen_dists: dict[str, Distribution] = {}\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 26,
+      "filepath": "src/pipdeptree/_discovery.py",
+      "old_string": "\ndef filter_valid_distributions(iterable_dists: Iterable[Distribution]) -> list[Distribution]:\n    warning_printer = get_warning_printer()\n\n    # Since importlib.metadata.distributions() can return duplicate packages, we need to handle this. pip's approach is\n    # to keep track of each package metadata it finds, and if it encounters one again it will simply just ignore it. We\n    # take it one step further and warn the user that there are duplicate packages in their environment.\n    # See https://github.com/pypa/pip/blob/7c49d06ea4be4635561f16a524e3842817d1169a/src/pip/_internal/metadata/importlib/_envs.py#L34\n    seen_dists: dict[str, Distribution] = {}\n",
+      "new_string": "\ndef get_warning_printer(warn_option: str = \"suppress\") -> bool:\n    \"\"\"Return whether warnings should be printed based on the --warn option.\"\"\"\n    return warn_option != \"silence\"\n\ndef filter_valid_distributions(iterable_dists: Iterable[Distribution], warn_option: str = \"suppress\") -> list[Distribution]:\n    \"\"\"Filter out invalid distributions and handle duplicates.\n    \n    Args:\n        iterable_dists: Iterable of Distribution objects to filter\n        warn_option: The --warn option value (\"silence\", \"suppress\", or \"fail\")\n    \n    Returns:\n        List of valid Distribution objects with duplicates removed\n    \"\"\"\n    # Since importlib.metadata.distributions() can return duplicate packages, we need to handle this. pip's approach is\n    # to keep track of each package metadata it finds, and if it encounters one again it will simply just ignore it. We\n    # take it one step further and warn the user that there are duplicate packages in their environment.\n    # See https://github.com/pypa/pip/blob/7c49d06ea4be4635561f16a524e3842817d1169a/src/pip/_internal/metadata/importlib/_envs.py#L34\n    seen_dists: dict[str, Distribution] = {}\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 28,
+      "filepath": "src/pipdeptree/_discovery.py",
+      "old_string": "\ndef render_duplicated_dist_metadata_text(\n    first_seen_to_already_seen_dists_dict: dict[Distribution, list[Distribution]],\n) -> None:\n    entries_to_pairs_dict: dict[str, list[FirstSeenWithDistsPair]] = {}\n    for first_seen, dists in first_seen_to_already_seen_dists_dict.items():\n        for dist in dists:\n            entry = str(dist.locate_file(\"\"))\n            dist_list = entries_to_pairs_dict.setdefault(entry, [])\n            dist_list.append((first_seen, dist))\n\n    print(\"Warning!!! Duplicate package metadata found:\", file=sys.stderr)  # noqa: T201\n    for entry, pairs in entries_to_pairs_dict.items():\n        print(f'\"{entry}\"', file=sys.stderr)  # noqa: T201\n        for first_seen, dist in pairs:\n            print(  # noqa: T201\n                (\n                    f\"  {dist.metadata['Name']:<32} {dist.version:<16} (using {first_seen.version},\"\n                    f' \"{first_seen.locate_file(\"\")}\")'\n                ),\n                file=sys.stderr,\n            )\n    print(\"-\" * 72, file=sys.stderr)  # noqa: T201\n",
+      "new_string": "\ndef render_duplicated_dist_metadata_text(\n    first_seen_to_already_seen_dists_dict: dict[Distribution, list[Distribution]],\n    warn_option: str = \"suppress\",\n) -> None:\n    if warn_option == \"silence\":\n        return\n\n    entries_to_pairs_dict: dict[str, list[FirstSeenWithDistsPair]] = {}\n    for first_seen, dists in first_seen_to_already_seen_dists_dict.items():\n        for dist in dists:\n            entry = str(dist.locate_file(\"\"))\n            dist_list = entries_to_pairs_dict.setdefault(entry, [])\n            dist_list.append((first_seen, dist))\n\n    print(\"Warning!!! Duplicate package metadata found:\", file=sys.stderr)  # noqa: T201\n    for entry, pairs in entries_to_pairs_dict.items():\n        print(f'\"{entry}\"', file=sys.stderr)  # noqa: T201\n        for first_seen, dist in pairs:\n            print(  # noqa: T201\n                (\n                    f\"  {dist.metadata['Name']:<32} {dist.version:<16} (using {first_seen.version},\"\n                    f' \"{first_seen.locate_file(\"\")}\")'\n                ),\n                file=sys.stderr,\n            )\n    print(\"-\" * 72, file=sys.stderr)  # noqa: T201\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 30,
+      "filepath": "src/pipdeptree/_discovery.py",
+      "old_string": "\n    if first_seen_to_already_seen_dists_dict:\n        render_duplicated_dist_metadata_text(first_seen_to_already_seen_dists_dict)\n\n    return dists\n",
+      "new_string": "\n    if first_seen_to_already_seen_dists_dict:\n        render_duplicated_dist_metadata_text(first_seen_to_already_seen_dists_dict, warn_option)\n\n    return dists\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 32,
+      "filepath": "src/pipdeptree/_discovery.py",
+      "old_string": "\ndef get_installed_distributions(\n    interpreter: str = str(sys.executable),\n    supplied_paths: list[str] | None = None,\n    local_only: bool = False,  # noqa: FBT001, FBT002\n    user_only: bool = False,  # noqa: FBT001, FBT002\n) -> list[Distribution]:\n    # This will be the default since it's used by both importlib.metadata.PathDistribution and pip by default.\n    computed_paths = supplied_paths or sys.path\n",
+      "new_string": "\ndef get_installed_distributions(\n    interpreter: str = str(sys.executable),\n    supplied_paths: list[str] | None = None,\n    local_only: bool = False,  # noqa: FBT001, FBT002\n    user_only: bool = False,  # noqa: FBT001, FBT002\n    warn_option: str = \"suppress\",\n) -> list[Distribution]:\n    # This will be the default since it's used by both importlib.metadata.PathDistribution and pip by default.\n    computed_paths = supplied_paths or sys.path\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 34,
+      "filepath": "src/pipdeptree/_discovery.py",
+      "old_string": "\n    if user_only:\n        computed_paths = [p for p in computed_paths if p.startswith(site.getusersitepackages())]\n\n    return filter_valid_distributions(distributions(path=computed_paths))\n",
+      "new_string": "\n    if user_only:\n        computed_paths = [p for p in computed_paths if p.startswith(site.getusersitepackages())]\n\n    return filter_valid_distributions(distributions(path=computed_paths), warn_option=warn_option)\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 44,
+      "filepath": "src/pipdeptree/_models/package.py",
+      "old_string": "\ndef requires(self) -> Iterator[Requirement]:\n        \"\"\"\n        Return an iterator of the distribution's required dependencies.\n\n        :raises InvalidRequirementError: If the metadata contains invalid requirement strings.\n        \"\"\"\n        for r in self._obj.requires or []:\n            try:\n                req = Requirement(r)\n            except InvalidRequirement:\n                raise InvalidRequirementError(r) from None\n            if not req.marker or req.marker.evaluate():\n                # Make sure that we're either dealing with a dependency that has no environment markers or does but\n                # are evaluated True against the existing environment (if it's False, it means they cannot be\n                # installed). \"extra\" markers are always evaluated False here which is what we want when retrieving\n                # only required dependencies.\n                yield req\n",
+      "new_string": "\ndef render_invalid_requirement_text(req_str: str, warn_option: str = \"suppress\") -> None:\n    \"\"\"Print a warning about an invalid requirement string.\"\"\"\n    if warn_option == \"silence\":\n        return\n\n    print(\"Warning!!! Invalid requirement string found:\", file=sys.stderr)  # noqa: T201\n    print(f'\"{req_str}\"', file=sys.stderr)  # noqa: T201\n    print(\"-\" * 72, file=sys.stderr)  # noqa: T201\n\ndef requires(self, warn_option: str = \"suppress\") -> Iterator[Requirement]:\n        \"\"\"\n        Return an iterator of the distribution's required dependencies.\n\n        Args:\n            warn_option: The --warn option value (\"silence\", \"suppress\", or \"fail\")\n\n        :raises InvalidRequirementError: If the metadata contains invalid requirement strings and warn_option is \"fail\".\n        \"\"\"\n        for r in self._obj.requires or []:\n            try:\n                req = Requirement(r)\n            except InvalidRequirement:\n                if warn_option == \"fail\":\n                    raise InvalidRequirementError(r) from None\n                self.render_invalid_requirement_text(r, warn_option)\n                continue\n            if not req.marker or req.marker.evaluate():\n                # Make sure that we're either dealing with a dependency that has no environment markers or does but\n                # are evaluated True against the existing environment (if it's False, it means they cannot be\n                # installed). \"extra\" markers are always evaluated False here which is what we want when retrieving\n                # only required dependencies.\n                yield req\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 46,
+      "filepath": "src/pipdeptree/_models/package.py",
+      "old_string": "\n    def render_invalid_requirement_text(req_str: str, warn_option: str = \"suppress\") -> None:\n    \"\"\"Print a warning about an invalid requirement string.\"\"\"\n    if warn_option == \"silence\":\n        return\n\n    print(\"Warning!!! Invalid requirement string found:\", file=sys.stderr)  # noqa: T201\n    print(f'\"{req_str}\"', file=sys.stderr)  # noqa: T201\n    print(\"-\" * 72, file=sys.stderr)  # noqa: T201\n\ndef requires(self, warn_option: str = \"suppress\") -> Iterator[Requirement]:\n",
+      "new_string": "\n    def render_invalid_requirement_text(self, req_str: str, warn_option: str = \"suppress\") -> None:\n        \"\"\"Print a warning about an invalid requirement string.\"\"\"\n        if warn_option == \"silence\":\n            return\n\n        print(\"Warning!!! Invalid requirement string found:\", file=sys.stderr)  # noqa: T201\n        print(f'\"{req_str}\"', file=sys.stderr)  # noqa: T201\n        print(\"-\" * 72, file=sys.stderr)  # noqa: T201\n\n    def requires(self, warn_option: str = \"suppress\") -> Iterator[Requirement]:\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 48,
+      "filepath": "src/pipdeptree/_models/package.py",
+      "old_string": "\nfrom __future__ import annotations\n\nfrom abc import ABC, abstractmethod\nfrom importlib import import_module\nfrom importlib.metadata import Distribution, PackageNotFoundError, metadata, version\nfrom inspect import ismodule\nfrom typing import TYPE_CHECKING, Iterator\n",
+      "new_string": "\nfrom __future__ import annotations\n\nimport sys\nfrom abc import ABC, abstractmethod\nfrom importlib import import_module\nfrom importlib.metadata import Distribution, PackageNotFoundError, metadata, version\nfrom inspect import ismodule\nfrom typing import TYPE_CHECKING, Iterator\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 74,
+      "filepath": "src/pipdeptree/__main__.py",
+      "old_string": "\n    pkgs = get_installed_distributions(\n        interpreter=options.python,\n        supplied_paths=options.path or None,\n        local_only=options.local_only,\n        user_only=options.user_only,\n    )\n",
+      "new_string": "\n    pkgs = get_installed_distributions(\n        interpreter=options.python,\n        supplied_paths=options.path or None,\n        local_only=options.local_only,\n        user_only=options.user_only,\n        warn_option=options.warn,\n    )\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 78,
+      "filepath": "src/pipdeptree/_models/dag.py",
+      "old_string": "\ndef render_invalid_reqs_text_if_necessary(dist_name_to_invalid_reqs_dict: dict[str, list[str]]) -> None:\n    if not dist_name_to_invalid_reqs_dict:\n        return\n\n    print(\"Warning!!! Invalid requirement strings found for the following distributions:\", file=sys.stderr)  # noqa: T201\n    for dist_name, invalid_reqs in dist_name_to_invalid_reqs_dict.items():\n        print(dist_name, file=sys.stderr)  # noqa: T201\n\n        for invalid_req in invalid_reqs:\n            print(f'  Skipping \"{invalid_req}\"', file=sys.stderr)  # noqa: T201\n    print(\"-\" * 72, file=sys.stderr)  # noqa: T201\n",
+      "new_string": "\ndef render_invalid_reqs_text_if_necessary(\n    dist_name_to_invalid_reqs_dict: dict[str, list[str]],\n    warn_option: str = \"suppress\",\n) -> None:\n    if not dist_name_to_invalid_reqs_dict or warn_option == \"silence\":\n        return\n\n    print(\"Warning!!! Invalid requirement strings found for the following distributions:\", file=sys.stderr)  # noqa: T201\n    for dist_name, invalid_reqs in dist_name_to_invalid_reqs_dict.items():\n        print(dist_name, file=sys.stderr)  # noqa: T201\n\n        for invalid_req in invalid_reqs:\n            print(f'  Skipping \"{invalid_req}\"', file=sys.stderr)  # noqa: T201\n    print(\"-\" * 72, file=sys.stderr)  # noqa: T201\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 80,
+      "filepath": "src/pipdeptree/_models/dag.py",
+      "old_string": "\n    @classmethod\n    def from_pkgs(cls, pkgs: list[Distribution]) -> PackageDAG:\n        dist_pkgs = [DistPackage(p) for p in pkgs]\n        idx = {p.key: p for p in dist_pkgs}\n        m: dict[DistPackage, list[ReqPackage]] = {}\n        dist_name_to_invalid_reqs_dict: dict[str, list[str]] = {}\n        for p in dist_pkgs:\n            reqs = []\n            requires_iterator = p.requires()\n            while True:\n                try:\n                    req = next(requires_iterator)\n                except InvalidRequirementError as err:\n                    # We can't work with invalid requirement strings. Let's warn the user about them.\n                    dist_name_to_invalid_reqs_dict.setdefault(p.project_name, []).append(str(err))\n                    continue\n                except StopIteration:\n                    break\n                d = idx.get(canonicalize_name(req.name))\n                # Distribution.requires only returns the name of requirements in the metadata file, which may not be the\n                # same as the name in PyPI. We should try to retain the original package names for requirements.\n                # See https://github.com/tox-dev/pipdeptree/issues/242\n                req.name = d.project_name if d is not None else req.name\n                pkg = ReqPackage(req, d)\n                reqs.append(pkg)\n            m[p] = reqs\n\n        render_invalid_reqs_text_if_necessary(dist_name_to_invalid_reqs_dict)\n\n        return cls(m)\n",
+      "new_string": "\n    @classmethod\n    def from_pkgs(cls, pkgs: list[Distribution], warn_option: str = \"suppress\") -> PackageDAG:\n        dist_pkgs = [DistPackage(p) for p in pkgs]\n        idx = {p.key: p for p in dist_pkgs}\n        m: dict[DistPackage, list[ReqPackage]] = {}\n        dist_name_to_invalid_reqs_dict: dict[str, list[str]] = {}\n        for p in dist_pkgs:\n            reqs = []\n            requires_iterator = p.requires(warn_option=warn_option)\n            while True:\n                try:\n                    req = next(requires_iterator)\n                except InvalidRequirementError as err:\n                    # We can't work with invalid requirement strings. Let's warn the user about them.\n                    dist_name_to_invalid_reqs_dict.setdefault(p.project_name, []).append(str(err))\n                    continue\n                except StopIteration:\n                    break\n                d = idx.get(canonicalize_name(req.name))\n                # Distribution.requires only returns the name of requirements in the metadata file, which may not be the\n                # same as the name in PyPI. We should try to retain the original package names for requirements.\n                # See https://github.com/tox-dev/pipdeptree/issues/242\n                req.name = d.project_name if d is not None else req.name\n                pkg = ReqPackage(req, d)\n                reqs.append(pkg)\n            m[p] = reqs\n\n        render_invalid_reqs_text_if_necessary(dist_name_to_invalid_reqs_dict, warn_option)\n\n        return cls(m)\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 82,
+      "filepath": "src/pipdeptree/__main__.py",
+      "old_string": "\n    tree = PackageDAG.from_pkgs(pkgs)\n",
+      "new_string": "\n    tree = PackageDAG.from_pkgs(pkgs, warn_option=options.warn)\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

@@ -1,0 +1,162 @@
+{
+  "sample_id": "p012-getmoto__moto.694ce1f4.pr_8618",
+  "transaction_id": "p012-getmoto__moto.694ce1f4.pr_8618",
+  "producer_revision": "p012-local-2",
+  "synthetic": false,
+  "origin_kind": "cpu_replayed_source_edit_subset",
+  "group": {
+    "issue": "getmoto__moto.694ce1f4.pr_8618",
+    "repo": "getmoto/moto",
+    "commit": "a55d87d6faffada3f3c8e4da803ffe1b379017a8",
+    "split": "train"
+  },
+  "source": {
+    "uri": "https://huggingface.co/datasets/SWE-bench/SWE-smith-trajectories/tree/08e109b4a59eaeebf80e4675cd125d42e7ac99a4",
+    "license": "MIT dataset; repository license in provenance.json",
+    "sha256": "123a479397d2b10529efda726a425cd2b39ef4f038d0e6cac6ed9b0155509b16",
+    "teacher": "claude-3-7-sonnet-20250219",
+    "traj_id": "getmoto__moto.694ce1f4.pr_8618.y1wve1wy"
+  },
+  "protocol_id": "p012-repair-v1",
+  "tool_schema": {
+    "path": "research/012/agent/repair_tools_v1.json",
+    "canonical_sha256": "91ec82b15fe0961b3ef9e686fac268706ce954a69cabaa0d705c63d41088e267",
+    "names": [
+      "run_command",
+      "read_file",
+      "edit_file",
+      "write_file",
+      "get_status"
+    ],
+    "repair_role_holds_submit_patch": false
+  },
+  "messages": [
+    {
+      "role": "system",
+      "content": "Use the supplied repository tools. Preserve unrelated behavior. Treat tool failures as observations and correct the action before retrying. Do not modify tests."
+    },
+    {
+      "role": "user",
+      "content": "Implement the following requested change in the repository.\n\n# describe_clusters method broken after pagination changes\n\n## What happened?\n\nAfter recent changes to the pagination implementation in the CloudHSMV2 backend, the `describe_clusters` method is no longer working correctly. The method was modified to remove the `@paginate` decorator but the pagination functionality wasn't properly reimplemented.\n\n## What did you expect to happen?\n\nI expected the `describe_clusters` method to continue working as before, properly handling pagination when requested.\n\n## Minimal Complete Verifiable Example\n\n```python\nimport boto3\nfrom moto import mock_aws\n\n@mock_aws\ndef reproduce_issue():\n    client = boto3.client('cloudhsmv2', region_name='us-east-1')\n    \n    # Create a cluster\n    response = client.create_cluster(\n        HsmType='hsm1.medium', \n        SubnetIds=['subnet-12345678']\n    )\n    \n    # This fails with a TypeError\n    clusters = client.describe_clusters()\n    print(clusters)\n    \n    # Pagination also doesn't work\n    client.create_cluster(HsmType='hsm1.medium', SubnetIds=['subnet-87654321'])\n    client.create_cluster(HsmType='hsm1.medium', SubnetIds=['subnet-11223344'])\n    \n    # This fails too\n    paginated = client.describe_clusters(MaxResults=2)\n    print(paginated)\n\nreproduce_issue()\n```\n\nWhen running this code, you'll get a TypeError because the `describe_clusters` method is missing the pagination implementation that was previously handled by the `@paginate` decorator.\n\nThe issue appears to be that while the `describe_backups` method was updated to handle pagination manually, the `describe_clusters` method wasn't given the same treatment, even though its decorator was removed.\n\nScope of this editing session: update the following production files and report the resulting local change for handover: moto/cloudhsmv2/models.py. No full task validation has been performed in this session."
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_00",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": {
+              "filepath": "moto/cloudhsmv2/models.py",
+              "start_line": 214,
+              "end_line": 261
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_00",
+      "name": "read_file",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"filepath\": \"moto/cloudhsmv2/models.py\", \"content\": \"        return cluster.to_dict()\\n\\n    def delete_cluster(self, cluster_id: str) -> Dict[str, Any]:\\n        if cluster_id not in self.clusters:\\n            raise ResourceNotFoundException(f\\\"Cluster {cluster_id} not found\\\")\\n\\n        cluster = self.clusters[cluster_id]\\n        cluster.state = \\\"DELETED\\\"\\n        cluster.state_message = \\\"Cluster deleted\\\"\\n        del self.clusters[cluster_id]\\n        return cluster.to_dict()\\n\\n    def describe_clusters(\\n        self, filters: Optional[Dict[str, List[str]]] = None\\n    ) -> List[Dict[str, str]]:\\n        \\\"\\\"\\\"List all clusters with optional filtering.\\n\\n        Args:\\n            filters: Optional dictionary of filters to apply\\n\\n        Returns:\\n            List of cluster dictionaries\\n        \\\"\\\"\\\"\\n        clusters = list(self.clusters.values())\\n\\n        if filters:\\n            for key, values in filters.items():\\n                if key == \\\"clusterIds\\\":\\n                    clusters = [c for c in clusters if c.cluster_id in values]\\n                elif key == \\\"states\\\":\\n                    clusters = [c for c in clusters if c.state in values]\\n                elif key == \\\"vpcIds\\\":\\n                    clusters = [c for c in clusters if c.vpc_id in values]\\n\\n        clusters = sorted(clusters, key=lambda x: x.create_timestamp)\\n        return [c.to_dict() for c in clusters]\\n\\n    def get_resource_policy(self, resource_arn: str) -> Optional[str]:\\n        return self.resource_policies.get(resource_arn)\\n\\n    def describe_backups(\\n        self,\\n        next_token: Optional[str],\\n        max_results: Optional[int],\\n        filters: Optional[Dict[str, List[str]]],\\n        shared: Optional[bool],\\n        sort_ascending: Optional[bool],\\n    ) -> Tuple[List[Dict[str, Any]], Optional[str]]:\", \"start_line\": 214, \"end_line\": 261, \"total_lines\": 299, \"is_truncated\": false}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_01",
+          "type": "function",
+          "function": {
+            "name": "edit_file",
+            "arguments": {
+              "filepath": "moto/cloudhsmv2/models.py",
+              "old_string": "    def describe_clusters(\n        self, filters: Optional[Dict[str, List[str]]] = None\n    ) -> List[Dict[str, str]]:\n        \"\"\"List all clusters with optional filtering.\n\n        Args:\n            filters: Optional dictionary of filters to apply\n\n        Returns:\n            List of cluster dictionaries\n        \"\"\"\n        clusters = list(self.clusters.values())\n\n        if filters:\n            for key, values in filters.items():\n                if key == \"clusterIds\":\n                    clusters = [c for c in clusters if c.cluster_id in values]\n                elif key == \"states\":\n                    clusters = [c for c in clusters if c.state in values]\n                elif key == \"vpcIds\":\n                    clusters = [c for c in clusters if c.vpc_id in values]\n\n        clusters = sorted(clusters, key=lambda x: x.create_timestamp)\n        return [c.to_dict() for c in clusters]",
+              "new_string": "    def describe_clusters(\n        self, \n        filters: Optional[Dict[str, List[str]]] = None,\n        next_token: Optional[str] = None,\n        max_results: Optional[int] = None\n    ) -> Tuple[List[Dict[str, Any]], Optional[str]]:\n        \"\"\"List all clusters with optional filtering and pagination.\n\n        Args:\n            filters: Optional dictionary of filters to apply\n            next_token: Optional pagination token\n            max_results: Optional maximum number of results to return\n\n        Returns:\n            Tuple of (list of cluster dictionaries, next token)\n        \"\"\"\n        clusters = list(self.clusters.values())\n\n        if filters:\n            for key, values in filters.items():\n                if key == \"clusterIds\":\n                    clusters = [c for c in clusters if c.cluster_id in values]\n                elif key == \"states\":\n                    clusters = [c for c in clusters if c.state in values]\n                elif key == \"vpcIds\":\n                    clusters = [c for c in clusters if c.vpc_id in values]\n\n        clusters = sorted(clusters, key=lambda x: x.create_timestamp)\n        cluster_dicts = [c.to_dict() for c in clusters]\n        \n        if not max_results:\n            return cluster_dicts, None\n            \n        paginator = Paginator(\n            max_results=max_results,\n            unique_attribute=\"ClusterId\",\n            starting_token=next_token,\n            fail_on_invalid_token=False,\n        )\n        results, token = paginator.paginate(cluster_dicts)\n        return results, token",
+              "allow_multiple": false
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_01",
+      "name": "edit_file",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"filepath\": \"moto/cloudhsmv2/models.py\", \"occurrences\": 1, \"strategy\": \"exact\", \"diff\": \"--- a/moto/cloudhsmv2/models.py\\n+++ b/moto/cloudhsmv2/models.py\\n@@ -224,15 +224,20 @@\\n         return cluster.to_dict()\\n \\n     def describe_clusters(\\n-        self, filters: Optional[Dict[str, List[str]]] = None\\n-    ) -> List[Dict[str, str]]:\\n-        \\\"\\\"\\\"List all clusters with optional filtering.\\n+        self, \\n+        filters: Optional[Dict[str, List[str]]] = None,\\n+        next_token: Optional[str] = None,\\n+        max_results: Optional[int] = None\\n+    ) -> Tuple[List[Dict[str, Any]], Optional[str]]:\\n+        \\\"\\\"\\\"List all clusters with optional filtering and pagination.\\n \\n         Args:\\n             filters: Optional dictionary of filters to apply\\n+            next_token: Optional pagination token\\n+            max_results: Optional maximum number of results to return\\n \\n         Returns:\\n-            List of cluster dictionaries\\n+            Tuple of (list of cluster dictionaries, next token)\\n         \\\"\\\"\\\"\\n         clusters = list(self.clusters.values())\\n \\n@@ -246,7 +251,19 @@\\n                     clusters = [c for c in clusters if c.vpc_id in values]\\n \\n         clusters = sorted(clusters, key=lambda x: x.create_timestamp)\\n-        return [c.to_dict() for c in clusters]\\n+        cluster_dicts = [c.to_dict() for c in clusters]\\n+        \\n+        if not max_results:\\n+            return cluster_dicts, None\\n+            \\n+        paginator = Paginator(\\n+            max_results=max_results,\\n+            unique_attribute=\\\"ClusterId\\\",\\n+            starting_token=next_token,\\n+            fail_on_invalid_token=False,\\n+        )\\n+        results, token = paginator.paginate(cluster_dicts)\\n+        return results, token\\n \\n     def get_resource_policy(self, resource_arn: str) -> Optional[str]:\\n         return self.resource_policies.get(resource_arn)\\n\", \"is_truncated\": false}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_02",
+          "type": "function",
+          "function": {
+            "name": "get_status",
+            "arguments": {}
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_02",
+      "name": "get_status",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"tool_calls_used\": 2, \"patch_submitted\": false, \"patch_size\": 0, \"tool_calls_remaining\": 98, \"max_tool_calls\": 100, \"command_timeout_seconds\": 30}"
+    },
+    {
+      "role": "assistant",
+      "content": "{\n  \"candidate_id\": \"p012-getmoto__moto.694ce1f4.pr_8618\",\n  \"files\": [\n    {\n      \"path\": \"moto/cloudhsmv2/models.py\",\n      \"after_sha256\": \"626e9688080be960e944362b56bb967a22d5c7fce9c4c2ed456d695c82e0b171\"\n    }\n  ],\n  \"requirement_done\": true,\n  \"requirement_scope\": \"local production edits applied and syntactically parsed; full-task validation NOT performed in this session\",\n  \"verification\": {\n    \"observation\": \"get_status\",\n    \"status\": \"ok\",\n    \"scope\": \"post-edit local patch status of the same workspace; no repository test suite or whole-issue oracle executed\"\n  },\n  \"unresolved\": [\n    \"no whole-issue oracle executed; task_resolved=null\",\n    \"behavior recovery chain to be upgraded by a later step, not fabricated here\"\n  ],\n  \"needs_other_route\": false\n}",
+      "tool_calls": []
+    }
+  ],
+  "target_assistant_steps": [
+    1,
+    2,
+    3
+  ],
+  "behavior": "local_edit",
+  "needs_replay": false,
+  "attempt_status": "local_edits_applied",
+  "observed_outcome": {
+    "action_succeeded": true,
+    "task_resolved": null,
+    "behavior_verified": false,
+    "syntax_parse_passed": true,
+    "local_patch_nonempty": true,
+    "handover_reported": true,
+    "scope": "All selected structured production str_replace actions replayed from fixed buggy snapshot with five official tools (no submit_patch); post-edit status observed via get_status; session ends with a handover report, not a submission. This is local edit supervision, not a resolved task or full trajectory."
+  },
+  "handover": {
+    "candidate_id": "p012-getmoto__moto.694ce1f4.pr_8618",
+    "files": [
+      {
+        "path": "moto/cloudhsmv2/models.py",
+        "after_sha256": "626e9688080be960e944362b56bb967a22d5c7fce9c4c2ed456d695c82e0b171"
+      }
+    ],
+    "requirement_done": true,
+    "requirement_scope": "local production edits applied and syntactically parsed; full-task validation NOT performed in this session",
+    "verification": {
+      "observation": "get_status",
+      "status": "ok",
+      "scope": "post-edit local patch status of the same workspace; no repository test suite or whole-issue oracle executed"
+    },
+    "unresolved": [
+      "no whole-issue oracle executed; task_resolved=null",
+      "behavior recovery chain to be upgraded by a later step, not fabricated here"
+    ],
+    "needs_other_route": false
+  },
+  "source_resolved_label": true,
+  "source_label_not_revalidated": true,
+  "replay_boundary": "Unchanged official v31 tool functions minus submit_patch, with macOS local transport, production subset. Read locations derived from source edit targets; this is edit/action SFT, not search-policy supervision.",
+  "continuation_policy": "New read/edit/status tool observations only; no old assistant future or old tool observations reused."
+}

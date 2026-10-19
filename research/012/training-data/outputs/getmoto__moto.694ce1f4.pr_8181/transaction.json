@@ -1,0 +1,162 @@
+{
+  "sample_id": "p012-getmoto__moto.694ce1f4.pr_8181",
+  "transaction_id": "p012-getmoto__moto.694ce1f4.pr_8181",
+  "producer_revision": "p012-local-2",
+  "synthetic": false,
+  "origin_kind": "cpu_replayed_source_edit_subset",
+  "group": {
+    "issue": "getmoto__moto.694ce1f4.pr_8181",
+    "repo": "getmoto/moto",
+    "commit": "06b0ec849b9e28445af7fcbe718990a211cbb132",
+    "split": "train"
+  },
+  "source": {
+    "uri": "https://huggingface.co/datasets/SWE-bench/SWE-smith-trajectories/tree/08e109b4a59eaeebf80e4675cd125d42e7ac99a4",
+    "license": "MIT dataset; repository license in provenance.json",
+    "sha256": "e02ae210932fd6d31a34d4428d8b63c61e05894f5d7a6a81e3f9015d4eee61ef",
+    "teacher": "claude-3-7-sonnet-20250219",
+    "traj_id": "getmoto__moto.694ce1f4.pr_8181.y1wve1wy"
+  },
+  "protocol_id": "p012-repair-v1",
+  "tool_schema": {
+    "path": "research/012/agent/repair_tools_v1.json",
+    "canonical_sha256": "91ec82b15fe0961b3ef9e686fac268706ce954a69cabaa0d705c63d41088e267",
+    "names": [
+      "run_command",
+      "read_file",
+      "edit_file",
+      "write_file",
+      "get_status"
+    ],
+    "repair_role_holds_submit_patch": false
+  },
+  "messages": [
+    {
+      "role": "system",
+      "content": "Use the supplied repository tools. Preserve unrelated behavior. Treat tool failures as observations and correct the action before retrying. Do not modify tests."
+    },
+    {
+      "role": "user",
+      "content": "Implement the following requested change in the repository.\n\n# Incorrect error code and message when describing a non-existent Shield subscription\n\nI think there's a bug in the Shield service implementation. When trying to describe a subscription that doesn't exist, the error code and message don't match what the AWS API returns.\n\n## Steps to reproduce\n\n1. Create a Shield client\n2. Call `describe_subscription()` without creating a subscription first\n\n## Expected behavior\n\nThe error should have:\n- Code: `ResourceNotFoundException`\n- Message: `The subscription does not exist.`\n\n## Actual behavior\n\nThe error has:\n- Code: `SubscriptionNotFoundException`\n- Message: `No Shield subscription has been created for this account`\n\n## Reproduction code\n\n```python\nimport boto3\nfrom botocore.exceptions import ClientError\n\nclient = boto3.client('shield', region_name='eu-west-1')\n\ntry:\n    client.describe_subscription()\nexcept ClientError as e:\n    print(f\"Error code: {e.response['Error']['Code']}\")\n    print(f\"Error message: {e.response['Error']['Message']}\")\n```\n\nThis returns the incorrect error code and message instead of the expected ones. This could break client code that's specifically checking for the correct error code and message.\n\nScope of this editing session: update the following production files and report the resulting local change for handover: moto/shield/exceptions.py. No full task validation has been performed in this session."
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_00",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": {
+              "filepath": "moto/shield/exceptions.py",
+              "start_line": 29,
+              "end_line": 60
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_00",
+      "name": "read_file",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"filepath\": \"moto/shield/exceptions.py\", \"content\": \"\\n    def __init__(self, message: str):\\n        super().__init__(\\\"ResourceNotFoundException\\\", message)\\n\\n\\nclass ValidationException(JsonRESTError):\\n    code = 400\\n\\n    def __init__(self, message: str):\\n        super().__init__(\\\"ValidationException\\\", message)\\n\\n\\nclass SubscriptionNotFoundError(JsonRESTError):\\n    code = 400\\n\\n    def __init__(self) -> None:\\n        super().__init__(\\n            \\\"SubscriptionNotFoundException\\\",\\n            \\\"No Shield subscription has been created for this account\\\",\\n        )\", \"start_line\": 29, \"end_line\": 48, \"total_lines\": 48, \"is_truncated\": false}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_01",
+          "type": "function",
+          "function": {
+            "name": "edit_file",
+            "arguments": {
+              "filepath": "moto/shield/exceptions.py",
+              "old_string": "class SubscriptionNotFoundError(JsonRESTError):\n    code = 400\n\n    def __init__(self) -> None:\n        super().__init__(\n            \"SubscriptionNotFoundException\",\n            \"No Shield subscription has been created for this account\",\n        )",
+              "new_string": "class SubscriptionNotFoundError(JsonRESTError):\n    code = 400\n\n    def __init__(self) -> None:\n        super().__init__(\n            \"ResourceNotFoundException\",\n            \"The subscription does not exist.\",\n        )",
+              "allow_multiple": false
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_01",
+      "name": "edit_file",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"filepath\": \"moto/shield/exceptions.py\", \"occurrences\": 1, \"strategy\": \"exact\", \"diff\": \"--- a/moto/shield/exceptions.py\\n+++ b/moto/shield/exceptions.py\\n@@ -43,6 +43,6 @@\\n \\n     def __init__(self) -> None:\\n         super().__init__(\\n-            \\\"SubscriptionNotFoundException\\\",\\n-            \\\"No Shield subscription has been created for this account\\\",\\n+            \\\"ResourceNotFoundException\\\",\\n+            \\\"The subscription does not exist.\\\",\\n         )\", \"is_truncated\": false}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_02",
+          "type": "function",
+          "function": {
+            "name": "get_status",
+            "arguments": {}
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_02",
+      "name": "get_status",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"tool_calls_used\": 2, \"patch_submitted\": false, \"patch_size\": 0, \"tool_calls_remaining\": 98, \"max_tool_calls\": 100, \"command_timeout_seconds\": 30}"
+    },
+    {
+      "role": "assistant",
+      "content": "{\n  \"candidate_id\": \"p012-getmoto__moto.694ce1f4.pr_8181\",\n  \"files\": [\n    {\n      \"path\": \"moto/shield/exceptions.py\",\n      \"after_sha256\": \"296ea41891ca43e313d047eb91189dcddade9f5dde73309363b4e74dbf4a8d5e\"\n    }\n  ],\n  \"requirement_done\": true,\n  \"requirement_scope\": \"local production edits applied and syntactically parsed; full-task validation NOT performed in this session\",\n  \"verification\": {\n    \"observation\": \"get_status\",\n    \"status\": \"ok\",\n    \"scope\": \"post-edit local patch status of the same workspace; no repository test suite or whole-issue oracle executed\"\n  },\n  \"unresolved\": [\n    \"no whole-issue oracle executed; task_resolved=null\",\n    \"behavior recovery chain to be upgraded by a later step, not fabricated here\"\n  ],\n  \"needs_other_route\": false\n}",
+      "tool_calls": []
+    }
+  ],
+  "target_assistant_steps": [
+    1,
+    2,
+    3
+  ],
+  "behavior": "local_edit",
+  "needs_replay": false,
+  "attempt_status": "local_edits_applied",
+  "observed_outcome": {
+    "action_succeeded": true,
+    "task_resolved": null,
+    "behavior_verified": false,
+    "syntax_parse_passed": true,
+    "local_patch_nonempty": true,
+    "handover_reported": true,
+    "scope": "All selected structured production str_replace actions replayed from fixed buggy snapshot with five official tools (no submit_patch); post-edit status observed via get_status; session ends with a handover report, not a submission. This is local edit supervision, not a resolved task or full trajectory."
+  },
+  "handover": {
+    "candidate_id": "p012-getmoto__moto.694ce1f4.pr_8181",
+    "files": [
+      {
+        "path": "moto/shield/exceptions.py",
+        "after_sha256": "296ea41891ca43e313d047eb91189dcddade9f5dde73309363b4e74dbf4a8d5e"
+      }
+    ],
+    "requirement_done": true,
+    "requirement_scope": "local production edits applied and syntactically parsed; full-task validation NOT performed in this session",
+    "verification": {
+      "observation": "get_status",
+      "status": "ok",
+      "scope": "post-edit local patch status of the same workspace; no repository test suite or whole-issue oracle executed"
+    },
+    "unresolved": [
+      "no whole-issue oracle executed; task_resolved=null",
+      "behavior recovery chain to be upgraded by a later step, not fabricated here"
+    ],
+    "needs_other_route": false
+  },
+  "source_resolved_label": true,
+  "source_label_not_revalidated": true,
+  "replay_boundary": "Unchanged official v31 tool functions minus submit_patch, with macOS local transport, production subset. Read locations derived from source edit targets; this is edit/action SFT, not search-policy supervision.",
+  "continuation_policy": "New read/edit/status tool observations only; no old assistant future or old tool observations reused."
+}

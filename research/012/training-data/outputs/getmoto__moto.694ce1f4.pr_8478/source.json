@@ -1,0 +1,35 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 1602,
+  "instance_id": "getmoto__moto.694ce1f4.pr_8478",
+  "repo": "getmoto/moto",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "getmoto__moto.694ce1f4.pr_8478.y1wve1wy",
+  "messages_sha256": "d31f973583b9b3d43a9a61fdea793dc4fcb7f619ddaa4149fdb7304c99081508",
+  "issue": "# Missing HTTP status code in ScheduleNotFound exception\n\nI'm trying to use the EventBridge Scheduler API and noticed an issue when trying to get a schedule that doesn't exist.\n\n## Reproduction\n\n```python\nimport boto3\nfrom botocore.exceptions import ClientError\n\nclient = boto3.client('scheduler', region_name='us-east-1')\n\ntry:\n    # Try to get a schedule that doesn't exist\n    response = client.get_schedule(Name='non-existent-schedule')\nexcept ClientError as e:\n    print(f\"Error: {e}\")\n    print(f\"Status code: {e.response['ResponseMetadata']['HTTPStatusCode']}\")\n```\n\n## Expected behavior\nThe API should return a 404 status code when a schedule is not found.\n\n## Actual behavior\nThe API returns a 200 status code instead of 404 when a schedule is not found. The error message is correct (\"Schedule non-existent-schedule does not exist\"), but the HTTP status code is wrong.\n\nI also noticed that the ScheduleGroupNotFound exception has been modified to not include the name of the group in the error message, which makes debugging harder.\n\n<END WRITING>",
+  "actions": [
+    {
+      "source_message_index": 32,
+      "filepath": "moto/scheduler/exceptions.py",
+      "old_string": "class ScheduleNotFound(JsonRESTError):\n    def __init__(self, name: str) -> None:\n        super().__init__(\n            \"ResourceNotFoundException\", f\"Schedule {name} does not exist.\"\n        )",
+      "new_string": "class ScheduleNotFound(JsonRESTError):\n    code = 404\n    \n    def __init__(self, name: str) -> None:\n        super().__init__(\n            \"ResourceNotFoundException\", f\"Schedule {name} does not exist.\"\n        )",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 34,
+      "filepath": "moto/scheduler/exceptions.py",
+      "old_string": "class ScheduleGroupNotFound(JsonRESTError):\n    def __init__(self) -> None:\n        super().__init__(\"ResourceNotFoundException\", \"ScheduleGroup not found\")",
+      "new_string": "class ScheduleGroupNotFound(JsonRESTError):\n    code = 404\n    \n    def __init__(self, name: str = None) -> None:\n        message = f\"ScheduleGroup {name} not found\" if name else \"ScheduleGroup not found\"\n        super().__init__(\"ResourceNotFoundException\", message)",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 36,
+      "filepath": "moto/scheduler/models.py",
+      "old_string": "    def get_schedule_group(self, group_name: Optional[str]) -> ScheduleGroup:\n        if (group_name or \"default\") not in self.schedule_groups:\n            raise ScheduleGroupNotFound\n        return self.schedule_groups[group_name or \"default\"]",
+      "new_string": "    def get_schedule_group(self, group_name: Optional[str]) -> ScheduleGroup:\n        group_name_to_use = group_name or \"default\"\n        if group_name_to_use not in self.schedule_groups:\n            raise ScheduleGroupNotFound(group_name_to_use)\n        return self.schedule_groups[group_name_to_use]",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

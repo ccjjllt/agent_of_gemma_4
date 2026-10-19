@@ -1,0 +1,121 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "astroid/brain/brain_namedtuple_enum.py",
+      "start_line": 643,
+      "end_line": 678
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "astroid/brain/brain_namedtuple_enum.py",
+      "content": "        if not isinstance(elt, (nodes.List, nodes.Tuple)):\n            raise UseInferenceDefault\n        if len(elt.elts) != 2:\n            raise UseInferenceDefault\n        names.append(elt.elts[0].as_string())\n\n    if names:\n        field_names = f\"({','.join(names)},)\"\n    else:\n        field_names = \"\"\n    return field_names\n\n\ndef _is_enum_subclass(cls: astroid.ClassDef) -> bool:\n    \"\"\"Return whether cls is a subclass of an Enum.\"\"\"\n    try:\n        return any(\n            klass.name in ENUM_BASE_NAMES\n            and getattr(klass.root(), \"name\", None) == \"enum\"\n            for klass in cls.mro()\n        )\n    except MroError:\n        return False\n\n\ndef register(manager: AstroidManager) -> None:\n    manager.register_transform(\n        nodes.Call, inference_tip(infer_named_tuple), _looks_like_namedtuple\n    )\n    manager.register_transform(nodes.Call, inference_tip(infer_enum), _looks_like_enum)\n    manager.register_transform(\n        nodes.ClassDef, infer_enum_class, predicate=_is_enum_subclass\n    )\n    manager.register_transform(\n        nodes.ClassDef,\n        inference_tip(infer_typing_namedtuple_class),",
+      "start_line": 643,
+      "end_line": 678,
+      "total_lines": 692,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "astroid/brain/brain_namedtuple_enum.py",
+      "old_string": "\ndef _is_enum_subclass(cls: astroid.ClassDef) -> bool:\n    \"\"\"Return whether cls is a subclass of an Enum.\"\"\"\n    try:\n        return any(\n            klass.name in ENUM_BASE_NAMES\n            and getattr(klass.root(), \"name\", None) == \"enum\"\n            for klass in cls.mro()\n        )\n    except MroError:\n        return False\n",
+      "new_string": "\ndef _is_enum_subclass(cls: astroid.ClassDef) -> bool:\n    \"\"\"Return whether cls is a subclass of an Enum.\"\"\"\n    try:\n        return any(\n            klass.name in ENUM_BASE_NAMES\n            and getattr(klass.root(), \"name\", None) == \"enum\"\n            for klass in cls.mro()\n        )\n    except (MroError, RecursionError):\n        # Handle both MroError and RecursionError that can occur with circular class hierarchies\n        return False\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "astroid/brain/brain_namedtuple_enum.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/astroid/brain/brain_namedtuple_enum.py\n+++ b/astroid/brain/brain_namedtuple_enum.py\n@@ -661,7 +661,8 @@\n             and getattr(klass.root(), \"name\", None) == \"enum\"\n             for klass in cls.mro()\n         )\n-    except MroError:\n+    except (MroError, RecursionError):\n+        # Handle both MroError and RecursionError that can occur with circular class hierarchies\n         return False\n \n \n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "astroid/brain/brain_namedtuple_enum.py",
+      "start_line": 386,
+      "end_line": 417
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "astroid/brain/brain_namedtuple_enum.py",
+      "content": "    def __xor__(self, other):\n        return {name}(self.value ^ other.value)\n    def __add__(self, other):\n        return {name}(self.value + other.value)\n    def __div__(self, other):\n        return {name}(self.value / other.value)\n    def __invert__(self):\n        return {name}(~self.value)\n    def __mul__(self, other):\n        return {name}(self.value * other.value)\n\"\"\"\n\n\ndef infer_enum_class(node: nodes.ClassDef) -> nodes.ClassDef:\n    \"\"\"Specific inference for enums.\"\"\"\n    for basename in (b for cls in node.mro() for b in cls.basenames):\n        if node.root().name == \"enum\":\n            # Skip if the class is directly from enum module.\n            break\n        dunder_members = {}\n        target_names = set()\n        for local, values in node.locals.items():\n            if (\n                any(not isinstance(value, nodes.AssignName) for value in values)\n                or local == \"_ignore_\"\n            ):\n                continue\n\n            stmt = values[0].statement()\n            if isinstance(stmt, nodes.Assign):\n                if isinstance(stmt.targets[0], nodes.Tuple):\n                    targets = stmt.targets[0].itered()",
+      "start_line": 386,
+      "end_line": 417,
+      "total_lines": 693,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "astroid/brain/brain_namedtuple_enum.py",
+      "old_string": "\ndef infer_enum_class(node: nodes.ClassDef) -> nodes.ClassDef:\n    \"\"\"Specific inference for enums.\"\"\"\n    for basename in (b for cls in node.mro() for b in cls.basenames):\n        if node.root().name == \"enum\":\n            # Skip if the class is directly from enum module.\n            break\n",
+      "new_string": "\ndef infer_enum_class(node: nodes.ClassDef) -> nodes.ClassDef:\n    \"\"\"Specific inference for enums.\"\"\"\n    try:\n        for basename in (b for cls in node.mro() for b in cls.basenames):\n            if node.root().name == \"enum\":\n                # Skip if the class is directly from enum module.\n                break\n    except (MroError, RecursionError):\n        # If we encounter a circular reference in the class hierarchy, just return the node as is\n        return node\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "astroid/brain/brain_namedtuple_enum.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/astroid/brain/brain_namedtuple_enum.py\n+++ b/astroid/brain/brain_namedtuple_enum.py\n@@ -398,10 +398,14 @@\n \n def infer_enum_class(node: nodes.ClassDef) -> nodes.ClassDef:\n     \"\"\"Specific inference for enums.\"\"\"\n-    for basename in (b for cls in node.mro() for b in cls.basenames):\n-        if node.root().name == \"enum\":\n-            # Skip if the class is directly from enum module.\n-            break\n+    try:\n+        for basename in (b for cls in node.mro() for b in cls.basenames):\n+            if node.root().name == \"enum\":\n+                # Skip if the class is directly from enum module.\n+                break\n+    except (MroError, RecursionError):\n+        # If we encounter a circular reference in the class hierarchy, just return the node as is\n+        return node\n         dunder_members = {}\n         target_names = set()\n         for local, values in node.locals.items():\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "astroid/brain/brain_namedtuple_enum.py",
+      "start_line": 386,
+      "end_line": 424
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "astroid/brain/brain_namedtuple_enum.py",
+      "content": "    def __xor__(self, other):\n        return {name}(self.value ^ other.value)\n    def __add__(self, other):\n        return {name}(self.value + other.value)\n    def __div__(self, other):\n        return {name}(self.value / other.value)\n    def __invert__(self):\n        return {name}(~self.value)\n    def __mul__(self, other):\n        return {name}(self.value * other.value)\n\"\"\"\n\n\ndef infer_enum_class(node: nodes.ClassDef) -> nodes.ClassDef:\n    \"\"\"Specific inference for enums.\"\"\"\n    try:\n        for basename in (b for cls in node.mro() for b in cls.basenames):\n            if node.root().name == \"enum\":\n                # Skip if the class is directly from enum module.\n                break\n    except (MroError, RecursionError):\n        # If we encounter a circular reference in the class hierarchy, just return the node as is\n        return node\n        dunder_members = {}\n        target_names = set()\n        for local, values in node.locals.items():\n            if (\n                any(not isinstance(value, nodes.AssignName) for value in values)\n                or local == \"_ignore_\"\n            ):\n                continue\n\n            stmt = values[0].statement()\n            if isinstance(stmt, nodes.Assign):\n                if isinstance(stmt.targets[0], nodes.Tuple):\n                    targets = stmt.targets[0].itered()\n                else:\n                    targets = stmt.targets\n            elif isinstance(stmt, nodes.AnnAssign):",
+      "start_line": 386,
+      "end_line": 424,
+      "total_lines": 697,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "astroid/brain/brain_namedtuple_enum.py",
+      "old_string": "\ndef infer_enum_class(node: nodes.ClassDef) -> nodes.ClassDef:\n    \"\"\"Specific inference for enums.\"\"\"\n    try:\n        for basename in (b for cls in node.mro() for b in cls.basenames):\n            if node.root().name == \"enum\":\n                # Skip if the class is directly from enum module.\n                break\n    except (MroError, RecursionError):\n        # If we encounter a circular reference in the class hierarchy, just return the node as is\n        return node\n        dunder_members = {}\n        target_names = set()\n        for local, values in node.locals.items():\n",
+      "new_string": "\ndef infer_enum_class(node: nodes.ClassDef) -> nodes.ClassDef:\n    \"\"\"Specific inference for enums.\"\"\"\n    try:\n        for basename in (b for cls in node.mro() for b in cls.basenames):\n            if node.root().name == \"enum\":\n                # Skip if the class is directly from enum module.\n                break\n            dunder_members = {}\n            target_names = set()\n            for local, values in node.locals.items():\n    except (MroError, RecursionError):\n        # If we encounter a circular reference in the class hierarchy, just return the node as is\n        return node\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "astroid/brain/brain_namedtuple_enum.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/astroid/brain/brain_namedtuple_enum.py\n+++ b/astroid/brain/brain_namedtuple_enum.py\n@@ -403,12 +403,12 @@\n             if node.root().name == \"enum\":\n                 # Skip if the class is directly from enum module.\n                 break\n+            dunder_members = {}\n+            target_names = set()\n+            for local, values in node.locals.items():\n     except (MroError, RecursionError):\n         # If we encounter a circular reference in the class hierarchy, just return the node as is\n         return node\n-        dunder_members = {}\n-        target_names = set()\n-        for local, values in node.locals.items():\n             if (\n                 any(not isinstance(value, nodes.AssignName) for value in values)\n                 or local == \"_ignore_\"\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "astroid/brain/brain_namedtuple_enum.py",
+      "start_line": 386,
+      "end_line": 556
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "astroid/brain/brain_namedtuple_enum.py",
+      "content": "    def __xor__(self, other):\n        return {name}(self.value ^ other.value)\n    def __add__(self, other):\n        return {name}(self.value + other.value)\n    def __div__(self, other):\n        return {name}(self.value / other.value)\n    def __invert__(self):\n        return {name}(~self.value)\n    def __mul__(self, other):\n        return {name}(self.value * other.value)\n\"\"\"\n\n\ndef infer_enum_class(node: nodes.ClassDef) -> nodes.ClassDef:\n    \"\"\"Specific inference for enums.\"\"\"\n    try:\n        for basename in (b for cls in node.mro() for b in cls.basenames):\n            if node.root().name == \"enum\":\n                # Skip if the class is directly from enum module.\n                break\n            dunder_members = {}\n            target_names = set()\n            for local, values in node.locals.items():\n    except (MroError, RecursionError):\n        # If we encounter a circular reference in the class hierarchy, just return the node as is\n        return node\n            if (\n                any(not isinstance(value, nodes.AssignName) for value in values)\n                or local == \"_ignore_\"\n            ):\n                continue\n\n            stmt = values[0].statement()\n            if isinstance(stmt, nodes.Assign):\n                if isinstance(stmt.targets[0], nodes.Tuple):\n                    targets = stmt.targets[0].itered()\n                else:\n                    targets = stmt.targets\n            elif isinstance(stmt, nodes.AnnAssign):\n                targets = [stmt.target]\n            else:\n                continue\n\n            inferred_return_value = None\n            if stmt.value is not None:\n                if isinstance(stmt.value, nodes.Const):\n                    if isinstance(stmt.value.value, str):\n                        inferred_return_value = repr(stmt.value.value)\n                    else:\n                        inferred_return_value = stmt.value.value\n                else:\n                    inferred_return_value = stmt.value.as_string()\n\n            new_targets = []\n            for target in targets:\n                if isinstance(target, nodes.Starred):\n                    continue\n                target_names.add(target.name)\n                # Replace all the assignments with our mocked class.\n                classdef = dedent(\n                    \"\"\"\n                class {name}({types}):\n                    @property\n                    def value(self):\n                        return {return_value}\n                    @property\n                    def _value_(self):\n                        return {return_value}\n                    @property\n                    def name(self):\n                        return \"{name}\"\n                    @property\n                    def _name_(self):\n                        return \"{name}\"\n                \"\"\".format(\n                        name=target.name,\n                        types=\", \".join(node.basenames),\n                        return_value=inferred_return_value,\n                    )\n                )\n                if \"IntFlag\" in basename:\n                    # Alright, we need to add some additional methods.\n                    # Unfortunately we still can't infer the resulting objects as\n                    # Enum members, but once we'll be able to do that, the following\n                    # should result in some nice symbolic execution\n                    classdef += INT_FLAG_ADDITION_METHODS.format(name=target.name)\n\n                fake = AstroidBuilder(\n                    AstroidManager(), apply_transforms=False\n                ).string_build(classdef)[target.name]\n                fake.parent = target.parent\n                for method in node.mymethods():\n                    fake.locals[method.name] = [method]\n                new_targets.append(fake.instantiate_class())\n                if stmt.value is None:\n                    continue\n                dunder_members[local] = fake\n            node.locals[local] = new_targets\n\n        # The undocumented `_value2member_map_` member:\n        node.locals[\"_value2member_map_\"] = [\n            nodes.Dict(\n                parent=node,\n                lineno=node.lineno,\n                col_offset=node.col_offset,\n                end_lineno=node.end_lineno,\n                end_col_offset=node.end_col_offset,\n            )\n        ]\n\n        members = nodes.Dict(\n            parent=node,\n            lineno=node.lineno,\n            col_offset=node.col_offset,\n            end_lineno=node.end_lineno,\n            end_col_offset=node.end_col_offset,\n        )\n        members.postinit(\n            [\n                (\n                    nodes.Const(k, parent=members),\n                    nodes.Name(\n                        v.name,\n                        parent=members,\n                        lineno=v.lineno,\n                        col_offset=v.col_offset,\n                        end_lineno=v.end_lineno,\n                        end_col_offset=v.end_col_offset,\n                    ),\n                )\n                for k, v in dunder_members.items()\n            ]\n        )\n        node.locals[\"__members__\"] = [members]\n        # The enum.Enum class itself defines two @DynamicClassAttribute data-descriptors\n        # \"name\" and \"value\" (which we override in the mocked class for each enum member\n        # above). When dealing with inference of an arbitrary instance of the enum\n        # class, e.g. in a method defined in the class body like:\n        #     class SomeEnum(enum.Enum):\n        #         def method(self):\n        #             self.name  # <- here\n        # In the absence of an enum member called \"name\" or \"value\", these attributes\n        # should resolve to the descriptor on that particular instance, i.e. enum member.\n        # For \"value\", we have no idea what that should be, but for \"name\", we at least\n        # know that it should be a string, so infer that as a guess.\n        if \"name\" not in target_names:\n            code = dedent(\n                \"\"\"\n            @property\n            def name(self):",
+      "start_line": 386,
+      "end_line": 535,
+      "total_lines": 697,
+      "is_truncated": true
+    }
+  }
+]

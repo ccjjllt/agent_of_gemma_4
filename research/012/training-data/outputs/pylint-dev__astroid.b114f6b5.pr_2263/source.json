@@ -1,0 +1,28 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00006-of-00008.parquet",
+  "row_index": 839,
+  "instance_id": "pylint-dev__astroid.b114f6b5.pr_2263",
+  "repo": "pylint-dev/astroid",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "pylint-dev__astroid.b114f6b5.pr_2263.zfk34ct2",
+  "messages_sha256": "6107213d89ac7cba67c56772eb50552a348ee9e1263f2e2baf1a326ee255c492",
+  "issue": "Enum members with type annotations but no value are not included in __members__\n\nDescription\n\nWhen defining an Enum class with members that have type annotations but no assigned values, these members are not properly included in the `__members__` container. This causes issues when trying to access or iterate over all enum members.\n\nFor example, take this enum class with different types of members:\n\n```python\nfrom enum import Enum\n\nclass Planet(Enum):\n    MARS = (1, 2)\n    radius: int = 1\n    mass: int  # Type annotation but no value\n\n    def __init__(self, mass, radius):\n        self.mass = mass\n        self.radius = radius\n```\n\nWhen accessing `Planet.__members__`, only `MARS` and `radius` appear, but `mass` is missing. This is incorrect behavior since `mass` should also be considered an enum member.\n\nThe issue occurs because the code that processes enum members doesn't properly handle the case where a member has a type annotation but no assigned value. When a member has a type annotation but no value (using `AnnAssign` nodes), it should still be included in the `__members__` container.\n\nTo reproduce:\n\n```python\nfrom enum import Enum\n\nclass Planet(Enum):\n    MARS = (1, 2)\n    radius: int = 1\n    mass: int  # This member is missing from __members__\n\n    def __init__(self, mass, radius):\n        self.mass = mass\n        self.radius = radius\n\n# Should show all three members, but only shows MARS and radius\nprint(Planet.__members__)\n```\n\nThis issue affects code that relies on the completeness of the `__members__` container, such as code that iterates over all enum members or checks for the existence of specific members.",
+  "actions": [
+    {
+      "source_message_index": 50,
+      "filepath": "astroid/brain/brain_namedtuple_enum.py",
+      "old_string": "\n            inferred_return_value = None\n            if stmt.value is not None:\n                if isinstance(stmt.value, nodes.Const):\n                    if isinstance(stmt.value.value, str):\n                        inferred_return_value = repr(stmt.value.value)\n                    else:\n                        inferred_return_value = stmt.value.value\n                else:\n                    inferred_return_value = stmt.value.as_string()\n",
+      "new_string": "\n            inferred_return_value = None\n            if stmt.value is not None:\n                if isinstance(stmt.value, nodes.Const):\n                    if isinstance(stmt.value.value, str):\n                        inferred_return_value = repr(stmt.value.value)\n                    else:\n                        inferred_return_value = stmt.value.value\n                else:\n                    inferred_return_value = stmt.value.as_string()\n            # For AnnAssign nodes with no value, we still want to include them in __members__\n            # but we'll use None as the return value\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 52,
+      "filepath": "astroid/nodes/scoped_nodes/scoped_nodes.py",
+      "old_string": "\n        result: list[InferenceResult] = []\n        for value in values:\n            if isinstance(value, node_classes.AssignName):\n                stmt = value.statement()\n                # Ignore AnnAssigns without value, which are not attributes in the purest sense.\n                if isinstance(stmt, node_classes.AnnAssign) and stmt.value is None:\n                    continue\n            result.append(value)\n",
+      "new_string": "\n        result: list[InferenceResult] = []\n        for value in values:\n            if isinstance(value, node_classes.AssignName):\n                stmt = value.statement()\n                # Ignore AnnAssigns without value, which are not attributes in the purest sense.\n                # However, for Enum classes, we want to include them as they should be enum members.\n                if (isinstance(stmt, node_classes.AnnAssign) and stmt.value is None and \n                    not self.is_subtype_of(\"enum.Enum\")):\n                    continue\n            result.append(value)\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

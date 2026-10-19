@@ -1,0 +1,35 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 644,
+  "instance_id": "sqlfluff__sqlfluff.50a1c4b6.pr_5047",
+  "repo": "sqlfluff/sqlfluff",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "sqlfluff__sqlfluff.50a1c4b6.pr_5047.8uw16942",
+  "messages_sha256": "7adc55b24ed69de00c399fe6055d4dee605da3e3369c15fd1615d3dcad2ec9ef",
+  "issue": "# SQLFluff error pickling is broken\n\nWhen trying to pickle SQLFluff errors, it fails with AttributeError. The `__reduce__` methods in the error classes have been modified and are now incompatible with the original class definitions.\n\n## Steps to Reproduce\n\n```python\nimport pickle\nfrom sqlfluff.core.errors import SQLLexError, SQLParseError, SQLLintError\n\n# Create a simple error\nlex_error = SQLLexError(\"test description\", pos=None)\n# Try to pickle and unpickle it\npickled = pickle.dumps(lex_error)\nunpickled = pickle.loads(pickled)\n\n# Same for parse error\nparse_error = SQLParseError(\"test description\", segment=None)\npickled = pickle.dumps(parse_error)\nunpickled = pickle.loads(pickled)\n\n# Same for lint error\nlint_error = SQLLintError(\"test description\", segment=None, rule=None)\npickled = pickle.dumps(lint_error)\nunpickled = pickle.loads(pickled)\n```\n\n## Expected Results\nThe errors should be pickled and unpickled without any issues.\n\n## Actual Results\nPickling fails with AttributeError because the `__reduce__` methods don't match the class constructors. The parameters returned by `__reduce__` don't match what the constructors expect.\n\nFor example, in SQLBaseError, `__reduce__` returns `self.pos` but the constructor doesn't have a `pos` parameter in that position. Similarly, for SQLParseError and SQLLintError, the `__reduce__` methods are missing required parameters like `ignore`, `fatal`, and `warning`.",
+  "actions": [
+    {
+      "source_message_index": 10,
+      "filepath": "src/sqlfluff/core/errors.py",
+      "old_string": "\n    def __reduce__(self):  # pragma: no cover\n        \"\"\"Prepare the SQLBaseError for pickling.\"\"\"\n        return type(self), (\n            self.description,\n            self.pos,\n            self.line_no,\n            self.line_pos,\n            self.ignore,\n            self.fatal,\n            self.warning,\n        )\n",
+      "new_string": "\n    def __reduce__(self):  # pragma: no cover\n        \"\"\"Prepare the SQLBaseError for pickling.\"\"\"\n        return type(self), (\n            self.description,\n            None,  # pos is not stored as an attribute, so pass None\n            self.line_no,\n            self.line_pos,\n            self.ignore,\n            self.fatal,\n            self.warning,\n        )\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 12,
+      "filepath": "src/sqlfluff/core/errors.py",
+      "old_string": "\n    def __reduce__(self):  # pragma: no cover\n        \"\"\"Prepare the SQLParseError for pickling.\"\"\"\n        return type(self), (self.description, self.segment, self.line_no, self.line_pos)\n",
+      "new_string": "\n    def __reduce__(self):  # pragma: no cover\n        \"\"\"Prepare the SQLParseError for pickling.\"\"\"\n        return type(self), (\n            self.description, \n            self.segment, \n            self.line_no, \n            self.line_pos,\n            self.ignore,\n            self.fatal,\n            self.warning,\n        )\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 14,
+      "filepath": "src/sqlfluff/core/errors.py",
+      "old_string": "\n    def __reduce__(self):  # pragma: no cover\n        \"\"\"Prepare the SQLLintError for pickling.\"\"\"\n        return type(self), (self.description, self.segment, self.rule, self.fixes)\n",
+      "new_string": "\n    def __reduce__(self):  # pragma: no cover\n        \"\"\"Prepare the SQLLintError for pickling.\"\"\"\n        return type(self), (\n            self.description, \n            self.segment, \n            self.rule, \n            self.fixes,\n            self.ignore,\n            self.fatal,\n            self.warning,\n        )\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

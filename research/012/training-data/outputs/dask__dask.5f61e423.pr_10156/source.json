@@ -1,0 +1,35 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 2059,
+  "instance_id": "dask__dask.5f61e423.pr_10156",
+  "repo": "dask/dask",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "dask__dask.5f61e423.pr_10156.y1wve1wy",
+  "messages_sha256": "3cb21ad3513d293a4ddaeb637eb06c1e2a3d8a7ea512d0ec248694c4ccfc36eb",
+  "issue": "# Missing _percentile function in partitionquantiles.py\n\nI'm getting errors when trying to use certain dataframe operations that involve quantiles with string data. The error occurs when trying to convert xarray datasets to dask dataframes and when setting an index with non-numeric values that include nulls.\n\n## Reproduction\n\nHere's a simple example that reproduces the issue:\n\n```python\nimport dask.dataframe as dd\nimport pandas as pd\nimport numpy as np\nimport xarray as xr\n\n# Example 1: Converting xarray with string data to dask dataframe\nx = np.random.randn(10)\ny = np.arange(10, dtype='uint8')\nt = list('abcdefghij')\nds = xr.Dataset({'a': ('t', x), 'b': ('t', y), 't': ('t', t)})\ndf = ds.to_dask_dataframe(set_index=True)  # This fails\n\n# Example 2: Setting index with nulls\ndf = pd.DataFrame({'numeric': [1, 2, 3, 4], 'non_numeric': ['foo', 'bar', 'foo', 'bar']})\nddf = dd.from_pandas(df, npartitions=2)\nddf.set_index(ddf['non_numeric'].map({'foo': 'foo', 'bar': None})).compute()  # This fails too\n```\n\n## Error message\n\n```\nNameError: name '_percentile' is not defined\n```\n\nThe error happens in the `percentiles_summary` function in `dask/dataframe/partitionquantiles.py` when it tries to fall back to the `_percentile` function for data types that don't work with Series.quantile (like strings).\n\nThis seems to be a regression - the fallback path for non-numeric data types is trying to use a function that doesn't exist or isn't imported.",
+  "actions": [
+    {
+      "source_message_index": 28,
+      "filepath": "dask/dataframe/partitionquantiles.py",
+      "old_string": "from __future__ import annotations\n\nimport math\n\nimport numpy as np\nimport pandas as pd\nfrom pandas.api.types import is_datetime64_dtype, is_integer_dtype\nfrom tlz import merge_sorted, take\n\nfrom dask.dataframe.dispatch import tolist_dispatch\nfrom dask.dataframe.utils import is_series_like\nfrom dask.utils import is_cupy_type",
+      "new_string": "from __future__ import annotations\n\nimport math\n\nimport numpy as np\nimport pandas as pd\nfrom pandas.api.types import is_datetime64_dtype, is_integer_dtype\nfrom tlz import merge_sorted, take\n\nfrom dask.array.percentile import _percentile\nfrom dask.array.utils import array_safe\nfrom dask.dataframe.dispatch import tolist_dispatch\nfrom dask.dataframe.utils import is_series_like\nfrom dask.utils import is_cupy_type",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 46,
+      "filepath": "dask/dataframe/partitionquantiles.py",
+      "old_string": "    try:\n        # Plan A: Use `Series.quantile`\n        vals = data.quantile(q=qs / 100, interpolation=interpolation).values\n    except (TypeError, NotImplementedError):\n        vals, _ = _percentile(array_safe(data, data.dtype), qs, interpolation)",
+      "new_string": "    try:\n        # Plan A: Use `Series.quantile`\n        vals = data.quantile(q=qs / 100, interpolation=interpolation).values\n    except (TypeError, NotImplementedError):\n        # Handle nulls in non-numeric data\n        if data.isna().any() and not np.issubdtype(data.dtype, np.number):\n            # Filter out nulls for non-numeric data\n            filtered_data = data.dropna()\n            if len(filtered_data) > 0:\n                vals, _ = _percentile(array_safe(filtered_data, filtered_data.dtype), qs, interpolation)\n            else:\n                # All values are null, return empty array with correct dtype\n                vals = np.array([], dtype=data.dtype)\n        else:\n            vals, _ = _percentile(array_safe(data, data.dtype), qs, interpolation)",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 58,
+      "filepath": "dask/dataframe/partitionquantiles.py",
+      "old_string": "    try:\n        # Plan A: Use `Series.quantile`\n        vals = data.quantile(q=qs / 100, interpolation=interpolation).values\n    except (TypeError, NotImplementedError):\n        # Handle nulls in non-numeric data\n        if data.isna().any() and not np.issubdtype(data.dtype, np.number):\n            # Filter out nulls for non-numeric data\n            filtered_data = data.dropna()\n            if len(filtered_data) > 0:\n                vals, _ = _percentile(array_safe(filtered_data, filtered_data.dtype), qs, interpolation)\n            else:\n                # All values are null, return empty array with correct dtype\n                vals = np.array([], dtype=data.dtype)\n        else:\n            vals, _ = _percentile(array_safe(data, data.dtype), qs, interpolation)",
+      "new_string": "    try:\n        # Plan A: Use `Series.quantile`\n        vals = data.quantile(q=qs / 100, interpolation=interpolation).values\n    except (TypeError, NotImplementedError):\n        # Handle nulls in non-numeric data\n        if data.isna().any() and not np.issubdtype(data.dtype, np.number):\n            # Filter out nulls for non-numeric data\n            filtered_data = data.dropna()\n            if len(filtered_data) > 0:\n                vals, _ = _percentile(array_safe(filtered_data, filtered_data.dtype), qs, interpolation)\n            else:\n                # All values are null, create an array of NaN values with the same length as qs\n                # This ensures we have a value for each percentile requested\n                vals = np.full(len(qs), np.nan, dtype=np.float64)\n        else:\n            vals, _ = _percentile(array_safe(data, data.dtype), qs, interpolation)",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

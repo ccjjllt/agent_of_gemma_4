@@ -1,0 +1,28 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00005-of-00008.parquet",
+  "row_index": 1495,
+  "instance_id": "iterative__dvc.1d6ea681.pr_9774",
+  "repo": "iterative/dvc",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "iterative__dvc.1d6ea681.pr_9774.7ngext6y",
+  "messages_sha256": "db444c59064811d7482c93672141e1a6d9439a7e7051f824b17d121733b0dfd4",
+  "issue": "# DVCFileSystem fails to check if files exist after changing exception type\n\n## Description\n\nI found a bug in the DVCFileSystem class where it fails to properly check if files exist. The issue occurs when trying to access files that are tracked by DVC but don't exist in the working directory.\n\n## Steps to Reproduce\n\n1. Create a DVC repository with some tracked files and directories\n2. Remove the files/directories from the working directory (but keep the .dvc files)\n3. Try to use the DVCFileSystem methods like `isdir`, `isfile`, and `isdvc`\n\n```python\nimport os\nimport shutil\nfrom dvc.fs import DVCFileSystem\n\n# Setup\ntmp_dir.dvc_gen({'datafile': 'data', 'datadir': {'foo': 'foo', 'bar': 'bar'}})\nfs = DVCFileSystem(repo=dvc)\n\n# Remove the actual files/directories\nshutil.rmtree(tmp_dir / 'datadir')\n(tmp_dir / 'datafile').unlink()\n\n# These should work but now fail\nfs.exists('datadir')  # Should be True\nfs.isdir('datadir')   # Should be True\nfs.isfile('datafile') # Should be True\nfs.isdvc('datadir')   # Should be True\n```\n\n## Expected Results\n\nThe DVCFileSystem should correctly identify that the files/directories exist in the DVC tracking system even if they've been removed from the working directory.\n\n## Actual Results\n\nThe methods fail with KeyError exceptions like:\n```\nKeyError: ('datadir',)\nKeyError: ('bar',)\nKeyError: ('dir', ...)\n```\n\nThis happens because the code is catching the wrong exception type when trying to access file information from the DVC index.\n\n## Environment\n\n- DVC version: latest\n- Python version: 3.10\n- OS: Linux",
+  "actions": [
+    {
+      "source_message_index": 106,
+      "filepath": "dvc/fs/dvc.py",
+      "old_string": "\n        dvc_info = None\n        if dvc_fs:\n            try:\n                dvc_info = dvc_fs.fs.index.info(subkey)\n                dvc_path = _get_dvc_path(dvc_fs, subkey)\n                dvc_info[\"name\"] = dvc_path\n            except FileNotFoundError:\n                pass\n",
+      "new_string": "\n        dvc_info = None\n        if dvc_fs:\n            try:\n                dvc_info = dvc_fs.fs.index.info(subkey)\n                dvc_path = _get_dvc_path(dvc_fs, subkey)\n                dvc_info[\"name\"] = dvc_path\n            except (FileNotFoundError, KeyError):\n                pass\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 110,
+      "filepath": "dvc/fs/dvc.py",
+      "old_string": "\n    def isdvc(self, path, **kwargs) -> bool:\n        \"\"\"Is this entry dvc-tracked?\"\"\"\n        try:\n            return self.info(path).get(\"dvc_info\", {}).get(\"isout\", False)\n        except FileNotFoundError:\n            return False\n",
+      "new_string": "\n    def isdvc(self, path, **kwargs) -> bool:\n        \"\"\"Is this entry dvc-tracked?\"\"\"\n        try:\n            return self.info(path).get(\"dvc_info\", {}).get(\"isout\", False)\n        except (FileNotFoundError, KeyError):\n            return False\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

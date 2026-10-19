@@ -1,0 +1,35 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 1754,
+  "instance_id": "pylint-dev__astroid.b114f6b5.pr_2399",
+  "repo": "pylint-dev/astroid",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "pylint-dev__astroid.b114f6b5.pr_2399.y1wve1wy",
+  "messages_sha256": "8916eb1341c985a44bf62c52919686c1f3e547c721f264aeb9bdec01a61f97ac",
+  "issue": "# Module denylist functionality removed from AstroidManager\n\n## Description\n\nThe `module_denylist` functionality appears to have been removed from the `AstroidManager` class. This feature allowed users to specify modules that should be skipped during import, raising an `AstroidImportError` when attempting to import them.\n\n## Reproduction\n\n```python\nfrom astroid.manager import AstroidManager\n\n# Create a manager instance\nmanager = AstroidManager()\n\n# Try to add a module to the denylist\nmanager.module_denylist.add('random')  # AttributeError: 'AstroidManager' object has no attribute 'module_denylist'\n\n# The following code should raise an AstroidImportError but now it will import the module\nmodule = manager.ast_from_module_name('random')\n```\n\n## Expected Behavior\n\nThe `module_denylist` attribute should exist on the `AstroidManager` class, and when a module is added to this list, attempting to import it should raise an `AstroidImportError`.\n\n## Actual Behavior\n\nThe `module_denylist` attribute has been removed from the `AstroidManager` class, both from the `brain` dictionary and from the instance initialization. The code that checked if a module was in the denylist before importing it has also been removed.\n\nThis breaks backward compatibility for users who were relying on this feature to prevent certain modules from being imported during static analysis.",
+  "actions": [
+    {
+      "source_message_index": 20,
+      "filepath": "astroid/manager.py",
+      "old_string": "    brain: ClassVar[AstroidManagerBrain] = {\n        \"astroid_cache\": {},\n        \"_mod_file_cache\": {},\n        \"_failed_import_hooks\": [],\n        \"always_load_extensions\": False,\n        \"optimize_ast\": False,\n        \"max_inferable_values\": 100,\n        \"extension_package_whitelist\": set(),\n        \"_transform\": TransformVisitor(),\n        \"prefer_stubs\": False,\n    }",
+      "new_string": "    brain: ClassVar[AstroidManagerBrain] = {\n        \"astroid_cache\": {},\n        \"_mod_file_cache\": {},\n        \"_failed_import_hooks\": [],\n        \"always_load_extensions\": False,\n        \"optimize_ast\": False,\n        \"max_inferable_values\": 100,\n        \"extension_package_whitelist\": set(),\n        \"_transform\": TransformVisitor(),\n        \"prefer_stubs\": False,\n        \"module_denylist\": set(),\n    }",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 22,
+      "filepath": "astroid/manager.py",
+      "old_string": "    @prefer_stubs.setter\n    def prefer_stubs(self, value: bool) -> None:\n        AstroidManager.brain[\"prefer_stubs\"] = value\n\n    def visit_transforms(self, node: nodes.NodeNG) -> InferenceResult:",
+      "new_string": "    @prefer_stubs.setter\n    def prefer_stubs(self, value: bool) -> None:\n        AstroidManager.brain[\"prefer_stubs\"] = value\n\n    @property\n    def module_denylist(self) -> set:\n        return AstroidManager.brain[\"module_denylist\"]\n\n    def visit_transforms(self, node: nodes.NodeNG) -> InferenceResult:",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 24,
+      "filepath": "astroid/manager.py",
+      "old_string": "    def ast_from_module_name(  # noqa: C901\n        self,\n        modname: str | None,\n        context_file: str | None = None,\n        use_cache: bool = True,\n    ) -> nodes.Module:\n        \"\"\"Given a module name, return the astroid object.\"\"\"\n        if modname is None:\n            raise AstroidBuildingError(\"No module name given.\")",
+      "new_string": "    def ast_from_module_name(  # noqa: C901\n        self,\n        modname: str | None,\n        context_file: str | None = None,\n        use_cache: bool = True,\n    ) -> nodes.Module:\n        \"\"\"Given a module name, return the astroid object.\"\"\"\n        if modname is None:\n            raise AstroidBuildingError(\"No module name given.\")\n        if modname in self.module_denylist:\n            raise AstroidImportError(f\"Module {modname} is denied\")",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

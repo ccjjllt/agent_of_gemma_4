@@ -1,0 +1,21 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00005-of-00008.parquet",
+  "row_index": 2509,
+  "instance_id": "getmoto__moto.694ce1f4.pr_5607",
+  "repo": "getmoto/moto",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "getmoto__moto.694ce1f4.pr_5607.b3g9065g",
+  "messages_sha256": "af5f7748338369ce70e52b1ffc734e436055090589599cbb324642c165900b39",
+  "issue": "### Issue: Inconsistent Trail Listing Across Regions\n\n#### Description\n\nIt seems there's an inconsistency when listing CloudTrail trails across different regions, especially when dealing with multi-region trails. After applying the recent changes, the behavior of listing trails does not align with the expected results.\n\n#### Steps to Reproduce\n\n1. **Setup**: Ensure you have a CloudTrail client set up in the `eu-west-3` region.\n2. **Create Trails**:\n   - Create a simple trail in the default region.\n   - Create an advanced trail in the `ap-southeast-2` region.\n   - Create another simple trail in the `eu-west-1` region.\n3. **List Trails**:\n   - Use the `list_trails()` method from the `eu-west-3` client.\n   - Observe the output.\n\n#### Expected Behavior\n\n- When listing trails from `eu-west-3`, the expectation is to see only the multi-region trail from `ap-southeast-2`.\n\n#### Actual Behavior\n\n- The output does not match the expected list of trails, indicating a potential issue with how trails are aggregated across regions.\n\nThis discrepancy might affect users relying on accurate trail listings for compliance and monitoring purposes. Further investigation is needed to ensure the correct trails are returned based on the region and multi-region settings.",
+  "actions": [
+    {
+      "source_message_index": 20,
+      "filepath": "moto/cloudtrail/models.py",
+      "old_string": "\n    def describe_trails(self, include_shadow_trails: bool) -> Iterable[Trail]:\n        all_trails = []\n        if include_shadow_trails:\n            current_account = cloudtrail_backends[self.account_id]\n            for backend in current_account.values():\n                    all_trails.extend(backend.trails.values())\n        else:\n            all_trails.extend(self.trails.values())\n        return all_trails\n",
+      "new_string": "\n    def describe_trails(self, include_shadow_trails: bool) -> Iterable[Trail]:\n        all_trails = []\n        if include_shadow_trails:\n            current_account = cloudtrail_backends[self.account_id]\n            for region, backend in current_account.items():\n                if region == self.region_name:\n                    # Include all trails from the current region\n                    all_trails.extend(backend.trails.values())\n                else:\n                    # From other regions, only include multi-region trails\n                    for trail in backend.trails.values():\n                        if trail.is_multi_region:\n                            all_trails.append(trail)\n        else:\n            all_trails.extend(self.trails.values())\n        return all_trails\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

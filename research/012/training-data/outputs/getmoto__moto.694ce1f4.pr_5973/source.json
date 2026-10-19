@@ -1,0 +1,91 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00005-of-00008.parquet",
+  "row_index": 1825,
+  "instance_id": "getmoto__moto.694ce1f4.pr_5973",
+  "repo": "getmoto/moto",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "getmoto__moto.694ce1f4.pr_5973.cgczaegw",
+  "messages_sha256": "4968282d0fd047609b1288bd6de2dae33d16f4c1eef2a5ee53b6c86036b921f5",
+  "issue": "# List certificates API returns incorrect response structure\n\nI'm using moto to mock AWS Certificate Manager (ACM) in my application, and I've noticed that the `list_certificates` API is returning an incorrect response structure.\n\n## Description\n\nWhen calling the `list_certificates` API, the response is missing several expected fields and has an incorrect structure. The API is only returning `CertificateArn` and `DomainName` in each certificate summary, but it should also include the `InUse` field.\n\n## Steps to reproduce\n\nHere's a simple script to reproduce the issue:\n\n```python\nimport boto3\nfrom moto import mock_acm\n\n@mock_acm\ndef test_list_certificates():\n    client = boto3.client('acm', region_name='us-east-1')\n    \n    # Request a certificate\n    response = client.request_certificate(\n        DomainName='example.com',\n        ValidationMethod='DNS'\n    )\n    cert_arn = response['CertificateArn']\n    \n    # List certificates\n    response = client.list_certificates()\n    print(\"Response:\", response)\n    \n    # Check if InUse field exists in the response\n    cert = response['CertificateSummaryList'][0]\n    print(\"Certificate fields:\", cert.keys())\n    \n    # This will fail because 'InUse' is missing\n    in_use = cert['InUse']\n    \ntest_list_certificates()\n```\n\n## Expected behavior\n\nThe `list_certificates` API should return a response that includes the `InUse` field for each certificate in the `CertificateSummaryList`.\n\n## Actual behavior\n\nThe API only returns `CertificateArn` and `DomainName` for each certificate, and the `InUse` field is missing. This causes my application to fail when it tries to access this field.\n\n## Environment\n- moto version: latest\n- Python 3.9\n- boto3 version: latest\n\n<END WRITING>",
+  "actions": [
+    {
+      "source_message_index": 36,
+      "filepath": "moto/acm/responses.py",
+      "old_string": "\n    def list_certificates(self) -> str:\n        certs = []\n        statuses = self._get_param(\"CertificateStatuses\")\n        for cert_bundle in self.acm_backend.get_certificates_list(statuses):\n            certs.append(\n                {\n                    \"CertificateArn\": cert_bundle.arn,\n                    \"DomainName\": cert_bundle.common_name,\n                }\n            )\n\n        result = {\"CertificateSummaryList\": certs}\n        return json.dumps(result)\n",
+      "new_string": "\n    def list_certificates(self) -> str:\n        certs = []\n        statuses = self._get_param(\"CertificateStatuses\")\n        for cert_bundle in self.acm_backend.list_certificates(statuses):\n            certs.append(\n                {\n                    \"CertificateArn\": cert_bundle.arn,\n                    \"DomainName\": cert_bundle.common_name,\n                    \"InUse\": len(cert_bundle.in_use_by) > 0\n                }\n            )\n\n        result = {\"CertificateSummaryList\": certs}\n        return json.dumps(result)\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 48,
+      "filepath": "moto/acm/responses.py",
+      "old_string": "\n    def list_certificates(self) -> str:\n        certs = []\n        statuses = self._get_param(\"CertificateStatuses\")\n        for cert_bundle in self.acm_backend.list_certificates(statuses):\n            certs.append(\n                {\n                    \"CertificateArn\": cert_bundle.arn,\n                    \"DomainName\": cert_bundle.common_name,\n                    \"InUse\": len(cert_bundle.in_use_by) > 0\n                }\n            )\n\n        result = {\"CertificateSummaryList\": certs}\n        return json.dumps(result)\n",
+      "new_string": "\n    def list_certificates(self) -> str:\n        certs = []\n        statuses = self._get_param(\"CertificateStatuses\")\n        for cert_bundle in self.acm_backend.list_certificates(statuses):\n            # Get certificate details\n            cert = cert_bundle._cert\n            cert_summary = {\n                \"CertificateArn\": cert_bundle.arn,\n                \"DomainName\": cert_bundle.common_name,\n                \"InUse\": len(cert_bundle.in_use_by) > 0,\n                \"Status\": cert_bundle.status,\n                \"Type\": cert_bundle.type\n            }\n            \n            # Add key algorithm\n            if cert_bundle._key.key_size == 1024:\n                cert_summary[\"KeyAlgorithm\"] = \"RSA_1024\"\n            elif cert_bundle._key.key_size == 2048:\n                cert_summary[\"KeyAlgorithm\"] = \"RSA_2048\"\n            else:\n                cert_summary[\"KeyAlgorithm\"] = \"EC_prime256v1\"\n            \n            # Add renewal eligibility\n            cert_summary[\"RenewalEligibility\"] = \"INELIGIBLE\"\n            \n            # Add validity dates\n            cert_summary[\"NotBefore\"] = cert_bundle._not_valid_before(cert)\n            cert_summary[\"NotAfter\"] = cert_bundle._not_valid_after(cert)\n            \n            certs.append(cert_summary)\n\n        result = {\"CertificateSummaryList\": certs}\n        return json.dumps(result)\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 50,
+      "filepath": "moto/acm/responses.py",
+      "old_string": "\n            # Add validity dates\n            cert_summary[\"NotBefore\"] = cert_bundle._not_valid_before(cert)\n            cert_summary[\"NotAfter\"] = cert_bundle._not_valid_after(cert)\n",
+      "new_string": "\n            # Add validity dates - convert to epoch timestamp for proper serialization\n            from moto.acm.models import datetime_to_epoch\n            cert_summary[\"NotBefore\"] = datetime_to_epoch(cert_bundle._not_valid_before(cert))\n            cert_summary[\"NotAfter\"] = datetime_to_epoch(cert_bundle._not_valid_after(cert))\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 54,
+      "filepath": "moto/acm/responses.py",
+      "old_string": "\n            # Add validity dates - convert to epoch timestamp for proper serialization\n            from moto.acm.models import datetime_to_epoch\n            cert_summary[\"NotBefore\"] = datetime_to_epoch(cert_bundle._not_valid_before(cert))\n            cert_summary[\"NotAfter\"] = datetime_to_epoch(cert_bundle._not_valid_after(cert))\n",
+      "new_string": "\n            # Add validity dates\n            not_before = cert_bundle._not_valid_before(cert)\n            not_after = cert_bundle._not_valid_after(cert)\n            \n            # We need to include these dates but they'll be properly serialized by the JSON encoder\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 56,
+      "filepath": "moto/acm/responses.py",
+      "old_string": "\n            # Add validity dates\n            not_before = cert_bundle._not_valid_before(cert)\n            not_after = cert_bundle._not_valid_after(cert)\n            \n            # We need to include these dates but they'll be properly serialized by the JSON encoder\n",
+      "new_string": "\n            # Add validity dates\n            cert_summary[\"NotBefore\"] = cert_bundle._not_valid_before(cert)\n            cert_summary[\"NotAfter\"] = cert_bundle._not_valid_after(cert)\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 60,
+      "filepath": "moto/acm/responses.py",
+      "old_string": "\n            # Add validity dates\n            cert_summary[\"NotBefore\"] = cert_bundle._not_valid_before(cert)\n            cert_summary[\"NotAfter\"] = cert_bundle._not_valid_after(cert)\n",
+      "new_string": "\n            # Add validity dates - convert to epoch timestamp for proper serialization\n            from moto.acm.models import datetime_to_epoch\n            cert_summary[\"NotBefore\"] = datetime_to_epoch(cert_bundle._not_valid_before(cert))\n            cert_summary[\"NotAfter\"] = datetime_to_epoch(cert_bundle._not_valid_after(cert))\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 70,
+      "filepath": "moto/acm/responses.py",
+      "old_string": "\nimport base64\nimport json\nfrom typing import Dict, List, Tuple, Union\n\nfrom moto.core.responses import BaseResponse\n\nfrom .exceptions import AWSValidationException\nfrom .models import AWSCertificateManagerBackend, acm_backends\n",
+      "new_string": "\nimport base64\nimport json\nfrom datetime import datetime\nfrom typing import Any, Dict, List, Tuple, Union\n\nfrom moto.core.responses import BaseResponse\n\nfrom .exceptions import AWSValidationException\nfrom .models import AWSCertificateManagerBackend, acm_backends\n\n\nclass DateTimeEncoder(json.JSONEncoder):\n    def default(self, o: Any) -> Any:\n        if isinstance(o, datetime):\n            return o.isoformat()\n        return super().default(o)\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 72,
+      "filepath": "moto/acm/responses.py",
+      "old_string": "\n            # Add validity dates - convert to epoch timestamp for proper serialization\n            from moto.acm.models import datetime_to_epoch\n            cert_summary[\"NotBefore\"] = datetime_to_epoch(cert_bundle._not_valid_before(cert))\n            cert_summary[\"NotAfter\"] = datetime_to_epoch(cert_bundle._not_valid_after(cert))\n",
+      "new_string": "\n            # Add validity dates\n            cert_summary[\"NotBefore\"] = cert_bundle._not_valid_before(cert)\n            cert_summary[\"NotAfter\"] = cert_bundle._not_valid_after(cert)\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 74,
+      "filepath": "moto/acm/responses.py",
+      "old_string": "\n        result = {\"CertificateSummaryList\": certs}\n        return json.dumps(result)\n",
+      "new_string": "\n        result = {\"CertificateSummaryList\": certs}\n        return json.dumps(result, cls=DateTimeEncoder)\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 80,
+      "filepath": "moto/acm/responses.py",
+      "old_string": "\n    def list_certificates(self) -> str:\n        certs = []\n        statuses = self._get_param(\"CertificateStatuses\")\n        for cert_bundle in self.acm_backend.list_certificates(statuses):\n            # Get certificate details\n            cert = cert_bundle._cert\n            cert_summary = {\n                \"CertificateArn\": cert_bundle.arn,\n                \"DomainName\": cert_bundle.common_name,\n                \"InUse\": len(cert_bundle.in_use_by) > 0,\n                \"Status\": cert_bundle.status,\n                \"Type\": cert_bundle.type\n            }\n            \n            # Add key algorithm\n            if cert_bundle._key.key_size == 1024:\n                cert_summary[\"KeyAlgorithm\"] = \"RSA_1024\"\n            elif cert_bundle._key.key_size == 2048:\n                cert_summary[\"KeyAlgorithm\"] = \"RSA_2048\"\n            else:\n                cert_summary[\"KeyAlgorithm\"] = \"EC_prime256v1\"\n            \n            # Add renewal eligibility\n            cert_summary[\"RenewalEligibility\"] = \"INELIGIBLE\"\n            \n            # Add validity dates\n            cert_summary[\"NotBefore\"] = cert_bundle._not_valid_before(cert)\n            cert_summary[\"NotAfter\"] = cert_bundle._not_valid_after(cert)\n            \n            certs.append(cert_summary)\n\n        result = {\"CertificateSummaryList\": certs}\n        return json.dumps(result, cls=DateTimeEncoder)\n",
+      "new_string": "\n    def list_certificates(self) -> str:\n        certs = []\n        statuses = self._get_param(\"CertificateStatuses\")\n        for cert_bundle in self.acm_backend.list_certificates(statuses):\n            cert_summary = {\n                \"CertificateArn\": cert_bundle.arn,\n                \"DomainName\": cert_bundle.common_name,\n                \"InUse\": len(cert_bundle.in_use_by) > 0\n            }\n            certs.append(cert_summary)\n\n        result = {\"CertificateSummaryList\": certs}\n        return json.dumps(result)\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 86,
+      "filepath": "moto/acm/responses.py",
+      "old_string": "\n    def list_certificates(self) -> str:\n        certs = []\n        statuses = self._get_param(\"CertificateStatuses\")\n        for cert_bundle in self.acm_backend.list_certificates(statuses):\n            cert_summary = {\n                \"CertificateArn\": cert_bundle.arn,\n                \"DomainName\": cert_bundle.common_name,\n                \"InUse\": len(cert_bundle.in_use_by) > 0\n            }\n            certs.append(cert_summary)\n\n        result = {\"CertificateSummaryList\": certs}\n        return json.dumps(result)\n",
+      "new_string": "\n    def list_certificates(self) -> str:\n        certs = []\n        statuses = self._get_param(\"CertificateStatuses\")\n        for cert_bundle in self.acm_backend.list_certificates(statuses):\n            # Get certificate details\n            cert = cert_bundle._cert\n            cert_summary = {\n                \"CertificateArn\": cert_bundle.arn,\n                \"DomainName\": cert_bundle.common_name,\n                \"InUse\": len(cert_bundle.in_use_by) > 0,\n                \"Status\": cert_bundle.status,\n                \"Type\": cert_bundle.type\n            }\n            \n            # Add key algorithm\n            if cert_bundle._key.key_size == 1024:\n                cert_summary[\"KeyAlgorithm\"] = \"RSA_1024\"\n            elif cert_bundle._key.key_size == 2048:\n                cert_summary[\"KeyAlgorithm\"] = \"RSA_2048\"\n            else:\n                cert_summary[\"KeyAlgorithm\"] = \"EC_prime256v1\"\n            \n            # Add renewal eligibility\n            cert_summary[\"RenewalEligibility\"] = \"INELIGIBLE\"\n            \n            # Add validity dates - use epoch timestamps for proper serialization\n            from moto.acm.models import datetime_to_epoch\n            cert_summary[\"NotBefore\"] = datetime_to_epoch(cert_bundle._not_valid_before(cert))\n            cert_summary[\"NotAfter\"] = datetime_to_epoch(cert_bundle._not_valid_after(cert))\n            \n            certs.append(cert_summary)\n\n        result = {\"CertificateSummaryList\": certs}\n        return json.dumps(result)\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

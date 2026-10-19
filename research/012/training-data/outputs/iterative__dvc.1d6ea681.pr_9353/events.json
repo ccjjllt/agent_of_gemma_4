@@ -1,0 +1,53 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "dvc/repo/experiments/queue/tasks.py",
+      "start_line": 33,
+      "end_line": 91
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "dvc/repo/experiments/queue/tasks.py",
+      "content": "        # exp.scm_lock before DVC push\n        executor = BaseStashQueue.init_executor(\n            repo.experiments,\n            entry,\n            TempDirExecutor,\n            location=\"dvc-task\",\n        )\n        infofile = repo.experiments.celery_queue.get_infofile_path(entry.stash_rev)\n        executor.info.dump_json(infofile)\n    return executor\n\n\n@shared_task\ndef collect_exp(\n    proc_dict: dict[str, Any],  # noqa: ARG001\n    entry_dict: dict[str, Any],\n) -> str:\n    \"\"\"Collect results for an experiment.\n\n    Arguments:\n        proc_dict: Serialized ProcessInfo for experiment executor process.\n        entry_dict: Serialized QueueEntry for this experiment.\n\n    Returns:\n        Directory to be cleaned up after this experiment.\n    \"\"\"\n    from dvc.repo import Repo\n\n    entry = QueueEntry.from_dict(entry_dict)\n    with Repo(entry.dvc_root) as repo:\n        celery_queue = repo.experiments.celery_queue\n        infofile = celery_queue.get_infofile_path(entry.stash_rev)\n        executor_info = ExecutorInfo.load_json(infofile)\n        logger.debug(\"Collecting experiment info '%s'\", str(executor_info))\n        executor = TempDirExecutor.from_info(executor_info)\n        exec_result = executor_info.result\n        try:\n            if exec_result is not None:\n                BaseStashQueue.collect_executor(repo.experiments, executor, exec_result)\n            else:\n                logger.debug(\"Experiment failed (Exec result was None)\")\n                celery_queue.stash_failed(entry)\n        except Exception:\n            # Log exceptions but do not re-raise so that task chain execution\n            # continues\n            logger.exception(\"Failed to collect experiment\")\n    return executor.root_dir\n\n\n@shared_task\ndef cleanup_exp(executor: TempDirExecutor, infofile: str) -> None:\n    \"\"\"Cleanup after an experiment.\n\n    Arguments:\n        tmp_dir: Temp directory to be removed.\n        entry_dict: Serialized QueueEntry for this experiment.\n    \"\"\"\n    executor.cleanup(infofile)\n",
+      "start_line": 33,
+      "end_line": 91,
+      "total_lines": 123,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "dvc/repo/experiments/queue/tasks.py",
+      "old_string": "@shared_task\ndef collect_exp(\n    proc_dict: dict[str, Any],  # noqa: ARG001\n    entry_dict: dict[str, Any],\n) -> str:\n    \"\"\"Collect results for an experiment.\n\n    Arguments:\n        proc_dict: Serialized ProcessInfo for experiment executor process.\n        entry_dict: Serialized QueueEntry for this experiment.\n\n    Returns:\n        Directory to be cleaned up after this experiment.\n    \"\"\"\n    from dvc.repo import Repo\n\n    entry = QueueEntry.from_dict(entry_dict)\n    with Repo(entry.dvc_root) as repo:\n        celery_queue = repo.experiments.celery_queue\n        infofile = celery_queue.get_infofile_path(entry.stash_rev)\n        executor_info = ExecutorInfo.load_json(infofile)\n        logger.debug(\"Collecting experiment info '%s'\", str(executor_info))\n        executor = TempDirExecutor.from_info(executor_info)\n        exec_result = executor_info.result\n        try:\n            if exec_result is not None:\n                BaseStashQueue.collect_executor(repo.experiments, executor, exec_result)\n            else:\n                logger.debug(\"Experiment failed (Exec result was None)\")\n                celery_queue.stash_failed(entry)\n        except Exception:\n            # Log exceptions but do not re-raise so that task chain execution\n            # continues\n            logger.exception(\"Failed to collect experiment\")\n    return executor.root_dir",
+      "new_string": "@shared_task\ndef collect_exp(\n    proc_dict: dict[str, Any],  # noqa: ARG001\n    entry_dict: dict[str, Any],\n) -> str:\n    \"\"\"Collect results for an experiment.\n\n    Arguments:\n        proc_dict: Serialized ProcessInfo for experiment executor process.\n        entry_dict: Serialized QueueEntry for this experiment.\n\n    Returns:\n        Directory to be cleaned up after this experiment.\n    \"\"\"\n    from dvc.repo import Repo\n    from dvc.utils.studio import get_repo_url, notify_refs\n    from dvc.env import DVC_STUDIO_TOKEN\n\n    entry = QueueEntry.from_dict(entry_dict)\n    with Repo(entry.dvc_root) as repo:\n        celery_queue = repo.experiments.celery_queue\n        infofile = celery_queue.get_infofile_path(entry.stash_rev)\n        executor_info = ExecutorInfo.load_json(infofile)\n        logger.debug(\"Collecting experiment info '%s'\", str(executor_info))\n        executor = TempDirExecutor.from_info(executor_info)\n        exec_result = executor_info.result\n        try:\n            if exec_result is not None:\n                BaseStashQueue.collect_executor(repo.experiments, executor, exec_result)\n                # Notify Studio about completed experiment\n                studio_token = os.getenv(DVC_STUDIO_TOKEN)\n                if studio_token:\n                    repo_url = get_repo_url(repo)\n                    if repo_url:\n                        notify_refs(\n                            repo_url=repo_url,\n                            token=studio_token,\n                            pushed=[exec_result.ref_info.name] if exec_result.ref_info else []\n                        )\n            else:\n                logger.debug(\"Experiment failed (Exec result was None)\")\n                celery_queue.stash_failed(entry)\n        except Exception:\n            # Log exceptions but do not re-raise so that task chain execution\n            # continues\n            logger.exception(\"Failed to collect experiment\")\n    return executor.root_dir",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "dvc/repo/experiments/queue/tasks.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/dvc/repo/experiments/queue/tasks.py\n+++ b/dvc/repo/experiments/queue/tasks.py\n@@ -57,6 +57,8 @@\n         Directory to be cleaned up after this experiment.\n     \"\"\"\n     from dvc.repo import Repo\n+    from dvc.utils.studio import get_repo_url, notify_refs\n+    from dvc.env import DVC_STUDIO_TOKEN\n \n     entry = QueueEntry.from_dict(entry_dict)\n     with Repo(entry.dvc_root) as repo:\n@@ -69,6 +71,16 @@\n         try:\n             if exec_result is not None:\n                 BaseStashQueue.collect_executor(repo.experiments, executor, exec_result)\n+                # Notify Studio about completed experiment\n+                studio_token = os.getenv(DVC_STUDIO_TOKEN)\n+                if studio_token:\n+                    repo_url = get_repo_url(repo)\n+                    if repo_url:\n+                        notify_refs(\n+                            repo_url=repo_url,\n+                            token=studio_token,\n+                            pushed=[exec_result.ref_info.name] if exec_result.ref_info else []\n+                        )\n             else:\n                 logger.debug(\"Experiment failed (Exec result was None)\")\n                 celery_queue.stash_failed(entry)\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "dvc/repo/experiments/executor/base.py",
+      "start_line": 1,
+      "end_line": 13
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "dvc/repo/experiments/executor/base.py",
+      "content": "import logging\nimport os\nimport pickle\nimport shutil\nfrom abc import ABC, abstractmethod\nfrom collections.abc import Iterable, Iterator\nfrom contextlib import contextmanager\nfrom dataclasses import asdict, dataclass\nfrom enum import IntEnum\nfrom itertools import chain\nfrom typing import TYPE_CHECKING, Any, Callable, NamedTuple, Optional, Union\n\nfrom scmrepo.exceptions import SCMError",
+      "start_line": 1,
+      "end_line": 13,
+      "total_lines": 804,
+      "is_truncated": false
+    }
+  }
+]

@@ -1,0 +1,28 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 1333,
+  "instance_id": "facebookresearch__hydra.0f03eb60.pr_1952",
+  "repo": "facebookresearch/hydra",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "facebookresearch__hydra.0f03eb60.pr_1952.y1wve1wy",
+  "messages_sha256": "9594eda94a5b139797aeabf1d1ccee6b2c75eebaeb6bb485a633b3c4f8cd03e1",
+  "issue": "# Version checking for deprecated optional syntax is broken\n\n**Describe the bug**\nAfter a recent change, the version checking for deprecated optional syntax in defaults lists is broken. The code is no longer respecting the `version_base` setting, causing incorrect behavior for both version 1.1 and 1.2 configurations.\n\n**To Reproduce**\nCreate a config with the deprecated optional syntax:\n\n```yaml\n# config.yaml\ndefaults:\n  - group1:\n      optional: true\n      value: foo\n```\n\nThen try to load it with different version_base settings:\n\n```python\nimport hydra\nfrom hydra import initialize, compose\n\n# This should work with a warning for version_base=\"1.1\"\nwith initialize(version_base=\"1.1\"):\n    cfg = compose(config_name=\"config\")\n    print(cfg)\n\n# This should fail for version_base=\"1.2\"\nwith initialize(version_base=\"1.2\"):\n    cfg = compose(config_name=\"config\")\n    print(cfg)\n```\n\n**Expected behavior**\n- For version_base=\"1.1\", the deprecated syntax should be accepted with a warning\n- For version_base=\"1.2\", the deprecated syntax should be rejected with an error\n\n**Actual behavior**\nThe version checking logic is broken, causing the code to always behave as if version_base=\"1.1\" regardless of the actual setting. This means the deprecated syntax is always accepted with a warning, even when it should be rejected.\n\n**Environment info**\n- Hydra version: 1.4.0.dev1\n- Python version: 3.10\n- OS: Linux",
+  "actions": [
+    {
+      "source_message_index": 46,
+      "filepath": "hydra/_internal/config_repository.py",
+      "old_string": "                if old_optional is not None:\n                    # DEPRECATED: remove in 1.2\n                    msg = dedent(\n                        f\"\"\"\n                        In {config_path}: 'optional: true' is deprecated.\n                        Use 'optional {key}: {config_value}' instead.\n                        Support for the old style will be removed in Hydra 1.2\"\"\"\n                    )\n                    deprecation_warning(msg)",
+      "new_string": "                if old_optional is not None:\n                    # DEPRECATED: remove in 1.2\n                    msg = dedent(\n                        f\"\"\"\n                        In {config_path}: 'optional: true' is deprecated.\n                        Use 'optional {key}: {config_value}' instead.\n                        Support for the old style is removed for Hydra version_base >= 1.2\"\"\"\n                    )\n                    \n                    from hydra import version\n                    if version.base_at_least(\"1.2\"):\n                        raise ValueError(f\"In {config_path}: Too many keys in default item {{'group1': '{config_value}', 'optional': {old_optional}}}\")\n                    else:\n                        deprecation_warning(msg)",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 48,
+      "filepath": "hydra/_internal/config_repository.py",
+      "old_string": "                    from hydra import version\n                    if version.base_at_least(\"1.2\"):\n                        raise ValueError(f\"In {config_path}: Too many keys in default item {{'group1': '{config_value}', 'optional': {old_optional}}}\")\n                    else:\n                        deprecation_warning(msg)",
+      "new_string": "                    from hydra import version\n                    if version.base_at_least(\"1.2\"):\n                        raise ValueError(f\"In {config_path}: Too many keys in default item {{'{key}': '{config_value}', 'optional': {old_optional}}}\")\n                    else:\n                        deprecation_warning(msg)",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

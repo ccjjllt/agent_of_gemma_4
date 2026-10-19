@@ -1,0 +1,49 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/cloudtrail/models.py",
+      "start_line": 308,
+      "end_line": 342
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/cloudtrail/models.py",
+      "content": "            (\n                trail\n                for trail in all_trails\n                if trail.trail_name == name or trail.arn == name\n            ),\n            None,\n        )\n        if not trail:\n            # This particular method returns the ARN as part of the error message\n            arn = f\"arn:{get_partition(self.region_name)}:cloudtrail:{self.region_name}:{self.account_id}:trail/{name}\"\n            raise TrailNotFoundException(account_id=self.account_id, name=arn)\n        return trail.status\n\n    def describe_trails(self, include_shadow_trails: bool) -> Iterable[Trail]:\n        all_trails = []\n        if include_shadow_trails:\n            current_account = cloudtrail_backends[self.account_id]\n            for backend in current_account.values():\n                    all_trails.extend(backend.trails.values())\n        else:\n            all_trails.extend(self.trails.values())\n        return all_trails\n\n    def list_trails(self) -> Iterable[Trail]:\n        return self.describe_trails(include_shadow_trails=True)\n\n    def start_logging(self, name: str) -> None:\n        trail = self.trails[name]\n        trail.start_logging()\n\n    def stop_logging(self, name: str) -> None:\n        trail = self.trails[name]\n        trail.stop_logging()\n\n    def delete_trail(self, name: str) -> None:",
+      "start_line": 308,
+      "end_line": 342,
+      "total_lines": 424,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/cloudtrail/models.py",
+      "old_string": "\n    def describe_trails(self, include_shadow_trails: bool) -> Iterable[Trail]:\n        all_trails = []\n        if include_shadow_trails:\n            current_account = cloudtrail_backends[self.account_id]\n            for backend in current_account.values():\n                    all_trails.extend(backend.trails.values())\n        else:\n            all_trails.extend(self.trails.values())\n        return all_trails\n",
+      "new_string": "\n    def describe_trails(self, include_shadow_trails: bool) -> Iterable[Trail]:\n        all_trails = []\n        if include_shadow_trails:\n            current_account = cloudtrail_backends[self.account_id]\n            for region, backend in current_account.items():\n                if region == self.region_name:\n                    # Include all trails from the current region\n                    all_trails.extend(backend.trails.values())\n                else:\n                    # From other regions, only include multi-region trails\n                    for trail in backend.trails.values():\n                        if trail.is_multi_region:\n                            all_trails.append(trail)\n        else:\n            all_trails.extend(self.trails.values())\n        return all_trails\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/cloudtrail/models.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/cloudtrail/models.py\n+++ b/moto/cloudtrail/models.py\n@@ -322,8 +322,15 @@\n         all_trails = []\n         if include_shadow_trails:\n             current_account = cloudtrail_backends[self.account_id]\n-            for backend in current_account.values():\n+            for region, backend in current_account.items():\n+                if region == self.region_name:\n+                    # Include all trails from the current region\n                     all_trails.extend(backend.trails.values())\n+                else:\n+                    # From other regions, only include multi-region trails\n+                    for trail in backend.trails.values():\n+                        if trail.is_multi_region:\n+                            all_trails.append(trail)\n         else:\n             all_trails.extend(self.trails.values())\n         return all_trails\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "get_status",
+    "arguments": {},
+    "response": {
+      "status": "ok",
+      "tool_calls_used": 2,
+      "patch_submitted": false,
+      "patch_size": 0,
+      "tool_calls_remaining": 98,
+      "max_tool_calls": 100,
+      "command_timeout_seconds": 30
+    }
+  }
+]

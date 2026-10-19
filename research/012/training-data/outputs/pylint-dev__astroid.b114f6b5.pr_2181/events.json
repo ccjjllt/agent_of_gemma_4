@@ -1,0 +1,83 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "astroid/inference_tip.py",
+      "start_line": 1,
+      "end_line": 35
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "astroid/inference_tip.py",
+      "content": "# Licensed under the LGPL: https://www.gnu.org/licenses/old-licenses/lgpl-2.1.en.html\n# For details: https://github.com/pylint-dev/astroid/blob/main/LICENSE\n# Copyright (c) https://github.com/pylint-dev/astroid/blob/main/CONTRIBUTORS.txt\n\n\"\"\"Transform utilities (filters and decorator).\"\"\"\n\nfrom __future__ import annotations\n\nfrom collections.abc import Generator\nfrom typing import Any, TypeVar\n\nfrom astroid.context import InferenceContext\nfrom astroid.exceptions import InferenceOverwriteError, UseInferenceDefault\nfrom astroid.nodes import NodeNG\nfrom astroid.typing import (\n    InferenceResult,\n    InferFn,\n    TransformFn,\n)\n\n_cache: dict[\n    tuple[InferFn[Any], NodeNG, InferenceContext | None], list[InferenceResult]\n] = {}\n\n_CURRENTLY_INFERRING: set[tuple[InferFn[Any], NodeNG]] = set()\n\n_NodesT = TypeVar(\"_NodesT\", bound=NodeNG)\n\n\ndef clear_inference_tip_cache() -> None:\n    \"\"\"Clear the inference tips cache.\"\"\"\n    _cache.clear()\n\n\ndef _inference_tip_cached(func: InferFn[_NodesT]) -> InferFn[_NodesT]:",
+      "start_line": 1,
+      "end_line": 35,
+      "total_lines": 110,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "astroid/inference_tip.py",
+      "old_string": "from __future__ import annotations\n\nfrom collections.abc import Generator\nfrom typing import Any, TypeVar\n\nfrom astroid.context import InferenceContext\nfrom astroid.exceptions import InferenceOverwriteError, UseInferenceDefault\nfrom astroid.nodes import NodeNG\nfrom astroid.typing import (\n    InferenceResult,\n    InferFn,\n    TransformFn,\n)\n\n_cache: dict[\n    tuple[InferFn[Any], NodeNG, InferenceContext | None], list[InferenceResult]\n] = {}",
+      "new_string": "from __future__ import annotations\n\nfrom collections.abc import Generator\nfrom functools import lru_cache\nfrom typing import Any, TypeVar\n\nfrom astroid.context import InferenceContext\nfrom astroid.exceptions import InferenceOverwriteError, UseInferenceDefault\nfrom astroid.nodes import NodeNG\nfrom astroid.typing import (\n    InferenceResult,\n    InferFn,\n    TransformFn,\n)\n\n# Use a dictionary to store the LRU cache instances for each function\n# This is needed because lru_cache needs hashable arguments, and InferenceContext isn't hashable\n_cache_instances: dict[InferFn[Any], Any] = {}",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "astroid/inference_tip.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/astroid/inference_tip.py\n+++ b/astroid/inference_tip.py\n@@ -7,6 +7,7 @@\n from __future__ import annotations\n \n from collections.abc import Generator\n+from functools import lru_cache\n from typing import Any, TypeVar\n \n from astroid.context import InferenceContext\n@@ -18,9 +19,9 @@\n     TransformFn,\n )\n \n-_cache: dict[\n-    tuple[InferFn[Any], NodeNG, InferenceContext | None], list[InferenceResult]\n-] = {}\n+# Use a dictionary to store the LRU cache instances for each function\n+# This is needed because lru_cache needs hashable arguments, and InferenceContext isn't hashable\n+_cache_instances: dict[InferFn[Any], Any] = {}\n \n _CURRENTLY_INFERRING: set[tuple[InferFn[Any], NodeNG]] = set()\n \n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "astroid/inference_tip.py",
+      "start_line": 19,
+      "end_line": 77
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "astroid/inference_tip.py",
+      "content": "    TransformFn,\n)\n\n# Use a dictionary to store the LRU cache instances for each function\n# This is needed because lru_cache needs hashable arguments, and InferenceContext isn't hashable\n_cache_instances: dict[InferFn[Any], Any] = {}\n\n_CURRENTLY_INFERRING: set[tuple[InferFn[Any], NodeNG]] = set()\n\n_NodesT = TypeVar(\"_NodesT\", bound=NodeNG)\n\n\ndef clear_inference_tip_cache() -> None:\n    \"\"\"Clear the inference tips cache.\"\"\"\n    _cache.clear()\n\n\ndef _inference_tip_cached(func: InferFn[_NodesT]) -> InferFn[_NodesT]:\n    \"\"\"Cache decorator used for inference tips.\"\"\"\n\n    def inner(\n        node: _NodesT,\n        context: InferenceContext | None = None,\n        **kwargs: Any,\n    ) -> Generator[InferenceResult]:\n        partial_cache_key = (func, node)\n        if partial_cache_key in _CURRENTLY_INFERRING:\n            # If through recursion we end up trying to infer the same\n            # func + node we raise here.\n            raise UseInferenceDefault\n        try:\n            yield from _cache[func, node, context]\n            return\n        except KeyError:\n            # Recursion guard with a partial cache key.\n            # Using the full key causes a recursion error on PyPy.\n            # It's a pragmatic compromise to avoid so much recursive inference\n            # with slightly different contexts while still passing the simple\n            # test cases included with this commit.\n            _CURRENTLY_INFERRING.add(partial_cache_key)\n            result = _cache[func, node, context] = list(func(node, context, **kwargs))\n            # Remove recursion guard.\n            _CURRENTLY_INFERRING.remove(partial_cache_key)\n\n        yield from result\n\n    return inner\n\n\ndef inference_tip(\n    infer_function: InferFn[_NodesT], raise_on_overwrite: bool = False\n) -> TransformFn[_NodesT]:\n    \"\"\"Given an instance specific inference function, return a function to be\n    given to AstroidManager().register_transform to set this inference function.\n\n    :param bool raise_on_overwrite: Raise an `InferenceOverwriteError`\n        if the inference tip will overwrite another. Used for debugging\n\n    Typical usage",
+      "start_line": 19,
+      "end_line": 77,
+      "total_lines": 111,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "astroid/inference_tip.py",
+      "old_string": "def clear_inference_tip_cache() -> None:\n    \"\"\"Clear the inference tips cache.\"\"\"\n    _cache.clear()\n\n\ndef _inference_tip_cached(func: InferFn[_NodesT]) -> InferFn[_NodesT]:\n    \"\"\"Cache decorator used for inference tips.\"\"\"\n\n    def inner(\n        node: _NodesT,\n        context: InferenceContext | None = None,\n        **kwargs: Any,\n    ) -> Generator[InferenceResult]:\n        partial_cache_key = (func, node)\n        if partial_cache_key in _CURRENTLY_INFERRING:\n            # If through recursion we end up trying to infer the same\n            # func + node we raise here.\n            raise UseInferenceDefault\n        try:\n            yield from _cache[func, node, context]\n            return\n        except KeyError:\n            # Recursion guard with a partial cache key.\n            # Using the full key causes a recursion error on PyPy.\n            # It's a pragmatic compromise to avoid so much recursive inference\n            # with slightly different contexts while still passing the simple\n            # test cases included with this commit.\n            _CURRENTLY_INFERRING.add(partial_cache_key)\n            result = _cache[func, node, context] = list(func(node, context, **kwargs))\n            # Remove recursion guard.\n            _CURRENTLY_INFERRING.remove(partial_cache_key)\n\n        yield from result\n\n    return inner",
+      "new_string": "def clear_inference_tip_cache() -> None:\n    \"\"\"Clear the inference tips cache.\"\"\"\n    _cache_instances.clear()\n\n\ndef _make_cache_key(node: NodeNG, context: InferenceContext | None) -> tuple:\n    \"\"\"Create a hashable cache key from node and context.\n    \n    Since InferenceContext isn't hashable, we extract the relevant parts\n    that make it unique for caching purposes.\n    \"\"\"\n    if context is None:\n        return (id(node), None, None, None)\n    \n    # Extract the minimal set of context attributes that make it unique\n    # We use id() for non-hashable objects to maintain cache correctness\n    return (\n        id(node),\n        context.lookupname,\n        id(context.callcontext) if context.callcontext else None,\n        id(context.boundnode) if context.boundnode else None,\n    )\n\n\ndef _inference_tip_cached(func: InferFn[_NodesT]) -> InferFn[_NodesT]:\n    \"\"\"Cache decorator used for inference tips.\"\"\"\n    \n    # Create a new LRU cache for this function if it doesn't exist\n    if func not in _cache_instances:\n        @lru_cache(maxsize=1000)  # Limit cache to 1000 entries per function\n        def cached_func(cache_key: tuple) -> list[InferenceResult]:\n            node = _NODES_BY_ID.get(cache_key[0])\n            if node is None:\n                return []\n            # Reconstruct a minimal context if needed\n            if cache_key[1] is not None:\n                context = InferenceContext()\n                context.lookupname = cache_key[1]\n            else:\n                context = None\n            return list(func(node, context))\n            \n        _cache_instances[func] = cached_func\n    \n    cached_func = _cache_instances[func]\n    \n    def inner(\n        node: _NodesT,\n        context: InferenceContext | None = None,\n        **kwargs: Any,\n    ) -> Generator[InferenceResult]:\n        partial_cache_key = (func, node)\n        if partial_cache_key in _CURRENTLY_INFERRING:\n            # If through recursion we end up trying to infer the same\n            # func + node we raise here.\n            raise UseInferenceDefault\n        \n        # Store node in temporary dict so we can retrieve it by id in cached_func\n        _NODES_BY_ID[id(node)] = node\n        try:\n            _CURRENTLY_INFERRING.add(partial_cache_key)\n            cache_key = _make_cache_key(node, context)\n            result = cached_func(cache_key)\n            yield from result\n        finally:\n            _CURRENTLY_INFERRING.remove(partial_cache_key)\n            del _NODES_BY_ID[id(node)]\n\n    return inner\n\n# Temporary storage to map node ids to nodes\n_NODES_BY_ID: dict[int, NodeNG] = {}",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "astroid/inference_tip.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/astroid/inference_tip.py\n+++ b/astroid/inference_tip.py\n@@ -30,12 +30,50 @@\n \n def clear_inference_tip_cache() -> None:\n     \"\"\"Clear the inference tips cache.\"\"\"\n-    _cache.clear()\n+    _cache_instances.clear()\n+\n+\n+def _make_cache_key(node: NodeNG, context: InferenceContext | None) -> tuple:\n+    \"\"\"Create a hashable cache key from node and context.\n+    \n+    Since InferenceContext isn't hashable, we extract the relevant parts\n+    that make it unique for caching purposes.\n+    \"\"\"\n+    if context is None:\n+        return (id(node), None, None, None)\n+    \n+    # Extract the minimal set of context attributes that make it unique\n+    # We use id() for non-hashable objects to maintain cache correctness\n+    return (\n+        id(node),\n+        context.lookupname,\n+        id(context.callcontext) if context.callcontext else None,\n+        id(context.boundnode) if context.boundnode else None,\n+    )\n \n \n def _inference_tip_cached(func: InferFn[_NodesT]) -> InferFn[_NodesT]:\n     \"\"\"Cache decorator used for inference tips.\"\"\"\n-\n+    \n+    # Create a new LRU cache for this function if it doesn't exist\n+    if func not in _cache_instances:\n+        @lru_cache(maxsize=1000)  # Limit cache to 1000 entries per function\n+        def cached_func(cache_key: tuple) -> list[InferenceResult]:\n+            node = _NODES_BY_ID.get(cache_key[0])\n+            if node is None:\n+                return []\n+            # Reconstruct a minimal context if needed\n+            if cache_key[1] is not None:\n+                context = InferenceContext()\n+                context.lookupname = cache_key[1]\n+            else:\n+                context = None\n+            return list(func(node, context))\n+            \n+        _cache_instances[func] = cached_func\n+    \n+    cached_func = _cache_instances[func]\n+    \n     def inner(\n         node: _NodesT,\n         context: InferenceContext | None = None,\n@@ -46,23 +84,22 @@\n             # If through recursion we end up trying to infer the same\n             # func + node we raise here.\n             raise UseInferenceDefault\n+        \n+        # Store node in temporary dict so we can retrieve it by id in cached_func\n+        _NODES_BY_ID[id(node)] = node\n         try:\n-            yield from _cache[func, node, context]\n-            return\n-        except KeyError:\n-            # Recursion guard with a partial cache key.\n-            # Using the full key causes a recursion error on PyPy.\n-            # It's a pragmatic compromise to avoid so much recursive inference\n-            # with slightly different contexts while still passing the simple\n-            # test cases included with this commit.\n             _CURRENTLY_INFERRING.add(partial_cache_key)\n-            result = _cache[func, node, context] = list(func(node, context, **kwargs))\n-            # Remove recursion guard.\n+            cache_key = _make_cache_key(node, context)\n+            result = cached_func(cache_key)\n+            yield from result\n+        finally:\n             _CURRENTLY_INFERRING.remove(partial_cache_key)\n-\n-        yield from result\n+            del _NODES_BY_ID[id(node)]\n \n     return inner\n+\n+# Temporary storage to map node ids to nodes\n+_NODES_BY_ID: dict[int, NodeNG] = {}\n \n \n def inference_tip(\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "get_status",
+    "arguments": {},
+    "response": {
+      "status": "ok",
+      "tool_calls_used": 4,
+      "patch_submitted": false,
+      "patch_size": 0,
+      "tool_calls_remaining": 96,
+      "max_tool_calls": 100,
+      "command_timeout_seconds": 30
+    }
+  }
+]

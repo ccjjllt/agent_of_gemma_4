@@ -1,0 +1,21 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 1079,
+  "instance_id": "iterative__dvc.1d6ea681.pr_9212",
+  "repo": "iterative/dvc",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "iterative__dvc.1d6ea681.pr_9212.rnoqw9w1",
+  "messages_sha256": "18194a0a0523db7688a3e8d9116f23301762b49e1a0b75e39f35c25012141acc",
+  "issue": "# Hydra interpolation not working in compose_and_dump\n\nWhen using `compose_and_dump` function, interpolation in configuration files is not being resolved. This affects both standard interpolation and custom resolvers from plugins.\n\n## Reproduction\n\nI have a configuration file with interpolation:\n\n```yaml\n# conf/config.yaml\ndata:\n  root: path/to/root\n  raw: ${.root}/raw\n```\n\nWhen I try to use this with `compose_and_dump`:\n\n```python\nfrom dvc.utils.hydra import compose_and_dump\ncompose_and_dump('params.yaml', 'conf', None, 'config', '.', [])\n```\n\nThe resulting `params.yaml` file contains unresolved interpolation:\n\n```yaml\ndata:\n  root: path/to/root\n  raw: ${.root}/raw\n```\n\nExpected output should be:\n\n```yaml\ndata:\n  root: path/to/root\n  raw: path/to/root/raw\n```\n\nThe same issue happens with custom resolvers from plugins. For example, if I have a plugin that registers a resolver:\n\n```python\n# hydra_plugins/resolver.py\nfrom omegaconf import OmegaConf\nOmegaConf.register_new_resolver('plus_10', lambda x: x + 10)\n```\n\nAnd a config file that uses it:\n\n```yaml\n# conf/config.yaml\nfoo: '${plus_10:1}'\n```\n\nThe output file will contain `foo: '${plus_10:1}'` instead of `foo: 11`.\n\nThis seems to be a regression as interpolation was working before.\n\n<END WRITING>",
+  "actions": [
+    {
+      "source_message_index": 18,
+      "filepath": "dvc/utils/hydra.py",
+      "old_string": "\n    load_hydra_plugins(plugins_path)\n    with initialize_config(  # type: ignore[attr-defined]\n        config_source, version_base=None\n    ):\n        cfg = compose(config_name=config_name, overrides=overrides)\n\n    suffix = Path(output_file).suffix.lower()\n    if suffix not in [\".yml\", \".yaml\"]:\n        dumper = DUMPERS[suffix]\n        dumper(output_file, OmegaConf.to_object(cfg))\n    else:\n        Path(output_file).write_text(OmegaConf.to_yaml(cfg), encoding=\"utf-8\")\n    logger.trace(\n        \"Hydra composition enabled. Contents dumped to %s:\\n %s\", output_file, cfg\n    )\n",
+      "new_string": "\n    load_hydra_plugins(plugins_path)\n    with initialize_config(  # type: ignore[attr-defined]\n        config_source, version_base=None\n    ):\n        cfg = compose(config_name=config_name, overrides=overrides)\n        # Resolve interpolation before dumping\n        resolved_cfg = OmegaConf.to_container(cfg, resolve=True)\n\n    suffix = Path(output_file).suffix.lower()\n    if suffix not in [\".yml\", \".yaml\"]:\n        dumper = DUMPERS[suffix]\n        dumper(output_file, resolved_cfg)\n    else:\n        # For YAML files, convert back to OmegaConf to use its YAML dumper\n        yaml_cfg = OmegaConf.create(resolved_cfg)\n        Path(output_file).write_text(OmegaConf.to_yaml(yaml_cfg), encoding=\"utf-8\")\n    logger.trace(\n        \"Hydra composition enabled. Contents dumped to %s:\\n %s\", output_file, resolved_cfg\n    )\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

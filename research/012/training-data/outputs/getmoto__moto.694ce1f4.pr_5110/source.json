@@ -1,0 +1,21 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00001-of-00008.parquet",
+  "row_index": 2158,
+  "instance_id": "getmoto__moto.694ce1f4.pr_5110",
+  "repo": "getmoto/moto",
+  "source_resolved": true,
+  "teacher_source": "claude-3-5-sonnet-20241022",
+  "traj_id": "getmoto__moto.694ce1f4.pr_5110.87igi3sy",
+  "messages_sha256": "c73b5eb85a60ccbe2a8198a72b318cce2de734034dbcc8e08ea05374b8a4d7ef",
+  "issue": "# VPC Endpoint filtering by type not working\n\nI'm having an issue with filtering VPC endpoints by their type. When I try to filter VPC endpoints using the `vpc-endpoint-type` filter, it doesn't return the expected results.\n\n## Reproduction steps:\n\n1. Create a VPC endpoint of type 'Gateway'\n2. Try to describe VPC endpoints with a filter for type 'Gateway'\n\n```python\nimport boto3\n\nec2 = boto3.client('ec2', region_name='us-east-1')\n\n# Create a VPC\nvpc = ec2.create_vpc(CidrBlock='10.0.0.0/16')\nvpc_id = vpc['Vpc']['VpcId']\n\n# Create a gateway endpoint\nendpoint = ec2.create_vpc_endpoint(\n    VpcId=vpc_id,\n    ServiceName='com.amazonaws.us-east-1.s3',\n    VpcEndpointType='Gateway'\n)\n\n# Try to filter by endpoint type\nfiltered_endpoints = ec2.describe_vpc_endpoints(\n    Filters=[\n        {\n            'Name': 'vpc-endpoint-type',\n            'Values': ['Gateway']\n        }\n    ]\n)\n\n# This should return our endpoint, but it doesn't work\nprint(filtered_endpoints)\n```\n\nThe filter doesn't work as expected and doesn't return the endpoint even though it exists and is of type 'Gateway'.\n\nI also tried with the alternative filter name `vpc_endpoint_type` but got the same result.\n\nThis seems to be a regression as it used to work in previous versions. The filtering mechanism for VPC endpoint types appears to be broken.",
+  "actions": [
+    {
+      "source_message_index": 80,
+      "filepath": "moto/ec2/models/vpcs.py",
+      "old_string": "class VPCEndPoint(TaggedEC2Resource, CloudFormationModel):\n    DEFAULT_POLICY = {\n        \"Version\": \"2008-10-17\",\n        \"Statement\": [\n            {\"Effect\": \"Allow\", \"Principal\": \"*\", \"Action\": \"*\", \"Resource\": \"*\"}\n        ],\n    }\n\n    def __init__(",
+      "new_string": "class VPCEndPoint(TaggedEC2Resource, CloudFormationModel):\n    DEFAULT_POLICY = {\n        \"Version\": \"2008-10-17\",\n        \"Statement\": [\n            {\"Effect\": \"Allow\", \"Principal\": \"*\", \"Action\": \"*\", \"Resource\": \"*\"}\n        ],\n    }\n\n    def get_filter_value(self, filter_name: str, method_name: Optional[str] = None) -> Any:\n        if filter_name == \"vpc-endpoint-type\":\n            return self.endpoint_type\n        return super().get_filter_value(filter_name, method_name)\n\n    def __init__(",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

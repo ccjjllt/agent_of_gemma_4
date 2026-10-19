@@ -1,0 +1,77 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 108,
+  "instance_id": "pydantic__pydantic.acb0f10f.pr_8285",
+  "repo": "pydantic/pydantic",
+  "source_resolved": true,
+  "teacher_source": "claude-3-5-sonnet-20241022",
+  "traj_id": "pydantic__pydantic.acb0f10f.pr_8285.bwjhpkvn",
+  "messages_sha256": "04815af558ad54ae326bfdbc2583289956ede465769c5dddc8a53dd99a812892",
+  "issue": "Mypy typing errors with \"reusable\" `model_validator`\n### Initial Checks\r\n\r\n- [X] I confirm that I'm using Pydantic V2\r\n\r\n### Description\r\n\r\nI'm at the final stages of migrating a v1 code base to v2. Functionally it's complete, the code runs as expected without any issues (the v1 to v2 migration guide was _really_ useful). But I'm getting `mypy` errors when using my attempt to migrate \"reused\" v1 `root_validator` instances to v2 `model_validator` instances.\r\n\r\nWhen I use a decorated `model_validator` inline in the model definition all is well. The model validates as expected and `mypy` is content and happy.\r\n\r\nWhen I use my attempt at a reusable `model_validator` the model still validates as expected but `mypy` is not happy at all.\r\n\r\nThe \"inline\" test case I've put together, plus the output from `mypy` is:\r\n\r\n```python\r\n#!/usr/bin/env python\r\n# pylint: disable=all\r\n\r\nfrom typing import Any, Dict, Optional\r\n\r\nfrom pydantic import BaseModel, ConfigDict, model_validator\r\n\r\ndef normalise_known_invalids(values: Dict[str, Any]) -> Dict[str, Any]:\r\n    if values:\r\n        for key, value in values.items():\r\n            value = value.strip()\r\n            if value:\r\n                if value.lower() in ['', 'n/a', '-']:\r\n                    values[key] = None\r\n                else:\r\n                    values[key] = value\r\n\r\n            else:\r\n                values[key] = None\r\n\r\n    return values\r\n\r\n\r\nclass InlineValidatorModel(BaseModel):\r\n    fld: Optional[str] = None\r\n\r\n    @model_validator(mode='before')\r\n    @classmethod\r\n    def normaliser(cls, values: Dict[str, Any]) -> Dict[str, Any]:\r\n        return normalise_known_invalids(values)\r\n\r\n    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')\r\n\r\ndef main():\r\n    model = InlineValidatorModel()\r\n    print(f'empty inline model: {model}')\r\n\r\n    model = InlineValidatorModel(fld='OK')\r\n    print(f'valid input inline model: {model}')\r\n\r\n    model = InlineValidatorModel(fld='n/a ')\r\n    print(f'invalid input inline model: {model}')\r\n\r\nif __name__ == '__main__':\r\n    main()\r\n```\r\n\r\n```\r\n$ mypy model_test.py\r\nSuccess: no issues found in 1 source file\r\n```\r\n\r\nBut the `mypy` output from the \"reused\" variant, code in the example below, is:\r\n\r\n```\r\n$ mypy model_test2.py\r\nmodel_test2.py:29: error: Argument 1 has incompatible type \"Callable[[dict[str, Any]], dict[str, Any]]\"; expected \"ModelBeforeValidator | ModelBeforeValidatorWithoutInfo\"  [arg-type]\r\nFound 1 error in 1 file (checked 1 source file)\r\n```\r\n\r\nAlso, this is possibly related to #6693.\r\n\r\n### Example Code\r\n\r\n```Python\r\n#!/usr/bin/env python\r\n# pylint: disable=all\r\n\r\nfrom typing import Any, Dict, Optional\r\n\r\nfrom pydantic import BaseModel, ConfigDict, model_validator\r\n\r\ndef normalise_known_invalids(values: Dict[str, Any]) -> Dict[str, Any]:\r\n    if values:\r\n        for key, value in values.items():\r\n            value = value.strip()\r\n            if value:\r\n                if value.lower() in ['', 'n/a', '-']:\r\n                    values[key] = None\r\n                else:\r\n                    values[key] = value\r\n\r\n            else:\r\n                values[key] = None\r\n\r\n    return values\r\n\r\nclass ReusedValidatorModel(BaseModel):\r\n    fld: Optional[str] = None\r\n\r\n    _normaliser = model_validator(mode='before')(normalise_known_invalids)\r\n    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')\r\n\r\n\r\ndef main():\r\n    model = ReusedValidatorModel()\r\n    print(f'empty reused model: {model}')\r\n\r\n    model = ReusedValidatorModel(fld='OK')\r\n    print(f'valid input reused model: {model}')\r\n\r\n    model = ReusedValidatorModel(fld='n/a ')\r\n    print(f'invalid inputreused  model: {model}')\r\n\r\nif __name__ == '__main__':\r\n    main()\r\n```\r\n\r\n\r\n### Python, Pydantic & OS Version\r\n\r\n```Text\r\npydantic version: 2.5.2\r\n        pydantic-core version: 2.14.5\r\n          pydantic-core build: profile=release pgo=true\r\n                 install path: /home/gary/scratch/.direnv/python-3.10.12/lib/python3.10/site-packages/pydantic\r\n               python version: 3.10.12 (main, Nov 20 2023, 15:14:05) [GCC 11.4.0]\r\n                     platform: Linux-6.2.0-37-generic-x86_64-with-glibc2.35\r\n             related packages: mypy-1.7.1 pydantic-settings-2.0.3 typing_extensions-4.8.0\r\n```\r\n```",
+  "actions": [
+    {
+      "source_message_index": 32,
+      "filepath": "pydantic/functional_validators.py",
+      "old_string": "\nclass ModelBeforeValidatorWithoutInfo(Protocol):\n    \"\"\"A `@model_validator` decorated function signature.\n    This is used when `mode='before'` and the function does not have info argument.\n    \"\"\"\n\n    def __call__(  # noqa: D102\n        self,\n        cls: Any,\n        # this can be a dict, a model instance\n        # or anything else that gets passed to validate_python\n        # thus validators _must_ handle all cases\n        value: Any,\n        /,\n    ) -> Any: ...\n",
+      "new_string": "\nclass ModelBeforeValidatorWithoutInfo(Protocol):\n    \"\"\"A `@model_validator` decorated function signature.\n    This is used when `mode='before'` and the function does not have info argument.\n    \"\"\"\n\n    @overload\n    def __call__(  # noqa: D102\n        self,\n        cls: Any,\n        # this can be a dict, a model instance\n        # or anything else that gets passed to validate_python\n        # thus validators _must_ handle all cases\n        value: Any,\n        /,\n    ) -> Any: ...\n\n    @overload\n    def __call__(  # noqa: D102\n        self,\n        # this can be a dict, a model instance\n        # or anything else that gets passed to validate_python\n        # thus validators _must_ handle all cases\n        value: Any,\n        /,\n    ) -> Any: ...\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 36,
+      "filepath": "pydantic/functional_validators.py",
+      "old_string": "\nclass ModelBeforeValidator(Protocol):\n    \"\"\"A `@model_validator` decorated function signature. This is used when `mode='before'`.\"\"\"\n\n    def __call__(  # noqa: D102\n        self,\n        cls: Any,\n        # this can be a dict, a model instance\n        # or anything else that gets passed to validate_python\n        # thus validators _must_ handle all cases\n        value: Any,\n        info: _core_schema.ValidationInfo,\n        /,\n    ) -> Any: ...\n",
+      "new_string": "\nclass ModelBeforeValidator(Protocol):\n    \"\"\"A `@model_validator` decorated function signature. This is used when `mode='before'`.\"\"\"\n\n    @overload\n    def __call__(  # noqa: D102\n        self,\n        cls: Any,\n        # this can be a dict, a model instance\n        # or anything else that gets passed to validate_python\n        # thus validators _must_ handle all cases\n        value: Any,\n        info: _core_schema.ValidationInfo,\n        /,\n    ) -> Any: ...\n\n    @overload\n    def __call__(  # noqa: D102\n        self,\n        # this can be a dict, a model instance\n        # or anything else that gets passed to validate_python\n        # thus validators _must_ handle all cases\n        value: Any,\n        info: _core_schema.ValidationInfo,\n        /,\n    ) -> Any: ...\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 38,
+      "filepath": "pydantic/functional_validators.py",
+      "old_string": "\nModelAfterValidatorWithoutInfo = Callable[[_ModelType], _ModelType]\n",
+      "new_string": "\nModelAfterValidatorWithoutInfo = Callable[[_ModelType], _ModelType]\n\n# Type alias for reusable model validators\nReusableModelValidator = Callable[[dict[str, Any]], dict[str, Any]]\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 40,
+      "filepath": "pydantic/functional_validators.py",
+      "old_string": "\ndef model_validator(\n    *,\n    mode: Literal['before'],\n) -> Callable[\n    [_AnyModeBeforeValidator], _decorators.PydanticDescriptorProxy[_decorators.ModelValidatorDecoratorInfo]\n]: ...\n",
+      "new_string": "\ndef model_validator(\n    *,\n    mode: Literal['before'],\n) -> Callable[\n    [Union[_AnyModeBeforeValidator, ReusableModelValidator]], _decorators.PydanticDescriptorProxy[_decorators.ModelValidatorDecoratorInfo]\n]: ...\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 52,
+      "filepath": "pydantic/functional_validators.py",
+      "old_string": "\n    FieldValidatorModes: TypeAlias = Literal['before', 'after', 'wrap', 'plain']\n",
+      "new_string": "\nFieldValidatorModes: TypeAlias = Literal['before', 'after', 'wrap', 'plain']\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 56,
+      "filepath": "pydantic/functional_validators.py",
+      "old_string": "\n    @overload\n    def field_validator(\n        field: str,\n        /,\n        *fields: str,\n        mode: Literal['wrap'],\n        check_fields: bool | None = ...,\n        json_schema_input_type: Any = ...,\n    ) -> Callable[[_V2WrapValidatorType], _V2WrapValidatorType]: ...\n",
+      "new_string": "\n@overload\ndef field_validator(\n    field: str,\n    /,\n    *fields: str,\n    mode: Literal['wrap'],\n    check_fields: bool | None = ...,\n    json_schema_input_type: Any = ...,\n) -> Callable[[_V2WrapValidatorType], _V2WrapValidatorType]: ...\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 58,
+      "filepath": "pydantic/functional_validators.py",
+      "old_string": "\n    @overload\n    def field_validator(\n        field: str,\n        /,\n        *fields: str,\n        mode: Literal['before', 'plain'],\n        check_fields: bool | None = ...,\n        json_schema_input_type: Any = ...,\n    ) -> Callable[[_V2BeforeAfterOrPlainValidatorType], _V2BeforeAfterOrPlainValidatorType]: ...\n",
+      "new_string": "\n@overload\ndef field_validator(\n    field: str,\n    /,\n    *fields: str,\n    mode: Literal['before', 'plain'],\n    check_fields: bool | None = ...,\n    json_schema_input_type: Any = ...,\n) -> Callable[[_V2BeforeAfterOrPlainValidatorType], _V2BeforeAfterOrPlainValidatorType]: ...\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 60,
+      "filepath": "pydantic/functional_validators.py",
+      "old_string": "\n    @overload\n    def field_validator(\n        field: str,\n        /,\n        *fields: str,\n        mode: Literal['after'] = ...,\n        check_fields: bool | None = ...,\n    ) -> Callable[[_V2BeforeAfterOrPlainValidatorType], _V2BeforeAfterOrPlainValidatorType]: ...\n",
+      "new_string": "\n@overload\ndef field_validator(\n    field: str,\n    /,\n    *fields: str,\n    mode: Literal['after'] = ...,\n    check_fields: bool | None = ...,\n) -> Callable[[_V2BeforeAfterOrPlainValidatorType], _V2BeforeAfterOrPlainValidatorType]: ...\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 62,
+      "filepath": "pydantic/functional_validators.py",
+      "old_string": "\n    def field_validator(\n        field: str,\n        /,\n        *fields: str,\n        mode: FieldValidatorModes = 'after',\n        check_fields: bool | None = None,\n        json_schema_input_type: Any = PydanticUndefined,\n    ) -> Callable[[Any], Any]:\n",
+      "new_string": "\ndef field_validator(\n    field: str,\n    /,\n    *fields: str,\n    mode: FieldValidatorModes = 'after',\n    check_fields: bool | None = None,\n    json_schema_input_type: Any = PydanticUndefined,\n) -> Callable[[Any], Any]:\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

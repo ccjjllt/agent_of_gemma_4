@@ -1,0 +1,112 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 1825,
+  "instance_id": "getmoto__moto.694ce1f4.pr_6028",
+  "repo": "getmoto/moto",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "getmoto__moto.694ce1f4.pr_6028.y1wve1wy",
+  "messages_sha256": "a8157ffe62690e0afb625c55608c111af8fa619361627c5d3fc35f71ed2dda53",
+  "issue": "# Delivery Stream ARN format is incorrect and encryption configuration is missing\n\n## Description\n\nI noticed an issue with the Firehose delivery stream ARN format and missing encryption configuration support. When creating a delivery stream, the ARN is generated incorrectly and encryption configuration is not properly handled.\n\n## Steps to reproduce\n\n1. Create a Firehose delivery stream with encryption configuration:\n\n```python\nimport boto3\n\nclient = boto3.client('firehose', region_name='us-east-1')\nstream_name = 'my-test-stream'\n\n# Create a delivery stream with encryption configuration\nresponse = client.create_delivery_stream(\n    DeliveryStreamName=stream_name,\n    DeliveryStreamEncryptionConfigurationInput={\n        'KeyType': 'AWS_OWNED_CMK'\n    },\n    S3DestinationConfiguration={\n        'RoleARN': 'arn:aws:iam::123456789012:role/firehose-role',\n        'BucketARN': 'arn:aws:s3:::my-bucket',\n        'BufferingHints': {\n            'SizeInMBs': 5,\n            'IntervalInSeconds': 300\n        }\n    }\n)\n\n# Describe the delivery stream\ndesc = client.describe_delivery_stream(DeliveryStreamName=stream_name)\nprint(desc['DeliveryStreamDescription']['DeliveryStreamARN'])\n```\n\n## Expected behavior\n\n1. The delivery stream ARN should follow the format: `arn:{partition}:firehose:{region}:{account_id}:deliverystream/{stream_name}`\n2. The encryption configuration should be properly stored and returned when describing the delivery stream\n\n## Actual behavior\n\n1. The delivery stream ARN is hardcoded to use `aws` as the partition instead of using the correct partition for the region\n2. The encryption configuration is ignored and not stored with the delivery stream\n3. When trying to describe a delivery stream with encryption configuration, the encryption details are missing\n\nAdditionally, the code for handling S3 backup configurations seems to be incomplete, as it's not properly handling the field name transformations that should occur between create and describe operations.",
+  "actions": [
+    {
+      "source_message_index": 48,
+      "filepath": "moto/firehose/models.py",
+      "old_string": "        self.delivery_stream_status = \"ACTIVE\"\n        self.delivery_stream_arn = f\"arn:aws:firehose:{region}:{account_id}:deliverystream/{delivery_stream_name}\"",
+      "new_string": "        self.delivery_stream_status = \"ACTIVE\"\n        partition = get_partition(region)\n        self.delivery_stream_arn = f\"arn:{partition}:firehose:{region}:{account_id}:deliverystream/{delivery_stream_name}\"",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 50,
+      "filepath": "moto/firehose/models.py",
+      "old_string": "        self.create_timestamp = datetime.now(timezone.utc).isoformat()\n        self.version_id = \"1\"  # Used to track updates of destination configs\n\n        # I believe boto3 only adds this field after an update ...\n        self.last_update_timestamp = datetime.now(timezone.utc).isoformat()",
+      "new_string": "        self.create_timestamp = datetime.now(timezone.utc).isoformat()\n        self.version_id = \"1\"  # Used to track updates of destination configs\n        self.delivery_stream_encryption_configuration = None\n\n        # I believe boto3 only adds this field after an update ...\n        self.last_update_timestamp = datetime.now(timezone.utc).isoformat()",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 52,
+      "filepath": "moto/firehose/models.py",
+      "old_string": "        # Rule out situations that are not yet implemented.\n        if delivery_stream_encryption_configuration_input:\n            warnings.warn(\n                \"A delivery stream with server-side encryption enabled is not \"\n                \"yet implemented\"\n            )",
+      "new_string": "        # Handle encryption configuration\n        encryption_config = None\n        if delivery_stream_encryption_configuration_input:\n            key_type = delivery_stream_encryption_configuration_input.get('KeyType')\n            key_arn = delivery_stream_encryption_configuration_input.get('KeyARN')\n            \n            encryption_config = {\n                'KeyType': key_type\n            }\n            \n            if key_arn:\n                encryption_config['KeyARN'] = key_arn\n                \n            if key_type not in ['AWS_OWNED_CMK', 'CUSTOMER_MANAGED_CMK']:\n                raise InvalidArgumentException(\n                    f\"KeyType must be one of: AWS_OWNED_CMK, CUSTOMER_MANAGED_CMK. Got: {key_type}\"\n                )",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 54,
+      "filepath": "moto/firehose/models.py",
+      "old_string": "        # Create a DeliveryStream instance that will be stored and indexed\n        # by delivery stream name.  This instance will update the state and\n        # create the ARN.\n        delivery_stream = DeliveryStream(\n            self.account_id,\n            region,\n            delivery_stream_name,\n            delivery_stream_type,\n            kinesis_stream_source_configuration,\n            destination_name,\n            destination_config,\n        )",
+      "new_string": "        # Create a DeliveryStream instance that will be stored and indexed\n        # by delivery stream name.  This instance will update the state and\n        # create the ARN.\n        delivery_stream = DeliveryStream(\n            self.account_id,\n            region,\n            delivery_stream_name,\n            delivery_stream_type,\n            kinesis_stream_source_configuration,\n            destination_name,\n            destination_config,\n        )\n        \n        # Set the encryption configuration if provided\n        if encryption_config:\n            delivery_stream.delivery_stream_encryption_configuration = encryption_config",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 82,
+      "filepath": "moto/firehose/models.py",
+      "old_string": "    STATES = {\"CREATING\", \"ACTIVE\", \"CREATING_FAILED\"}\n\n    MAX_STREAMS_PER_REGION = 50",
+      "new_string": "    STATES = {\"CREATING\", \"ACTIVE\", \"CREATING_FAILED\"}\n\n    MAX_STREAMS_PER_REGION = 50\n    \n    # Field name transformations that should occur between create and describe operations\n    ALTERNATIVE_FIELD_NAMES = [\n        (\"S3BackupConfiguration\", \"S3BackupDestinationDescription\"),\n        (\"S3Configuration\", \"S3DestinationDescription\")\n    ]",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 84,
+      "filepath": "moto/firehose/models.py",
+      "old_string": "        if destination_name == \"ExtendedS3\":\n            # Add a S3 destination as well, minus a few ExtendedS3 fields.\n            self.destinations[0][\"S3\"] = create_s3_destination_config(\n                destination_config\n            )\n        elif \"S3Configuration\" in destination_config:\n            # S3Configuration becomes S3DestinationDescription for the\n            # other destinations.\n            self.destinations[0][destination_name][\"S3DestinationDescription\"] = destination_config[\"S3Configuration\"]\n            del self.destinations[0][destination_name][\"S3Configuration\"]",
+      "new_string": "        if destination_name == \"ExtendedS3\":\n            # Add a S3 destination as well, minus a few ExtendedS3 fields.\n            self.destinations[0][\"S3\"] = create_s3_destination_config(\n                destination_config\n            )\n        \n        # Handle field name transformations\n        for old, new in self.ALTERNATIVE_FIELD_NAMES:\n            if old in destination_config:\n                self.destinations[0][destination_name][new] = destination_config[old]\n                del self.destinations[0][destination_name][old]",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 90,
+      "filepath": "moto/firehose/models.py",
+      "old_string": "        # Handle field name transformations\n        for old, new in self.ALTERNATIVE_FIELD_NAMES:\n            if old in destination_config:\n                self.destinations[0][destination_name][new] = destination_config[old]\n                del self.destinations[0][destination_name][old]",
+      "new_string": "        # Handle field name transformations\n        for old, new in self.ALTERNATIVE_FIELD_NAMES:\n            if old in destination_config:\n                self.destinations[0][destination_name][new] = destination_config[old]\n                # Keep the original field for now, as it might be needed for other operations",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 94,
+      "filepath": "moto/firehose/models.py",
+      "old_string": "        # Handle field name transformations\n        for old, new in self.ALTERNATIVE_FIELD_NAMES:\n            if old in destination_config:\n                self.destinations[0][destination_name][new] = destination_config[old]\n                # Keep the original field for now, as it might be needed for other operations",
+      "new_string": "        # Handle field name transformations\n        for old, new in self.ALTERNATIVE_FIELD_NAMES:\n            if old in destination_config:\n                self.destinations[0][destination_name][new] = destination_config[old]\n                # Keep the original field for now, as it might be needed for other operations\n        \n        # Handle S3BackupMode and S3BackupConfiguration specifically for ExtendedS3\n        if destination_name == \"ExtendedS3\" and \"S3BackupMode\" in destination_config:\n            self.destinations[0][destination_name][\"S3BackupMode\"] = destination_config[\"S3BackupMode\"]\n            if \"S3BackupConfiguration\" in destination_config:\n                self.destinations[0][destination_name][\"S3BackupDestinationDescription\"] = destination_config[\"S3BackupConfiguration\"]",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 102,
+      "filepath": "moto/firehose/models.py",
+      "old_string": "        # Handle S3BackupMode and S3BackupConfiguration specifically for ExtendedS3\n        if destination_name == \"ExtendedS3\" and \"S3BackupMode\" in destination_config:\n            self.destinations[0][destination_name][\"S3BackupMode\"] = destination_config[\"S3BackupMode\"]\n            if \"S3BackupConfiguration\" in destination_config:\n                self.destinations[0][destination_name][\"S3BackupDestinationDescription\"] = destination_config[\"S3BackupConfiguration\"]",
+      "new_string": "        # Handle S3BackupMode and S3BackupConfiguration specifically for ExtendedS3\n        if destination_name == \"ExtendedS3\" and \"S3BackupMode\" in destination_config:\n            self.destinations[0][destination_name][\"S3BackupMode\"] = destination_config[\"S3BackupMode\"]\n            if \"S3BackupConfiguration\" in destination_config:\n                self.destinations[0][destination_name][\"S3BackupDestinationDescription\"] = destination_config[\"S3BackupConfiguration\"].copy()",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 110,
+      "filepath": "moto/firehose/models.py",
+      "old_string": "        # Handle S3BackupMode and S3BackupConfiguration specifically for ExtendedS3\n        if destination_name == \"ExtendedS3\" and \"S3BackupMode\" in destination_config:\n            self.destinations[0][destination_name][\"S3BackupMode\"] = destination_config[\"S3BackupMode\"]\n            if \"S3BackupConfiguration\" in destination_config:\n                self.destinations[0][destination_name][\"S3BackupDestinationDescription\"] = destination_config[\"S3BackupConfiguration\"].copy()",
+      "new_string": "        # Handle S3BackupMode and S3BackupConfiguration specifically for ExtendedS3\n        if destination_name == \"ExtendedS3\" and \"S3BackupMode\" in destination_config:\n            self.destinations[0][destination_name][\"S3BackupMode\"] = destination_config[\"S3BackupMode\"]\n            if \"S3BackupConfiguration\" in destination_config:\n                # Store S3BackupConfiguration directly - it will be transformed in describe_delivery_stream\n                self.destinations[0][destination_name][\"S3BackupConfiguration\"] = destination_config[\"S3BackupConfiguration\"].copy()",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 112,
+      "filepath": "moto/firehose/models.py",
+      "old_string": "                for key, value in destination.items():\n                    if key == \"destination_id\":\n                        description[\"DestinationId\"] = value\n                    else:\n                        description[f\"{key}DestinationDescription\"] = value",
+      "new_string": "                for key, value in destination.items():\n                    if key == \"destination_id\":\n                        description[\"DestinationId\"] = value\n                    else:\n                        dest_desc_key = f\"{key}DestinationDescription\"\n                        description[dest_desc_key] = value\n                        \n                        # Handle S3BackupConfiguration transformation\n                        if key == \"ExtendedS3\" and \"S3BackupConfiguration\" in value:\n                            description[dest_desc_key][\"S3BackupDestinationDescription\"] = value[\"S3BackupConfiguration\"]\n                            # Remove the original field to avoid duplication\n                            if \"S3BackupConfiguration\" in description[dest_desc_key]:\n                                del description[dest_desc_key][\"S3BackupConfiguration\"]",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 116,
+      "filepath": "moto/firehose/models.py",
+      "old_string": "                        # Handle S3BackupConfiguration transformation\n                        if key == \"ExtendedS3\" and \"S3BackupConfiguration\" in value:\n                            description[dest_desc_key][\"S3BackupDestinationDescription\"] = value[\"S3BackupConfiguration\"]\n                            # Remove the original field to avoid duplication\n                            if \"S3BackupConfiguration\" in description[dest_desc_key]:\n                                del description[dest_desc_key][\"S3BackupConfiguration\"]",
+      "new_string": "                        # Handle S3BackupConfiguration transformation\n                        if key == \"ExtendedS3\":\n                            # Add S3BackupDestinationDescription if S3BackupConfiguration exists\n                            if \"S3BackupConfiguration\" in value:\n                                description[dest_desc_key][\"S3BackupDestinationDescription\"] = value[\"S3BackupConfiguration\"]\n                                # Remove the original field to avoid duplication\n                                if \"S3BackupConfiguration\" in description[dest_desc_key]:\n                                    del description[dest_desc_key][\"S3BackupConfiguration\"]",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 120,
+      "filepath": "moto/firehose/models.py",
+      "old_string": "                        # Handle S3BackupConfiguration transformation\n                        if key == \"ExtendedS3\":\n                            # Add S3BackupDestinationDescription if S3BackupConfiguration exists\n                            if \"S3BackupConfiguration\" in value:\n                                description[dest_desc_key][\"S3BackupDestinationDescription\"] = value[\"S3BackupConfiguration\"]\n                                # Remove the original field to avoid duplication\n                                if \"S3BackupConfiguration\" in description[dest_desc_key]:\n                                    del description[dest_desc_key][\"S3BackupConfiguration\"]",
+      "new_string": "                        # Handle S3BackupConfiguration transformation\n                        if key == \"ExtendedS3\":\n                            # Debug output\n                            print(f\"ExtendedS3 value: {value}\")\n                            \n                            # Add S3BackupDestinationDescription if S3BackupConfiguration exists\n                            if \"S3BackupConfiguration\" in value:\n                                print(f\"S3BackupConfiguration found: {value['S3BackupConfiguration']}\")\n                                description[dest_desc_key][\"S3BackupDestinationDescription\"] = value[\"S3BackupConfiguration\"]\n                                # Remove the original field to avoid duplication\n                                if \"S3BackupConfiguration\" in description[dest_desc_key]:\n                                    del description[dest_desc_key][\"S3BackupConfiguration\"]",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 124,
+      "filepath": "moto/firehose/models.py",
+      "old_string": "                        # Handle S3BackupConfiguration transformation\n                        if key == \"ExtendedS3\":\n                            # Debug output\n                            print(f\"ExtendedS3 value: {value}\")\n                            \n                            # Add S3BackupDestinationDescription if S3BackupConfiguration exists\n                            if \"S3BackupConfiguration\" in value:\n                                print(f\"S3BackupConfiguration found: {value['S3BackupConfiguration']}\")\n                                description[dest_desc_key][\"S3BackupDestinationDescription\"] = value[\"S3BackupConfiguration\"]\n                                # Remove the original field to avoid duplication\n                                if \"S3BackupConfiguration\" in description[dest_desc_key]:\n                                    del description[dest_desc_key][\"S3BackupConfiguration\"]",
+      "new_string": "                        # For ExtendedS3, we need to manually add the S3BackupDestinationDescription\n                        if key == \"ExtendedS3\" and \"S3BackupMode\" in value and value[\"S3BackupMode\"] == \"Enabled\":\n                            # Manually add S3BackupDestinationDescription to the response\n                            if \"S3BackupConfiguration\" in value:\n                                description[dest_desc_key][\"S3BackupDestinationDescription\"] = value[\"S3BackupConfiguration\"]\n                            elif \"S3BackupDestinationDescription\" in value:\n                                description[dest_desc_key][\"S3BackupDestinationDescription\"] = value[\"S3BackupDestinationDescription\"]",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

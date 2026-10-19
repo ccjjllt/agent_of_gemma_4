@@ -1,0 +1,42 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00005-of-00008.parquet",
+  "row_index": 1543,
+  "instance_id": "getmoto__moto.694ce1f4.pr_7052",
+  "repo": "getmoto/moto",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "getmoto__moto.694ce1f4.pr_7052.s77rk23e",
+  "messages_sha256": "aa74c2322a78886fce4834726a267ff28a0df2999d789cfada7dc59f8365ba85",
+  "issue": "### Resource Registration Overwrites Existing Entries\n\n#### Summary\nIt seems that when attempting to register a resource that has already been registered, the existing resource entry is overwritten without any warning or error. This behavior is unexpected as it should ideally prevent duplicate registrations or at least notify the user of the existing entry.\n\n#### Reproducer\nThe issue can be reproduced with the following script:\n\n```python\nimport boto3\nfrom moto import mock_aws\n\n@mock_aws\ndef test_register_resource():\n    client = boto3.client('lakeformation', region_name='us-east-2')\n    client.register_resource(ResourceArn='arn:aws:lakeformation:us-east-2:123456789012:resource/some-resource', RoleArn='arn:aws:iam::123456789012:role/some-role')\n    client.register_resource(ResourceArn='arn:aws:lakeformation:us-east-2:123456789012:resource/some-resource', RoleArn='arn:aws:iam::123456789012:role/some-role')\n    resources = client.list_resources()\n    assert len(resources['ResourceInfoList']) == 1, \"Expected only one resource to be registered, but found multiple.\"\n\ntest_register_resource()\n```\n\n#### Expected Behavior\nWhen attempting to register a resource that already exists, an `AlreadyExistsException` should be raised to prevent overwriting the existing resource entry.\n\n#### Environment\n- Python 3.12.9\n- Moto version: [version]\n- Boto3 version: [version]\n\nThis behavior was observed in a controlled test environment using the `moto` library to mock AWS services.",
+  "actions": [
+    {
+      "source_message_index": 20,
+      "filepath": "moto/lakeformation/models.py",
+      "old_string": "\n    def get_resource_lf_tags(\n        self,\n        catalog_id: str,  # pylint: disable=unused-argument\n        resource: Dict[str, Any],\n    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]:\n",
+      "new_string": "\n    def get_resource_lf_tags(\n        self,\n        catalog_id: str,  # pylint: disable=unused-argument\n        resource: Dict[str, Any],\n    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 24,
+      "filepath": "moto/lakeformation/exceptions.py",
+      "old_string": "\n\"\"\"Exceptions raised by the lakeformation service.\"\"\"\n\nfrom moto.core.exceptions import JsonRESTError\n\n\nclass EntityNotFound(JsonRESTError):\n    def __init__(self) -> None:\n        super().__init__(\"EntityNotFoundException\", \"Entity not found\")\n\n\nclass InvalidInput(JsonRESTError):\n    def __init__(self, message: str) -> None:\n        super().__init__(\"InvalidInputException\", message)\n",
+      "new_string": "\n\"\"\"Exceptions raised by the lakeformation service.\"\"\"\n\nfrom moto.core.exceptions import JsonRESTError\n\n\nclass EntityNotFound(JsonRESTError):\n    def __init__(self) -> None:\n        super().__init__(\"EntityNotFoundException\", \"Entity not found\")\n\n\nclass InvalidInput(JsonRESTError):\n    def __init__(self, message: str) -> None:\n        super().__init__(\"InvalidInputException\", message)\n\n\nclass AlreadyExistsException(JsonRESTError):\n    def __init__(self, resource_arn: str) -> None:\n        super().__init__(\n            \"AlreadyExistsException\", \n            f\"Resource with ARN '{resource_arn}' is already registered\"\n        )\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 26,
+      "filepath": "moto/lakeformation/models.py",
+      "old_string": "\nfrom __future__ import annotations\n\nimport json\nfrom collections import defaultdict\nfrom enum import Enum\nfrom typing import Any, Dict, List, Optional, Set, Tuple\n\nfrom moto.core.base_backend import BackendDict, BaseBackend\nfrom moto.core.common_models import BaseModel\nfrom moto.utilities.tagging_service import TaggingService\n\nfrom .exceptions import EntityNotFound, InvalidInput\n",
+      "new_string": "\nfrom __future__ import annotations\n\nimport json\nfrom collections import defaultdict\nfrom enum import Enum\nfrom typing import Any, Dict, List, Optional, Set, Tuple\n\nfrom moto.core.base_backend import BackendDict, BaseBackend\nfrom moto.core.common_models import BaseModel\nfrom moto.utilities.tagging_service import TaggingService\n\nfrom .exceptions import AlreadyExistsException, EntityNotFound, InvalidInput\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 28,
+      "filepath": "moto/lakeformation/models.py",
+      "old_string": "\n    def register_resource(self, resource_arn: str, role_arn: str) -> None:\n        self.resources[resource_arn] = Resource(resource_arn, role_arn)\n",
+      "new_string": "\n    def register_resource(self, resource_arn: str, role_arn: str) -> None:\n        if resource_arn in self.resources:\n            raise AlreadyExistsException(resource_arn)\n        self.resources[resource_arn] = Resource(resource_arn, role_arn)\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

@@ -1,0 +1,49 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "pydantic/_internal/_typing_extra.py",
+      "start_line": 630,
+      "end_line": 676
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "pydantic/_internal/_typing_extra.py",
+      "content": "                    # top of the `NameError`s caught in `try_eval_type`) that could happen so that users are free\n                    # to use any kind of forward annotation for private fields (e.g. circular imports, new typing\n                    # syntax, etc).\n                    try:\n                        hints[name] = try_eval_type(value, globalns, localns)\n                    except Exception:\n                        hints[name] = (value, False)\n                else:\n                    hints[name] = try_eval_type(value, globalns, localns)\n    return hints\n\n\ndef get_cls_type_hints(\n    obj: type[Any],\n    *,\n    ns_resolver: NsResolver | None = None,\n) -> dict[str, Any]:\n    \"\"\"Collect annotations from a class, including those from parent classes.\n\n    Args:\n        obj: The class to inspect.\n        ns_resolver: A namespace resolver instance to use. Defaults to an empty instance.\n    \"\"\"\n    hints: dict[str, Any] | dict[str, tuple[Any, bool]] = {}\n    ns_resolver = ns_resolver or NsResolver()\n\n    for base in reversed(obj.__mro__):\n        ann: dict[str, Any] | None = base.__dict__.get('__annotations__')\n        if not ann or isinstance(ann, types.GetSetDescriptorType):\n            continue\n        with ns_resolver.push(base):\n            globalns, localns = ns_resolver.types_namespace\n            for name, value in ann.items():\n                hints[name] = eval_type(value, globalns, localns)\n    return hints\n\n\ndef try_eval_type(\n    value: Any,\n    globalns: GlobalsNamespace | None = None,\n    localns: MappingNamespace | None = None,\n) -> tuple[Any, bool]:\n    \"\"\"Try evaluating the annotation using the provided namespaces.\n\n    Args:\n        value: The value to evaluate. If `None`, it will be replaced by `type[None]`. If an instance\n            of `str`, it will be converted to a `ForwardRef`.",
+      "start_line": 630,
+      "end_line": 676,
+      "total_lines": 1023,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "pydantic/_internal/_typing_extra.py",
+      "old_string": "def get_cls_type_hints(\n    obj: type[Any],\n    *,\n    ns_resolver: NsResolver | None = None,\n) -> dict[str, Any]:\n    \"\"\"Collect annotations from a class, including those from parent classes.\n\n    Args:\n        obj: The class to inspect.\n        ns_resolver: A namespace resolver instance to use. Defaults to an empty instance.\n    \"\"\"\n    hints: dict[str, Any] | dict[str, tuple[Any, bool]] = {}\n    ns_resolver = ns_resolver or NsResolver()\n\n    for base in reversed(obj.__mro__):\n        ann: dict[str, Any] | None = base.__dict__.get('__annotations__')\n        if not ann or isinstance(ann, types.GetSetDescriptorType):\n            continue\n        with ns_resolver.push(base):\n            globalns, localns = ns_resolver.types_namespace\n            for name, value in ann.items():\n                hints[name] = eval_type(value, globalns, localns)\n    return hints",
+      "new_string": "def get_cls_types_namespace(obj: type[Any]) -> NamespacesTuple:\n    \"\"\"Get the namespace for a class.\n    \n    This function returns the global and local namespaces that should be used\n    when evaluating type annotations for the given class.\n    \n    Args:\n        obj: The class to get the namespace for.\n        \n    Returns:\n        A tuple containing the global and local namespaces.\n    \"\"\"\n    globalns = get_module_ns_of(obj)\n    localns = {obj.__name__: obj}\n    \n    # Add class variables to the local namespace\n    if hasattr(obj, '__dict__'):\n        localns.update(vars(obj))\n    \n    # Add type parameters if available (PEP 695)\n    type_params = getattr(obj, '__type_params__', ())\n    if type_params:\n        localns.update({t.__name__: t for t in type_params})\n    \n    return NamespacesTuple(globalns, localns)\n\n\ndef get_cls_type_hints(\n    obj: type[Any],\n    *,\n    ns_resolver: NsResolver | None = None,\n) -> dict[str, Any]:\n    \"\"\"Collect annotations from a class, including those from parent classes.\n\n    Args:\n        obj: The class to inspect.\n        ns_resolver: A namespace resolver instance to use. Defaults to an empty instance.\n    \"\"\"\n    hints: dict[str, Any] | dict[str, tuple[Any, bool]] = {}\n    ns_resolver = ns_resolver or NsResolver()\n\n    for base in reversed(obj.__mro__):\n        ann: dict[str, Any] | None = base.__dict__.get('__annotations__')\n        if not ann or isinstance(ann, types.GetSetDescriptorType):\n            continue\n        with ns_resolver.push(base):\n            globalns, localns = ns_resolver.types_namespace\n            for name, value in ann.items():\n                hints[name] = eval_type(value, globalns, localns)\n    return hints",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "pydantic/_internal/_typing_extra.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/pydantic/_internal/_typing_extra.py\n+++ b/pydantic/_internal/_typing_extra.py\n@@ -637,6 +637,33 @@\n                 else:\n                     hints[name] = try_eval_type(value, globalns, localns)\n     return hints\n+\n+\n+def get_cls_types_namespace(obj: type[Any]) -> NamespacesTuple:\n+    \"\"\"Get the namespace for a class.\n+    \n+    This function returns the global and local namespaces that should be used\n+    when evaluating type annotations for the given class.\n+    \n+    Args:\n+        obj: The class to get the namespace for.\n+        \n+    Returns:\n+        A tuple containing the global and local namespaces.\n+    \"\"\"\n+    globalns = get_module_ns_of(obj)\n+    localns = {obj.__name__: obj}\n+    \n+    # Add class variables to the local namespace\n+    if hasattr(obj, '__dict__'):\n+        localns.update(vars(obj))\n+    \n+    # Add type parameters if available (PEP 695)\n+    type_params = getattr(obj, '__type_params__', ())\n+    if type_params:\n+        localns.update({t.__name__: t for t in type_params})\n+    \n+    return NamespacesTuple(globalns, localns)\n \n \n def get_cls_type_hints(\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "get_status",
+    "arguments": {},
+    "response": {
+      "status": "ok",
+      "tool_calls_used": 2,
+      "patch_submitted": false,
+      "patch_size": 0,
+      "tool_calls_remaining": 98,
+      "max_tool_calls": 100,
+      "command_timeout_seconds": 30
+    }
+  }
+]

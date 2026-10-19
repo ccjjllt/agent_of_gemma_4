@@ -1,0 +1,593 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/wafv2/models.py",
+      "start_line": 469,
+      "end_line": 496
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/wafv2/models.py",
+      "content": "        if arn not in self.wacls:\n            raise WAFNonexistentItemException\n        wacl = self.wacls[arn]\n        if wacl.lock_token != lock_token:\n            raise WAFOptimisticLockException()\n        self.wacls.pop(arn)\n\n    def get_web_acl(self, name: str, _id: str) -> FakeWebACL:\n        for wacl in self.wacls.values():\n            if wacl.name == name and wacl.id == _id:\n                return wacl\n        raise WAFNonexistentItemException\n\n    def list_web_acls(self) -> List[FakeWebACL]:\n        return [wacl for wacl in self.wacls.values()]\n\n    def _is_duplicate_name(self, name: str) -> bool:\n        all_wacl_names = set(wacl.name for wacl in self.wacls.values())\n        return name in all_wacl_names\n\n    def list_rule_groups(self, scope: str) -> List[FakeRuleGroup]:\n        rule_groups = [\n            group for group in self.rule_groups.values() if group.scope == scope\n        ]\n        return rule_groups\n\n    def list_tags_for_resource(self, arn: str) -> List[Dict[str, str]]:\n        \"\"\"",
+      "start_line": 469,
+      "end_line": 496,
+      "total_lines": 786,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/wafv2/models.py",
+      "old_string": "\n    def list_web_acls(self) -> List[FakeWebACL]:\n        return [wacl for wacl in self.wacls.values()]\n",
+      "new_string": "\n    def list_web_acls(self, limit: Optional[int] = None, next_marker: Optional[str] = None) -> Tuple[List[FakeWebACL], Optional[str]]:\n        \"\"\"\n        List WebACLs with pagination support\n        \n        Args:\n            limit: Maximum number of items to return\n            next_marker: Token for pagination\n            \n        Returns:\n            Tuple of (list of WebACLs, next marker if more items exist)\n        \"\"\"\n        all_web_acls = list(self.wacls.values())\n        \n        # If next_marker is provided, find the starting position\n        start_idx = 0\n        if next_marker:\n            # Find the item after the one with the marker\n            for idx, wacl in enumerate(all_web_acls):\n                if wacl.id == next_marker:\n                    start_idx = idx + 1\n                    break\n        \n        # Apply pagination\n        if limit and limit > 0:\n            end_idx = start_idx + limit\n            result = all_web_acls[start_idx:end_idx]\n            \n            # If there are more items, return a next marker\n            if end_idx < len(all_web_acls):\n                next_marker = all_web_acls[end_idx - 1].id\n                return result, next_marker\n            return result, None\n        \n        return all_web_acls, None\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/wafv2/models.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/wafv2/models.py\n+++ b/moto/wafv2/models.py\n@@ -479,8 +479,40 @@\n                 return wacl\n         raise WAFNonexistentItemException\n \n-    def list_web_acls(self) -> List[FakeWebACL]:\n-        return [wacl for wacl in self.wacls.values()]\n+    def list_web_acls(self, limit: Optional[int] = None, next_marker: Optional[str] = None) -> Tuple[List[FakeWebACL], Optional[str]]:\n+        \"\"\"\n+        List WebACLs with pagination support\n+        \n+        Args:\n+            limit: Maximum number of items to return\n+            next_marker: Token for pagination\n+            \n+        Returns:\n+            Tuple of (list of WebACLs, next marker if more items exist)\n+        \"\"\"\n+        all_web_acls = list(self.wacls.values())\n+        \n+        # If next_marker is provided, find the starting position\n+        start_idx = 0\n+        if next_marker:\n+            # Find the item after the one with the marker\n+            for idx, wacl in enumerate(all_web_acls):\n+                if wacl.id == next_marker:\n+                    start_idx = idx + 1\n+                    break\n+        \n+        # Apply pagination\n+        if limit and limit > 0:\n+            end_idx = start_idx + limit\n+            result = all_web_acls[start_idx:end_idx]\n+            \n+            # If there are more items, return a next marker\n+            if end_idx < len(all_web_acls):\n+                next_marker = all_web_acls[end_idx - 1].id\n+                return result, next_marker\n+            return result, None\n+        \n+        return all_web_acls, None\n \n     def _is_duplicate_name(self, name: str) -> bool:\n         all_wacl_names = set(wacl.name for wacl in self.wacls.values())\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/wafv2/models.py",
+      "start_line": 613,
+      "end_line": 643
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/wafv2/models.py",
+      "content": "            region_name=self.region_name,\n            _id=_id,\n            scope=scope,\n        )\n\n        if arn not in self.ip_sets:\n            raise WAFNonexistentItemException()\n\n        if lock_token != self.ip_sets[arn].lock_token:\n            raise WAFOptimisticLockException()\n\n        self.ip_sets.pop(arn)\n\n    def list_ip_sets(self, scope: str) -> List[FakeIPSet]:\n        ip_sets = [\n            ip_set for arn, ip_set in self.ip_sets.items() if ip_set.scope == scope\n        ]\n        return ip_sets\n\n    def get_ip_set(self, name: str, scope: str, _id: str) -> FakeIPSet:\n        arn = make_arn_for_ip_set(\n            name=name,\n            account_id=self.account_id,\n            region_name=self.region_name,\n            _id=_id,\n            scope=scope,\n        )\n        if arn not in self.ip_sets:\n            raise WAFNonexistentItemException()\n\n        return self.ip_sets[arn]",
+      "start_line": 613,
+      "end_line": 643,
+      "total_lines": 818,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/wafv2/models.py",
+      "old_string": "\n    def list_ip_sets(self, scope: str) -> List[FakeIPSet]:\n        ip_sets = [\n            ip_set for arn, ip_set in self.ip_sets.items() if ip_set.scope == scope\n        ]\n        return ip_sets\n",
+      "new_string": "\n    def list_ip_sets(self, scope: str, limit: Optional[int] = None, next_marker: Optional[str] = None) -> Tuple[List[FakeIPSet], Optional[str]]:\n        \"\"\"\n        List IP sets with pagination support\n        \n        Args:\n            scope: Scope of the IP sets to list\n            limit: Maximum number of items to return\n            next_marker: Token for pagination\n            \n        Returns:\n            Tuple of (list of IP sets, next marker if more items exist)\n        \"\"\"\n        ip_sets = [\n            ip_set for arn, ip_set in self.ip_sets.items() if ip_set.scope == scope\n        ]\n        \n        # If next_marker is provided, find the starting position\n        start_idx = 0\n        if next_marker:\n            # Find the item after the one with the marker\n            for idx, ip_set in enumerate(ip_sets):\n                if ip_set.ip_set_id == next_marker:\n                    start_idx = idx + 1\n                    break\n        \n        # Apply pagination\n        if limit and limit > 0:\n            end_idx = start_idx + limit\n            result = ip_sets[start_idx:end_idx]\n            \n            # If there are more items, return a next marker\n            if end_idx < len(ip_sets):\n                next_marker = ip_sets[end_idx - 1].ip_set_id\n                return result, next_marker\n            return result, None\n        \n        return ip_sets, None\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/wafv2/models.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/wafv2/models.py\n+++ b/moto/wafv2/models.py\n@@ -623,11 +623,43 @@\n \n         self.ip_sets.pop(arn)\n \n-    def list_ip_sets(self, scope: str) -> List[FakeIPSet]:\n+    def list_ip_sets(self, scope: str, limit: Optional[int] = None, next_marker: Optional[str] = None) -> Tuple[List[FakeIPSet], Optional[str]]:\n+        \"\"\"\n+        List IP sets with pagination support\n+        \n+        Args:\n+            scope: Scope of the IP sets to list\n+            limit: Maximum number of items to return\n+            next_marker: Token for pagination\n+            \n+        Returns:\n+            Tuple of (list of IP sets, next marker if more items exist)\n+        \"\"\"\n         ip_sets = [\n             ip_set for arn, ip_set in self.ip_sets.items() if ip_set.scope == scope\n         ]\n-        return ip_sets\n+        \n+        # If next_marker is provided, find the starting position\n+        start_idx = 0\n+        if next_marker:\n+            # Find the item after the one with the marker\n+            for idx, ip_set in enumerate(ip_sets):\n+                if ip_set.ip_set_id == next_marker:\n+                    start_idx = idx + 1\n+                    break\n+        \n+        # Apply pagination\n+        if limit and limit > 0:\n+            end_idx = start_idx + limit\n+            result = ip_sets[start_idx:end_idx]\n+            \n+            # If there are more items, return a next marker\n+            if end_idx < len(ip_sets):\n+                next_marker = ip_sets[end_idx - 1].ip_set_id\n+                return result, next_marker\n+            return result, None\n+        \n+        return ip_sets, None\n \n     def get_ip_set(self, name: str, scope: str, _id: str) -> FakeIPSet:\n         arn = make_arn_for_ip_set(\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/wafv2/models.py",
+      "start_line": 508,
+      "end_line": 538
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/wafv2/models.py",
+      "content": "            \n            # If there are more items, return a next marker\n            if end_idx < len(all_web_acls):\n                next_marker = all_web_acls[end_idx - 1].id\n                return result, next_marker\n            return result, None\n        \n        return all_web_acls, None\n\n    def _is_duplicate_name(self, name: str) -> bool:\n        all_wacl_names = set(wacl.name for wacl in self.wacls.values())\n        return name in all_wacl_names\n\n    def list_rule_groups(self, scope: str) -> List[FakeRuleGroup]:\n        rule_groups = [\n            group for group in self.rule_groups.values() if group.scope == scope\n        ]\n        return rule_groups\n\n    def list_tags_for_resource(self, arn: str) -> List[Dict[str, str]]:\n        \"\"\"\n        Pagination is not yet implemented\n        \"\"\"\n        return self.tagging_service.list_tags_for_resource(arn)[\"Tags\"]\n\n    def tag_resource(self, arn: str, tags: List[Dict[str, str]]) -> None:\n        self.tagging_service.tag_resource(arn, tags)\n\n    def untag_resource(self, arn: str, tag_keys: List[str]) -> None:\n        self.tagging_service.untag_resource_using_names(arn, tag_keys)\n",
+      "start_line": 508,
+      "end_line": 538,
+      "total_lines": 850,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/wafv2/models.py",
+      "old_string": "\n    def list_rule_groups(self, scope: str) -> List[FakeRuleGroup]:\n        rule_groups = [\n            group for group in self.rule_groups.values() if group.scope == scope\n        ]\n        return rule_groups\n",
+      "new_string": "\n    def list_rule_groups(self, scope: str, limit: Optional[int] = None, next_marker: Optional[str] = None) -> Tuple[List[FakeRuleGroup], Optional[str]]:\n        \"\"\"\n        List rule groups with pagination support\n        \n        Args:\n            scope: Scope of the rule groups to list\n            limit: Maximum number of items to return\n            next_marker: Token for pagination\n            \n        Returns:\n            Tuple of (list of rule groups, next marker if more items exist)\n        \"\"\"\n        rule_groups = [\n            group for group in self.rule_groups.values() if group.scope == scope\n        ]\n        \n        # If next_marker is provided, find the starting position\n        start_idx = 0\n        if next_marker:\n            # Find the item after the one with the marker\n            for idx, group in enumerate(rule_groups):\n                if group.id == next_marker:\n                    start_idx = idx + 1\n                    break\n        \n        # Apply pagination\n        if limit and limit > 0:\n            end_idx = start_idx + limit\n            result = rule_groups[start_idx:end_idx]\n            \n            # If there are more items, return a next marker\n            if end_idx < len(rule_groups):\n                next_marker = rule_groups[end_idx - 1].id\n                return result, next_marker\n            return result, None\n        \n        return rule_groups, None\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/wafv2/models.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/wafv2/models.py\n+++ b/moto/wafv2/models.py\n@@ -518,11 +518,43 @@\n         all_wacl_names = set(wacl.name for wacl in self.wacls.values())\n         return name in all_wacl_names\n \n-    def list_rule_groups(self, scope: str) -> List[FakeRuleGroup]:\n+    def list_rule_groups(self, scope: str, limit: Optional[int] = None, next_marker: Optional[str] = None) -> Tuple[List[FakeRuleGroup], Optional[str]]:\n+        \"\"\"\n+        List rule groups with pagination support\n+        \n+        Args:\n+            scope: Scope of the rule groups to list\n+            limit: Maximum number of items to return\n+            next_marker: Token for pagination\n+            \n+        Returns:\n+            Tuple of (list of rule groups, next marker if more items exist)\n+        \"\"\"\n         rule_groups = [\n             group for group in self.rule_groups.values() if group.scope == scope\n         ]\n-        return rule_groups\n+        \n+        # If next_marker is provided, find the starting position\n+        start_idx = 0\n+        if next_marker:\n+            # Find the item after the one with the marker\n+            for idx, group in enumerate(rule_groups):\n+                if group.id == next_marker:\n+                    start_idx = idx + 1\n+                    break\n+        \n+        # Apply pagination\n+        if limit and limit > 0:\n+            end_idx = start_idx + limit\n+            result = rule_groups[start_idx:end_idx]\n+            \n+            # If there are more items, return a next marker\n+            if end_idx < len(rule_groups):\n+                next_marker = rule_groups[end_idx - 1].id\n+                return result, next_marker\n+            return result, None\n+        \n+        return rule_groups, None\n \n     def list_tags_for_resource(self, arn: str) -> List[Dict[str, str]]:\n         \"\"\"\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/wafv2/responses.py",
+      "start_line": 82,
+      "end_line": 117
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/wafv2/responses.py",
+      "content": "        return 200, response_headers, \"{}\"\n\n    def get_web_acl(self) -> TYPE_RESPONSE:\n        scope = self._get_param(\"Scope\")\n        if scope == \"CLOUDFRONT\":\n            self.region = GLOBAL_REGION\n        name = self._get_param(\"Name\")\n        _id = self._get_param(\"Id\")\n        web_acl = self.wafv2_backend.get_web_acl(name, _id)\n        response = {\"WebACL\": web_acl.to_dict(), \"LockToken\": web_acl.lock_token}\n        response_headers = {\"Content-Type\": \"application/json\"}\n        return 200, response_headers, json.dumps(response)\n\n    def list_web_ac_ls(self) -> TYPE_RESPONSE:\n        \"\"\"https://docs.aws.amazon.com/waf/latest/APIReference/API_ListWebACLs.html (response syntax section)\"\"\"\n\n        scope = self._get_param(\"Scope\")\n        if scope == \"CLOUDFRONT\":\n            self.region = GLOBAL_REGION\n        all_web_acls = self.wafv2_backend.list_web_acls()\n        response = {\"NextMarker\": \"Not Implemented\", \"WebACLs\": all_web_acls}\n        response_headers = {\"Content-Type\": \"application/json\"}\n        return 200, response_headers, json.dumps(response)\n\n    def list_rule_groups(self) -> TYPE_RESPONSE:\n        scope = self._get_param(\"Scope\")\n        if scope == \"CLOUDFRONT\":\n            self.region = GLOBAL_REGION\n        rule_groups = self.wafv2_backend.list_rule_groups(scope)\n        response = {\"RuleGroups\": [rg.to_short_dict() for rg in rule_groups]}\n        response_headers = {\"Content-Type\": \"application/json\"}\n        return 200, response_headers, json.dumps(response)\n\n    def list_tags_for_resource(self) -> TYPE_RESPONSE:\n        arn = self._get_param(\"ResourceARN\")\n        self.region = arn.split(\":\")[3]",
+      "start_line": 82,
+      "end_line": 117,
+      "total_lines": 432,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/wafv2/responses.py",
+      "old_string": "\n    def list_web_ac_ls(self) -> TYPE_RESPONSE:\n        \"\"\"https://docs.aws.amazon.com/waf/latest/APIReference/API_ListWebACLs.html (response syntax section)\"\"\"\n\n        scope = self._get_param(\"Scope\")\n        if scope == \"CLOUDFRONT\":\n            self.region = GLOBAL_REGION\n        all_web_acls = self.wafv2_backend.list_web_acls()\n        response = {\"NextMarker\": \"Not Implemented\", \"WebACLs\": all_web_acls}\n        response_headers = {\"Content-Type\": \"application/json\"}\n        return 200, response_headers, json.dumps(response)\n",
+      "new_string": "\n    def list_web_ac_ls(self) -> TYPE_RESPONSE:\n        \"\"\"https://docs.aws.amazon.com/waf/latest/APIReference/API_ListWebACLs.html (response syntax section)\"\"\"\n\n        scope = self._get_param(\"Scope\")\n        if scope == \"CLOUDFRONT\":\n            self.region = GLOBAL_REGION\n            \n        # Get pagination parameters\n        limit = self._get_int_param(\"Limit\")\n        next_marker = self._get_param(\"NextMarker\")\n        \n        # Get paginated results\n        web_acls, next_marker = self.wafv2_backend.list_web_acls(limit, next_marker)\n        \n        # Format response\n        response = {\"WebACLs\": [wacl.to_short_dict() for wacl in web_acls]}\n        if next_marker:\n            response[\"NextMarker\"] = next_marker\n            \n        response_headers = {\"Content-Type\": \"application/json\"}\n        return 200, response_headers, json.dumps(response)\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/wafv2/responses.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/wafv2/responses.py\n+++ b/moto/wafv2/responses.py\n@@ -98,8 +98,19 @@\n         scope = self._get_param(\"Scope\")\n         if scope == \"CLOUDFRONT\":\n             self.region = GLOBAL_REGION\n-        all_web_acls = self.wafv2_backend.list_web_acls()\n-        response = {\"NextMarker\": \"Not Implemented\", \"WebACLs\": all_web_acls}\n+            \n+        # Get pagination parameters\n+        limit = self._get_int_param(\"Limit\")\n+        next_marker = self._get_param(\"NextMarker\")\n+        \n+        # Get paginated results\n+        web_acls, next_marker = self.wafv2_backend.list_web_acls(limit, next_marker)\n+        \n+        # Format response\n+        response = {\"WebACLs\": [wacl.to_short_dict() for wacl in web_acls]}\n+        if next_marker:\n+            response[\"NextMarker\"] = next_marker\n+            \n         response_headers = {\"Content-Type\": \"application/json\"}\n         return 200, response_headers, json.dumps(response)\n \n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/wafv2/responses.py",
+      "start_line": 104,
+      "end_line": 137
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/wafv2/responses.py",
+      "content": "        next_marker = self._get_param(\"NextMarker\")\n        \n        # Get paginated results\n        web_acls, next_marker = self.wafv2_backend.list_web_acls(limit, next_marker)\n        \n        # Format response\n        response = {\"WebACLs\": [wacl.to_short_dict() for wacl in web_acls]}\n        if next_marker:\n            response[\"NextMarker\"] = next_marker\n            \n        response_headers = {\"Content-Type\": \"application/json\"}\n        return 200, response_headers, json.dumps(response)\n\n    def list_rule_groups(self) -> TYPE_RESPONSE:\n        scope = self._get_param(\"Scope\")\n        if scope == \"CLOUDFRONT\":\n            self.region = GLOBAL_REGION\n        rule_groups = self.wafv2_backend.list_rule_groups(scope)\n        response = {\"RuleGroups\": [rg.to_short_dict() for rg in rule_groups]}\n        response_headers = {\"Content-Type\": \"application/json\"}\n        return 200, response_headers, json.dumps(response)\n\n    def list_tags_for_resource(self) -> TYPE_RESPONSE:\n        arn = self._get_param(\"ResourceARN\")\n        self.region = arn.split(\":\")[3]\n        tags = self.wafv2_backend.list_tags_for_resource(arn)\n        response = {\"TagInfoForResource\": {\"ResourceARN\": arn, \"TagList\": tags}}\n        response_headers = {\"Content-Type\": \"application/json\"}\n        return 200, response_headers, json.dumps(response)\n\n    def tag_resource(self) -> TYPE_RESPONSE:\n        body = json.loads(self.body)\n        arn = body.get(\"ResourceARN\")\n        self.region = arn.split(\":\")[3]",
+      "start_line": 104,
+      "end_line": 137,
+      "total_lines": 443,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/wafv2/responses.py",
+      "old_string": "\n    def list_rule_groups(self) -> TYPE_RESPONSE:\n        scope = self._get_param(\"Scope\")\n        if scope == \"CLOUDFRONT\":\n            self.region = GLOBAL_REGION\n        rule_groups = self.wafv2_backend.list_rule_groups(scope)\n        response = {\"RuleGroups\": [rg.to_short_dict() for rg in rule_groups]}\n        response_headers = {\"Content-Type\": \"application/json\"}\n        return 200, response_headers, json.dumps(response)\n",
+      "new_string": "\n    def list_rule_groups(self) -> TYPE_RESPONSE:\n        scope = self._get_param(\"Scope\")\n        if scope == \"CLOUDFRONT\":\n            self.region = GLOBAL_REGION\n            \n        # Get pagination parameters\n        limit = self._get_int_param(\"Limit\")\n        next_marker = self._get_param(\"NextMarker\")\n        \n        # Get paginated results\n        rule_groups, next_marker = self.wafv2_backend.list_rule_groups(scope, limit, next_marker)\n        \n        # Format response\n        response = {\"RuleGroups\": [rg.to_short_dict() for rg in rule_groups]}\n        if next_marker:\n            response[\"NextMarker\"] = next_marker\n            \n        response_headers = {\"Content-Type\": \"application/json\"}\n        return 200, response_headers, json.dumps(response)\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/wafv2/responses.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/wafv2/responses.py\n+++ b/moto/wafv2/responses.py\n@@ -118,8 +118,19 @@\n         scope = self._get_param(\"Scope\")\n         if scope == \"CLOUDFRONT\":\n             self.region = GLOBAL_REGION\n-        rule_groups = self.wafv2_backend.list_rule_groups(scope)\n+            \n+        # Get pagination parameters\n+        limit = self._get_int_param(\"Limit\")\n+        next_marker = self._get_param(\"NextMarker\")\n+        \n+        # Get paginated results\n+        rule_groups, next_marker = self.wafv2_backend.list_rule_groups(scope, limit, next_marker)\n+        \n+        # Format response\n         response = {\"RuleGroups\": [rg.to_short_dict() for rg in rule_groups]}\n+        if next_marker:\n+            response[\"NextMarker\"] = next_marker\n+            \n         response_headers = {\"Content-Type\": \"application/json\"}\n         return 200, response_headers, json.dumps(response)\n \n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/wafv2/responses.py",
+      "start_line": 229,
+      "end_line": 278
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/wafv2/responses.py",
+      "content": "\n        name = body.get(\"Name\")\n        scope = body.get(\"Scope\")\n        if scope == \"CLOUDFRONT\":\n            self.region = GLOBAL_REGION\n\n        _id = body.get(\"Id\")\n        lock_token = body.get(\"LockToken\")\n\n        self.wafv2_backend.delete_ip_set(name, scope, _id, lock_token)\n\n        return 200, {}, \"{}\"\n\n    def list_ip_sets(self) -> TYPE_RESPONSE:\n        scope = self._get_param(\"Scope\")\n        if scope == \"CLOUDFRONT\":\n            self.region = GLOBAL_REGION\n        ip_sets = self.wafv2_backend.list_ip_sets(scope)\n\n        formatted_ip_sets = [\n            {\n                \"Name\": ip_set.name,\n                \"Id\": ip_set.ip_set_id,\n                \"Description\": ip_set.description,\n                \"LockToken\": ip_set.lock_token,\n                \"ARN\": ip_set.arn,\n            }\n            for ip_set in ip_sets\n        ]\n\n        return (\n            200,\n            {},\n            json.dumps(\n                {\"NextMarker\": str(mock_random.uuid4()), \"IPSets\": formatted_ip_sets}\n            ),\n        )\n\n    def get_ip_set(self) -> TYPE_RESPONSE:\n        scope = self._get_param(\"Scope\")\n        if scope == \"CLOUDFRONT\":\n            self.region = GLOBAL_REGION\n\n        ip_set = self.wafv2_backend.get_ip_set(\n            name=self._get_param(\"Name\"), scope=scope, _id=self._get_param(\"Id\")\n        )\n\n        dict_ip = ip_set.to_dict()\n        lock_token = dict_ip.pop(\"LockToken\")\n        return 200, {}, json.dumps({\"IPSet\": dict_ip, \"LockToken\": lock_token})",
+      "start_line": 229,
+      "end_line": 278,
+      "total_lines": 454,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/wafv2/responses.py",
+      "old_string": "\n    def list_ip_sets(self) -> TYPE_RESPONSE:\n        scope = self._get_param(\"Scope\")\n        if scope == \"CLOUDFRONT\":\n            self.region = GLOBAL_REGION\n        ip_sets = self.wafv2_backend.list_ip_sets(scope)\n\n        formatted_ip_sets = [\n            {\n                \"Name\": ip_set.name,\n                \"Id\": ip_set.ip_set_id,\n                \"Description\": ip_set.description,\n                \"LockToken\": ip_set.lock_token,\n                \"ARN\": ip_set.arn,\n            }\n            for ip_set in ip_sets\n        ]\n\n        return (\n            200,\n            {},\n            json.dumps(\n                {\"NextMarker\": str(mock_random.uuid4()), \"IPSets\": formatted_ip_sets}\n            ),\n        )\n",
+      "new_string": "\n    def list_ip_sets(self) -> TYPE_RESPONSE:\n        scope = self._get_param(\"Scope\")\n        if scope == \"CLOUDFRONT\":\n            self.region = GLOBAL_REGION\n            \n        # Get pagination parameters\n        limit = self._get_int_param(\"Limit\")\n        next_marker = self._get_param(\"NextMarker\")\n        \n        # Get paginated results\n        ip_sets, next_marker = self.wafv2_backend.list_ip_sets(scope, limit, next_marker)\n\n        formatted_ip_sets = [\n            {\n                \"Name\": ip_set.name,\n                \"Id\": ip_set.ip_set_id,\n                \"Description\": ip_set.description,\n                \"LockToken\": ip_set.lock_token,\n                \"ARN\": ip_set.arn,\n            }\n            for ip_set in ip_sets\n        ]\n\n        # Format response\n        response = {\"IPSets\": formatted_ip_sets}\n        if next_marker:\n            response[\"NextMarker\"] = next_marker\n\n        return 200, {}, json.dumps(response)\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/wafv2/responses.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/wafv2/responses.py\n+++ b/moto/wafv2/responses.py\n@@ -243,7 +243,13 @@\n         scope = self._get_param(\"Scope\")\n         if scope == \"CLOUDFRONT\":\n             self.region = GLOBAL_REGION\n-        ip_sets = self.wafv2_backend.list_ip_sets(scope)\n+            \n+        # Get pagination parameters\n+        limit = self._get_int_param(\"Limit\")\n+        next_marker = self._get_param(\"NextMarker\")\n+        \n+        # Get paginated results\n+        ip_sets, next_marker = self.wafv2_backend.list_ip_sets(scope, limit, next_marker)\n \n         formatted_ip_sets = [\n             {\n@@ -256,13 +262,12 @@\n             for ip_set in ip_sets\n         ]\n \n-        return (\n-            200,\n-            {},\n-            json.dumps(\n-                {\"NextMarker\": str(mock_random.uuid4()), \"IPSets\": formatted_ip_sets}\n-            ),\n-        )\n+        # Format response\n+        response = {\"IPSets\": formatted_ip_sets}\n+        if next_marker:\n+            response[\"NextMarker\"] = next_marker\n+\n+        return 200, {}, json.dumps(response)\n \n     def get_ip_set(self) -> TYPE_RESPONSE:\n         scope = self._get_param(\"Scope\")\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/wafv2/models.py",
+      "start_line": 1,
+      "end_line": 16
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/wafv2/models.py",
+      "content": "import re\nfrom collections import OrderedDict\nfrom typing import TYPE_CHECKING, Any, Dict, List, Optional, Union\n\nfrom moto.core.base_backend import BackendDict, BaseBackend\nfrom moto.core.common_models import BaseModel\nfrom moto.core.utils import (\n    camelcase_to_underscores,\n    iso_8601_datetime_with_milliseconds,\n)\nfrom moto.moto_api._internal import mock_random\nfrom moto.utilities.tagging_service import TaggingService\nfrom moto.utilities.utils import ARN_PARTITION_REGEX, PARTITION_NAMES\n\nfrom .exceptions import (\n    WAFNonexistentItemException,",
+      "start_line": 1,
+      "end_line": 16,
+      "total_lines": 882,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/wafv2/models.py",
+      "old_string": "\nfrom typing import TYPE_CHECKING, Any, Dict, List, Optional, Union\n",
+      "new_string": "\nfrom typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/wafv2/models.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/wafv2/models.py\n+++ b/moto/wafv2/models.py\n@@ -1,6 +1,6 @@\n import re\n from collections import OrderedDict\n-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union\n+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union\n \n from moto.core.base_backend import BackendDict, BaseBackend\n from moto.core.common_models import BaseModel\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/wafv2/responses.py",
+      "start_line": 82,
+      "end_line": 108
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/wafv2/responses.py",
+      "content": "        return 200, response_headers, \"{}\"\n\n    def get_web_acl(self) -> TYPE_RESPONSE:\n        scope = self._get_param(\"Scope\")\n        if scope == \"CLOUDFRONT\":\n            self.region = GLOBAL_REGION\n        name = self._get_param(\"Name\")\n        _id = self._get_param(\"Id\")\n        web_acl = self.wafv2_backend.get_web_acl(name, _id)\n        response = {\"WebACL\": web_acl.to_dict(), \"LockToken\": web_acl.lock_token}\n        response_headers = {\"Content-Type\": \"application/json\"}\n        return 200, response_headers, json.dumps(response)\n\n    def list_web_ac_ls(self) -> TYPE_RESPONSE:\n        \"\"\"https://docs.aws.amazon.com/waf/latest/APIReference/API_ListWebACLs.html (response syntax section)\"\"\"\n\n        scope = self._get_param(\"Scope\")\n        if scope == \"CLOUDFRONT\":\n            self.region = GLOBAL_REGION\n            \n        # Get pagination parameters\n        limit = self._get_int_param(\"Limit\")\n        next_marker = self._get_param(\"NextMarker\")\n        \n        # Get paginated results\n        web_acls, next_marker = self.wafv2_backend.list_web_acls(limit, next_marker)\n        ",
+      "start_line": 82,
+      "end_line": 108,
+      "total_lines": 459,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/wafv2/responses.py",
+      "old_string": "\n    def list_web_ac_ls(self) -> TYPE_RESPONSE:\n",
+      "new_string": "\n    def list_web_acls(self) -> TYPE_RESPONSE:\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/wafv2/responses.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/wafv2/responses.py\n+++ b/moto/wafv2/responses.py\n@@ -92,7 +92,7 @@\n         response_headers = {\"Content-Type\": \"application/json\"}\n         return 200, response_headers, json.dumps(response)\n \n-    def list_web_ac_ls(self) -> TYPE_RESPONSE:\n+    def list_web_acls(self) -> TYPE_RESPONSE:\n         \"\"\"https://docs.aws.amazon.com/waf/latest/APIReference/API_ListWebACLs.html (response syntax section)\"\"\"\n \n         scope = self._get_param(\"Scope\")\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/wafv2/responses.py",
+      "start_line": 1,
+      "end_line": 25
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/wafv2/responses.py",
+      "content": "import json\n\nfrom moto.core.common_types import TYPE_RESPONSE\nfrom moto.core.responses import BaseResponse\n\nfrom ..moto_api._internal import mock_random\nfrom .models import GLOBAL_REGION, WAFV2Backend, wafv2_backends\n\n\nclass WAFV2Response(BaseResponse):\n    def __init__(self) -> None:\n        super().__init__(service_name=\"wafv2\")\n\n    @property\n    def wafv2_backend(self) -> WAFV2Backend:\n        return wafv2_backends[self.current_account][self.region]\n\n    def associate_web_acl(self) -> TYPE_RESPONSE:\n        body = json.loads(self.body)\n        web_acl_arn = body[\"WebACLArn\"]\n        resource_arn = body[\"ResourceArn\"]\n        self.wafv2_backend.associate_web_acl(web_acl_arn, resource_arn)\n        return 200, {}, \"{}\"\n\n    def disassociate_web_acl(self) -> TYPE_RESPONSE:",
+      "start_line": 1,
+      "end_line": 25,
+      "total_lines": 459,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/wafv2/responses.py",
+      "old_string": "\nclass WAFV2Response(BaseResponse):\n    def __init__(self) -> None:\n        super().__init__(service_name=\"wafv2\")\n",
+      "new_string": "\nclass WAFV2Response(BaseResponse):\n    def __init__(self) -> None:\n        super().__init__(service_name=\"wafv2\")\n        \n    def _get_action(self) -> str:\n        \"\"\"Override to handle special case for list_web_acls\"\"\"\n        action = super()._get_action()\n        # Map list_web_ac_ls to ListWebACLs\n        if action == \"list_web_ac_ls\":\n            return \"ListWebACLs\"\n        return action\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/wafv2/responses.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/wafv2/responses.py\n+++ b/moto/wafv2/responses.py\n@@ -10,6 +10,14 @@\n class WAFV2Response(BaseResponse):\n     def __init__(self) -> None:\n         super().__init__(service_name=\"wafv2\")\n+        \n+    def _get_action(self) -> str:\n+        \"\"\"Override to handle special case for list_web_acls\"\"\"\n+        action = super()._get_action()\n+        # Map list_web_ac_ls to ListWebACLs\n+        if action == \"list_web_ac_ls\":\n+            return \"ListWebACLs\"\n+        return action\n \n     @property\n     def wafv2_backend(self) -> WAFV2Backend:\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/wafv2/responses.py",
+      "start_line": 1,
+      "end_line": 33
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/wafv2/responses.py",
+      "content": "import json\n\nfrom moto.core.common_types import TYPE_RESPONSE\nfrom moto.core.responses import BaseResponse\n\nfrom ..moto_api._internal import mock_random\nfrom .models import GLOBAL_REGION, WAFV2Backend, wafv2_backends\n\n\nclass WAFV2Response(BaseResponse):\n    def __init__(self) -> None:\n        super().__init__(service_name=\"wafv2\")\n        \n    def _get_action(self) -> str:\n        \"\"\"Override to handle special case for list_web_acls\"\"\"\n        action = super()._get_action()\n        # Map list_web_ac_ls to ListWebACLs\n        if action == \"list_web_ac_ls\":\n            return \"ListWebACLs\"\n        return action\n\n    @property\n    def wafv2_backend(self) -> WAFV2Backend:\n        return wafv2_backends[self.current_account][self.region]\n\n    def associate_web_acl(self) -> TYPE_RESPONSE:\n        body = json.loads(self.body)\n        web_acl_arn = body[\"WebACLArn\"]\n        resource_arn = body[\"ResourceArn\"]\n        self.wafv2_backend.associate_web_acl(web_acl_arn, resource_arn)\n        return 200, {}, \"{}\"\n\n    def disassociate_web_acl(self) -> TYPE_RESPONSE:",
+      "start_line": 1,
+      "end_line": 33,
+      "total_lines": 467,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/wafv2/responses.py",
+      "old_string": "\n    def _get_action(self) -> str:\n        \"\"\"Override to handle special case for list_web_acls\"\"\"\n        action = super()._get_action()\n        # Map list_web_ac_ls to ListWebACLs\n        if action == \"list_web_ac_ls\":\n            return \"ListWebACLs\"\n        return action\n",
+      "new_string": "\n    def _get_action(self) -> str:\n        \"\"\"Override to handle special case for list_web_acls\"\"\"\n        action = super()._get_action()\n        return action\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/wafv2/responses.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/wafv2/responses.py\n+++ b/moto/wafv2/responses.py\n@@ -14,9 +14,6 @@\n     def _get_action(self) -> str:\n         \"\"\"Override to handle special case for list_web_acls\"\"\"\n         action = super()._get_action()\n-        # Map list_web_ac_ls to ListWebACLs\n-        if action == \"list_web_ac_ls\":\n-            return \"ListWebACLs\"\n         return action\n \n     @property\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/wafv2/responses.py",
+      "start_line": 87,
+      "end_line": 133
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/wafv2/responses.py",
+      "content": "        return 200, response_headers, \"{}\"\n\n    def get_web_acl(self) -> TYPE_RESPONSE:\n        scope = self._get_param(\"Scope\")\n        if scope == \"CLOUDFRONT\":\n            self.region = GLOBAL_REGION\n        name = self._get_param(\"Name\")\n        _id = self._get_param(\"Id\")\n        web_acl = self.wafv2_backend.get_web_acl(name, _id)\n        response = {\"WebACL\": web_acl.to_dict(), \"LockToken\": web_acl.lock_token}\n        response_headers = {\"Content-Type\": \"application/json\"}\n        return 200, response_headers, json.dumps(response)\n\n    def list_web_acls(self) -> TYPE_RESPONSE:\n        \"\"\"https://docs.aws.amazon.com/waf/latest/APIReference/API_ListWebACLs.html (response syntax section)\"\"\"\n\n        scope = self._get_param(\"Scope\")\n        if scope == \"CLOUDFRONT\":\n            self.region = GLOBAL_REGION\n            \n        # Get pagination parameters\n        limit = self._get_int_param(\"Limit\")\n        next_marker = self._get_param(\"NextMarker\")\n        \n        # Get paginated results\n        web_acls, next_marker = self.wafv2_backend.list_web_acls(limit, next_marker)\n        \n        # Format response\n        response = {\"WebACLs\": [wacl.to_short_dict() for wacl in web_acls]}\n        if next_marker:\n            response[\"NextMarker\"] = next_marker\n            \n        response_headers = {\"Content-Type\": \"application/json\"}\n        return 200, response_headers, json.dumps(response)\n\n    def list_rule_groups(self) -> TYPE_RESPONSE:\n        scope = self._get_param(\"Scope\")\n        if scope == \"CLOUDFRONT\":\n            self.region = GLOBAL_REGION\n            \n        # Get pagination parameters\n        limit = self._get_int_param(\"Limit\")\n        next_marker = self._get_param(\"NextMarker\")\n        \n        # Get paginated results\n        rule_groups, next_marker = self.wafv2_backend.list_rule_groups(scope, limit, next_marker)\n        ",
+      "start_line": 87,
+      "end_line": 133,
+      "total_lines": 464,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/wafv2/responses.py",
+      "old_string": "\n    def list_web_acls(self) -> TYPE_RESPONSE:\n        \"\"\"https://docs.aws.amazon.com/waf/latest/APIReference/API_ListWebACLs.html (response syntax section)\"\"\"\n\n        scope = self._get_param(\"Scope\")\n        if scope == \"CLOUDFRONT\":\n            self.region = GLOBAL_REGION\n            \n        # Get pagination parameters\n        limit = self._get_int_param(\"Limit\")\n        next_marker = self._get_param(\"NextMarker\")\n        \n        # Get paginated results\n        web_acls, next_marker = self.wafv2_backend.list_web_acls(limit, next_marker)\n        \n        # Format response\n        response = {\"WebACLs\": [wacl.to_short_dict() for wacl in web_acls]}\n        if next_marker:\n            response[\"NextMarker\"] = next_marker\n            \n        response_headers = {\"Content-Type\": \"application/json\"}\n        return 200, response_headers, json.dumps(response)\n",
+      "new_string": "\n    def list_web_acls(self) -> TYPE_RESPONSE:\n        \"\"\"https://docs.aws.amazon.com/waf/latest/APIReference/API_ListWebACLs.html (response syntax section)\"\"\"\n\n        scope = self._get_param(\"Scope\")\n        if scope == \"CLOUDFRONT\":\n            self.region = GLOBAL_REGION\n            \n        # Get pagination parameters\n        limit = self._get_int_param(\"Limit\")\n        next_marker = self._get_param(\"NextMarker\")\n        \n        # Get paginated results\n        web_acls, next_marker = self.wafv2_backend.list_web_acls(limit, next_marker)\n        \n        # Format response\n        response = {\"WebACLs\": [wacl.to_short_dict() for wacl in web_acls]}\n        if next_marker:\n            response[\"NextMarker\"] = next_marker\n            \n        response_headers = {\"Content-Type\": \"application/json\"}\n        return 200, response_headers, json.dumps(response)\n        \n    def list_web_ac_ls(self) -> TYPE_RESPONSE:\n        \"\"\"Alias for list_web_acls to handle the action name mismatch\"\"\"\n        return self.list_web_acls()\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/wafv2/responses.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/wafv2/responses.py\n+++ b/moto/wafv2/responses.py\n@@ -118,6 +118,10 @@\n             \n         response_headers = {\"Content-Type\": \"application/json\"}\n         return 200, response_headers, json.dumps(response)\n+        \n+    def list_web_ac_ls(self) -> TYPE_RESPONSE:\n+        \"\"\"Alias for list_web_acls to handle the action name mismatch\"\"\"\n+        return self.list_web_acls()\n \n     def list_rule_groups(self) -> TYPE_RESPONSE:\n         scope = self._get_param(\"Scope\")\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/wafv2/models.py",
+      "start_line": 469,
+      "end_line": 528
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/wafv2/models.py",
+      "content": "        if arn not in self.wacls:\n            raise WAFNonexistentItemException\n        wacl = self.wacls[arn]\n        if wacl.lock_token != lock_token:\n            raise WAFOptimisticLockException()\n        self.wacls.pop(arn)\n\n    def get_web_acl(self, name: str, _id: str) -> FakeWebACL:\n        for wacl in self.wacls.values():\n            if wacl.name == name and wacl.id == _id:\n                return wacl\n        raise WAFNonexistentItemException\n\n    def list_web_acls(self, limit: Optional[int] = None, next_marker: Optional[str] = None) -> Tuple[List[FakeWebACL], Optional[str]]:\n        \"\"\"\n        List WebACLs with pagination support\n        \n        Args:\n            limit: Maximum number of items to return\n            next_marker: Token for pagination\n            \n        Returns:\n            Tuple of (list of WebACLs, next marker if more items exist)\n        \"\"\"\n        all_web_acls = list(self.wacls.values())\n        \n        # If next_marker is provided, find the starting position\n        start_idx = 0\n        if next_marker:\n            # Find the item after the one with the marker\n            for idx, wacl in enumerate(all_web_acls):\n                if wacl.id == next_marker:\n                    start_idx = idx + 1\n                    break\n        \n        # Apply pagination\n        if limit and limit > 0:\n            end_idx = start_idx + limit\n            result = all_web_acls[start_idx:end_idx]\n            \n            # If there are more items, return a next marker\n            if end_idx < len(all_web_acls):\n                next_marker = all_web_acls[end_idx - 1].id\n                return result, next_marker\n            return result, None\n        \n        return all_web_acls, None\n\n    def _is_duplicate_name(self, name: str) -> bool:\n        all_wacl_names = set(wacl.name for wacl in self.wacls.values())\n        return name in all_wacl_names\n\n    def list_rule_groups(self, scope: str, limit: Optional[int] = None, next_marker: Optional[str] = None) -> Tuple[List[FakeRuleGroup], Optional[str]]:\n        \"\"\"\n        List rule groups with pagination support\n        \n        Args:\n            scope: Scope of the rule groups to list\n            limit: Maximum number of items to return\n            next_marker: Token for pagination",
+      "start_line": 469,
+      "end_line": 528,
+      "total_lines": 882,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/wafv2/models.py",
+      "old_string": "\n    def list_web_acls(self, limit: Optional[int] = None, next_marker: Optional[str] = None) -> Tuple[List[FakeWebACL], Optional[str]]:\n        \"\"\"\n        List WebACLs with pagination support\n        \n        Args:\n            limit: Maximum number of items to return\n            next_marker: Token for pagination\n            \n        Returns:\n            Tuple of (list of WebACLs, next marker if more items exist)\n        \"\"\"\n        all_web_acls = list(self.wacls.values())\n        \n        # If next_marker is provided, find the starting position\n        start_idx = 0\n        if next_marker:\n            # Find the item after the one with the marker\n            for idx, wacl in enumerate(all_web_acls):\n                if wacl.id == next_marker:\n                    start_idx = idx + 1\n                    break\n        \n        # Apply pagination\n        if limit and limit > 0:\n            end_idx = start_idx + limit\n            result = all_web_acls[start_idx:end_idx]\n            \n            # If there are more items, return a next marker\n            if end_idx < len(all_web_acls):\n                next_marker = all_web_acls[end_idx - 1].id\n                return result, next_marker\n            return result, None\n        \n        return all_web_acls, None\n",
+      "new_string": "\n    def list_web_acls(self, limit: Optional[int] = None, next_marker: Optional[str] = None) -> Tuple[List[FakeWebACL], Optional[str]]:\n        \"\"\"\n        List WebACLs with pagination support\n        \n        Args:\n            limit: Maximum number of items to return\n            next_marker: Token for pagination\n            \n        Returns:\n            Tuple of (list of WebACLs, next marker if more items exist)\n        \"\"\"\n        all_web_acls = list(self.wacls.values())\n        \n        # Handle empty list case\n        if not all_web_acls:\n            return [], None\n        \n        # If next_marker is provided, find the starting position\n        start_idx = 0\n        if next_marker:\n            # Find the item after the one with the marker\n            marker_found = False\n            for idx, wacl in enumerate(all_web_acls):\n                if wacl.id == next_marker:\n                    start_idx = idx + 1\n                    marker_found = True\n                    break\n            \n            # If marker not found, start from beginning\n            if not marker_found:\n                start_idx = 0\n        \n        # Handle case where start_idx is beyond the list\n        if start_idx >= len(all_web_acls):\n            return [], None\n        \n        # Apply pagination\n        if limit is not None and limit > 0:\n            end_idx = start_idx + limit\n            result = all_web_acls[start_idx:end_idx]\n            \n            # If there are more items, return a next marker\n            if end_idx < len(all_web_acls):\n                next_marker = all_web_acls[end_idx - 1].id\n                return result, next_marker\n            return result, None\n        elif limit is not None and limit <= 0:\n            # Return empty list for invalid limit\n            return [], None\n        \n        # If no limit specified, return all items from start_idx\n        return all_web_acls[start_idx:], None\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/wafv2/models.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/wafv2/models.py\n+++ b/moto/wafv2/models.py\n@@ -492,17 +492,31 @@\n         \"\"\"\n         all_web_acls = list(self.wacls.values())\n         \n+        # Handle empty list case\n+        if not all_web_acls:\n+            return [], None\n+        \n         # If next_marker is provided, find the starting position\n         start_idx = 0\n         if next_marker:\n             # Find the item after the one with the marker\n+            marker_found = False\n             for idx, wacl in enumerate(all_web_acls):\n                 if wacl.id == next_marker:\n                     start_idx = idx + 1\n+                    marker_found = True\n                     break\n+            \n+            # If marker not found, start from beginning\n+            if not marker_found:\n+                start_idx = 0\n+        \n+        # Handle case where start_idx is beyond the list\n+        if start_idx >= len(all_web_acls):\n+            return [], None\n         \n         # Apply pagination\n-        if limit and limit > 0:\n+        if limit is not None and limit > 0:\n             end_idx = start_idx + limit\n             result = all_web_acls[start_idx:end_idx]\n             \n@@ -511,8 +525,12 @@\n                 next_marker = all_web_acls[end_idx - 1].id\n                 return result, next_marker\n             return result, None\n-        \n-        return all_web_acls, None\n+        elif limit is not None and limit <= 0:\n+            # Return empty list for invalid limit\n+            return [], None\n+        \n+        # If no limit specified, return all items from start_idx\n+        return all_web_acls[start_idx:], None\n \n     def _is_duplicate_name(self, name: str) -> bool:\n         all_wacl_names = set(wacl.name for wacl in self.wacls.values())\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/wafv2/models.py",
+      "start_line": 663,
+      "end_line": 725
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/wafv2/models.py",
+      "content": "            region_name=self.region_name,\n            _id=_id,\n            scope=scope,\n        )\n\n        if arn not in self.ip_sets:\n            raise WAFNonexistentItemException()\n\n        if lock_token != self.ip_sets[arn].lock_token:\n            raise WAFOptimisticLockException()\n\n        self.ip_sets.pop(arn)\n\n    def list_ip_sets(self, scope: str, limit: Optional[int] = None, next_marker: Optional[str] = None) -> Tuple[List[FakeIPSet], Optional[str]]:\n        \"\"\"\n        List IP sets with pagination support\n        \n        Args:\n            scope: Scope of the IP sets to list\n            limit: Maximum number of items to return\n            next_marker: Token for pagination\n            \n        Returns:\n            Tuple of (list of IP sets, next marker if more items exist)\n        \"\"\"\n        ip_sets = [\n            ip_set for arn, ip_set in self.ip_sets.items() if ip_set.scope == scope\n        ]\n        \n        # If next_marker is provided, find the starting position\n        start_idx = 0\n        if next_marker:\n            # Find the item after the one with the marker\n            for idx, ip_set in enumerate(ip_sets):\n                if ip_set.ip_set_id == next_marker:\n                    start_idx = idx + 1\n                    break\n        \n        # Apply pagination\n        if limit and limit > 0:\n            end_idx = start_idx + limit\n            result = ip_sets[start_idx:end_idx]\n            \n            # If there are more items, return a next marker\n            if end_idx < len(ip_sets):\n                next_marker = ip_sets[end_idx - 1].ip_set_id\n                return result, next_marker\n            return result, None\n        \n        return ip_sets, None\n\n    def get_ip_set(self, name: str, scope: str, _id: str) -> FakeIPSet:\n        arn = make_arn_for_ip_set(\n            name=name,\n            account_id=self.account_id,\n            region_name=self.region_name,\n            _id=_id,\n            scope=scope,\n        )\n        if arn not in self.ip_sets:\n            raise WAFNonexistentItemException()\n\n        return self.ip_sets[arn]",
+      "start_line": 663,
+      "end_line": 725,
+      "total_lines": 900,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/wafv2/models.py",
+      "old_string": "\n    def list_ip_sets(self, scope: str, limit: Optional[int] = None, next_marker: Optional[str] = None) -> Tuple[List[FakeIPSet], Optional[str]]:\n        \"\"\"\n        List IP sets with pagination support\n        \n        Args:\n            scope: Scope of the IP sets to list\n            limit: Maximum number of items to return\n            next_marker: Token for pagination\n            \n        Returns:\n            Tuple of (list of IP sets, next marker if more items exist)\n        \"\"\"\n        ip_sets = [\n            ip_set for arn, ip_set in self.ip_sets.items() if ip_set.scope == scope\n        ]\n        \n        # If next_marker is provided, find the starting position\n        start_idx = 0\n        if next_marker:\n            # Find the item after the one with the marker\n            for idx, ip_set in enumerate(ip_sets):\n                if ip_set.ip_set_id == next_marker:\n                    start_idx = idx + 1\n                    break\n        \n        # Apply pagination\n        if limit and limit > 0:\n            end_idx = start_idx + limit\n            result = ip_sets[start_idx:end_idx]\n            \n            # If there are more items, return a next marker\n            if end_idx < len(ip_sets):\n                next_marker = ip_sets[end_idx - 1].ip_set_id\n                return result, next_marker\n            return result, None\n        \n        return ip_sets, None\n",
+      "new_string": "\n    def list_ip_sets(self, scope: str, limit: Optional[int] = None, next_marker: Optional[str] = None) -> Tuple[List[FakeIPSet], Optional[str]]:\n        \"\"\"\n        List IP sets with pagination support\n        \n        Args:\n            scope: Scope of the IP sets to list\n            limit: Maximum number of items to return\n            next_marker: Token for pagination\n            \n        Returns:\n            Tuple of (list of IP sets, next marker if more items exist)\n        \"\"\"\n        ip_sets = [\n            ip_set for arn, ip_set in self.ip_sets.items() if ip_set.scope == scope\n        ]\n        \n        # Handle empty list case\n        if not ip_sets:\n            return [], None\n        \n        # If next_marker is provided, find the starting position\n        start_idx = 0\n        if next_marker:\n            # Find the item after the one with the marker\n            marker_found = False\n            for idx, ip_set in enumerate(ip_sets):\n                if ip_set.ip_set_id == next_marker:\n                    start_idx = idx + 1\n                    marker_found = True\n                    break\n            \n            # If marker not found, start from beginning\n            if not marker_found:\n                start_idx = 0\n        \n        # Handle case where start_idx is beyond the list\n        if start_idx >= len(ip_sets):\n            return [], None\n        \n        # Apply pagination\n        if limit is not None and limit > 0:\n            end_idx = start_idx + limit\n            result = ip_sets[start_idx:end_idx]\n            \n            # If there are more items, return a next marker\n            if end_idx < len(ip_sets):\n                next_marker = ip_sets[end_idx - 1].ip_set_id\n                return result, next_marker\n            return result, None\n        elif limit is not None and limit <= 0:\n            # Return empty list for invalid limit\n            return [], None\n        \n        # If no limit specified, return all items from start_idx\n        return ip_sets[start_idx:], None\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/wafv2/models.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/wafv2/models.py\n+++ b/moto/wafv2/models.py\n@@ -689,17 +689,31 @@\n             ip_set for arn, ip_set in self.ip_sets.items() if ip_set.scope == scope\n         ]\n         \n+        # Handle empty list case\n+        if not ip_sets:\n+            return [], None\n+        \n         # If next_marker is provided, find the starting position\n         start_idx = 0\n         if next_marker:\n             # Find the item after the one with the marker\n+            marker_found = False\n             for idx, ip_set in enumerate(ip_sets):\n                 if ip_set.ip_set_id == next_marker:\n                     start_idx = idx + 1\n+                    marker_found = True\n                     break\n+            \n+            # If marker not found, start from beginning\n+            if not marker_found:\n+                start_idx = 0\n+        \n+        # Handle case where start_idx is beyond the list\n+        if start_idx >= len(ip_sets):\n+            return [], None\n         \n         # Apply pagination\n-        if limit and limit > 0:\n+        if limit is not None and limit > 0:\n             end_idx = start_idx + limit\n             result = ip_sets[start_idx:end_idx]\n             \n@@ -708,8 +722,12 @@\n                 next_marker = ip_sets[end_idx - 1].ip_set_id\n                 return result, next_marker\n             return result, None\n-        \n-        return ip_sets, None\n+        elif limit is not None and limit <= 0:\n+            # Return empty list for invalid limit\n+            return [], None\n+        \n+        # If no limit specified, return all items from start_idx\n+        return ip_sets[start_idx:], None\n \n     def get_ip_set(self, name: str, scope: str, _id: str) -> FakeIPSet:\n         arn = make_arn_for_ip_set(\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/wafv2/models.py",
+      "start_line": 526,
+      "end_line": 588
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/wafv2/models.py",
+      "content": "                return result, next_marker\n            return result, None\n        elif limit is not None and limit <= 0:\n            # Return empty list for invalid limit\n            return [], None\n        \n        # If no limit specified, return all items from start_idx\n        return all_web_acls[start_idx:], None\n\n    def _is_duplicate_name(self, name: str) -> bool:\n        all_wacl_names = set(wacl.name for wacl in self.wacls.values())\n        return name in all_wacl_names\n\n    def list_rule_groups(self, scope: str, limit: Optional[int] = None, next_marker: Optional[str] = None) -> Tuple[List[FakeRuleGroup], Optional[str]]:\n        \"\"\"\n        List rule groups with pagination support\n        \n        Args:\n            scope: Scope of the rule groups to list\n            limit: Maximum number of items to return\n            next_marker: Token for pagination\n            \n        Returns:\n            Tuple of (list of rule groups, next marker if more items exist)\n        \"\"\"\n        rule_groups = [\n            group for group in self.rule_groups.values() if group.scope == scope\n        ]\n        \n        # If next_marker is provided, find the starting position\n        start_idx = 0\n        if next_marker:\n            # Find the item after the one with the marker\n            for idx, group in enumerate(rule_groups):\n                if group.id == next_marker:\n                    start_idx = idx + 1\n                    break\n        \n        # Apply pagination\n        if limit and limit > 0:\n            end_idx = start_idx + limit\n            result = rule_groups[start_idx:end_idx]\n            \n            # If there are more items, return a next marker\n            if end_idx < len(rule_groups):\n                next_marker = rule_groups[end_idx - 1].id\n                return result, next_marker\n            return result, None\n        \n        return rule_groups, None\n\n    def list_tags_for_resource(self, arn: str) -> List[Dict[str, str]]:\n        \"\"\"\n        Pagination is not yet implemented\n        \"\"\"\n        return self.tagging_service.list_tags_for_resource(arn)[\"Tags\"]\n\n    def tag_resource(self, arn: str, tags: List[Dict[str, str]]) -> None:\n        self.tagging_service.tag_resource(arn, tags)\n\n    def untag_resource(self, arn: str, tag_keys: List[str]) -> None:\n        self.tagging_service.untag_resource_using_names(arn, tag_keys)\n",
+      "start_line": 526,
+      "end_line": 588,
+      "total_lines": 918,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/wafv2/models.py",
+      "old_string": "\n    def list_rule_groups(self, scope: str, limit: Optional[int] = None, next_marker: Optional[str] = None) -> Tuple[List[FakeRuleGroup], Optional[str]]:\n        \"\"\"\n        List rule groups with pagination support\n        \n        Args:\n            scope: Scope of the rule groups to list\n            limit: Maximum number of items to return\n            next_marker: Token for pagination\n            \n        Returns:\n            Tuple of (list of rule groups, next marker if more items exist)\n        \"\"\"\n        rule_groups = [\n            group for group in self.rule_groups.values() if group.scope == scope\n        ]\n        \n        # If next_marker is provided, find the starting position\n        start_idx = 0\n        if next_marker:\n            # Find the item after the one with the marker\n            for idx, group in enumerate(rule_groups):\n                if group.id == next_marker:\n                    start_idx = idx + 1\n                    break\n        \n        # Apply pagination\n        if limit and limit > 0:\n            end_idx = start_idx + limit\n            result = rule_groups[start_idx:end_idx]\n            \n            # If there are more items, return a next marker\n            if end_idx < len(rule_groups):\n                next_marker = rule_groups[end_idx - 1].id\n                return result, next_marker\n            return result, None\n        \n        return rule_groups, None\n",
+      "new_string": "\n    def list_rule_groups(self, scope: str, limit: Optional[int] = None, next_marker: Optional[str] = None) -> Tuple[List[FakeRuleGroup], Optional[str]]:\n        \"\"\"\n        List rule groups with pagination support\n        \n        Args:\n            scope: Scope of the rule groups to list\n            limit: Maximum number of items to return\n            next_marker: Token for pagination\n            \n        Returns:\n            Tuple of (list of rule groups, next marker if more items exist)\n        \"\"\"\n        rule_groups = [\n            group for group in self.rule_groups.values() if group.scope == scope\n        ]\n        \n        # Handle empty list case\n        if not rule_groups:\n            return [], None\n        \n        # If next_marker is provided, find the starting position\n        start_idx = 0\n        if next_marker:\n            # Find the item after the one with the marker\n            marker_found = False\n            for idx, group in enumerate(rule_groups):\n                if group.id == next_marker:\n                    start_idx = idx + 1\n                    marker_found = True\n                    break\n            \n            # If marker not found, start from beginning\n            if not marker_found:\n                start_idx = 0\n        \n        # Handle case where start_idx is beyond the list\n        if start_idx >= len(rule_groups):\n            return [], None\n        \n        # Apply pagination\n        if limit is not None and limit > 0:\n            end_idx = start_idx + limit\n            result = rule_groups[start_idx:end_idx]\n            \n            # If there are more items, return a next marker\n            if end_idx < len(rule_groups):\n                next_marker = rule_groups[end_idx - 1].id\n                return result, next_marker\n            return result, None\n        elif limit is not None and limit <= 0:\n            # Return empty list for invalid limit\n            return [], None\n        \n        # If no limit specified, return all items from start_idx\n        return rule_groups[start_idx:], None\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/wafv2/models.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/wafv2/models.py\n+++ b/moto/wafv2/models.py\n@@ -552,17 +552,31 @@\n             group for group in self.rule_groups.values() if group.scope == scope\n         ]\n         \n+        # Handle empty list case\n+        if not rule_groups:\n+            return [], None\n+        \n         # If next_marker is provided, find the starting position\n         start_idx = 0\n         if next_marker:\n             # Find the item after the one with the marker\n+            marker_found = False\n             for idx, group in enumerate(rule_groups):\n                 if group.id == next_marker:\n                     start_idx = idx + 1\n+                    marker_found = True\n                     break\n+            \n+            # If marker not found, start from beginning\n+            if not marker_found:\n+                start_idx = 0\n+        \n+        # Handle case where start_idx is beyond the list\n+        if start_idx >= len(rule_groups):\n+            return [], None\n         \n         # Apply pagination\n-        if limit and limit > 0:\n+        if limit is not None and limit > 0:\n             end_idx = start_idx + limit\n             result = rule_groups[start_idx:end_idx]\n             \n@@ -571,8 +585,12 @@\n                 next_marker = rule_groups[end_idx - 1].id\n                 return result, next_marker\n             return result, None\n-        \n-        return rule_groups, None\n+        elif limit is not None and limit <= 0:\n+            # Return empty list for invalid limit\n+            return [], None\n+        \n+        # If no limit specified, return all items from start_idx\n+        return rule_groups[start_idx:], None\n \n     def list_tags_for_resource(self, arn: str) -> List[Dict[str, str]]:\n         \"\"\"\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/wafv2/models.py",
+      "start_line": 505,
+      "end_line": 543
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/wafv2/models.py",
+      "content": "                if wacl.id == next_marker:\n                    start_idx = idx + 1\n                    marker_found = True\n                    break\n            \n            # If marker not found, start from beginning\n            if not marker_found:\n                start_idx = 0\n        \n        # Handle case where start_idx is beyond the list\n        if start_idx >= len(all_web_acls):\n            return [], None\n        \n        # Apply pagination\n        if limit is not None and limit > 0:\n            end_idx = start_idx + limit\n            result = all_web_acls[start_idx:end_idx]\n            \n            # If there are more items, return a next marker\n            if end_idx < len(all_web_acls):\n                next_marker = all_web_acls[end_idx - 1].id\n                return result, next_marker\n            return result, None\n        elif limit is not None and limit <= 0:\n            # Return empty list for invalid limit\n            return [], None\n        \n        # If no limit specified, return all items from start_idx\n        return all_web_acls[start_idx:], None\n\n    def _is_duplicate_name(self, name: str) -> bool:\n        all_wacl_names = set(wacl.name for wacl in self.wacls.values())\n        return name in all_wacl_names\n\n    def list_rule_groups(self, scope: str, limit: Optional[int] = None, next_marker: Optional[str] = None) -> Tuple[List[FakeRuleGroup], Optional[str]]:\n        \"\"\"\n        List rule groups with pagination support\n        \n        Args:",
+      "start_line": 505,
+      "end_line": 543,
+      "total_lines": 936,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/wafv2/models.py",
+      "old_string": "\n        # Apply pagination\n        if limit is not None and limit > 0:\n            end_idx = start_idx + limit\n            result = all_web_acls[start_idx:end_idx]\n            \n            # If there are more items, return a next marker\n            if end_idx < len(all_web_acls):\n                next_marker = all_web_acls[end_idx - 1].id\n                return result, next_marker\n            return result, None\n        elif limit is not None and limit <= 0:\n            # Return empty list for invalid limit\n            return [], None\n",
+      "new_string": "\n        # Apply pagination\n        if limit is not None and limit >= 1:  # AWS API requires Limit >= 1\n            end_idx = start_idx + limit\n            result = all_web_acls[start_idx:end_idx]\n            \n            # If there are more items, return a next marker\n            if end_idx < len(all_web_acls):\n                next_marker = all_web_acls[end_idx - 1].id\n                return result, next_marker\n            return result, None\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/wafv2/models.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/wafv2/models.py\n+++ b/moto/wafv2/models.py\n@@ -516,7 +516,7 @@\n             return [], None\n         \n         # Apply pagination\n-        if limit is not None and limit > 0:\n+        if limit is not None and limit >= 1:  # AWS API requires Limit >= 1\n             end_idx = start_idx + limit\n             result = all_web_acls[start_idx:end_idx]\n             \n@@ -525,9 +525,6 @@\n                 next_marker = all_web_acls[end_idx - 1].id\n                 return result, next_marker\n             return result, None\n-        elif limit is not None and limit <= 0:\n-            # Return empty list for invalid limit\n-            return [], None\n         \n         # If no limit specified, return all items from start_idx\n         return all_web_acls[start_idx:], None\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/wafv2/models.py",
+      "start_line": 717,
+      "end_line": 755
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/wafv2/models.py",
+      "content": "                if ip_set.ip_set_id == next_marker:\n                    start_idx = idx + 1\n                    marker_found = True\n                    break\n            \n            # If marker not found, start from beginning\n            if not marker_found:\n                start_idx = 0\n        \n        # Handle case where start_idx is beyond the list\n        if start_idx >= len(ip_sets):\n            return [], None\n        \n        # Apply pagination\n        if limit is not None and limit > 0:\n            end_idx = start_idx + limit\n            result = ip_sets[start_idx:end_idx]\n            \n            # If there are more items, return a next marker\n            if end_idx < len(ip_sets):\n                next_marker = ip_sets[end_idx - 1].ip_set_id\n                return result, next_marker\n            return result, None\n        elif limit is not None and limit <= 0:\n            # Return empty list for invalid limit\n            return [], None\n        \n        # If no limit specified, return all items from start_idx\n        return ip_sets[start_idx:], None\n\n    def get_ip_set(self, name: str, scope: str, _id: str) -> FakeIPSet:\n        arn = make_arn_for_ip_set(\n            name=name,\n            account_id=self.account_id,\n            region_name=self.region_name,\n            _id=_id,\n            scope=scope,\n        )\n        if arn not in self.ip_sets:",
+      "start_line": 717,
+      "end_line": 755,
+      "total_lines": 933,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/wafv2/models.py",
+      "old_string": "\n        # Apply pagination\n        if limit is not None and limit > 0:\n            end_idx = start_idx + limit\n            result = ip_sets[start_idx:end_idx]\n            \n            # If there are more items, return a next marker\n            if end_idx < len(ip_sets):\n                next_marker = ip_sets[end_idx - 1].ip_set_id\n                return result, next_marker\n            return result, None\n        elif limit is not None and limit <= 0:\n            # Return empty list for invalid limit\n            return [], None\n",
+      "new_string": "\n        # Apply pagination\n        if limit is not None and limit >= 1:  # AWS API requires Limit >= 1\n            end_idx = start_idx + limit\n            result = ip_sets[start_idx:end_idx]\n            \n            # If there are more items, return a next marker\n            if end_idx < len(ip_sets):\n                next_marker = ip_sets[end_idx - 1].ip_set_id\n                return result, next_marker\n            return result, None\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/wafv2/models.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/wafv2/models.py\n+++ b/moto/wafv2/models.py\n@@ -728,7 +728,7 @@\n             return [], None\n         \n         # Apply pagination\n-        if limit is not None and limit > 0:\n+        if limit is not None and limit >= 1:  # AWS API requires Limit >= 1\n             end_idx = start_idx + limit\n             result = ip_sets[start_idx:end_idx]\n             \n@@ -737,9 +737,6 @@\n                 next_marker = ip_sets[end_idx - 1].ip_set_id\n                 return result, next_marker\n             return result, None\n-        elif limit is not None and limit <= 0:\n-            # Return empty list for invalid limit\n-            return [], None\n         \n         # If no limit specified, return all items from start_idx\n         return ip_sets[start_idx:], None\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/wafv2/models.py",
+      "start_line": 562,
+      "end_line": 600
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/wafv2/models.py",
+      "content": "                if group.id == next_marker:\n                    start_idx = idx + 1\n                    marker_found = True\n                    break\n            \n            # If marker not found, start from beginning\n            if not marker_found:\n                start_idx = 0\n        \n        # Handle case where start_idx is beyond the list\n        if start_idx >= len(rule_groups):\n            return [], None\n        \n        # Apply pagination\n        if limit is not None and limit > 0:\n            end_idx = start_idx + limit\n            result = rule_groups[start_idx:end_idx]\n            \n            # If there are more items, return a next marker\n            if end_idx < len(rule_groups):\n                next_marker = rule_groups[end_idx - 1].id\n                return result, next_marker\n            return result, None\n        elif limit is not None and limit <= 0:\n            # Return empty list for invalid limit\n            return [], None\n        \n        # If no limit specified, return all items from start_idx\n        return rule_groups[start_idx:], None\n\n    def list_tags_for_resource(self, arn: str) -> List[Dict[str, str]]:\n        \"\"\"\n        Pagination is not yet implemented\n        \"\"\"\n        return self.tagging_service.list_tags_for_resource(arn)[\"Tags\"]\n\n    def tag_resource(self, arn: str, tags: List[Dict[str, str]]) -> None:\n        self.tagging_service.tag_resource(arn, tags)\n",
+      "start_line": 562,
+      "end_line": 600,
+      "total_lines": 930,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/wafv2/models.py",
+      "old_string": "\n        # Apply pagination\n        if limit is not None and limit > 0:\n            end_idx = start_idx + limit\n            result = rule_groups[start_idx:end_idx]\n            \n            # If there are more items, return a next marker\n            if end_idx < len(rule_groups):\n                next_marker = rule_groups[end_idx - 1].id\n                return result, next_marker\n            return result, None\n        elif limit is not None and limit <= 0:\n            # Return empty list for invalid limit\n            return [], None\n",
+      "new_string": "\n        # Apply pagination\n        if limit is not None and limit >= 1:  # AWS API requires Limit >= 1\n            end_idx = start_idx + limit\n            result = rule_groups[start_idx:end_idx]\n            \n            # If there are more items, return a next marker\n            if end_idx < len(rule_groups):\n                next_marker = rule_groups[end_idx - 1].id\n                return result, next_marker\n            return result, None\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/wafv2/models.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/wafv2/models.py\n+++ b/moto/wafv2/models.py\n@@ -573,7 +573,7 @@\n             return [], None\n         \n         # Apply pagination\n-        if limit is not None and limit > 0:\n+        if limit is not None and limit >= 1:  # AWS API requires Limit >= 1\n             end_idx = start_idx + limit\n             result = rule_groups[start_idx:end_idx]\n             \n@@ -582,9 +582,6 @@\n                 next_marker = rule_groups[end_idx - 1].id\n                 return result, next_marker\n             return result, None\n-        elif limit is not None and limit <= 0:\n-            # Return empty list for invalid limit\n-            return [], None\n         \n         # If no limit specified, return all items from start_idx\n         return rule_groups[start_idx:], None\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "get_status",
+    "arguments": {},
+    "response": {
+      "status": "ok",
+      "tool_calls_used": 34,
+      "patch_submitted": false,
+      "patch_size": 0,
+      "tool_calls_remaining": 66,
+      "max_tool_calls": 100,
+      "command_timeout_seconds": 30
+    }
+  }
+]

@@ -1,0 +1,287 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/acm/responses.py",
+      "start_line": 117,
+      "end_line": 151
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/acm/responses.py",
+      "content": "                chain = base64.standard_b64decode(chain)\n            except Exception:\n                raise AWSValidationException(\n                    \"The certificate chain is not PEM-encoded or is not valid.\"\n                )\n\n        arn = self.acm_backend.import_certificate(\n            certificate, private_key, chain=chain, arn=current_arn, tags=tags\n        )\n\n        return json.dumps({\"CertificateArn\": arn})\n\n    def list_certificates(self) -> str:\n        certs = []\n        statuses = self._get_param(\"CertificateStatuses\")\n        for cert_bundle in self.acm_backend.list_certificates(statuses):\n            _cert = cert_bundle.describe()[\"Certificate\"]\n            _in_use_by = _cert.pop(\"InUseBy\", [])\n            _cert[\"InUse\"] = bool(_in_use_by)\n            certs.append(_cert)\n\n        result = {\"CertificateSummaryList\": certs}\n        return json.dumps(result)\n\n    def list_tags_for_certificate(self) -> GENERIC_RESPONSE_TYPE:\n        arn = self._get_param(\"CertificateArn\")\n\n        if arn is None:\n            msg = \"A required parameter for the specified action is not supplied.\"\n            return json.dumps({\"__type\": \"MissingParameter\", \"message\": msg}), dict(\n                status=400\n            )\n\n        cert_bundle = self.acm_backend.get_certificate(arn)\n",
+      "start_line": 117,
+      "end_line": 151,
+      "total_lines": 253,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/acm/responses.py",
+      "old_string": "    def list_certificates(self) -> str:\n        certs = []\n        statuses = self._get_param(\"CertificateStatuses\")\n        for cert_bundle in self.acm_backend.list_certificates(statuses):\n            _cert = cert_bundle.describe()[\"Certificate\"]\n            _in_use_by = _cert.pop(\"InUseBy\", [])\n            _cert[\"InUse\"] = bool(_in_use_by)\n            certs.append(_cert)\n\n        result = {\"CertificateSummaryList\": certs}\n        return json.dumps(result)",
+      "new_string": "    def list_certificates(self) -> str:\n        certs = []\n        statuses = self._get_param(\"CertificateStatuses\")\n        for cert_bundle in self.acm_backend.list_certificates(statuses):\n            _cert = cert_bundle.describe()[\"Certificate\"]\n            _in_use_by = _cert.pop(\"InUseBy\", [])\n            _cert[\"InUse\"] = bool(_in_use_by)\n            # Add RenewalEligibility field - INELIGIBLE for imported certs, ELIGIBLE for Amazon issued\n            _cert[\"RenewalEligibility\"] = \"INELIGIBLE\" if _cert[\"Type\"] == \"IMPORTED\" else \"ELIGIBLE\"\n            certs.append(_cert)\n\n        result = {\"CertificateSummaryList\": certs}\n        return json.dumps(result)",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/acm/responses.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/acm/responses.py\n+++ b/moto/acm/responses.py\n@@ -133,6 +133,8 @@\n             _cert = cert_bundle.describe()[\"Certificate\"]\n             _in_use_by = _cert.pop(\"InUseBy\", [])\n             _cert[\"InUse\"] = bool(_in_use_by)\n+            # Add RenewalEligibility field - INELIGIBLE for imported certs, ELIGIBLE for Amazon issued\n+            _cert[\"RenewalEligibility\"] = \"INELIGIBLE\" if _cert[\"Type\"] == \"IMPORTED\" else \"ELIGIBLE\"\n             certs.append(_cert)\n \n         result = {\"CertificateSummaryList\": certs}\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/acm/models.py",
+      "start_line": 327,
+      "end_line": 367
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/acm/models.py",
+      "content": "\n        # Look for SANs\n        try:\n            san_obj: Any = self._cert.extensions.get_extension_for_oid(\n                cryptography.x509.OID_SUBJECT_ALTERNATIVE_NAME\n            )\n        except cryptography.x509.ExtensionNotFound:\n            san_obj = None\n        sans = []\n        if san_obj is not None:\n            sans = [item.value for item in san_obj.value]\n\n        result: Dict[str, Any] = {\n            \"Certificate\": {\n                \"CertificateArn\": self.arn,\n                \"DomainName\": self.common_name,\n                \"InUseBy\": self.in_use_by,\n                \"Issuer\": self._cert.issuer.get_attributes_for_oid(OID_COMMON_NAME)[0].value,\n                \"KeyAlgorithm\": key_algo,\n                \"NotAfter\": datetime_to_epoch(self._not_valid_after(self._cert)),\n                \"NotBefore\": datetime_to_epoch(self._not_valid_before(self._cert)),\n                \"Serial\": self._cert.serial_number,\n                \"SignatureAlgorithm\": self._cert.signature_algorithm_oid._name.upper().replace(\"ENCRYPTION\", \"\"),\n                \"Status\": self.status,  # One of PENDING_VALIDATION, ISSUED, INACTIVE, EXPIRED, VALIDATION_TIMED_OUT, REVOKED, FAILED.\n                \"Subject\": f\"CN={self.common_name}\",\n                \"SubjectAlternativeNames\": sans,\n                \"Type\": self.type,  # One of IMPORTED, AMAZON_ISSUED\n            }\n        }\n\n        if self.type == \"IMPORTED\":\n            result[\"Certificate\"][\"ImportedAt\"] = datetime_to_epoch(self.created_at)\n        else:\n            result[\"Certificate\"][\"CreatedAt\"] = datetime_to_epoch(self.created_at)\n            result[\"Certificate\"][\"IssuedAt\"] = datetime_to_epoch(self.created_at)\n\n        return result\n\n    def serialize_pk(self, passphrase_bytes: bytes) -> str:\n        pk_bytes = self._key.private_bytes(\n            encoding=serialization.Encoding.PEM,",
+      "start_line": 327,
+      "end_line": 367,
+      "total_lines": 552,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/acm/models.py",
+      "old_string": "        result: Dict[str, Any] = {\n            \"Certificate\": {\n                \"CertificateArn\": self.arn,\n                \"DomainName\": self.common_name,\n                \"InUseBy\": self.in_use_by,\n                \"Issuer\": self._cert.issuer.get_attributes_for_oid(OID_COMMON_NAME)[0].value,\n                \"KeyAlgorithm\": key_algo,\n                \"NotAfter\": datetime_to_epoch(self._not_valid_after(self._cert)),\n                \"NotBefore\": datetime_to_epoch(self._not_valid_before(self._cert)),\n                \"Serial\": self._cert.serial_number,\n                \"SignatureAlgorithm\": self._cert.signature_algorithm_oid._name.upper().replace(\"ENCRYPTION\", \"\"),\n                \"Status\": self.status,  # One of PENDING_VALIDATION, ISSUED, INACTIVE, EXPIRED, VALIDATION_TIMED_OUT, REVOKED, FAILED.\n                \"Subject\": f\"CN={self.common_name}\",\n                \"SubjectAlternativeNames\": sans,\n                \"Type\": self.type,  # One of IMPORTED, AMAZON_ISSUED\n            }\n        }",
+      "new_string": "        result: Dict[str, Any] = {\n            \"Certificate\": {\n                \"CertificateArn\": self.arn,\n                \"DomainName\": self.common_name,\n                \"InUseBy\": self.in_use_by,\n                \"Issuer\": self._cert.issuer.get_attributes_for_oid(OID_COMMON_NAME)[0].value,\n                \"KeyAlgorithm\": key_algo,\n                \"NotAfter\": datetime_to_epoch(self._not_valid_after(self._cert)),\n                \"NotBefore\": datetime_to_epoch(self._not_valid_before(self._cert)),\n                \"Serial\": self._cert.serial_number,\n                \"SignatureAlgorithm\": self._cert.signature_algorithm_oid._name.upper().replace(\"ENCRYPTION\", \"\"),\n                \"Status\": self.status,  # One of PENDING_VALIDATION, ISSUED, INACTIVE, EXPIRED, VALIDATION_TIMED_OUT, REVOKED, FAILED.\n                \"Subject\": f\"CN={self.common_name}\",\n                \"SubjectAlternativeNames\": sans,\n                \"Type\": self.type,  # One of IMPORTED, AMAZON_ISSUED, PRIVATE\n                \"RenewalEligibility\": \"INELIGIBLE\",  # INELIGIBLE for imported/private certs, ELIGIBLE for Amazon issued\n                \"DomainValidationOptions\": [\n                    {\n                        \"DomainName\": self.common_name,\n                        \"ValidationDomain\": self.common_name,\n                        \"ValidationMethod\": \"DNS\",\n                        \"ValidationStatus\": \"PENDING_VALIDATION\" if self.status == \"PENDING_VALIDATION\" else \"SUCCESS\"\n                    }\n                ] + [\n                    {\n                        \"DomainName\": san,\n                        \"ValidationDomain\": san,\n                        \"ValidationMethod\": \"DNS\",\n                        \"ValidationStatus\": \"PENDING_VALIDATION\" if self.status == \"PENDING_VALIDATION\" else \"SUCCESS\"\n                    }\n                    for san in sans\n                ]\n            }\n        }",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/acm/models.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/acm/models.py\n+++ b/moto/acm/models.py\n@@ -350,7 +350,24 @@\n                 \"Status\": self.status,  # One of PENDING_VALIDATION, ISSUED, INACTIVE, EXPIRED, VALIDATION_TIMED_OUT, REVOKED, FAILED.\n                 \"Subject\": f\"CN={self.common_name}\",\n                 \"SubjectAlternativeNames\": sans,\n-                \"Type\": self.type,  # One of IMPORTED, AMAZON_ISSUED\n+                \"Type\": self.type,  # One of IMPORTED, AMAZON_ISSUED, PRIVATE\n+                \"RenewalEligibility\": \"INELIGIBLE\",  # INELIGIBLE for imported/private certs, ELIGIBLE for Amazon issued\n+                \"DomainValidationOptions\": [\n+                    {\n+                        \"DomainName\": self.common_name,\n+                        \"ValidationDomain\": self.common_name,\n+                        \"ValidationMethod\": \"DNS\",\n+                        \"ValidationStatus\": \"PENDING_VALIDATION\" if self.status == \"PENDING_VALIDATION\" else \"SUCCESS\"\n+                    }\n+                ] + [\n+                    {\n+                        \"DomainName\": san,\n+                        \"ValidationDomain\": san,\n+                        \"ValidationMethod\": \"DNS\",\n+                        \"ValidationStatus\": \"PENDING_VALIDATION\" if self.status == \"PENDING_VALIDATION\" else \"SUCCESS\"\n+                    }\n+                    for san in sans\n+                ]\n             }\n         }\n \n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/acm/responses.py",
+      "start_line": 124,
+      "end_line": 149
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/acm/responses.py",
+      "content": "            certificate, private_key, chain=chain, arn=current_arn, tags=tags\n        )\n\n        return json.dumps({\"CertificateArn\": arn})\n\n    def list_certificates(self) -> str:\n        certs = []\n        statuses = self._get_param(\"CertificateStatuses\")\n        for cert_bundle in self.acm_backend.list_certificates(statuses):\n            _cert = cert_bundle.describe()[\"Certificate\"]\n            _in_use_by = _cert.pop(\"InUseBy\", [])\n            _cert[\"InUse\"] = bool(_in_use_by)\n            # Add RenewalEligibility field - INELIGIBLE for imported certs, ELIGIBLE for Amazon issued\n            _cert[\"RenewalEligibility\"] = \"INELIGIBLE\" if _cert[\"Type\"] == \"IMPORTED\" else \"ELIGIBLE\"\n            certs.append(_cert)\n\n        result = {\"CertificateSummaryList\": certs}\n        return json.dumps(result)\n\n    def list_tags_for_certificate(self) -> GENERIC_RESPONSE_TYPE:\n        arn = self._get_param(\"CertificateArn\")\n\n        if arn is None:\n            msg = \"A required parameter for the specified action is not supplied.\"\n            return json.dumps({\"__type\": \"MissingParameter\", \"message\": msg}), dict(\n                status=400",
+      "start_line": 124,
+      "end_line": 149,
+      "total_lines": 255,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/acm/responses.py",
+      "old_string": "            # Add RenewalEligibility field - INELIGIBLE for imported certs, ELIGIBLE for Amazon issued\n            _cert[\"RenewalEligibility\"] = \"INELIGIBLE\" if _cert[\"Type\"] == \"IMPORTED\" else \"ELIGIBLE\"",
+      "new_string": "            # RenewalEligibility field is already included in the response",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/acm/responses.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/acm/responses.py\n+++ b/moto/acm/responses.py\n@@ -133,8 +133,7 @@\n             _cert = cert_bundle.describe()[\"Certificate\"]\n             _in_use_by = _cert.pop(\"InUseBy\", [])\n             _cert[\"InUse\"] = bool(_in_use_by)\n-            # Add RenewalEligibility field - INELIGIBLE for imported certs, ELIGIBLE for Amazon issued\n-            _cert[\"RenewalEligibility\"] = \"INELIGIBLE\" if _cert[\"Type\"] == \"IMPORTED\" else \"ELIGIBLE\"\n+            # RenewalEligibility field is already included in the response\n             certs.append(_cert)\n \n         result = {\"CertificateSummaryList\": certs}\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/acm/models.py",
+      "start_line": 343,
+      "end_line": 382
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/acm/models.py",
+      "content": "                \"InUseBy\": self.in_use_by,\n                \"Issuer\": self._cert.issuer.get_attributes_for_oid(OID_COMMON_NAME)[0].value,\n                \"KeyAlgorithm\": key_algo,\n                \"NotAfter\": datetime_to_epoch(self._not_valid_after(self._cert)),\n                \"NotBefore\": datetime_to_epoch(self._not_valid_before(self._cert)),\n                \"Serial\": self._cert.serial_number,\n                \"SignatureAlgorithm\": self._cert.signature_algorithm_oid._name.upper().replace(\"ENCRYPTION\", \"\"),\n                \"Status\": self.status,  # One of PENDING_VALIDATION, ISSUED, INACTIVE, EXPIRED, VALIDATION_TIMED_OUT, REVOKED, FAILED.\n                \"Subject\": f\"CN={self.common_name}\",\n                \"SubjectAlternativeNames\": sans,\n                \"Type\": self.type,  # One of IMPORTED, AMAZON_ISSUED, PRIVATE\n                \"RenewalEligibility\": \"INELIGIBLE\",  # INELIGIBLE for imported/private certs, ELIGIBLE for Amazon issued\n                \"DomainValidationOptions\": [\n                    {\n                        \"DomainName\": self.common_name,\n                        \"ValidationDomain\": self.common_name,\n                        \"ValidationMethod\": \"DNS\",\n                        \"ValidationStatus\": \"PENDING_VALIDATION\" if self.status == \"PENDING_VALIDATION\" else \"SUCCESS\"\n                    }\n                ] + [\n                    {\n                        \"DomainName\": san,\n                        \"ValidationDomain\": san,\n                        \"ValidationMethod\": \"DNS\",\n                        \"ValidationStatus\": \"PENDING_VALIDATION\" if self.status == \"PENDING_VALIDATION\" else \"SUCCESS\"\n                    }\n                    for san in sans\n                ]\n            }\n        }\n\n        if self.type == \"IMPORTED\":\n            result[\"Certificate\"][\"ImportedAt\"] = datetime_to_epoch(self.created_at)\n        else:\n            result[\"Certificate\"][\"CreatedAt\"] = datetime_to_epoch(self.created_at)\n            result[\"Certificate\"][\"IssuedAt\"] = datetime_to_epoch(self.created_at)\n\n        return result\n\n    def serialize_pk(self, passphrase_bytes: bytes) -> str:",
+      "start_line": 343,
+      "end_line": 382,
+      "total_lines": 569,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/acm/models.py",
+      "old_string": "                \"DomainValidationOptions\": [\n                    {\n                        \"DomainName\": self.common_name,\n                        \"ValidationDomain\": self.common_name,\n                        \"ValidationMethod\": \"DNS\",\n                        \"ValidationStatus\": \"PENDING_VALIDATION\" if self.status == \"PENDING_VALIDATION\" else \"SUCCESS\"\n                    }\n                ] + [\n                    {\n                        \"DomainName\": san,\n                        \"ValidationDomain\": san,\n                        \"ValidationMethod\": \"DNS\",\n                        \"ValidationStatus\": \"PENDING_VALIDATION\" if self.status == \"PENDING_VALIDATION\" else \"SUCCESS\"\n                    }\n                    for san in sans\n                ]",
+      "new_string": "                \"DomainValidationOptions\": [\n                    {\n                        \"DomainName\": san,\n                        \"ValidationDomain\": san,\n                        \"ValidationMethod\": \"DNS\",\n                        \"ValidationStatus\": \"PENDING_VALIDATION\" if self.status == \"PENDING_VALIDATION\" else \"SUCCESS\"\n                    }\n                    for san in ([self.common_name] + sans)\n                ],\n                \"Options\": {\n                    \"CertificateTransparencyLoggingPreference\": \"ENABLED\"\n                }",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/acm/models.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/acm/models.py\n+++ b/moto/acm/models.py\n@@ -354,20 +354,16 @@\n                 \"RenewalEligibility\": \"INELIGIBLE\",  # INELIGIBLE for imported/private certs, ELIGIBLE for Amazon issued\n                 \"DomainValidationOptions\": [\n                     {\n-                        \"DomainName\": self.common_name,\n-                        \"ValidationDomain\": self.common_name,\n-                        \"ValidationMethod\": \"DNS\",\n-                        \"ValidationStatus\": \"PENDING_VALIDATION\" if self.status == \"PENDING_VALIDATION\" else \"SUCCESS\"\n-                    }\n-                ] + [\n-                    {\n                         \"DomainName\": san,\n                         \"ValidationDomain\": san,\n                         \"ValidationMethod\": \"DNS\",\n                         \"ValidationStatus\": \"PENDING_VALIDATION\" if self.status == \"PENDING_VALIDATION\" else \"SUCCESS\"\n                     }\n-                    for san in sans\n-                ]\n+                    for san in ([self.common_name] + sans)\n+                ],\n+                \"Options\": {\n+                    \"CertificateTransparencyLoggingPreference\": \"ENABLED\"\n+                }\n             }\n         }\n \n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/acm/models.py",
+      "start_line": 343,
+      "end_line": 378
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/acm/models.py",
+      "content": "                \"InUseBy\": self.in_use_by,\n                \"Issuer\": self._cert.issuer.get_attributes_for_oid(OID_COMMON_NAME)[0].value,\n                \"KeyAlgorithm\": key_algo,\n                \"NotAfter\": datetime_to_epoch(self._not_valid_after(self._cert)),\n                \"NotBefore\": datetime_to_epoch(self._not_valid_before(self._cert)),\n                \"Serial\": self._cert.serial_number,\n                \"SignatureAlgorithm\": self._cert.signature_algorithm_oid._name.upper().replace(\"ENCRYPTION\", \"\"),\n                \"Status\": self.status,  # One of PENDING_VALIDATION, ISSUED, INACTIVE, EXPIRED, VALIDATION_TIMED_OUT, REVOKED, FAILED.\n                \"Subject\": f\"CN={self.common_name}\",\n                \"SubjectAlternativeNames\": sans,\n                \"Type\": self.type,  # One of IMPORTED, AMAZON_ISSUED, PRIVATE\n                \"RenewalEligibility\": \"INELIGIBLE\",  # INELIGIBLE for imported/private certs, ELIGIBLE for Amazon issued\n                \"DomainValidationOptions\": [\n                    {\n                        \"DomainName\": san,\n                        \"ValidationDomain\": san,\n                        \"ValidationMethod\": \"DNS\",\n                        \"ValidationStatus\": \"PENDING_VALIDATION\" if self.status == \"PENDING_VALIDATION\" else \"SUCCESS\"\n                    }\n                    for san in ([self.common_name] + sans)\n                ],\n                \"Options\": {\n                    \"CertificateTransparencyLoggingPreference\": \"ENABLED\"\n                }\n            }\n        }\n\n        if self.type == \"IMPORTED\":\n            result[\"Certificate\"][\"ImportedAt\"] = datetime_to_epoch(self.created_at)\n        else:\n            result[\"Certificate\"][\"CreatedAt\"] = datetime_to_epoch(self.created_at)\n            result[\"Certificate\"][\"IssuedAt\"] = datetime_to_epoch(self.created_at)\n\n        return result\n\n    def serialize_pk(self, passphrase_bytes: bytes) -> str:",
+      "start_line": 343,
+      "end_line": 378,
+      "total_lines": 565,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/acm/models.py",
+      "old_string": "                \"DomainValidationOptions\": [\n                    {\n                        \"DomainName\": san,\n                        \"ValidationDomain\": san,\n                        \"ValidationMethod\": \"DNS\",\n                        \"ValidationStatus\": \"PENDING_VALIDATION\" if self.status == \"PENDING_VALIDATION\" else \"SUCCESS\"\n                    }\n                    for san in ([self.common_name] + sans)\n                ],\n                \"Options\": {\n                    \"CertificateTransparencyLoggingPreference\": \"ENABLED\"\n                }",
+      "new_string": "                \"Options\": {\n                    \"CertificateTransparencyLoggingPreference\": \"ENABLED\"\n                }",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/acm/models.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/acm/models.py\n+++ b/moto/acm/models.py\n@@ -352,15 +352,6 @@\n                 \"SubjectAlternativeNames\": sans,\n                 \"Type\": self.type,  # One of IMPORTED, AMAZON_ISSUED, PRIVATE\n                 \"RenewalEligibility\": \"INELIGIBLE\",  # INELIGIBLE for imported/private certs, ELIGIBLE for Amazon issued\n-                \"DomainValidationOptions\": [\n-                    {\n-                        \"DomainName\": san,\n-                        \"ValidationDomain\": san,\n-                        \"ValidationMethod\": \"DNS\",\n-                        \"ValidationStatus\": \"PENDING_VALIDATION\" if self.status == \"PENDING_VALIDATION\" else \"SUCCESS\"\n-                    }\n-                    for san in ([self.common_name] + sans)\n-                ],\n                 \"Options\": {\n                     \"CertificateTransparencyLoggingPreference\": \"ENABLED\"\n                 }\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/acm/models.py",
+      "start_line": 349,
+      "end_line": 377
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/acm/models.py",
+      "content": "                \"SignatureAlgorithm\": self._cert.signature_algorithm_oid._name.upper().replace(\"ENCRYPTION\", \"\"),\n                \"Status\": self.status,  # One of PENDING_VALIDATION, ISSUED, INACTIVE, EXPIRED, VALIDATION_TIMED_OUT, REVOKED, FAILED.\n                \"Subject\": f\"CN={self.common_name}\",\n                \"SubjectAlternativeNames\": sans,\n                \"Type\": self.type,  # One of IMPORTED, AMAZON_ISSUED, PRIVATE\n                \"RenewalEligibility\": \"INELIGIBLE\",  # INELIGIBLE for imported/private certs, ELIGIBLE for Amazon issued\n                \"Options\": {\n                    \"CertificateTransparencyLoggingPreference\": \"ENABLED\"\n                }\n            }\n        }\n\n        if self.type == \"IMPORTED\":\n            result[\"Certificate\"][\"ImportedAt\"] = datetime_to_epoch(self.created_at)\n        else:\n            result[\"Certificate\"][\"CreatedAt\"] = datetime_to_epoch(self.created_at)\n            result[\"Certificate\"][\"IssuedAt\"] = datetime_to_epoch(self.created_at)\n\n        return result\n\n    def serialize_pk(self, passphrase_bytes: bytes) -> str:\n        pk_bytes = self._key.private_bytes(\n            encoding=serialization.Encoding.PEM,\n            format=serialization.PrivateFormat.PKCS8,\n            encryption_algorithm=serialization.BestAvailableEncryption(\n                passphrase_bytes\n            ),\n        )\n        return pk_bytes.decode(\"utf-8\")",
+      "start_line": 349,
+      "end_line": 377,
+      "total_lines": 556,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/acm/models.py",
+      "old_string": "        if self.type == \"IMPORTED\":\n            result[\"Certificate\"][\"ImportedAt\"] = datetime_to_epoch(self.created_at)\n        else:\n            result[\"Certificate\"][\"CreatedAt\"] = datetime_to_epoch(self.created_at)\n            result[\"Certificate\"][\"IssuedAt\"] = datetime_to_epoch(self.created_at)",
+      "new_string": "        if self.type == \"IMPORTED\":\n            result[\"Certificate\"][\"ImportedAt\"] = datetime_to_epoch(self.created_at)\n        else:\n            result[\"Certificate\"][\"CreatedAt\"] = datetime_to_epoch(self.created_at)\n            result[\"Certificate\"][\"IssuedAt\"] = datetime_to_epoch(self.created_at)\n            # Add domain validation options for non-imported certs\n            result[\"Certificate\"][\"DomainValidationOptions\"] = [\n                {\n                    \"DomainName\": san,\n                    \"ValidationDomain\": san,\n                    \"ValidationMethod\": \"DNS\",\n                    \"ValidationStatus\": \"PENDING_VALIDATION\" if self.status == \"PENDING_VALIDATION\" else \"SUCCESS\"\n                }\n                for san in ([self.common_name] + sans)\n            ]\n            # Add certificate authority ARN for private certs\n            if self.type == \"PRIVATE\":\n                result[\"Certificate\"][\"CertificateAuthorityArn\"] = self.cert_authority_arn",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/acm/models.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/acm/models.py\n+++ b/moto/acm/models.py\n@@ -363,6 +363,19 @@\n         else:\n             result[\"Certificate\"][\"CreatedAt\"] = datetime_to_epoch(self.created_at)\n             result[\"Certificate\"][\"IssuedAt\"] = datetime_to_epoch(self.created_at)\n+            # Add domain validation options for non-imported certs\n+            result[\"Certificate\"][\"DomainValidationOptions\"] = [\n+                {\n+                    \"DomainName\": san,\n+                    \"ValidationDomain\": san,\n+                    \"ValidationMethod\": \"DNS\",\n+                    \"ValidationStatus\": \"PENDING_VALIDATION\" if self.status == \"PENDING_VALIDATION\" else \"SUCCESS\"\n+                }\n+                for san in ([self.common_name] + sans)\n+            ]\n+            # Add certificate authority ARN for private certs\n+            if self.type == \"PRIVATE\":\n+                result[\"Certificate\"][\"CertificateAuthorityArn\"] = self.cert_authority_arn\n \n         return result\n \n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/acm/models.py",
+      "start_line": 104,
+      "end_line": 139
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/acm/models.py",
+      "content": "                # If value is provided, only delete if it matches what already exists\n                elif self[key] == value:\n                    del self[key]\n            except KeyError:\n                pass\n\n    def equals(self, tags: List[Dict[str, str]]) -> bool:\n        flat_tags = {t[\"Key\"]: t.get(\"Value\") for t in tags} if tags else {}\n        return self == flat_tags\n\n\nclass CertBundle(BaseModel):\n    def __init__(\n        self,\n        account_id: str,\n        certificate: bytes,\n        private_key: bytes,\n        chain: Optional[bytes] = None,\n        region: str = \"us-east-1\",\n        arn: Optional[str] = None,\n        cert_type: str = \"IMPORTED\",\n        cert_status: str = \"ISSUED\",\n        cert_authority_arn: Optional[str] = None,\n    ):\n        self.created_at = utcnow()\n        self.cert = certificate\n        self.key = private_key\n        # AWS always returns your chain + root CA\n        self.chain = chain + b\"\\n\" + AWS_ROOT_CA if chain else AWS_ROOT_CA\n        self.tags = TagHolder()\n        self.type = cert_type  # Should really be an enum\n        self.status = cert_status  # Should really be an enum\n        self.cert_authority_arn = cert_authority_arn\n        self.in_use_by: List[str] = []\n\n        # Takes care of PEM checking",
+      "start_line": 104,
+      "end_line": 139,
+      "total_lines": 569,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/acm/models.py",
+      "old_string": "    def __init__(\n        self,\n        account_id: str,\n        certificate: bytes,\n        private_key: bytes,\n        chain: Optional[bytes] = None,\n        region: str = \"us-east-1\",\n        arn: Optional[str] = None,\n        cert_type: str = \"IMPORTED\",\n        cert_status: str = \"ISSUED\",\n        cert_authority_arn: Optional[str] = None,\n    ):",
+      "new_string": "    def __init__(\n        self,\n        account_id: str,\n        certificate: bytes,\n        private_key: bytes,\n        chain: Optional[bytes] = None,\n        region: str = \"us-east-1\",\n        arn: Optional[str] = None,\n        cert_type: str = \"IMPORTED\",\n        cert_status: str = \"ISSUED\",\n        cert_authority_arn: Optional[str] = None,\n    ):\n        self.cert_authority_arn = cert_authority_arn",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/acm/models.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/acm/models.py\n+++ b/moto/acm/models.py\n@@ -125,6 +125,7 @@\n         cert_status: str = \"ISSUED\",\n         cert_authority_arn: Optional[str] = None,\n     ):\n+        self.cert_authority_arn = cert_authority_arn\n         self.created_at = utcnow()\n         self.cert = certificate\n         self.key = private_key\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/acm/models.py",
+      "start_line": 355,
+      "end_line": 391
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/acm/models.py",
+      "content": "                \"RenewalEligibility\": \"INELIGIBLE\",  # INELIGIBLE for imported/private certs, ELIGIBLE for Amazon issued\n                \"Options\": {\n                    \"CertificateTransparencyLoggingPreference\": \"ENABLED\"\n                }\n            }\n        }\n\n        if self.type == \"IMPORTED\":\n            result[\"Certificate\"][\"ImportedAt\"] = datetime_to_epoch(self.created_at)\n        else:\n            result[\"Certificate\"][\"CreatedAt\"] = datetime_to_epoch(self.created_at)\n            result[\"Certificate\"][\"IssuedAt\"] = datetime_to_epoch(self.created_at)\n            # Add domain validation options for non-imported certs\n            result[\"Certificate\"][\"DomainValidationOptions\"] = [\n                {\n                    \"DomainName\": san,\n                    \"ValidationDomain\": san,\n                    \"ValidationMethod\": \"DNS\",\n                    \"ValidationStatus\": \"PENDING_VALIDATION\" if self.status == \"PENDING_VALIDATION\" else \"SUCCESS\"\n                }\n                for san in ([self.common_name] + sans)\n            ]\n            # Add certificate authority ARN for private certs\n            if self.type == \"PRIVATE\":\n                result[\"Certificate\"][\"CertificateAuthorityArn\"] = self.cert_authority_arn\n\n        return result\n\n    def serialize_pk(self, passphrase_bytes: bytes) -> str:\n        pk_bytes = self._key.private_bytes(\n            encoding=serialization.Encoding.PEM,\n            format=serialization.PrivateFormat.PKCS8,\n            encryption_algorithm=serialization.BestAvailableEncryption(\n                passphrase_bytes\n            ),\n        )\n        return pk_bytes.decode(\"utf-8\")",
+      "start_line": 355,
+      "end_line": 391,
+      "total_lines": 570,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/acm/models.py",
+      "old_string": "            # Add domain validation options for non-imported certs\n            result[\"Certificate\"][\"DomainValidationOptions\"] = [\n                {\n                    \"DomainName\": san,\n                    \"ValidationDomain\": san,\n                    \"ValidationMethod\": \"DNS\",\n                    \"ValidationStatus\": \"PENDING_VALIDATION\" if self.status == \"PENDING_VALIDATION\" else \"SUCCESS\"\n                }\n                for san in ([self.common_name] + sans)\n            ]\n            # Add certificate authority ARN for private certs\n            if self.type == \"PRIVATE\":\n                result[\"Certificate\"][\"CertificateAuthorityArn\"] = self.cert_authority_arn",
+      "new_string": "            # Add domain validation options for Amazon-issued certs only\n            if self.type == \"AMAZON_ISSUED\":\n                # Ensure no duplicates between common name and SANs\n                all_domains = [self.common_name] + [san for san in sans if san != self.common_name]\n                result[\"Certificate\"][\"DomainValidationOptions\"] = [\n                    {\n                        \"DomainName\": san,\n                        \"ValidationDomain\": san,\n                        \"ValidationMethod\": \"DNS\",\n                        \"ValidationStatus\": \"PENDING_VALIDATION\" if self.status == \"PENDING_VALIDATION\" else \"SUCCESS\"\n                    }\n                    for san in all_domains\n                ]\n            # Add certificate authority ARN for private certs\n            if self.type == \"PRIVATE\":\n                result[\"Certificate\"][\"CertificateAuthorityArn\"] = self.cert_authority_arn",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/acm/models.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/acm/models.py\n+++ b/moto/acm/models.py\n@@ -364,16 +364,19 @@\n         else:\n             result[\"Certificate\"][\"CreatedAt\"] = datetime_to_epoch(self.created_at)\n             result[\"Certificate\"][\"IssuedAt\"] = datetime_to_epoch(self.created_at)\n-            # Add domain validation options for non-imported certs\n-            result[\"Certificate\"][\"DomainValidationOptions\"] = [\n-                {\n-                    \"DomainName\": san,\n-                    \"ValidationDomain\": san,\n-                    \"ValidationMethod\": \"DNS\",\n-                    \"ValidationStatus\": \"PENDING_VALIDATION\" if self.status == \"PENDING_VALIDATION\" else \"SUCCESS\"\n-                }\n-                for san in ([self.common_name] + sans)\n-            ]\n+            # Add domain validation options for Amazon-issued certs only\n+            if self.type == \"AMAZON_ISSUED\":\n+                # Ensure no duplicates between common name and SANs\n+                all_domains = [self.common_name] + [san for san in sans if san != self.common_name]\n+                result[\"Certificate\"][\"DomainValidationOptions\"] = [\n+                    {\n+                        \"DomainName\": san,\n+                        \"ValidationDomain\": san,\n+                        \"ValidationMethod\": \"DNS\",\n+                        \"ValidationStatus\": \"PENDING_VALIDATION\" if self.status == \"PENDING_VALIDATION\" else \"SUCCESS\"\n+                    }\n+                    for san in all_domains\n+                ]\n             # Add certificate authority ARN for private certs\n             if self.type == \"PRIVATE\":\n                 result[\"Certificate\"][\"CertificateAuthorityArn\"] = self.cert_authority_arn\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "get_status",
+    "arguments": {},
+    "response": {
+      "status": "ok",
+      "tool_calls_used": 16,
+      "patch_submitted": false,
+      "patch_size": 0,
+      "tool_calls_remaining": 84,
+      "max_tool_calls": 100,
+      "command_timeout_seconds": 30
+    }
+  }
+]

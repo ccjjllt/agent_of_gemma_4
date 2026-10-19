@@ -1,0 +1,21 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00006-of-00008.parquet",
+  "row_index": 1520,
+  "instance_id": "iterative__dvc.1d6ea681.pr_9183",
+  "repo": "iterative/dvc",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "iterative__dvc.1d6ea681.pr_9183.zm0qpod3",
+  "messages_sha256": "17e84887384a81a5566640aeb544836134eb21eafa5d04e91ffd68b08376668b",
+  "issue": "# Cache parameter is not passed to dvc_fs.open in DVCFileSystem\n\n## Description\n\nI've discovered an issue with the `DVCFileSystem.open` method. When opening files from a DVC repository, the `cache` parameter is not being passed to the underlying filesystem's `open` method.\n\nIn the current implementation, the `_DVCFileSystem._open` method is dropping the `cache` parameter that was passed in through `kwargs`:\n\n```python\ndvc_path = _get_dvc_path(dvc_fs, subkey)\nreturn dvc_fs.open(dvc_path, mode=mode)  # cache parameter is missing here\n```\n\nThis causes issues when working with plots and other operations that rely on caching to improve performance.\n\n## Steps to Reproduce\n\nHere's a simple script that demonstrates the issue:\n\n```python\nfrom dvc.fs import DVCFileSystem\nimport os\n\n# Create a DVCFileSystem instance\nfs = DVCFileSystem(repo=\".\")\n\n# Try to open a file with cache=True\nwith fs.open(\"path/to/dvc/tracked/file\", mode=\"r\", cache=True) as f:\n    content = f.read()\n    # The cache parameter is ignored, so caching doesn't work as expected\n```\n\n## Expected Behavior\n\nThe `cache` parameter should be passed to the underlying filesystem's `open` method, allowing for proper caching behavior.\n\n## Actual Behavior\n\nThe `cache` parameter is extracted from `kwargs` but then discarded, never making it to the underlying filesystem's `open` method. This causes performance issues, especially when working with plots that need to read the same files multiple times.\n\n## Additional Context\n\nThis issue affects plot operations that rely on caching for performance optimization. When working with large datasets or multiple plot operations, the lack of caching can significantly slow down the process.\n\n<END WRITING>",
+  "actions": [
+    {
+      "source_message_index": 44,
+      "filepath": "dvc/fs/dvc.py",
+      "old_string": "\n    def _open(self, path, mode=\"rb\", **kwargs):\n        if mode != \"rb\":\n            raise OSError(errno.EROFS, os.strerror(errno.EROFS))\n\n        key = self._get_key_from_relative(path)\n        fs_path = self._from_key(key)\n        try:\n            return self.repo.fs.open(fs_path, mode=mode)\n        except FileNotFoundError:\n            _, dvc_fs, subkey = self._get_subrepo_info(key)\n            if not dvc_fs:\n                raise\n\n        dvc_path = _get_dvc_path(dvc_fs, subkey)\n        return dvc_fs.open(dvc_path, mode=mode)\n",
+      "new_string": "\n    def _open(self, path, mode=\"rb\", **kwargs):\n        if mode != \"rb\":\n            raise OSError(errno.EROFS, os.strerror(errno.EROFS))\n\n        key = self._get_key_from_relative(path)\n        fs_path = self._from_key(key)\n        try:\n            return self.repo.fs.open(fs_path, mode=mode, **kwargs)\n        except FileNotFoundError:\n            _, dvc_fs, subkey = self._get_subrepo_info(key)\n            if not dvc_fs:\n                raise\n\n        dvc_path = _get_dvc_path(dvc_fs, subkey)\n        return dvc_fs.open(dvc_path, mode=mode, **kwargs)\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

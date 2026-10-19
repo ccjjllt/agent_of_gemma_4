@@ -1,0 +1,21 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00006-of-00008.parquet",
+  "row_index": 754,
+  "instance_id": "iterative__dvc.1d6ea681.pr_8767",
+  "repo": "iterative/dvc",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "iterative__dvc.1d6ea681.pr_8767.45gzms2p",
+  "messages_sha256": "e1dccf23b3f086adea0f4eb6dcb438e6bbda3c15f829a9bfec25d7e379f619e6",
+  "issue": "Redefinition of regex group names in DvcIgnorePatterns\n\nDescription\n\nWhen using DvcIgnorePatterns with multiple patterns, the regex compilation fails with \"redefinition of group name\" errors. This happens because the pattern_to_regex function generates regex patterns with the same group names for different patterns.\n\nHere's a simple example to reproduce the issue:\n\n```python\nfrom dvc.ignore import DvcIgnorePatterns\nimport os\n\n# Create ignore patterns with multiple entries\nignore = DvcIgnorePatterns(['.git/', '.hg/', '.dvc/'], '/some/path', os.sep)\n\n# Try to use the ignore patterns\ndirs = ['.git', 'dir1', 'dir2']\nfiles = ['file1', 'file2']\ntry:\n    ignore('/some/path', dirs, files)  # This will fail\nexcept Exception as e:\n    print(f\"Error: {e}\")\n```\n\nThe error occurs because when processing multiple patterns, the same group names are used in the regex patterns, causing a conflict when they're combined.",
+  "actions": [
+    {
+      "source_message_index": 14,
+      "filepath": "dvc/ignore.py",
+      "old_string": "\n    def __init__(self, pattern_list, dirname, sep):\n        if pattern_list and isinstance(pattern_list[0], str):\n            pattern_list = [PatternInfo(pattern, \"\") for pattern in pattern_list]\n\n        self.sep = sep\n        self.pattern_list = pattern_list\n        self.dirname = dirname\n\n        self.regex_pattern_list = [\n            GitWildMatchPattern.pattern_to_regex(pattern_info.patterns)\n            for pattern_info in pattern_list\n        ]\n        self.ignore_spec = [\n            (ignore, re.compile(\"|\".join(item[0] for item in group)))\n            for ignore, group in groupby(self.regex_pattern_list, lambda x: x[1])\n            if ignore is not None\n        ]\n",
+      "new_string": "\n    def __init__(self, pattern_list, dirname, sep):\n        if pattern_list and isinstance(pattern_list[0], str):\n            pattern_list = [PatternInfo(pattern, \"\") for pattern in pattern_list]\n\n        self.sep = sep\n        self.pattern_list = pattern_list\n        self.dirname = dirname\n\n        self.regex_pattern_list = [\n            GitWildMatchPattern.pattern_to_regex(pattern_info.patterns)\n            for pattern_info in pattern_list\n        ]\n        \n        # Make group names unique by adding an index to each pattern\n        self.ignore_spec = []\n        for ignore, group in groupby(self.regex_pattern_list, lambda x: x[1]):\n            if ignore is not None:\n                patterns = []\n                for i, (pattern, _) in enumerate(group):\n                    # Replace named group with indexed version to avoid conflicts\n                    # The pattern from GitWildMatchPattern uses 'ps_d' as the group name\n                    pattern = pattern.replace('(?P<ps_d>', f'(?P<ps_d_{i}>')\n                    patterns.append(pattern)\n                \n                self.ignore_spec.append((ignore, re.compile(\"|\".join(patterns))))\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

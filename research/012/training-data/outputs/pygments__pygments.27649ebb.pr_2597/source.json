@@ -1,0 +1,35 @@
+{
+  "source_file": "training/artifacts/external/swe-smith/tool-00004-of-00008.parquet",
+  "row_index": 2623,
+  "instance_id": "pygments__pygments.27649ebb.pr_2597",
+  "repo": "pygments/pygments",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "pygments__pygments.27649ebb.pr_2597.wk1npgz2",
+  "messages_sha256": "395e52c2ec8d456829a42c3a920d0e15169b57e18e52e7f68199727eb2fbcdc9",
+  "issue": "UL4Lexer doesn't handle nested note and doc tags correctly\n\nDescription\n\nWhen using the UL4Lexer with nested note or doc tags, the lexer doesn't properly handle the nesting structure. This causes issues when trying to highlight UL4 code that contains nested documentation or comment blocks.\n\nFor example, if you have a UL4 template with nested note tags like:\n\n```\n<?note?>\n  Some comment\n  <?note?>\n    Nested comment\n  <?end note?>\n  More comment\n<?end note?>\n```\n\nThe lexer fails to properly process this structure. Similarly, nested doc tags also don't work correctly:\n\n```\n<?doc?>\n  Documentation\n  <?doc?>\n    Nested documentation\n  <?end doc?>\n  More documentation\n<?end doc?>\n```\n\nI tried to use this in a template and got an error when the lexer tried to process it. The lexer seems to be missing the ability to handle these nested structures properly.\n\nTo reproduce the issue, try to use the UL4Lexer on a file containing nested note or doc tags as shown in the examples above.",
+  "actions": [
+    {
+      "source_message_index": 10,
+      "filepath": "pygments/lexers/ul4.py",
+      "old_string": "\n            (\n                # Comment:\n                # ``<?note foobar?>``\n                r\"<\\?\\s*note\\s.*?\\?>\",\n                Comment,\n            ),\n            (\n                # Template documentation:\n                # ``<?doc foobar?>``\n                r\"<\\?\\s*doc\\s.*?\\?>\",\n                String.Doc,\n            ),\n",
+      "new_string": "\n            (\n                # Comment:\n                # ``<?note?>...<?end note?>``\n                r\"<\\?\\s*note\\s*\\?>\",\n                Comment,\n                \"note\", # Switch to \"note\" mode\n            ),\n            (\n                # Template documentation:\n                # ``<?doc?>...<?end doc?>``\n                r\"<\\?\\s*doc\\s*\\?>\",\n                String.Doc,\n                \"doc\", # Switch to \"doc\" mode\n            ),\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 12,
+      "filepath": "pygments/lexers/ul4.py",
+      "old_string": "\n        # Inside a single quoted string started with ``\"``\n        \"string2\": [\n            (r'\"', String, \"#pop\"),\n            include(\"stringescapes\"),\n            (r'[^\\\\\"]+', String),\n            (r'.', String),\n        ],\n",
+      "new_string": "\n        # Inside a single quoted string started with ``\"``\n        \"string2\": [\n            (r'\"', String, \"#pop\"),\n            include(\"stringescapes\"),\n            (r'[^\\\\\"]+', String),\n            (r'.', String),\n        ],\n        # Note mode handles everything up to the matching ``<?end note?>`` tag\n        \"note\": [\n            # Nested ``<?note?>`` tag\n            (r\"<\\?\\s*note\\s*\\?>\", Comment, \"#push\"),\n            # ``<?end note?>`` tag\n            (r\"<\\?\\s*end\\s+note\\s*\\?>\", Comment, \"#pop\"),\n            # Everything else\n            (r\"[^<]+\", Comment),\n            (r\".\", Comment),\n        ],\n        # Doc mode handles everything up to the matching ``<?end doc?>`` tag\n        \"doc\": [\n            # Nested ``<?doc?>`` tag\n            (r\"<\\?\\s*doc\\s*\\?>\", String.Doc, \"#push\"),\n            # ``<?end doc?>`` tag\n            (r\"<\\?\\s*end\\s+doc\\s*\\?>\", String.Doc, \"#pop\"),\n            # Everything else\n            (r\"[^<]+\", String.Doc),\n            (r\".\", String.Doc),\n        ],\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 24,
+      "filepath": "pygments/lexers/ul4.py",
+      "old_string": "\n            (\n                # Comment:\n                # ``<?note?>...<?end note?>``\n                r\"<\\?\\s*note\\s*\\?>\",\n                Comment,\n                \"note\", # Switch to \"note\" mode\n            ),\n            (\n                # Template documentation:\n                # ``<?doc?>...<?end doc?>``\n                r\"<\\?\\s*doc\\s*\\?>\",\n                String.Doc,\n                \"doc\", # Switch to \"doc\" mode\n            ),\n",
+      "new_string": "\n            (\n                # Comment:\n                # ``<?note?>...<?end note?>``\n                r\"<\\?\\s*note\\s*\\?>\",\n                Comment,\n                \"note\", # Switch to \"note\" mode\n            ),\n            (\n                # Comment with inline content:\n                # ``<?note content?>``\n                r\"<\\?\\s*note\\s+.*?\\?>\",\n                Comment,\n            ),\n            (\n                # Template documentation:\n                # ``<?doc?>...<?end doc?>``\n                r\"<\\?\\s*doc\\s*\\?>\",\n                String.Doc,\n                \"doc\", # Switch to \"doc\" mode\n            ),\n            (\n                # Documentation with inline content:\n                # ``<?doc content?>``\n                r\"<\\?\\s*doc\\s+.*?\\?>\",\n                String.Doc,\n            ),\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

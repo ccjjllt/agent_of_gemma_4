@@ -1,0 +1,35 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00002-of-00008.parquet",
+  "row_index": 2619,
+  "instance_id": "getmoto__moto.694ce1f4.pr_8539",
+  "repo": "getmoto/moto",
+  "source_resolved": true,
+  "teacher_source": "claude-3-5-sonnet-20241022",
+  "traj_id": "getmoto__moto.694ce1f4.pr_8539.14nh2ir8",
+  "messages_sha256": "d5c9ff626d527cb4af200271f09e1e8897edd64cc61497f211a9e666aad0fea8",
+  "issue": "[ElastiCache] createUser should map engine to be lowercase\nIn boto3, I created two Elasticache Redis users and noticed that the engine value for users get stored in lowercase. May need to adapt moto to store the passed values in lowercase.\n\nCreate with lowercase\n```\nimport boto3\nclient = boto3.client('elasticache')\nclient.create_user(UserId=\"user1\", UserName=\"user1\", Engine = \"redis\", AccessString = \" on ~* +@all\", AuthenticationMode = { 'Type': 'iam' },)\n\n```\n\nresult:\n```\n{'UserId': 'user1', 'UserName': 'user1', 'Status': 'active', 'Engine': 'redis', ...}\n```\n\nCreate with upper case\n```\nclient.create_user(UserId=\"user2\", UserName=\"user2\", Engine = \"Redis\", AccessString = \" on ~* +@all\", AuthenticationMode = { 'Type': 'iam' },)\n```\n\nresult:\n```\n{'UserId': 'user2', 'UserName': 'user2', 'Status': 'active', 'Engine': 'redis', ...}\n```\n\nLooking at the [Elasticache User API docs](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticache-user.html#cfn-elasticache-user-engine), the values accepted are `'valkey'` or `'redis'`",
+  "actions": [
+    {
+      "source_message_index": 44,
+      "filepath": "moto/elasticache/models.py",
+      "old_string": "\n        user = User(\n            account_id=self.account_id,\n            region=self.region_name,\n            user_id=user_id,\n            user_name=user_name,\n            engine=engine,\n            passwords=passwords,\n            access_string=access_string,\n            no_password_required=no_password_required,\n            authentication_type=authentication_type,\n        )\n",
+      "new_string": "\n        user = User(\n            account_id=self.account_id,\n            region=self.region_name,\n            user_id=user_id,\n            user_name=user_name,\n            engine=engine.lower() if engine else None,\n            passwords=passwords,\n            access_string=access_string,\n            no_password_required=no_password_required,\n            authentication_type=authentication_type,\n        )\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 50,
+      "filepath": "moto/elasticache/models.py",
+      "old_string": "\n        if not passwords and authentication_type == AuthenticationTypes.PASSWORD:\n            raise InvalidParameterCombinationException(\n                \"A user with Authentication Mode: password, must have at least one password\"\n            )\n\n        user = User(\n",
+      "new_string": "\n        if not passwords and authentication_type == AuthenticationTypes.PASSWORD:\n            raise InvalidParameterCombinationException(\n                \"A user with Authentication Mode: password, must have at least one password\"\n            )\n\n        # Convert engine to lowercase and validate\n        engine = engine.lower() if engine else None\n        if engine not in [\"redis\", \"valkey\"]:\n            raise InvalidParameterValueException(\n                f\"Engine must be one of: redis, valkey. Got: {engine}\"\n            )\n\n        user = User(\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 52,
+      "filepath": "moto/elasticache/models.py",
+      "old_string": "\n            engine=engine.lower() if engine else None,\n",
+      "new_string": "\n            engine=engine,\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

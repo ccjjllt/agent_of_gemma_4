@@ -1,0 +1,49 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/cognitoidp/models.py",
+      "start_line": 626,
+      "end_line": 667
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/cognitoidp/models.py",
+      "content": "        res = self.refresh_tokens[refresh_token]\n        if res is None:\n            raise NotAuthorizedError(refresh_token)\n        client_id, username, origin_jti = res\n        if not username:\n            raise NotAuthorizedError(refresh_token)\n\n        access_token, expires_in = self.create_access_token(\n            client_id, username, origin_jti=origin_jti\n        )\n        id_token, _ = self.create_id_token(client_id, username, origin_jti=origin_jti)\n        return access_token, id_token, expires_in\n\n    def get_user_extra_data_by_client_id(\n        self, client_id: str, username: str\n    ) -> Dict[str, Any]:\n        extra_data = {}\n        current_client = self.clients.get(client_id, None)\n        if current_client:\n            for readable_field in current_client.get_readable_fields():\n                attribute = list(\n                    filter(\n                        lambda f: f[\"Name\"] == readable_field,\n                        self._get_user(username).attributes,\n                    )\n                )\n                if len(attribute) > 0:\n                    extra_data.update({attribute[0][\"Name\"]: attribute[0][\"Value\"]})\n        return extra_data\n\n    def sign_out(self, username: str) -> None:\n        for token, token_tuple in list(self.refresh_tokens.items()):\n            if token_tuple is None:\n                continue\n            _, logged_in_user, _ = token_tuple\n            if username == logged_in_user:\n                self.refresh_tokens[token] = None\n        for access_token, (_, logged_in_user) in list(self.access_tokens.items()):\n            if username == logged_in_user:\n                self.access_tokens.pop(access_token)\n\n",
+      "start_line": 626,
+      "end_line": 667,
+      "total_lines": 2485,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/cognitoidp/models.py",
+      "old_string": "\n    def get_user_extra_data_by_client_id(\n        self, client_id: str, username: str\n    ) -> Dict[str, Any]:\n        extra_data = {}\n        current_client = self.clients.get(client_id, None)\n        if current_client:\n            for readable_field in current_client.get_readable_fields():\n                attribute = list(\n                    filter(\n                        lambda f: f[\"Name\"] == readable_field,\n                        self._get_user(username).attributes,\n                    )\n                )\n                if len(attribute) > 0:\n                    extra_data.update({attribute[0][\"Name\"]: attribute[0][\"Value\"]})\n        return extra_data\n",
+      "new_string": "\n    def get_user_extra_data_by_client_id(\n        self, client_id: str, username: str\n    ) -> Dict[str, Any]:\n        extra_data = {}\n        current_client = self.clients.get(client_id, None)\n        user_attributes = self._get_user(username).attributes\n        \n        # Always include custom attributes (prefixed with 'custom:')\n        for attribute in user_attributes:\n            if attribute[\"Name\"].startswith(\"custom:\"):\n                extra_data.update({attribute[\"Name\"]: attribute[\"Value\"]})\n        \n        # Include other attributes based on ReadAttributes\n        if current_client:\n            for readable_field in current_client.get_readable_fields():\n                # Skip custom attributes as they're already included\n                if readable_field.startswith(\"custom:\"):\n                    continue\n                    \n                attribute = list(\n                    filter(\n                        lambda f: f[\"Name\"] == readable_field,\n                        user_attributes,\n                    )\n                )\n                if len(attribute) > 0:\n                    extra_data.update({attribute[0][\"Name\"]: attribute[0][\"Value\"]})\n        return extra_data\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/cognitoidp/models.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/cognitoidp/models.py\n+++ b/moto/cognitoidp/models.py\n@@ -641,12 +641,24 @@\n     ) -> Dict[str, Any]:\n         extra_data = {}\n         current_client = self.clients.get(client_id, None)\n+        user_attributes = self._get_user(username).attributes\n+        \n+        # Always include custom attributes (prefixed with 'custom:')\n+        for attribute in user_attributes:\n+            if attribute[\"Name\"].startswith(\"custom:\"):\n+                extra_data.update({attribute[\"Name\"]: attribute[\"Value\"]})\n+        \n+        # Include other attributes based on ReadAttributes\n         if current_client:\n             for readable_field in current_client.get_readable_fields():\n+                # Skip custom attributes as they're already included\n+                if readable_field.startswith(\"custom:\"):\n+                    continue\n+                    \n                 attribute = list(\n                     filter(\n                         lambda f: f[\"Name\"] == readable_field,\n-                        self._get_user(username).attributes,\n+                        user_attributes,\n                     )\n                 )\n                 if len(attribute) > 0:\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "get_status",
+    "arguments": {},
+    "response": {
+      "status": "ok",
+      "tool_calls_used": 2,
+      "patch_submitted": false,
+      "patch_size": 0,
+      "tool_calls_remaining": 98,
+      "max_tool_calls": 100,
+      "command_timeout_seconds": 30
+    }
+  }
+]

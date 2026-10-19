@@ -1,0 +1,121 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "dvc/commands/stage.py",
+      "start_line": 121,
+      "end_line": 158
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "dvc/commands/stage.py",
+      "content": "\n@contextmanager\ndef _disable_logging(highest_level=logging.CRITICAL):\n    previous_level = logging.root.manager.disable\n\n    logging.disable(highest_level)\n\n    try:\n        yield\n    finally:\n        logging.disable(previous_level)\n\n\nclass CmdStageAdd(CmdBase):\n    def run(self):\n        kwargs = vars(self.args)\n        kwargs.update(\n            {\n                \"cmd\": parse_cmd(kwargs.pop(\"command\")),\n                \"params\": parse_params(self.args.params),\n            }\n        )\n        self.repo.stage.add(**kwargs)\n\n        return 0\n\n\ndef _add_common_args(parser):\n    parser.add_argument(\n        \"-f\",\n        \"--force\",\n        action=\"store_true\",\n        default=False,\n        help=\"Overwrite existing stage\",\n    )\n    parser.add_argument(\n        \"-d\",\n        \"--deps\",",
+      "start_line": 121,
+      "end_line": 158,
+      "total_lines": 338,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "dvc/commands/stage.py",
+      "old_string": "\nclass CmdStageAdd(CmdBase):\n    def run(self):\n        kwargs = vars(self.args)\n        kwargs.update(\n            {\n                \"cmd\": parse_cmd(kwargs.pop(\"command\")),\n                \"params\": parse_params(self.args.params),\n            }\n        )\n        self.repo.stage.add(**kwargs)\n\n        return 0\n",
+      "new_string": "\nclass CmdStageAdd(CmdBase):\n    def run(self):\n        kwargs = vars(self.args)\n        run_stage = kwargs.pop(\"run\", False)\n        kwargs.update(\n            {\n                \"cmd\": parse_cmd(kwargs.pop(\"command\")),\n                \"params\": parse_params(self.args.params),\n            }\n        )\n        stage = self.repo.stage.add(**kwargs)\n        \n        if run_stage:\n            stage.run()\n            stage.dump(update_pipeline=False)\n\n        return 0\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "dvc/commands/stage.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/dvc/commands/stage.py\n+++ b/dvc/commands/stage.py\n@@ -134,13 +134,18 @@\n class CmdStageAdd(CmdBase):\n     def run(self):\n         kwargs = vars(self.args)\n+        run_stage = kwargs.pop(\"run\", False)\n         kwargs.update(\n             {\n                 \"cmd\": parse_cmd(kwargs.pop(\"command\")),\n                 \"params\": parse_params(self.args.params),\n             }\n         )\n-        self.repo.stage.add(**kwargs)\n+        stage = self.repo.stage.add(**kwargs)\n+        \n+        if run_stage:\n+            stage.run()\n+            stage.dump(update_pipeline=False)\n \n         return 0\n \n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "dvc/commands/stage.py",
+      "start_line": 281,
+      "end_line": 311
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "dvc/commands/stage.py",
+      "content": "        dest=\"cmd\",\n        help=\"Use `dvc stage CMD --help` to display command-specific help.\",\n        required=True,\n    )\n\n    STAGE_ADD_HELP = \"Create stage\"\n    stage_add_parser = stage_subparsers.add_parser(\n        \"add\",\n        parents=[parent_parser],\n        description=append_doc_link(STAGE_ADD_HELP, \"stage/add\"),\n        help=STAGE_ADD_HELP,\n        formatter_class=formatter.RawDescriptionHelpFormatter,\n    )\n    stage_add_parser.add_argument(\n        \"-n\", \"--name\", help=\"Name of the stage to add\", required=True\n    )\n    _add_common_args(stage_add_parser)\n    stage_add_parser.set_defaults(func=CmdStageAdd)\n\n    STAGE_LIST_HELP = \"List stages.\"\n    stage_list_parser = stage_subparsers.add_parser(\n        \"list\",\n        parents=[parent_parser],\n        description=append_doc_link(STAGE_LIST_HELP, \"stage/list\"),\n        help=STAGE_LIST_HELP,\n        formatter_class=formatter.RawDescriptionHelpFormatter,\n    )\n    stage_list_parser.add_argument(\n        \"targets\",\n        nargs=\"*\",\n        default=[\"dvc.yaml\"],",
+      "start_line": 281,
+      "end_line": 311,
+      "total_lines": 343,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "dvc/commands/stage.py",
+      "old_string": "\n    stage_add_parser.add_argument(\n        \"-n\", \"--name\", help=\"Name of the stage to add\", required=True\n    )\n    _add_common_args(stage_add_parser)\n    stage_add_parser.set_defaults(func=CmdStageAdd)\n",
+      "new_string": "\n    stage_add_parser.add_argument(\n        \"-n\", \"--name\", help=\"Name of the stage to add\", required=True\n    )\n    stage_add_parser.add_argument(\n        \"--run\",\n        action=\"store_true\",\n        default=False,\n        help=\"Execute the stage after adding\",\n    )\n    _add_common_args(stage_add_parser)\n    stage_add_parser.set_defaults(func=CmdStageAdd)\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "dvc/commands/stage.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/dvc/commands/stage.py\n+++ b/dvc/commands/stage.py\n@@ -294,6 +294,12 @@\n     stage_add_parser.add_argument(\n         \"-n\", \"--name\", help=\"Name of the stage to add\", required=True\n     )\n+    stage_add_parser.add_argument(\n+        \"--run\",\n+        action=\"store_true\",\n+        default=False,\n+        help=\"Execute the stage after adding\",\n+    )\n     _add_common_args(stage_add_parser)\n     stage_add_parser.set_defaults(func=CmdStageAdd)\n \n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "dvc/repo/stage.py",
+      "start_line": 104,
+      "end_line": 158
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "dvc/repo/stage.py",
+      "content": "            return f(loader, *args, **kwargs)\n\n    return wrapper\n\n\nclass StageLoad:\n    def __init__(self, repo: \"Repo\") -> None:\n        self.repo: Repo = repo\n\n    @property\n    def fs(self):\n        return self.repo.fs\n\n    @locked\n    def add(\n        self,\n        single_stage: bool = False,\n        fname: Optional[str] = None,\n        validate: bool = True,\n        force: bool = False,\n        update_lock: bool = False,\n        **stage_data,\n    ):\n        stage = self.create(\n            single_stage=single_stage,\n            fname=fname,\n            validate=validate,\n            force=force,\n            **stage_data,\n        )\n        with self.repo.scm_context:\n            stage.dump(update_lock=update_lock)\n            try:\n                stage.ignore_outs()\n            except FileNotFoundError as exc:\n                ui.warn(\n                    f\"Could not create .gitignore entry in {exc.filename}.\"\n                    \" DVC will attempt to create .gitignore entry again when\"\n                    \" the stage is run.\"\n                )\n\n        return stage\n\n    def create(\n        self,\n        single_stage: bool = False,\n        validate: bool = True,\n        fname: Optional[str] = None,\n        force: bool = False,\n        **stage_data,\n    ) -> Union[\"Stage\", \"PipelineStage\"]:\n        \"\"\"Creates a stage.\n\n        Args:\n            single_stage: if true, the .dvc file based stage is created,",
+      "start_line": 104,
+      "end_line": 158,
+      "total_lines": 417,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "dvc/repo/stage.py",
+      "old_string": "\n    @locked\n    def add(\n        self,\n        single_stage: bool = False,\n        fname: Optional[str] = None,\n        validate: bool = True,\n        force: bool = False,\n        update_lock: bool = False,\n        **stage_data,\n    ):\n        stage = self.create(\n            single_stage=single_stage,\n            fname=fname,\n            validate=validate,\n            force=force,\n            **stage_data,\n        )\n        with self.repo.scm_context:\n            stage.dump(update_lock=update_lock)\n            try:\n                stage.ignore_outs()\n            except FileNotFoundError as exc:\n                ui.warn(\n                    f\"Could not create .gitignore entry in {exc.filename}.\"\n                    \" DVC will attempt to create .gitignore entry again when\"\n                    \" the stage is run.\"\n                )\n\n        return stage\n",
+      "new_string": "\n    @locked\n    def add(\n        self,\n        single_stage: bool = False,\n        fname: Optional[str] = None,\n        validate: bool = True,\n        force: bool = False,\n        update_lock: bool = False,\n        run: bool = False,\n        **stage_data,\n    ):\n        stage = self.create(\n            single_stage=single_stage,\n            fname=fname,\n            validate=validate,\n            force=force,\n            **stage_data,\n        )\n        with self.repo.scm_context:\n            stage.dump(update_lock=update_lock)\n            try:\n                stage.ignore_outs()\n            except FileNotFoundError as exc:\n                ui.warn(\n                    f\"Could not create .gitignore entry in {exc.filename}.\"\n                    \" DVC will attempt to create .gitignore entry again when\"\n                    \" the stage is run.\"\n                )\n        \n        if run:\n            stage.run()\n            stage.dump(update_pipeline=False)\n\n        return stage\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "dvc/repo/stage.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/dvc/repo/stage.py\n+++ b/dvc/repo/stage.py\n@@ -122,6 +122,7 @@\n         validate: bool = True,\n         force: bool = False,\n         update_lock: bool = False,\n+        run: bool = False,\n         **stage_data,\n     ):\n         stage = self.create(\n@@ -141,6 +142,10 @@\n                     \" DVC will attempt to create .gitignore entry again when\"\n                     \" the stage is run.\"\n                 )\n+        \n+        if run:\n+            stage.run()\n+            stage.dump(update_pipeline=False)\n \n         return stage\n \n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "dvc/commands/stage.py",
+      "start_line": 1,
+      "end_line": 19
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "dvc/commands/stage.py",
+      "content": "import argparse\nimport logging\nfrom collections.abc import Iterable\nfrom itertools import chain, filterfalse\nfrom typing import TYPE_CHECKING\n\nfrom dvc.cli import completion, formatter\nfrom dvc.cli.command import CmdBase\nfrom dvc.cli.utils import append_doc_link\nfrom dvc.log import logger\nfrom dvc.utils.cli_parse import parse_params\nfrom dvc.utils.humanize import truncate_text\n\nif TYPE_CHECKING:\n    from dvc.output import Output\n    from dvc.stage import Stage\n\nlogger = logger.getChild(__name__)\n",
+      "start_line": 1,
+      "end_line": 19,
+      "total_lines": 349,
+      "is_truncated": false
+    }
+  }
+]

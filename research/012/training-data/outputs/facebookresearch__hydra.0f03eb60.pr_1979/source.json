@@ -1,0 +1,49 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 1134,
+  "instance_id": "facebookresearch__hydra.0f03eb60.pr_1979",
+  "repo": "facebookresearch/hydra",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "facebookresearch__hydra.0f03eb60.pr_1979.0clcbj1q",
+  "messages_sha256": "0f420cbb09ef165eed06edf53719f54a85424495fc1d7befbd5dd4f139a91a83",
+  "issue": "Hydra resolvers not working in output directory paths\n\nDescription\n\nI found an issue when using Hydra resolvers in output directory paths. When I try to use a resolver like `${hydra:runtime.version}` in the output directory path, it doesn't get properly resolved.\n\nHere's a minimal example:\n```python\n# my_app.py\nimport hydra\n\n@hydra.main()\ndef main():\n    print(\"App running!\")\n\nif __name__ == \"__main__\":\n    main()\n```\n\nWhen running with:\n```\npython my_app.py hydra.run.dir='output_${hydra:runtime.version}'\n```\n\nThe directory is created with the literal string `output_${hydra:runtime.version}` instead of resolving the version number.\n\nThis happens with both regular runs and multirun mode. The resolvers work fine in other parts of the config, just not in the output directory paths.",
+  "actions": [
+    {
+      "source_message_index": 46,
+      "filepath": "hydra/core/utils.py",
+      "old_string": "\n    old_cwd = os.getcwd()\n    orig_hydra_cfg = HydraConfig.instance().cfg\n\n    output_dir = str(OmegaConf.select(config, job_dir_key))\n    if job_subdir_key is not None:\n        # evaluate job_subdir_key lazily.\n        # this is running on the client side in sweep and contains things such as job:id which\n        # are only available there.\n        subdir = str(OmegaConf.select(config, job_subdir_key))\n        output_dir = os.path.join(output_dir, subdir)\n\n    with read_write(config.hydra.runtime):\n        with open_dict(config.hydra.runtime):\n            config.hydra.runtime.output_dir = os.path.abspath(output_dir)\n\n    HydraConfig.instance().set_config(config)\n",
+      "new_string": "\n    old_cwd = os.getcwd()\n    orig_hydra_cfg = HydraConfig.instance().cfg\n\n    # Set HydraConfig before resolving output_dir to allow resolvers to work\n    HydraConfig.instance().set_config(config)\n\n    # Now resolve the output directory path\n    output_dir = str(OmegaConf.select(config, job_dir_key))\n    if job_subdir_key is not None:\n        # evaluate job_subdir_key lazily.\n        # this is running on the client side in sweep and contains things such as job:id which\n        # are only available there.\n        subdir = str(OmegaConf.select(config, job_subdir_key))\n        output_dir = os.path.join(output_dir, subdir)\n\n    with read_write(config.hydra.runtime):\n        with open_dict(config.hydra.runtime):\n            config.hydra.runtime.output_dir = os.path.abspath(output_dir)\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 58,
+      "filepath": "hydra/core/utils.py",
+      "old_string": "\n    # Set HydraConfig before resolving output_dir to allow resolvers to work\n    HydraConfig.instance().set_config(config)\n\n    # Now resolve the output directory path\n    output_dir = str(OmegaConf.select(config, job_dir_key))\n    if job_subdir_key is not None:\n        # evaluate job_subdir_key lazily.\n        # this is running on the client side in sweep and contains things such as job:id which\n        # are only available there.\n        subdir = str(OmegaConf.select(config, job_subdir_key))\n        output_dir = os.path.join(output_dir, subdir)\n\n    with read_write(config.hydra.runtime):\n        with open_dict(config.hydra.runtime):\n            config.hydra.runtime.output_dir = os.path.abspath(output_dir)\n",
+      "new_string": "\n    # First, set a temporary value for output_dir in the runtime config\n    # This is needed for resolvers that depend on HydraConfig\n    with read_write(config.hydra.runtime):\n        with open_dict(config.hydra.runtime):\n            config.hydra.runtime.output_dir = \"tmp_dir\"\n    \n    # Set HydraConfig before resolving output_dir to allow resolvers to work\n    HydraConfig.instance().set_config(config)\n\n    # Now resolve the output directory path\n    output_dir = str(OmegaConf.select(config, job_dir_key))\n    if job_subdir_key is not None:\n        # evaluate job_subdir_key lazily.\n        # this is running on the client side in sweep and contains things such as job:id which\n        # are only available there.\n        subdir = str(OmegaConf.select(config, job_subdir_key))\n        output_dir = os.path.join(output_dir, subdir)\n\n    # Update the output_dir in the runtime config with the resolved path\n    with read_write(config.hydra.runtime):\n        with open_dict(config.hydra.runtime):\n            config.hydra.runtime.output_dir = os.path.abspath(output_dir)\n    \n    # Update HydraConfig with the updated config\n    HydraConfig.instance().set_config(config)\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 72,
+      "filepath": "hydra/_internal/core_plugins/basic_sweeper.py",
+      "old_string": "\n        self.overrides = self.split_arguments(overrides, self.max_batch_size)\n        returns: List[Sequence[JobReturn]] = []\n\n        # Save sweep run config in top level sweep working directory\n        sweep_dir = Path(self.config.hydra.sweep.dir)\n        sweep_dir.mkdir(parents=True, exist_ok=True)\n        OmegaConf.save(self.config, sweep_dir / \"multirun.yaml\")\n",
+      "new_string": "\n        self.overrides = self.split_arguments(overrides, self.max_batch_size)\n        returns: List[Sequence[JobReturn]] = []\n\n        # Set HydraConfig before resolving sweep_dir to allow resolvers to work\n        from hydra.core.hydra_config import HydraConfig\n        # First, set a temporary value for output_dir in the runtime config\n        # This is needed for resolvers that depend on HydraConfig\n        with OmegaConf.read_write(self.config.hydra.runtime):\n            with OmegaConf.open_dict(self.config.hydra.runtime):\n                self.config.hydra.runtime.output_dir = \"tmp_dir\"\n        \n        # Set HydraConfig\n        HydraConfig.instance().set_config(self.config)\n        \n        # Now resolve the sweep directory path\n        sweep_dir = Path(str(self.config.hydra.sweep.dir))\n        sweep_dir.mkdir(parents=True, exist_ok=True)\n        OmegaConf.save(self.config, sweep_dir / \"multirun.yaml\")\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 76,
+      "filepath": "hydra/_internal/core_plugins/basic_sweeper.py",
+      "old_string": "\nfrom omegaconf import DictConfig, OmegaConf\n",
+      "new_string": "\nfrom omegaconf import DictConfig, OmegaConf, open_dict, read_write\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 78,
+      "filepath": "hydra/_internal/core_plugins/basic_sweeper.py",
+      "old_string": "\n        with OmegaConf.read_write(self.config.hydra.runtime):\n            with OmegaConf.open_dict(self.config.hydra.runtime):\n",
+      "new_string": "\n        with read_write(self.config.hydra.runtime):\n            with open_dict(self.config.hydra.runtime):\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

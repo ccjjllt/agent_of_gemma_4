@@ -1,0 +1,65 @@
+{
+  "protocol_id": "p012-repair-v1-example",
+  "derived_from": {
+    "transaction_id": "p009-apispec-tx01",
+    "sample_id": "p009-apispec",
+    "group": {"issue": "marshmallow-code__apispec.8b421526.pr_851", "repo": "marshmallow-code/apispec", "commit": "82d39f5f6fa21cf97408c79859044b8b8657c0eb", "split": "train"},
+    "source": {"traj_id": "marshmallow-code__apispec.8b421526.pr_851.mz3vj24e", "teacher": "claude-3-5-sonnet-20241022", "license": "MIT dataset; MIT touched code"},
+    "note": "本样例为接口形状示例，直接引用 P009 冻结事务的真实观察原文；不是 P012 新执行。task_resolved=null、behavior=local_edit 边界保留，不声称整题裁判通过。"
+  },
+  "repair_input": {
+    "candidate_id": "A",
+    "problem_text": "Deprecated flag is not configured correctly on query parameter objects\nWhen using the `metadata` parameter on a Marshmallow field, the `deprecated` field is not properly configured on parameter objects with a location of `\"query\"` in the generated spec (the `description` field is set as expected, but not `deprecated`). [完整原文见 P009 transactions-train.jsonl 首条 user 消息；此处为截断提示，实际输入为原问题全文]",
+    "repo": "marshmallow-code/apispec",
+    "base_commit": "82d39f5f6fa21cf97408c79859044b8b8657c0eb",
+    "baseline_identity": {
+      "head": "82d39f5f6fa21cf97408c79859044b8b8657c0eb",
+      "production_file": "src/apispec/ext/marshmallow/openapi.py",
+      "before_sha256": "2160beeb020902df04e1e7b4928c045a80ee9eeda3dece4aa16ac767a3cc15a9"
+    },
+    "role_identity": "base（示例；C/D 仅修复角色路由不同，B 配置其余完全相同）",
+    "localization_evidence": {
+      "file": "src/apispec/ext/marshmallow/openapi.py",
+      "lines": "190-270（_field2parameter；ret.update(prop) / description 提升 / ret[\"schema\"]=prop）",
+      "key_branch": "if self.openapi_version.major < 3: ret.update(prop) else: description 提升后 ret[\"schema\"]=prop；deprecated 留在 schema 内是根因候选",
+      "source": "read_file 真实观察，非摘要替代"
+    },
+    "prior_observations": [
+      {
+        "tool": "read_file",
+        "args": {"filepath": "src/apispec/ext/marshmallow/openapi.py", "start_line": 190, "end_line": 270},
+        "result": "ok；确认 _field2parameter 仅提升 description，未提升 deprecated（原文见事务 msg3）"
+      },
+      {
+        "tool": "run_command",
+        "args": "修前复现：对 deprecated True/False/None 三种 metadata 生成 OpenAPI3 query 参数并检查参数级 deprecated；另检查 component 属性保留",
+        "result": "error，exit_code=1；True/False 两案 fail（deprecated 仍在 schema 内，不在参数级），None 案 pass，component 属性 pass（原文见事务 msg5）"
+      }
+    ],
+    "current_diff": "(示例输入时刻为空；修复角色从 baseline 出发)",
+    "hypotheses": [
+      {"h": "根因为 _field2parameter 未把 deprecated 从 schema 提升到参数级", "evidence": "修前复现 True/False fail；description 同路径已提升"},
+      {"counter": "若 component 属性在修改后丢失，则方案过宽；需修后同判据确认 component 仍保留 deprecated"}
+    ],
+    "budget": {"time_seconds_remaining": "~480 起按 8 分钟计", "tool_calls_remaining": "~28 起计", "note": "定位约1分钟；优先完成 A 及验收；B 仅在预算可容纳完整尝试时进入"},
+    "goal": "完成生产修改 → 用同一判据真实验证（须导入修改后源码）→ 正确交接结束；不调用 submit_patch"
+  },
+  "expected_repair_output_shape": {
+    "tool_sequence": ["edit_file", "run_command"],
+    "edit_file": {
+      "filepath": "src/apispec/ext/marshmallow/openapi.py",
+      "old_string": "        if self.openapi_version.major < 3:\n            ret.update(prop)\n        else:\n            if \"description\" in prop:\n                ret[\"description\"] = prop.pop(\"description\")\n            ret[\"schema\"] = prop",
+      "new_string": "        if self.openapi_version.major < 3:\n            ret.update(prop)\n        else:\n            # Promote certain properties from schema to parameter level\n            for param_level_prop in [\"description\", \"deprecated\"]:\n                if param_level_prop in prop:\n                    ret[param_level_prop] = prop.pop(param_level_prop)\n            ret[\"schema\"] = prop"
+    },
+    "verify_command_scope": "同一复现判据修后重跑，exit_code=0；True/False/None 全 pass 且 component 属性仍 pass（原文见事务 msg9）",
+    "handoff": {
+      "candidate_id": "A",
+      "files": [{"path": "src/apispec/ext/marshmallow/openapi.py", "after_sha256": "a3f3a2b50a71502ac595f52d8780dbf0a8494ab9d498983036b0bdacf11c1a80"}],
+      "requirement_done": true,
+      "verification": {"exit_code": 0, "scope": "修改后源码的同判据；official suite 未跑"},
+      "unresolved": [],
+      "needs_other_route": false
+    },
+    "forbidden": ["submit_patch（仅最终选择器可调）", "虚假“验证通过”（局部完成须如实交接触待验收）"]
+  }
+}

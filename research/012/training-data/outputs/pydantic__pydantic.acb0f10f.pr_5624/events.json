@@ -1,0 +1,83 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "pydantic/_internal/_dataclasses.py",
+      "start_line": 179,
+      "end_line": 237
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "pydantic/_internal/_dataclasses.py",
+      "content": "    if config_wrapper.validate_assignment:\n\n        @wraps(cls.__setattr__)\n        def validated_setattr(instance: Any, field: str, value: str, /) -> None:\n            validator.validate_assignment(instance, field, value)\n\n        cls.__setattr__ = validated_setattr.__get__(None, cls)  # type: ignore\n\n    cls.__pydantic_complete__ = True\n    return True\n\n\ndef is_builtin_dataclass(_cls: type[Any]) -> TypeGuard[type[StandardDataclass]]:\n    \"\"\"Returns True if a class is a stdlib dataclass and *not* a pydantic dataclass.\n\n    We check that\n    - `_cls` is a dataclass\n    - `_cls` does not inherit from a processed pydantic dataclass (and thus have a `__pydantic_validator__`)\n    - `_cls` does not have any annotations that are not dataclass fields\n    e.g.\n    ```python\n    import dataclasses\n\n    import pydantic.dataclasses\n\n    @dataclasses.dataclass\n    class A:\n        x: int\n\n    @pydantic.dataclasses.dataclass\n    class B(A):\n        y: int\n    ```\n    In this case, when we first check `B`, we make an extra check and look at the annotations ('y'),\n    which won't be a superset of all the dataclass fields (only the stdlib fields i.e. 'x')\n\n    Args:\n        cls: The class.\n\n    Returns:\n        `True` if the class is a stdlib dataclass, `False` otherwise.\n    \"\"\"\n    return (\n        dataclasses.is_dataclass(_cls)\n        and not hasattr(_cls, '__pydantic_validator__')\n        and set(_cls.__dataclass_fields__).issuperset(set(getattr(_cls, '__annotations__', {})))\n    )",
+      "start_line": 179,
+      "end_line": 225,
+      "total_lines": 225,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "pydantic/_internal/_dataclasses.py",
+      "old_string": "def is_builtin_dataclass(_cls: type[Any]) -> TypeGuard[type[StandardDataclass]]:\n    \"\"\"Returns True if a class is a stdlib dataclass and *not* a pydantic dataclass.\n\n    We check that\n    - `_cls` is a dataclass\n    - `_cls` does not inherit from a processed pydantic dataclass (and thus have a `__pydantic_validator__`)\n    - `_cls` does not have any annotations that are not dataclass fields\n    e.g.\n    ```python\n    import dataclasses\n\n    import pydantic.dataclasses\n\n    @dataclasses.dataclass\n    class A:\n        x: int\n\n    @pydantic.dataclasses.dataclass\n    class B(A):\n        y: int\n    ```\n    In this case, when we first check `B`, we make an extra check and look at the annotations ('y'),\n    which won't be a superset of all the dataclass fields (only the stdlib fields i.e. 'x')\n\n    Args:\n        cls: The class.\n\n    Returns:\n        `True` if the class is a stdlib dataclass, `False` otherwise.\n    \"\"\"\n    return (\n        dataclasses.is_dataclass(_cls)\n        and not hasattr(_cls, '__pydantic_validator__')\n        and set(_cls.__dataclass_fields__).issuperset(set(getattr(_cls, '__annotations__', {})))\n    )",
+      "new_string": "def is_builtin_dataclass(_cls: type[Any]) -> TypeGuard[type[StandardDataclass]]:\n    \"\"\"Returns True if a class is a stdlib dataclass and *not* a pydantic dataclass.\n\n    We check that\n    - `_cls` is a dataclass\n    - `_cls` does not inherit from a processed pydantic dataclass (and thus have a `__pydantic_validator__`)\n    - `_cls` does not have any annotations that are not dataclass fields\n    e.g.\n    ```python\n    import dataclasses\n\n    import pydantic.dataclasses\n\n    @dataclasses.dataclass\n    class A:\n        x: int\n\n    @pydantic.dataclasses.dataclass\n    class B(A):\n        y: int\n    ```\n    In this case, when we first check `B`, we make an extra check and look at the annotations ('y'),\n    which won't be a superset of all the dataclass fields (only the stdlib fields i.e. 'x')\n\n    Args:\n        cls: The class.\n\n    Returns:\n        `True` if the class is a stdlib dataclass, `False` otherwise.\n    \"\"\"\n    # First check if it's a dataclass and not a pydantic dataclass\n    if not dataclasses.is_dataclass(_cls) or hasattr(_cls, '__pydantic_validator__'):\n        return False\n\n    # Get all annotations from the class and its bases\n    all_annotations = {}\n    for base in reversed(_cls.__mro__):\n        all_annotations.update(getattr(base, '__annotations__', {}))\n\n    # Get all dataclass fields\n    fields = set(_cls.__dataclass_fields__)\n\n    # Check that all annotated fields are dataclass fields\n    # Note: We don't check the reverse (all fields are annotated) because fields can come from parent classes\n    return fields.issuperset(all_annotations)",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "pydantic/_internal/_dataclasses.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/pydantic/_internal/_dataclasses.py\n+++ b/pydantic/_internal/_dataclasses.py\n@@ -218,8 +218,18 @@\n     Returns:\n         `True` if the class is a stdlib dataclass, `False` otherwise.\n     \"\"\"\n-    return (\n-        dataclasses.is_dataclass(_cls)\n-        and not hasattr(_cls, '__pydantic_validator__')\n-        and set(_cls.__dataclass_fields__).issuperset(set(getattr(_cls, '__annotations__', {})))\n-    )+    # First check if it's a dataclass and not a pydantic dataclass\n+    if not dataclasses.is_dataclass(_cls) or hasattr(_cls, '__pydantic_validator__'):\n+        return False\n+\n+    # Get all annotations from the class and its bases\n+    all_annotations = {}\n+    for base in reversed(_cls.__mro__):\n+        all_annotations.update(getattr(base, '__annotations__', {}))\n+\n+    # Get all dataclass fields\n+    fields = set(_cls.__dataclass_fields__)\n+\n+    # Check that all annotated fields are dataclass fields\n+    # Note: We don't check the reverse (all fields are annotated) because fields can come from parent classes\n+    return fields.issuperset(all_annotations)",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "pydantic/_internal/_dataclasses.py",
+      "start_line": 119,
+      "end_line": 158
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "pydantic/_internal/_dataclasses.py",
+      "content": "    gen_schema = GenerateSchema(\n        config_wrapper,\n        ns_resolver=types_namespace,\n        typevars_map=typevars_map,\n    )\n\n    try:\n        get_core_schema = getattr(cls, '__get_pydantic_core_schema__', None)\n        if get_core_schema:\n            schema = get_core_schema(cls, partial(gen_schema.generate_schema, from_dunder_get_core_schema=False))\n        else:\n            schema = gen_schema.generate_schema(cls, False)\n    except PydanticUndefinedAnnotation as e:\n        if raise_errors:\n            raise\n        if config_wrapper.undefined_types_warning:\n            config_warning_string = (\n                f'`{cls_name}` has an undefined annotation: `{e.name}`. '\n                f'It may be possible to resolve this by setting '\n                f'undefined_types_warning=False in the config for `{cls_name}`.'\n            )\n            raise UserWarning(config_warning_string)\n        usage_warning_string = (\n            f'`{cls_name}` is not fully defined; you should define `{e.name}`, then call'\n            f' TODO! `methods.rebuild({cls_name})` before the first `{cls_name}` instance is created.'\n        )\n        cls.__pydantic_validator__ = MockValidator(usage_warning_string, code='dataclass-not-fully-defined')\n        return False\n\n    original_init = cls.__init__\n\n    # dataclass.__init__ must be defined here so its `__qualname__` can be changed since functions can't be copied,\n    # and so that the mock validator is used if building was deferred:\n    def __init__(__dataclass_self__: PydanticDataclass, *args: Any, **kwargs: Any) -> None:\n        __tracebackhide__ = True\n        s = __dataclass_self__\n        s.__pydantic_validator__.validate_python(ArgsKwargs(args, kwargs), self_instance=s)\n\n    __init__.__qualname__ = f'{cls.__qualname__}.__init__'\n",
+      "start_line": 119,
+      "end_line": 158,
+      "total_lines": 235,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "pydantic/_internal/_dataclasses.py",
+      "old_string": "    except PydanticUndefinedAnnotation as e:\n        if raise_errors:\n            raise\n        if config_wrapper.undefined_types_warning:\n            config_warning_string = (\n                f'`{cls_name}` has an undefined annotation: `{e.name}`. '\n                f'It may be possible to resolve this by setting '\n                f'undefined_types_warning=False in the config for `{cls_name}`.'\n            )\n            raise UserWarning(config_warning_string)\n        usage_warning_string = (\n            f'`{cls_name}` is not fully defined; you should define `{e.name}`, then call'\n            f' TODO! `methods.rebuild({cls_name})` before the first `{cls_name}` instance is created.'\n        )\n        cls.__pydantic_validator__ = MockValidator(usage_warning_string, code='dataclass-not-fully-defined')\n        return False",
+      "new_string": "    except PydanticUndefinedAnnotation as e:\n        if raise_errors:\n            raise\n        if config_wrapper.undefined_types_warning:\n            config_warning_string = (\n                f'`{cls_name}` has an undefined annotation: `{e.name}`. '\n                f'It may be possible to resolve this by setting '\n                f'undefined_types_warning=False in the config for `{cls_name}`.'\n            )\n            warnings.warn(config_warning_string, UserWarning)\n        usage_warning_string = (\n            f'`{cls_name}` is not fully defined; you should define `{e.name}`, then call'\n            f' `rebuild_dataclass({cls_name})` before the first `{cls_name}` instance is created.'\n        )\n        cls.__pydantic_validator__ = MockValidator(usage_warning_string, code='dataclass-not-fully-defined')\n        return False",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "pydantic/_internal/_dataclasses.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/pydantic/_internal/_dataclasses.py\n+++ b/pydantic/_internal/_dataclasses.py\n@@ -137,10 +137,10 @@\n                 f'It may be possible to resolve this by setting '\n                 f'undefined_types_warning=False in the config for `{cls_name}`.'\n             )\n-            raise UserWarning(config_warning_string)\n+            warnings.warn(config_warning_string, UserWarning)\n         usage_warning_string = (\n             f'`{cls_name}` is not fully defined; you should define `{e.name}`, then call'\n-            f' TODO! `methods.rebuild({cls_name})` before the first `{cls_name}` instance is created.'\n+            f' `rebuild_dataclass({cls_name})` before the first `{cls_name}` instance is created.'\n         )\n         cls.__pydantic_validator__ = MockValidator(usage_warning_string, code='dataclass-not-fully-defined')\n         return False\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "get_status",
+    "arguments": {},
+    "response": {
+      "status": "ok",
+      "tool_calls_used": 4,
+      "patch_submitted": false,
+      "patch_size": 0,
+      "tool_calls_remaining": 96,
+      "max_tool_calls": 100,
+      "command_timeout_seconds": 30
+    }
+  }
+]

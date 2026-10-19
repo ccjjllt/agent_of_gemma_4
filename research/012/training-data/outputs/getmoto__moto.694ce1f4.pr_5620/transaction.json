@@ -1,0 +1,214 @@
+{
+  "sample_id": "p012-getmoto__moto.694ce1f4.pr_5620",
+  "transaction_id": "p012-getmoto__moto.694ce1f4.pr_5620",
+  "producer_revision": "p012-local-2",
+  "synthetic": false,
+  "origin_kind": "cpu_replayed_source_edit_subset",
+  "group": {
+    "issue": "getmoto__moto.694ce1f4.pr_5620",
+    "repo": "getmoto/moto",
+    "commit": "4eb9b25044be6c7cb8f615f671a956127c1810ff",
+    "split": "train"
+  },
+  "source": {
+    "uri": "https://huggingface.co/datasets/SWE-bench/SWE-smith-trajectories/tree/08e109b4a59eaeebf80e4675cd125d42e7ac99a4",
+    "license": "MIT dataset; repository license in provenance.json",
+    "sha256": "c0659dd3446a5b748ca270250d1bec291764587d0f2aab1f88cca83abac654e3",
+    "teacher": "claude-3-7-sonnet-20250219",
+    "traj_id": "getmoto__moto.694ce1f4.pr_5620.y1wve1wy"
+  },
+  "protocol_id": "p012-repair-v1",
+  "tool_schema": {
+    "path": "research/012/agent/repair_tools_v1.json",
+    "canonical_sha256": "91ec82b15fe0961b3ef9e686fac268706ce954a69cabaa0d705c63d41088e267",
+    "names": [
+      "run_command",
+      "read_file",
+      "edit_file",
+      "write_file",
+      "get_status"
+    ],
+    "repair_role_holds_submit_patch": false
+  },
+  "messages": [
+    {
+      "role": "system",
+      "content": "Use the supplied repository tools. Preserve unrelated behavior. Treat tool failures as observations and correct the action before retrying. Do not modify tests."
+    },
+    {
+      "role": "user",
+      "content": "Implement the following requested change in the repository.\n\n# DynamoDB UpdateExpression fails to validate primary key updates when using ExpressionAttributeNames\n\nWhen using UpdateExpression with ExpressionAttributeNames to update an item in DynamoDB, the validation that prevents updating primary key attributes doesn't work correctly.\n\n## Description\n\nI found that when using ExpressionAttributeNames to reference a primary key attribute in an UpdateExpression, the validation that should prevent updating primary key attributes is bypassed. This allows modifying primary key attributes, which should not be allowed according to DynamoDB's behavior.\n\n## Steps to reproduce\n\n1. Create a DynamoDB table with a hash key (and optionally a sort key)\n2. Insert an item into the table\n3. Try to update the item using UpdateExpression with ExpressionAttributeNames that reference the primary key\n\n```python\nimport boto3\n\n# Create a table with a hash key\ndynamodb = boto3.resource('dynamodb', region_name='us-east-1')\ntable = dynamodb.create_table(\n    TableName='test-table',\n    KeySchema=[{'AttributeName': 'pk', 'KeyType': 'HASH'}],\n    AttributeDefinitions=[{'AttributeName': 'pk', 'AttributeType': 'S'}],\n    BillingMode='PAY_PER_REQUEST'\n)\n\n# Insert an item\ntable.put_item(Item={'pk': 'testchangepk'})\n\n# Try to update the primary key using ExpressionAttributeNames\ntable.update_item(\n    Key={'pk': 'testchangepk'},\n    UpdateExpression='SET #attr1 = :val1',\n    ExpressionAttributeNames={'#attr1': 'pk'},\n    ExpressionAttributeValues={':val1': 'different'}\n)\n```\n\n## Expected behavior\n\nThe update operation should fail with a ValidationException indicating that you cannot update a primary key attribute.\n\n## Actual behavior\n\nThe update operation succeeds, allowing modification of the primary key attribute, which violates DynamoDB's expected behavior.\n\nThis issue also occurs with tables that have both a hash key and a sort key.\n\nScope of this editing session: update the following production files and report the resulting local change for handover: moto/dynamodb/parsing/validators.py. No full task validation has been performed in this session."
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_00",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": {
+              "filepath": "moto/dynamodb/parsing/validators.py",
+              "start_line": 406,
+              "end_line": 452
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_00",
+      "name": "read_file",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"filepath\": \"moto/dynamodb/parsing/validators.py\", \"content\": \"        assert isinstance(node, UpdateExpressionSetAction)\\n        assert len(node.children) == 2\\n        key = node.children[0].children[0].children[0]\\n        val_node = node.children[1].children[0]\\n        for dct in self.key_attributes_type:\\n            if dct[\\\"AttributeName\\\"] == key and dct[\\\"AttributeType\\\"] != val_node.type:\\n                raise InvalidAttributeTypeError(\\n                    key, dct[\\\"AttributeType\\\"], val_node.type\\n                )\\n        return node\\n\\n\\nclass UpdateHashRangeKeyValidator(DepthFirstTraverser):  # type: ignore[misc]\\n    def __init__(\\n        self,\\n        table_key_attributes: List[str],\\n    ):\\n        self.table_key_attributes = table_key_attributes\\n\\n    def _processing_map(\\n        self,\\n    ) -> Dict[\\n        Type[UpdateExpressionPath],\\n        Callable[[UpdateExpressionPath], UpdateExpressionPath],\\n    ]:\\n        return {UpdateExpressionPath: self.check_for_hash_or_range_key}\\n\\n    def check_for_hash_or_range_key(\\n        self, node: UpdateExpressionPath\\n    ) -> UpdateExpressionPath:\\n        \\\"\\\"\\\"Check that hash and range keys are not updated\\\"\\\"\\\"\\n        key_to_update = node.children[0].children[0]\\n        if key_to_update in self.table_key_attributes:\\n            raise UpdateHashRangeKeyException(key_to_update)\\n        return node\\n\\n\\nclass Validator:\\n    \\\"\\\"\\\"\\n    A validator is used to validate expressions which are passed in as an AST.\\n    \\\"\\\"\\\"\\n\\n    def __init__(\\n        self,\\n        expression: Node,\\n        expression_attribute_names: Dict[str, str],\\n        expression_attribute_values: Dict[str, Dict[str, Any]],\", \"start_line\": 406, \"end_line\": 452, \"total_lines\": 499, \"is_truncated\": false}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_01",
+          "type": "function",
+          "function": {
+            "name": "edit_file",
+            "arguments": {
+              "filepath": "moto/dynamodb/parsing/validators.py",
+              "old_string": "class UpdateHashRangeKeyValidator(DepthFirstTraverser):  # type: ignore[misc]\n    def __init__(\n        self,\n        table_key_attributes: List[str],\n    ):\n        self.table_key_attributes = table_key_attributes\n\n    def _processing_map(\n        self,\n    ) -> Dict[\n        Type[UpdateExpressionPath],\n        Callable[[UpdateExpressionPath], UpdateExpressionPath],\n    ]:\n        return {UpdateExpressionPath: self.check_for_hash_or_range_key}\n\n    def check_for_hash_or_range_key(\n        self, node: UpdateExpressionPath\n    ) -> UpdateExpressionPath:\n        \"\"\"Check that hash and range keys are not updated\"\"\"\n        key_to_update = node.children[0].children[0]\n        if key_to_update in self.table_key_attributes:\n            raise UpdateHashRangeKeyException(key_to_update)\n        return node",
+              "new_string": "class UpdateHashRangeKeyValidator(DepthFirstTraverser):  # type: ignore[misc]\n    def __init__(\n        self,\n        table_key_attributes: List[str],\n        expression_attribute_names: Dict[str, str] = None,\n    ):\n        self.table_key_attributes = table_key_attributes\n        self.expression_attribute_names = expression_attribute_names or {}\n\n    def _processing_map(\n        self,\n    ) -> Dict[\n        Type[UpdateExpressionPath],\n        Callable[[UpdateExpressionPath], UpdateExpressionPath],\n    ]:\n        return {UpdateExpressionPath: self.check_for_hash_or_range_key}\n\n    def check_for_hash_or_range_key(\n        self, node: UpdateExpressionPath\n    ) -> UpdateExpressionPath:\n        \"\"\"Check that hash and range keys are not updated\"\"\"\n        first_child = node.children[0]\n        \n        # Handle direct attribute names\n        if isinstance(first_child, ExpressionAttribute):\n            key_to_update = first_child.children[0]\n            if key_to_update in self.table_key_attributes:\n                raise UpdateHashRangeKeyException(key_to_update)\n        \n        # Handle ExpressionAttributeNames\n        elif isinstance(first_child, ExpressionAttributeName):\n            attr_placeholder = first_child.get_attribute_name_placeholder()\n            if attr_placeholder in self.expression_attribute_names:\n                resolved_name = self.expression_attribute_names[attr_placeholder]\n                if resolved_name in self.table_key_attributes:\n                    raise UpdateHashRangeKeyException(resolved_name)\n        \n        return node",
+              "allow_multiple": false
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_01",
+      "name": "edit_file",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"filepath\": \"moto/dynamodb/parsing/validators.py\", \"occurrences\": 1, \"strategy\": \"exact\", \"diff\": \"--- a/moto/dynamodb/parsing/validators.py\\n+++ b/moto/dynamodb/parsing/validators.py\\n@@ -419,8 +419,10 @@\\n     def __init__(\\n         self,\\n         table_key_attributes: List[str],\\n+        expression_attribute_names: Dict[str, str] = None,\\n     ):\\n         self.table_key_attributes = table_key_attributes\\n+        self.expression_attribute_names = expression_attribute_names or {}\\n \\n     def _processing_map(\\n         self,\\n@@ -434,9 +436,22 @@\\n         self, node: UpdateExpressionPath\\n     ) -> UpdateExpressionPath:\\n         \\\"\\\"\\\"Check that hash and range keys are not updated\\\"\\\"\\\"\\n-        key_to_update = node.children[0].children[0]\\n-        if key_to_update in self.table_key_attributes:\\n-            raise UpdateHashRangeKeyException(key_to_update)\\n+        first_child = node.children[0]\\n+        \\n+        # Handle direct attribute names\\n+        if isinstance(first_child, ExpressionAttribute):\\n+            key_to_update = first_child.children[0]\\n+            if key_to_update in self.table_key_attributes:\\n+                raise UpdateHashRangeKeyException(key_to_update)\\n+        \\n+        # Handle ExpressionAttributeNames\\n+        elif isinstance(first_child, ExpressionAttributeName):\\n+            attr_placeholder = first_child.get_attribute_name_placeholder()\\n+            if attr_placeholder in self.expression_attribute_names:\\n+                resolved_name = self.expression_attribute_names[attr_placeholder]\\n+                if resolved_name in self.table_key_attributes:\\n+                    raise UpdateHashRangeKeyException(resolved_name)\\n+        \\n         return node\\n \\n \\n\", \"is_truncated\": false}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_02",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": {
+              "filepath": "moto/dynamodb/parsing/validators.py",
+              "start_line": 487,
+              "end_line": 526
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_02",
+      "name": "read_file",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"filepath\": \"moto/dynamodb/parsing/validators.py\", \"content\": \"\\n    @abstractmethod\\n    def get_ast_processors(self) -> List[DepthFirstTraverser]:  # type: ignore[misc]\\n        \\\"\\\"\\\"Get the different processors that go through the AST tree and processes the nodes.\\\"\\\"\\\"\\n\\n    def validate(self) -> Node:\\n        n = self.node_to_validate\\n        for processor in self.processors:\\n            n = processor.traverse(n)\\n        return n\\n\\n\\nclass UpdateExpressionValidator(Validator):\\n    def get_ast_processors(self) -> List[DepthFirstTraverser]:\\n        \\\"\\\"\\\"Get the different processors that go through the AST tree and processes the nodes.\\\"\\\"\\\"\\n        processors = [\\n            UpdateHashRangeKeyValidator(self.table.table_key_attrs),\\n            ExpressionAttributeValueProcessor(self.expression_attribute_values),\\n            ExpressionAttributeResolvingProcessor(\\n                self.expression_attribute_names, self.item\\n            ),\\n            UpdateExpressionFunctionEvaluator(),\\n            NoneExistingPathChecker(),\\n            ExecuteOperations(),\\n            TypeMismatchValidator(self.table.attr),\\n            EmptyStringKeyValueValidator(self.table.attribute_keys),\\n        ]\\n        return processors\", \"start_line\": 487, \"end_line\": 514, \"total_lines\": 514, \"is_truncated\": false}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_03",
+          "type": "function",
+          "function": {
+            "name": "edit_file",
+            "arguments": {
+              "filepath": "moto/dynamodb/parsing/validators.py",
+              "old_string": "class UpdateExpressionValidator(Validator):\n    def get_ast_processors(self) -> List[DepthFirstTraverser]:\n        \"\"\"Get the different processors that go through the AST tree and processes the nodes.\"\"\"\n        processors = [\n            UpdateHashRangeKeyValidator(self.table.table_key_attrs),\n            ExpressionAttributeValueProcessor(self.expression_attribute_values),\n            ExpressionAttributeResolvingProcessor(\n                self.expression_attribute_names, self.item\n            ),\n            UpdateExpressionFunctionEvaluator(),\n            NoneExistingPathChecker(),\n            ExecuteOperations(),\n            TypeMismatchValidator(self.table.attr),\n            EmptyStringKeyValueValidator(self.table.attribute_keys),\n        ]\n        return processors",
+              "new_string": "class UpdateExpressionValidator(Validator):\n    def get_ast_processors(self) -> List[DepthFirstTraverser]:\n        \"\"\"Get the different processors that go through the AST tree and processes the nodes.\"\"\"\n        processors = [\n            UpdateHashRangeKeyValidator(\n                self.table.table_key_attrs,\n                expression_attribute_names=self.expression_attribute_names\n            ),\n            ExpressionAttributeValueProcessor(self.expression_attribute_values),\n            ExpressionAttributeResolvingProcessor(\n                self.expression_attribute_names, self.item\n            ),\n            UpdateExpressionFunctionEvaluator(),\n            NoneExistingPathChecker(),\n            ExecuteOperations(),\n            TypeMismatchValidator(self.table.attr),\n            EmptyStringKeyValueValidator(self.table.attribute_keys),\n        ]\n        return processors",
+              "allow_multiple": false
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_03",
+      "name": "edit_file",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"filepath\": \"moto/dynamodb/parsing/validators.py\", \"occurrences\": 1, \"strategy\": \"exact\", \"diff\": \"--- a/moto/dynamodb/parsing/validators.py\\n+++ b/moto/dynamodb/parsing/validators.py\\n@@ -500,7 +500,10 @@\\n     def get_ast_processors(self) -> List[DepthFirstTraverser]:\\n         \\\"\\\"\\\"Get the different processors that go through the AST tree and processes the nodes.\\\"\\\"\\\"\\n         processors = [\\n-            UpdateHashRangeKeyValidator(self.table.table_key_attrs),\\n+            UpdateHashRangeKeyValidator(\\n+                self.table.table_key_attrs,\\n+                expression_attribute_names=self.expression_attribute_names\\n+            ),\\n             ExpressionAttributeValueProcessor(self.expression_attribute_values),\\n             ExpressionAttributeResolvingProcessor(\\n                 self.expression_attribute_names, self.item\\n\", \"is_truncated\": false}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_04",
+          "type": "function",
+          "function": {
+            "name": "get_status",
+            "arguments": {}
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_04",
+      "name": "get_status",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"tool_calls_used\": 4, \"patch_submitted\": false, \"patch_size\": 0, \"tool_calls_remaining\": 96, \"max_tool_calls\": 100, \"command_timeout_seconds\": 30}"
+    },
+    {
+      "role": "assistant",
+      "content": "{\n  \"candidate_id\": \"p012-getmoto__moto.694ce1f4.pr_5620\",\n  \"files\": [\n    {\n      \"path\": \"moto/dynamodb/parsing/validators.py\",\n      \"after_sha256\": \"2778465138301a50fa973d9e68785ec39cc86f8da263b1a3a53fc3aa9d228b49\"\n    }\n  ],\n  \"requirement_done\": true,\n  \"requirement_scope\": \"local production edits applied and syntactically parsed; full-task validation NOT performed in this session\",\n  \"verification\": {\n    \"observation\": \"get_status\",\n    \"status\": \"ok\",\n    \"scope\": \"post-edit local patch status of the same workspace; no repository test suite or whole-issue oracle executed\"\n  },\n  \"unresolved\": [\n    \"no whole-issue oracle executed; task_resolved=null\",\n    \"behavior recovery chain to be upgraded by a later step, not fabricated here\"\n  ],\n  \"needs_other_route\": false\n}",
+      "tool_calls": []
+    }
+  ],
+  "target_assistant_steps": [
+    1,
+    3,
+    4,
+    5
+  ],
+  "behavior": "local_edit",
+  "needs_replay": false,
+  "attempt_status": "local_edits_applied",
+  "observed_outcome": {
+    "action_succeeded": true,
+    "task_resolved": null,
+    "behavior_verified": false,
+    "syntax_parse_passed": true,
+    "local_patch_nonempty": true,
+    "handover_reported": true,
+    "scope": "All selected structured production str_replace actions replayed from fixed buggy snapshot with five official tools (no submit_patch); post-edit status observed via get_status; session ends with a handover report, not a submission. This is local edit supervision, not a resolved task or full trajectory."
+  },
+  "handover": {
+    "candidate_id": "p012-getmoto__moto.694ce1f4.pr_5620",
+    "files": [
+      {
+        "path": "moto/dynamodb/parsing/validators.py",
+        "after_sha256": "2778465138301a50fa973d9e68785ec39cc86f8da263b1a3a53fc3aa9d228b49"
+      }
+    ],
+    "requirement_done": true,
+    "requirement_scope": "local production edits applied and syntactically parsed; full-task validation NOT performed in this session",
+    "verification": {
+      "observation": "get_status",
+      "status": "ok",
+      "scope": "post-edit local patch status of the same workspace; no repository test suite or whole-issue oracle executed"
+    },
+    "unresolved": [
+      "no whole-issue oracle executed; task_resolved=null",
+      "behavior recovery chain to be upgraded by a later step, not fabricated here"
+    ],
+    "needs_other_route": false
+  },
+  "source_resolved_label": true,
+  "source_label_not_revalidated": true,
+  "replay_boundary": "Unchanged official v31 tool functions minus submit_patch, with macOS local transport, production subset. Read locations derived from source edit targets; this is edit/action SFT, not search-policy supervision.",
+  "continuation_policy": "New read/edit/status tool observations only; no old assistant future or old tool observations reused."
+}

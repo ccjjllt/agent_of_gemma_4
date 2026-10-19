@@ -1,0 +1,151 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "astroid/brain/brain_attrs.py",
+      "start_line": 3,
+      "end_line": 50
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "astroid/brain/brain_attrs.py",
+      "content": "# Copyright (c) https://github.com/pylint-dev/astroid/blob/main/CONTRIBUTORS.txt\n\n\"\"\"\nAstroid hook for the attrs library\n\nWithout this hook pylint reports unsupported-assignment-operation\nfor attrs classes\n\"\"\"\nfrom astroid.manager import AstroidManager\nfrom astroid.nodes.node_classes import AnnAssign, Assign, AssignName, Call, Unknown\nfrom astroid.nodes.scoped_nodes import ClassDef\nfrom astroid.util import safe_infer\n\nATTRIB_NAMES = frozenset(\n    (\"attr.ib\", \"attrib\", \"attr.attrib\", \"attr.field\", \"attrs.field\", \"field\")\n)\nNEW_ATTRS_NAMES = frozenset(\n    (\n        \"attrs.define\",\n        \"attrs.mutable\",\n        \"attrs.frozen\",\n    )\n)\nATTRS_NAMES = frozenset(\n    (\n        \"attr.s\",\n        \"attrs\",\n        \"attr.attrs\",\n        \"attr.attributes\",\n        \"attr.define\",\n        \"attr.mutable\",\n        \"attr.frozen\",\n        *NEW_ATTRS_NAMES,\n    )\n)\n\n\ndef is_decorated_with_attrs(node, decorator_names=ATTRS_NAMES) -> bool:\n    \"\"\"Return whether a decorated node has an attr decorator applied.\"\"\"\n    if not node.decorators:\n        return False\n    for decorator_attribute in node.decorators.nodes:\n        if isinstance(decorator_attribute, Call):  # decorator with arguments\n            decorator_attribute = decorator_attribute.func\n        if decorator_attribute.as_string() in decorator_names:\n            return True\n\n        inferred = safe_infer(decorator_attribute)",
+      "start_line": 3,
+      "end_line": 50,
+      "total_lines": 95,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "astroid/brain/brain_attrs.py",
+      "old_string": "\nATTRIB_NAMES = frozenset(\n    (\"attr.ib\", \"attrib\", \"attr.attrib\", \"attr.field\", \"attrs.field\", \"field\")\n)\nNEW_ATTRS_NAMES = frozenset(\n    (\n        \"attrs.define\",\n        \"attrs.mutable\",\n        \"attrs.frozen\",\n    )\n)\nATTRS_NAMES = frozenset(\n    (\n        \"attr.s\",\n        \"attrs\",\n        \"attr.attrs\",\n        \"attr.attributes\",\n        \"attr.define\",\n        \"attr.mutable\",\n        \"attr.frozen\",\n        *NEW_ATTRS_NAMES,\n    )\n)\n",
+      "new_string": "\nATTRIB_NAMES = frozenset(\n    (\"attr.ib\", \"attrib\", \"attr.attrib\", \"attr.field\", \"attrs.field\", \"field\")\n)\nFACTORY_NAMES = frozenset(\n    (\"attr.Factory\", \"attrs.Factory\", \"Factory\")\n)\nNEW_ATTRS_NAMES = frozenset(\n    (\n        \"attrs.define\",\n        \"attrs.mutable\",\n        \"attrs.frozen\",\n    )\n)\nATTRS_NAMES = frozenset(\n    (\n        \"attr.s\",\n        \"attrs\",\n        \"attr.attrs\",\n        \"attr.attributes\",\n        \"attr.define\",\n        \"attr.mutable\",\n        \"attr.frozen\",\n        *NEW_ATTRS_NAMES,\n    )\n)\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "astroid/brain/brain_attrs.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/astroid/brain/brain_attrs.py\n+++ b/astroid/brain/brain_attrs.py\n@@ -15,6 +15,9 @@\n \n ATTRIB_NAMES = frozenset(\n     (\"attr.ib\", \"attrib\", \"attr.attrib\", \"attr.field\", \"attrs.field\", \"field\")\n+)\n+FACTORY_NAMES = frozenset(\n+    (\"attr.Factory\", \"attrs.Factory\", \"Factory\")\n )\n NEW_ATTRS_NAMES = frozenset(\n     (\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "astroid/brain/brain_attrs.py",
+      "start_line": 46,
+      "end_line": 105
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "astroid/brain/brain_attrs.py",
+      "content": "        return False\n    for decorator_attribute in node.decorators.nodes:\n        if isinstance(decorator_attribute, Call):  # decorator with arguments\n            decorator_attribute = decorator_attribute.func\n        if decorator_attribute.as_string() in decorator_names:\n            return True\n\n        inferred = safe_infer(decorator_attribute)\n        if inferred and inferred.root().name == \"attr._next_gen\":\n            return True\n    return False\n\n\ndef attr_attributes_transform(node: ClassDef) -> None:\n    \"\"\"Given that the ClassNode has an attr decorator,\n    rewrite class attributes as instance attributes\n    \"\"\"\n    # Astroid can't infer this attribute properly\n    # Prevents https://github.com/pylint-dev/pylint/issues/1884\n    node.locals[\"__attrs_attrs__\"] = [Unknown(parent=node)]\n\n    use_bare_annotations = is_decorated_with_attrs(node, NEW_ATTRS_NAMES)\n    for cdef_body_node in node.body:\n        if not isinstance(cdef_body_node, (Assign, AnnAssign)):\n            continue\n        if isinstance(cdef_body_node.value, Call):\n            if cdef_body_node.value.func.as_string() not in ATTRIB_NAMES:\n                continue\n        elif not use_bare_annotations:\n            continue\n        targets = (\n            cdef_body_node.targets\n            if hasattr(cdef_body_node, \"targets\")\n            else [cdef_body_node.target]\n        )\n        for target in targets:\n            rhs_node = Unknown(\n                lineno=cdef_body_node.lineno,\n                col_offset=cdef_body_node.col_offset,\n                parent=cdef_body_node,\n            )\n            if isinstance(target, AssignName):\n                # Could be a subscript if the code analysed is\n                # i = Optional[str] = \"\"\n                # See https://github.com/pylint-dev/pylint/issues/4439\n                node.locals[target.name] = [rhs_node]\n                node.instance_attrs[target.name] = [rhs_node]\n\n\ndef register(manager: AstroidManager) -> None:\n    manager.register_transform(\n        ClassDef, attr_attributes_transform, is_decorated_with_attrs\n    )",
+      "start_line": 46,
+      "end_line": 98,
+      "total_lines": 98,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "astroid/brain/brain_attrs.py",
+      "old_string": "\ndef attr_attributes_transform(node: ClassDef) -> None:\n    \"\"\"Given that the ClassNode has an attr decorator,\n    rewrite class attributes as instance attributes\n    \"\"\"\n    # Astroid can't infer this attribute properly\n    # Prevents https://github.com/pylint-dev/pylint/issues/1884\n    node.locals[\"__attrs_attrs__\"] = [Unknown(parent=node)]\n\n    use_bare_annotations = is_decorated_with_attrs(node, NEW_ATTRS_NAMES)\n    for cdef_body_node in node.body:\n        if not isinstance(cdef_body_node, (Assign, AnnAssign)):\n            continue\n        if isinstance(cdef_body_node.value, Call):\n            if cdef_body_node.value.func.as_string() not in ATTRIB_NAMES:\n                continue\n        elif not use_bare_annotations:\n            continue\n        targets = (\n            cdef_body_node.targets\n            if hasattr(cdef_body_node, \"targets\")\n            else [cdef_body_node.target]\n        )\n        for target in targets:\n            rhs_node = Unknown(\n                lineno=cdef_body_node.lineno,\n                col_offset=cdef_body_node.col_offset,\n                parent=cdef_body_node,\n            )\n            if isinstance(target, AssignName):\n                # Could be a subscript if the code analysed is\n                # i = Optional[str] = \"\"\n                # See https://github.com/pylint-dev/pylint/issues/4439\n                node.locals[target.name] = [rhs_node]\n                node.instance_attrs[target.name] = [rhs_node]\n",
+      "new_string": "\ndef attr_attributes_transform(node: ClassDef) -> None:\n    \"\"\"Given that the ClassNode has an attr decorator,\n    rewrite class attributes as instance attributes\n    \"\"\"\n    # Astroid can't infer this attribute properly\n    # Prevents https://github.com/pylint-dev/pylint/issues/1884\n    node.locals[\"__attrs_attrs__\"] = [Unknown(parent=node)]\n\n    use_bare_annotations = is_decorated_with_attrs(node, NEW_ATTRS_NAMES)\n    for cdef_body_node in node.body:\n        if not isinstance(cdef_body_node, (Assign, AnnAssign)):\n            continue\n        \n        # Check if this is an attr.ib/attr.field call\n        is_attr_call = False\n        if isinstance(cdef_body_node.value, Call):\n            # Direct attr.ib or attr.field call\n            if cdef_body_node.value.func.as_string() in ATTRIB_NAMES:\n                is_attr_call = True\n            # Check for attr.Factory in the arguments\n            elif has_factory_call(cdef_body_node.value):\n                is_attr_call = True\n        \n        if not is_attr_call and not use_bare_annotations:\n            continue\n            \n        targets = (\n            cdef_body_node.targets\n            if hasattr(cdef_body_node, \"targets\")\n            else [cdef_body_node.target]\n        )\n        for target in targets:\n            rhs_node = Unknown(\n                lineno=cdef_body_node.lineno,\n                col_offset=cdef_body_node.col_offset,\n                parent=cdef_body_node,\n            )\n            if isinstance(target, AssignName):\n                # Could be a subscript if the code analysed is\n                # i = Optional[str] = \"\"\n                # See https://github.com/pylint-dev/pylint/issues/4439\n                node.locals[target.name] = [rhs_node]\n                node.instance_attrs[target.name] = [rhs_node]\n\n\ndef has_factory_call(node):\n    \"\"\"Check if the node or its arguments contain an attr.Factory call.\"\"\"\n    if isinstance(node, Call):\n        # Check if the function itself is attr.Factory\n        if node.func.as_string() in FACTORY_NAMES:\n            return True\n        \n        # Check in the positional arguments\n        for arg in node.args:\n            if has_factory_call(arg):\n                return True\n        \n        # Check in the keyword arguments\n        for keyword in node.keywords:\n            if has_factory_call(keyword.value):\n                return True\n    \n    return False\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "astroid/brain/brain_attrs.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/astroid/brain/brain_attrs.py\n+++ b/astroid/brain/brain_attrs.py\n@@ -68,11 +68,20 @@\n     for cdef_body_node in node.body:\n         if not isinstance(cdef_body_node, (Assign, AnnAssign)):\n             continue\n+        \n+        # Check if this is an attr.ib/attr.field call\n+        is_attr_call = False\n         if isinstance(cdef_body_node.value, Call):\n-            if cdef_body_node.value.func.as_string() not in ATTRIB_NAMES:\n-                continue\n-        elif not use_bare_annotations:\n+            # Direct attr.ib or attr.field call\n+            if cdef_body_node.value.func.as_string() in ATTRIB_NAMES:\n+                is_attr_call = True\n+            # Check for attr.Factory in the arguments\n+            elif has_factory_call(cdef_body_node.value):\n+                is_attr_call = True\n+        \n+        if not is_attr_call and not use_bare_annotations:\n             continue\n+            \n         targets = (\n             cdef_body_node.targets\n             if hasattr(cdef_body_node, \"targets\")\n@@ -92,6 +101,26 @@\n                 node.instance_attrs[target.name] = [rhs_node]\n \n \n+def has_factory_call(node):\n+    \"\"\"Check if the node or its arguments contain an attr.Factory call.\"\"\"\n+    if isinstance(node, Call):\n+        # Check if the function itself is attr.Factory\n+        if node.func.as_string() in FACTORY_NAMES:\n+            return True\n+        \n+        # Check in the positional arguments\n+        for arg in node.args:\n+            if has_factory_call(arg):\n+                return True\n+        \n+        # Check in the keyword arguments\n+        for keyword in node.keywords:\n+            if has_factory_call(keyword.value):\n+                return True\n+    \n+    return False\n+\n+\n def register(manager: AstroidManager) -> None:\n     manager.register_transform(\n         ClassDef, attr_attributes_transform, is_decorated_with_attrs\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "astroid/brain/brain_attrs.py",
+      "start_line": 46,
+      "end_line": 114
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "astroid/brain/brain_attrs.py",
+      "content": "        return False\n    for decorator_attribute in node.decorators.nodes:\n        if isinstance(decorator_attribute, Call):  # decorator with arguments\n            decorator_attribute = decorator_attribute.func\n        if decorator_attribute.as_string() in decorator_names:\n            return True\n\n        inferred = safe_infer(decorator_attribute)\n        if inferred and inferred.root().name == \"attr._next_gen\":\n            return True\n    return False\n\n\ndef attr_attributes_transform(node: ClassDef) -> None:\n    \"\"\"Given that the ClassNode has an attr decorator,\n    rewrite class attributes as instance attributes\n    \"\"\"\n    # Astroid can't infer this attribute properly\n    # Prevents https://github.com/pylint-dev/pylint/issues/1884\n    node.locals[\"__attrs_attrs__\"] = [Unknown(parent=node)]\n\n    use_bare_annotations = is_decorated_with_attrs(node, NEW_ATTRS_NAMES)\n    for cdef_body_node in node.body:\n        if not isinstance(cdef_body_node, (Assign, AnnAssign)):\n            continue\n        \n        # Check if this is an attr.ib/attr.field call\n        is_attr_call = False\n        if isinstance(cdef_body_node.value, Call):\n            # Direct attr.ib or attr.field call\n            if cdef_body_node.value.func.as_string() in ATTRIB_NAMES:\n                is_attr_call = True\n            # Check for attr.Factory in the arguments\n            elif has_factory_call(cdef_body_node.value):\n                is_attr_call = True\n        \n        if not is_attr_call and not use_bare_annotations:\n            continue\n            \n        targets = (\n            cdef_body_node.targets\n            if hasattr(cdef_body_node, \"targets\")\n            else [cdef_body_node.target]\n        )\n        for target in targets:\n            rhs_node = Unknown(\n                lineno=cdef_body_node.lineno,\n                col_offset=cdef_body_node.col_offset,\n                parent=cdef_body_node,\n            )\n            if isinstance(target, AssignName):\n                # Could be a subscript if the code analysed is\n                # i = Optional[str] = \"\"\n                # See https://github.com/pylint-dev/pylint/issues/4439\n                node.locals[target.name] = [rhs_node]\n                node.instance_attrs[target.name] = [rhs_node]\n\n\ndef has_factory_call(node):\n    \"\"\"Check if the node or its arguments contain an attr.Factory call.\"\"\"\n    if isinstance(node, Call):\n        # Check if the function itself is attr.Factory\n        if node.func.as_string() in FACTORY_NAMES:\n            return True\n        \n        # Check in the positional arguments\n        for arg in node.args:\n            if has_factory_call(arg):\n                return True",
+      "start_line": 46,
+      "end_line": 114,
+      "total_lines": 127,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "astroid/brain/brain_attrs.py",
+      "old_string": "\ndef attr_attributes_transform(node: ClassDef) -> None:\n    \"\"\"Given that the ClassNode has an attr decorator,\n    rewrite class attributes as instance attributes\n    \"\"\"\n    # Astroid can't infer this attribute properly\n    # Prevents https://github.com/pylint-dev/pylint/issues/1884\n    node.locals[\"__attrs_attrs__\"] = [Unknown(parent=node)]\n\n    use_bare_annotations = is_decorated_with_attrs(node, NEW_ATTRS_NAMES)\n    for cdef_body_node in node.body:\n        if not isinstance(cdef_body_node, (Assign, AnnAssign)):\n            continue\n        \n        # Check if this is an attr.ib/attr.field call\n        is_attr_call = False\n        if isinstance(cdef_body_node.value, Call):\n            # Direct attr.ib or attr.field call\n            if cdef_body_node.value.func.as_string() in ATTRIB_NAMES:\n                is_attr_call = True\n            # Check for attr.Factory in the arguments\n            elif has_factory_call(cdef_body_node.value):\n                is_attr_call = True\n        \n        if not is_attr_call and not use_bare_annotations:\n            continue\n            \n        targets = (\n            cdef_body_node.targets\n            if hasattr(cdef_body_node, \"targets\")\n            else [cdef_body_node.target]\n        )\n        for target in targets:\n            rhs_node = Unknown(\n                lineno=cdef_body_node.lineno,\n                col_offset=cdef_body_node.col_offset,\n                parent=cdef_body_node,\n            )\n            if isinstance(target, AssignName):\n                # Could be a subscript if the code analysed is\n                # i = Optional[str] = \"\"\n                # See https://github.com/pylint-dev/pylint/issues/4439\n                node.locals[target.name] = [rhs_node]\n                node.instance_attrs[target.name] = [rhs_node]\n",
+      "new_string": "\ndef attr_attributes_transform(node: ClassDef) -> None:\n    \"\"\"Given that the ClassNode has an attr decorator,\n    rewrite class attributes as instance attributes\n    \"\"\"\n    # Astroid can't infer this attribute properly\n    # Prevents https://github.com/pylint-dev/pylint/issues/1884\n    node.locals[\"__attrs_attrs__\"] = [Unknown(parent=node)]\n\n    use_bare_annotations = is_decorated_with_attrs(node, NEW_ATTRS_NAMES)\n    for cdef_body_node in node.body:\n        if not isinstance(cdef_body_node, (Assign, AnnAssign)):\n            continue\n        \n        # Check if this is an attr.ib/attr.field call or attr.Factory\n        is_attr_call = False\n        if isinstance(cdef_body_node.value, Call):\n            # Direct attr.ib or attr.field call\n            if cdef_body_node.value.func.as_string() in ATTRIB_NAMES:\n                is_attr_call = True\n            # Direct attr.Factory call\n            elif cdef_body_node.value.func.as_string() in FACTORY_NAMES:\n                is_attr_call = True\n            # Check for attr.Factory in the arguments of attr.ib or attr.field\n            elif has_factory_call(cdef_body_node.value):\n                is_attr_call = True\n        \n        if not is_attr_call and not use_bare_annotations:\n            continue\n            \n        targets = (\n            cdef_body_node.targets\n            if hasattr(cdef_body_node, \"targets\")\n            else [cdef_body_node.target]\n        )\n        for target in targets:\n            rhs_node = Unknown(\n                lineno=cdef_body_node.lineno,\n                col_offset=cdef_body_node.col_offset,\n                parent=cdef_body_node,\n            )\n            if isinstance(target, AssignName):\n                # Could be a subscript if the code analysed is\n                # i = Optional[str] = \"\"\n                # See https://github.com/pylint-dev/pylint/issues/4439\n                node.locals[target.name] = [rhs_node]\n                node.instance_attrs[target.name] = [rhs_node]\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "astroid/brain/brain_attrs.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/astroid/brain/brain_attrs.py\n+++ b/astroid/brain/brain_attrs.py\n@@ -69,13 +69,16 @@\n         if not isinstance(cdef_body_node, (Assign, AnnAssign)):\n             continue\n         \n-        # Check if this is an attr.ib/attr.field call\n+        # Check if this is an attr.ib/attr.field call or attr.Factory\n         is_attr_call = False\n         if isinstance(cdef_body_node.value, Call):\n             # Direct attr.ib or attr.field call\n             if cdef_body_node.value.func.as_string() in ATTRIB_NAMES:\n                 is_attr_call = True\n-            # Check for attr.Factory in the arguments\n+            # Direct attr.Factory call\n+            elif cdef_body_node.value.func.as_string() in FACTORY_NAMES:\n+                is_attr_call = True\n+            # Check for attr.Factory in the arguments of attr.ib or attr.field\n             elif has_factory_call(cdef_body_node.value):\n                 is_attr_call = True\n         \n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "astroid/brain/brain_attrs.py",
+      "start_line": 16,
+      "end_line": 53
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "astroid/brain/brain_attrs.py",
+      "content": "ATTRIB_NAMES = frozenset(\n    (\"attr.ib\", \"attrib\", \"attr.attrib\", \"attr.field\", \"attrs.field\", \"field\")\n)\nFACTORY_NAMES = frozenset(\n    (\"attr.Factory\", \"attrs.Factory\", \"Factory\")\n)\nNEW_ATTRS_NAMES = frozenset(\n    (\n        \"attrs.define\",\n        \"attrs.mutable\",\n        \"attrs.frozen\",\n    )\n)\nATTRS_NAMES = frozenset(\n    (\n        \"attr.s\",\n        \"attrs\",\n        \"attr.attrs\",\n        \"attr.attributes\",\n        \"attr.define\",\n        \"attr.mutable\",\n        \"attr.frozen\",\n        *NEW_ATTRS_NAMES,\n    )\n)\n\n\ndef is_decorated_with_attrs(node, decorator_names=ATTRS_NAMES) -> bool:\n    \"\"\"Return whether a decorated node has an attr decorator applied.\"\"\"\n    if not node.decorators:\n        return False\n    for decorator_attribute in node.decorators.nodes:\n        if isinstance(decorator_attribute, Call):  # decorator with arguments\n            decorator_attribute = decorator_attribute.func\n        if decorator_attribute.as_string() in decorator_names:\n            return True\n\n        inferred = safe_infer(decorator_attribute)",
+      "start_line": 16,
+      "end_line": 53,
+      "total_lines": 130,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "astroid/brain/brain_attrs.py",
+      "old_string": "\nATTRS_NAMES = frozenset(\n    (\n        \"attr.s\",\n        \"attrs\",\n        \"attr.attrs\",\n        \"attr.attributes\",\n        \"attr.define\",\n        \"attr.mutable\",\n        \"attr.frozen\",\n        *NEW_ATTRS_NAMES,\n    )\n)\n",
+      "new_string": "\nATTRS_NAMES = frozenset(\n    (\n        \"attr.s\",\n        \"attrs\",\n        \"attr.attrs\",\n        \"attr.attributes\",\n        \"attr.define\",\n        \"attr.mutable\",\n        \"attr.frozen\",\n        \"s\",  # For from attr import s\n        *NEW_ATTRS_NAMES,\n    )\n)\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "astroid/brain/brain_attrs.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/astroid/brain/brain_attrs.py\n+++ b/astroid/brain/brain_attrs.py\n@@ -35,6 +35,7 @@\n         \"attr.define\",\n         \"attr.mutable\",\n         \"attr.frozen\",\n+        \"s\",  # For from attr import s\n         *NEW_ATTRS_NAMES,\n     )\n )\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "get_status",
+    "arguments": {},
+    "response": {
+      "status": "ok",
+      "tool_calls_used": 8,
+      "patch_submitted": false,
+      "patch_size": 0,
+      "tool_calls_remaining": 92,
+      "max_tool_calls": 100,
+      "command_timeout_seconds": 30
+    }
+  }
+]

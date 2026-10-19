@@ -1,0 +1,35 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00006-of-00008.parquet",
+  "row_index": 925,
+  "instance_id": "getmoto__moto.694ce1f4.pr_8149",
+  "repo": "getmoto/moto",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "getmoto__moto.694ce1f4.pr_8149.mlusxmd0",
+  "messages_sha256": "e62e45d11bf7652921dcf2a2fc92334b394d941b410bfe30216c08691dbb3484",
+  "issue": "FileSystem ID Format Change Causes AssertionError\n\nHello,\n\nI've encountered an issue with the recent changes in the FSx module. It seems that the format of the `FileSystemId` has been altered, which is causing an `AssertionError` in my application. Here's a minimal example to reproduce the problem:\n\n```python\nimport re\nfrom moto import mock_fsx\nimport boto3\n\nFAKE_SUBNET_ID = 'subnet-12345678'\nFAKE_SECURITY_GROUP_IDS = ['sg-12345678']\n\n@mock_fsx\ndef test_create_filesystem():\n    client = boto3.client('fsx', region_name='us-west-2')\n    resp = client.create_file_system(\n        FileSystemType='LUSTRE',\n        StorageCapacity=1200,\n        StorageType='SSD',\n        SubnetIds=[FAKE_SUBNET_ID],\n        SecurityGroupIds=FAKE_SECURITY_GROUP_IDS\n    )\n    file_system = resp['FileSystem']\n    assert re.match('^fs-[0-9a-f]{8,}$', file_system['FileSystemId']), \"FileSystemId format is incorrect\"\n    assert file_system['FileSystemType'] == 'LUSTRE'\n\ntest_create_filesystem()\n```\n\nPreviously, the `FileSystemId` was generated using a UUID and matched the pattern `^fs-[0-9a-f]{8,}$`. However, after the update, it seems to be using a timestamp format, which does not match the expected pattern and results in an assertion failure.\n\nThis change is breaking my existing code that relies on the old `FileSystemId` format. Could you please look into this and suggest a workaround or a fix? Thank you!",
+  "actions": [
+    {
+      "source_message_index": 24,
+      "filepath": "moto/fsx/models.py",
+      "old_string": "\n    def __init__(\n        self,\n        account_id: str,\n        region_name: str,\n        file_system_type: str,\n        storage_capacity: int,\n        storage_type: str,\n        subnet_ids: List[str],\n        security_group_ids: List[str],\n        tags: Optional[List[Dict[str, str]]],\n        kms_key_id: Optional[str],\n        windows_configuration: Optional[Dict[str, Any]],\n        lustre_configuration: Optional[Dict[str, Any]],\n        ontap_configuration: Optional[Dict[str, Any]],\n        open_zfs_configuration: Optional[Dict[str, Any]],\n    ) -> None:\n        self.file_system_id = f\"fs-moto{datetime.now().strftime('%Y%m%d%H%M%S')}\"\n",
+      "new_string": "\n    def __init__(\n        self,\n        account_id: str,\n        region_name: str,\n        file_system_type: str,\n        storage_capacity: int,\n        storage_type: str,\n        subnet_ids: List[str],\n        security_group_ids: List[str],\n        tags: Optional[List[Dict[str, str]]],\n        kms_key_id: Optional[str],\n        windows_configuration: Optional[Dict[str, Any]],\n        lustre_configuration: Optional[Dict[str, Any]],\n        ontap_configuration: Optional[Dict[str, Any]],\n        open_zfs_configuration: Optional[Dict[str, Any]],\n    ) -> None:\n        import uuid\n        self.file_system_id = f\"fs-{uuid.uuid4().hex[:8]}\"\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 28,
+      "filepath": "moto/fsx/models.py",
+      "old_string": "\n\"\"\"FSxBackend class with methods for supported APIs.\"\"\"\n\nfrom typing import Any, Dict, List, Optional, Tuple\nfrom datetime import datetime\n\nfrom moto.core.base_backend import BackendDict, BaseBackend\nfrom moto.core.common_models import BaseModel\nfrom moto.utilities.paginator import paginate\n\nfrom .utils import FileSystemType\n",
+      "new_string": "\n\"\"\"FSxBackend class with methods for supported APIs.\"\"\"\n\nfrom typing import Any, Dict, List, Optional, Tuple\nfrom datetime import datetime\nimport uuid\n\nfrom moto.core.base_backend import BackendDict, BaseBackend\nfrom moto.core.common_models import BaseModel\nfrom moto.utilities.paginator import paginate\n\nfrom .utils import FileSystemType\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 30,
+      "filepath": "moto/fsx/models.py",
+      "old_string": "\n    ) -> None:\n        import uuid\n        self.file_system_id = f\"fs-{uuid.uuid4().hex[:8]}\"\n",
+      "new_string": "\n    ) -> None:\n        self.file_system_id = f\"fs-{uuid.uuid4().hex[:8]}\"\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

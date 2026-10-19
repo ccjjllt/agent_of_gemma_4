@@ -1,0 +1,28 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 1952,
+  "instance_id": "graphql-python__graphene.82903263.pr_1581",
+  "repo": "graphql-python/graphene",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "graphql-python__graphene.82903263.pr_1581.y1wve1wy",
+  "messages_sha256": "2ec3233a33cab3b5e44bd0ed25639a03fd9c1064fd0385610afcd64a675de8c5",
+  "issue": "DateTime scalar fails to parse ISO 8601 format with Z timezone indicator\n\nWhile working with the DateTime scalar, I found that it fails to parse ISO 8601 formatted dates that use the 'Z' timezone indicator.\n\nA simple reproduction case:\n\n```python\nfrom graphene import Schema, ObjectType, String, DateTime\n\nclass Query(ObjectType):\n    datetime = String(in_=DateTime())\n    \n    def resolve_datetime(self, info, in_):\n        return in_.isoformat()\n\nschema = Schema(query=Query)\n\n# This fails\nisoformat = '2011-11-04T00:05:23Z'\nresult = schema.execute('query DateTime($time: DateTime){ datetime(in: $time) }', variables={'time': isoformat})\nprint(result.errors)  # Shows parsing error\n```\n\nThe issue is that when using the 'Z' timezone indicator (which represents UTC), the DateTime scalar fails to parse it correctly. This is a common format used in many APIs and JSON responses.\n\nExpected behavior:\n- The DateTime scalar should correctly parse ISO 8601 formatted dates with the 'Z' timezone indicator\n- The above query should return the datetime value without errors\n\nActual behavior:\n- The DateTime scalar fails to parse the input with a ValueError\n- The query returns an error instead of the expected datetime value\n\nThis affects any GraphQL queries where clients might send datetime values with the 'Z' timezone indicator, which is a standard way to represent UTC time in ISO 8601.",
+  "actions": [
+    {
+      "source_message_index": 16,
+      "filepath": "graphene/types/datetime.py",
+      "old_string": "    @staticmethod\n    def parse_value(value):\n        if isinstance(value, datetime.datetime):\n            return value\n        if not isinstance(value, str):\n            raise GraphQLError(\n                f\"DateTime cannot represent non-string value: {repr(value)}\"\n            )\n        try:\n            return datetime.datetime.fromisoformat(value)\n        except ValueError:\n            raise GraphQLError(f\"DateTime cannot represent value: {repr(value)}\")",
+      "new_string": "    @staticmethod\n    def parse_value(value):\n        if isinstance(value, datetime.datetime):\n            return value\n        if not isinstance(value, str):\n            raise GraphQLError(\n                f\"DateTime cannot represent non-string value: {repr(value)}\"\n            )\n        try:\n            # Handle 'Z' timezone indicator by replacing it with '+00:00'\n            if value.endswith('Z'):\n                value = value[:-1] + '+00:00'\n            return datetime.datetime.fromisoformat(value)\n        except ValueError:\n            raise GraphQLError(f\"DateTime cannot represent value: {repr(value)}\")",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 28,
+      "filepath": "graphene/types/datetime.py",
+      "old_string": "        try:\n            # Handle 'Z' timezone indicator by replacing it with '+00:00'\n            if value.endswith('Z'):\n                value = value[:-1] + '+00:00'\n            return datetime.datetime.fromisoformat(value)\n        except ValueError:\n            raise GraphQLError(f\"DateTime cannot represent value: {repr(value)}\")",
+      "new_string": "        try:\n            # Handle 'Z' timezone indicator by replacing it with '+00:00'\n            # Only replace 'Z' at the end of the string to ensure we don't modify\n            # 'Z' characters that might appear elsewhere in the string\n            if value.endswith('Z'):\n                value = value[:-1] + '+00:00'\n            return datetime.datetime.fromisoformat(value)\n        except ValueError:\n            raise GraphQLError(f\"DateTime cannot represent value: {repr(value)}\")",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

@@ -1,0 +1,53 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/athena/models.py",
+      "start_line": 231,
+      "end_line": 276
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/athena/models.py",
+      "content": "            return None\n        wg = self.work_groups[name]\n        return {\n            \"Name\": wg.name,\n            \"State\": wg.state,\n            \"Configuration\": wg.configuration,\n            \"Description\": wg.description,\n            \"CreationTime\": time.time(),\n        }\n\n    def delete_work_group(self, name: str) -> None:\n        self.work_groups.pop(name, None)\n\n    def start_query_execution(\n        self,\n        query: str,\n        context: str,\n        config: Dict[str, Any],\n        workgroup: WorkGroup,\n        execution_parameters: Optional[List[str]],\n    ) -> str:\n        execution = Execution(\n            query=query,\n            context=context,\n            config=config,\n            workgroup=workgroup,\n            execution_parameters=execution_parameters,\n        )\n        self.executions[execution.id] = execution\n\n        self._store_predefined_query_results(execution.id)\n\n        return execution.id\n\n    def _store_predefined_query_results(self, exec_id: str) -> None:\n        if exec_id not in self.query_results and self.query_results_queue:\n            self.query_results[exec_id] = self.query_results_queue.pop(0)\n\n            self._store_query_result_in_s3(exec_id)\n\n    def get_query_execution(self, exec_id: str) -> Execution:\n        return self.executions[exec_id]\n\n    def list_query_executions(self) -> Dict[str, Execution]:\n        return self.executions\n",
+      "start_line": 231,
+      "end_line": 276,
+      "total_lines": 450,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/athena/models.py",
+      "old_string": "\n    def start_query_execution(\n        self,\n        query: str,\n        context: str,\n        config: Dict[str, Any],\n        workgroup: WorkGroup,\n        execution_parameters: Optional[List[str]],\n    ) -> str:\n        execution = Execution(\n            query=query,\n            context=context,\n            config=config,\n            workgroup=workgroup,\n            execution_parameters=execution_parameters,\n        )\n        self.executions[execution.id] = execution\n\n        self._store_predefined_query_results(execution.id)\n\n        return execution.id\n",
+      "new_string": "\n    def start_query_execution(\n        self,\n        query: str,\n        context: str,\n        config: Dict[str, Any],\n        workgroup: Union[str, WorkGroup],\n        execution_parameters: Optional[List[str]],\n    ) -> str:\n        # If workgroup is a string, get the actual WorkGroup object\n        if isinstance(workgroup, str):\n            workgroup_name = workgroup\n            workgroup = self.work_groups.get(workgroup_name, self.work_groups.get(\"primary\"))\n        \n        execution = Execution(\n            query=query,\n            context=context,\n            config=config,\n            workgroup=workgroup,\n            execution_parameters=execution_parameters,\n        )\n        self.executions[execution.id] = execution\n\n        self._store_predefined_query_results(execution.id)\n\n        return execution.id\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/athena/models.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/athena/models.py\n+++ b/moto/athena/models.py\n@@ -246,9 +246,14 @@\n         query: str,\n         context: str,\n         config: Dict[str, Any],\n-        workgroup: WorkGroup,\n+        workgroup: Union[str, WorkGroup],\n         execution_parameters: Optional[List[str]],\n     ) -> str:\n+        # If workgroup is a string, get the actual WorkGroup object\n+        if isinstance(workgroup, str):\n+            workgroup_name = workgroup\n+            workgroup = self.work_groups.get(workgroup_name, self.work_groups.get(\"primary\"))\n+        \n         execution = Execution(\n             query=query,\n             context=context,\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/athena/models.py",
+      "start_line": 1,
+      "end_line": 17
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/athena/models.py",
+      "content": "import time\nfrom datetime import datetime\nfrom typing import Any, Dict, List, Optional\n\nfrom moto.core.base_backend import BackendDict, BaseBackend\nfrom moto.core.common_models import BaseModel\nfrom moto.moto_api._internal import mock_random\nfrom moto.s3.models import s3_backends\nfrom moto.s3.utils import bucket_and_name_from_url\nfrom moto.utilities.paginator import paginate\nfrom moto.utilities.utils import get_partition\n\n\nclass TaggableResourceMixin:\n    # This mixing was copied from Redshift when initially implementing\n    # Athena. TBD if it's worth the overhead.\n",
+      "start_line": 1,
+      "end_line": 17,
+      "total_lines": 455,
+      "is_truncated": false
+    }
+  }
+]

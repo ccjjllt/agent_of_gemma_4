@@ -1,0 +1,42 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00006-of-00008.parquet",
+  "row_index": 722,
+  "instance_id": "iterative__dvc.1d6ea681.pr_8189",
+  "repo": "iterative/dvc",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "iterative__dvc.1d6ea681.pr_8189.u8p0t5w2",
+  "messages_sha256": "c25e358d319ea7c9a0f059a318ab46a71595b008470eed69f0cfccf8dee773b2",
+  "issue": "# Missing `--not-in-remote` and `--no-remote-refresh` options in `dvc data status` command\n\n## Description\n\nI noticed that the `dvc data status` command is missing two important command-line options that should be available. When trying to use these options, they don't work as expected.\n\n## How to reproduce:\n\n1. Create a DVC project with some tracked files\n2. Try to run the command with the missing options:\n\n```bash\ndvc data status --not-in-remote\n```\n\nYou'll get an error like:\n```\nerror: unrecognized arguments: --not-in-remote\n```\n\nSimilarly, trying to use `--no-remote-refresh` also fails:\n```bash\ndvc data status --no-remote-refresh\n```\n\n## Expected behavior:\n\nThe `dvc data status` command should accept both `--not-in-remote` and `--no-remote-refresh` options, which would:\n- `--not-in-remote`: Show files that are not in the remote storage\n- `--no-remote-refresh`: Use cached remote index instead of checking the remote\n\n## Actual behavior:\n\nThese options are not available in the command line interface, even though the code in `CmdDataStatus.run()` seems to expect these arguments to be present (`self.args.not_in_remote` and `self.args.remote_refresh`).\n\nThe command works fine with other options like `--untracked-files`, but these specific remote-related options are missing.",
+  "actions": [
+    {
+      "source_message_index": 22,
+      "filepath": "dvc/commands/data.py",
+      "old_string": "\nfrom typing import TYPE_CHECKING, ClassVar\n\nfrom funcy import chunks, compact, log_durations\n\nfrom dvc.cli import formatter\nfrom dvc.cli.command import CmdBase\nfrom dvc.cli.utils import append_doc_link\nfrom dvc.log import logger\nfrom dvc.ui import ui\nfrom dvc.utils import colorize\n",
+      "new_string": "\nimport argparse\nfrom typing import TYPE_CHECKING, ClassVar\n\nfrom funcy import chunks, compact, log_durations\n\nfrom dvc.cli import formatter\nfrom dvc.cli.command import CmdBase\nfrom dvc.cli.utils import append_doc_link\nfrom dvc.log import logger\nfrom dvc.ui import ui\nfrom dvc.utils import colorize\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 24,
+      "filepath": "dvc/commands/data.py",
+      "old_string": "\n    data_status_parser.add_argument(\n        \"--with-dirs\",\n        action=\"store_true\",\n        default=False,\n        help=argparse.SUPPRESS,\n    )\n    data_status_parser.set_defaults(func=CmdDataStatus)\n",
+      "new_string": "\n    data_status_parser.add_argument(\n        \"--with-dirs\",\n        action=\"store_true\",\n        default=False,\n        help=argparse.SUPPRESS,\n    )\n    data_status_parser.add_argument(\n        \"--not-in-remote\",\n        action=\"store_true\",\n        default=False,\n        help=\"Show files that are not in the remote storage.\",\n    )\n    data_status_parser.add_argument(\n        \"--no-remote-refresh\",\n        action=\"store_false\",\n        dest=\"remote_refresh\",\n        default=True,\n        help=\"Use cached remote index instead of checking the remote.\",\n    )\n    data_status_parser.set_defaults(func=CmdDataStatus)\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 44,
+      "filepath": "dvc/repo/data.py",
+      "old_string": "\ndef _diff_index_to_wtree(repo: \"Repo\", **kwargs: Any) -> dict[str, list[str]]:\n    from .index import build_data_index\n\n    with ui.progress(desc=\"Building workspace index\", unit=\"entry\") as pb:\n        workspace = build_data_index(\n            repo.index,\n            repo.root_dir,\n            repo.fs,\n            compute_hash=True,\n            callback=pb.as_callback(),\n        )\n\n    with ui.progress(\n        desc=\"Calculating diff between index/workspace\",\n        unit=\"entry\",\n    ) as pb:\n        return _diff(\n            repo.index.data[\"repo\"],\n            workspace,\n            not_in_cache=True,\n            callback=pb.as_callback(),\n            **kwargs,\n        )\n",
+      "new_string": "\ndef _diff_index_to_wtree(repo: \"Repo\", **kwargs: Any) -> dict[str, list[str]]:\n    from .index import build_data_index\n\n    with ui.progress(desc=\"Building workspace index\", unit=\"entry\") as pb:\n        workspace = build_data_index(\n            repo.index,\n            repo.root_dir,\n            repo.fs,\n            compute_hash=True,\n            callback=pb.as_callback(),\n        )\n\n    # Filter out parameters not accepted by _diff\n    diff_kwargs = {k: v for k, v in kwargs.items() if k != \"with_dirs\"}\n\n    with ui.progress(\n        desc=\"Calculating diff between index/workspace\",\n        unit=\"entry\",\n    ) as pb:\n        return _diff(\n            repo.index.data[\"repo\"],\n            workspace,\n            not_in_cache=True,\n            callback=pb.as_callback(),\n            **diff_kwargs,\n        )\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 46,
+      "filepath": "dvc/repo/data.py",
+      "old_string": "\ndef _diff_head_to_index(\n    repo: \"Repo\", head: str = \"HEAD\", **kwargs: Any\n) -> dict[str, list[str]]:\n    index = repo.index.data[\"repo\"]\n\n    with repo.switch(head):\n        head_index = repo.index.data[\"repo\"]\n\n    with ui.progress(desc=\"Calculating diff between head/index\", unit=\"entry\") as pb:\n        return _diff(head_index, index, callback=pb.as_callback(), **kwargs)\n",
+      "new_string": "\ndef _diff_head_to_index(\n    repo: \"Repo\", head: str = \"HEAD\", **kwargs: Any\n) -> dict[str, list[str]]:\n    index = repo.index.data[\"repo\"]\n\n    with repo.switch(head):\n        head_index = repo.index.data[\"repo\"]\n\n    # Filter out parameters not accepted by _diff\n    diff_kwargs = {k: v for k, v in kwargs.items() if k != \"with_dirs\"}\n\n    with ui.progress(desc=\"Calculating diff between head/index\", unit=\"entry\") as pb:\n        return _diff(head_index, index, callback=pb.as_callback(), **diff_kwargs)\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

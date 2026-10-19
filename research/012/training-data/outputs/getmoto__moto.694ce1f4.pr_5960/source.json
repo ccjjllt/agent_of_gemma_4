@@ -1,0 +1,21 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 446,
+  "instance_id": "getmoto__moto.694ce1f4.pr_5960",
+  "repo": "getmoto/moto",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "getmoto__moto.694ce1f4.pr_5960.oed4ul7y",
+  "messages_sha256": "d3722f0ed022f4f740b89141d573a731c1465e16b9e890c6524821ba79bf3786",
+  "issue": "# DynamoDB index projections not working correctly\n\n## Description\n\nI'm having an issue with DynamoDB index projections in moto. When using a Global Secondary Index (GSI) or Local Secondary Index (LSI) with a specific projection type, the results don't match what I would expect from real DynamoDB behavior.\n\nFor example, when I create a table with a GSI that has a projection type of `KEYS_ONLY`, I expect the query results to only include the table's primary key and the index key attributes. However, this doesn't seem to be working correctly.\n\nHere's a simple reproduction case:\n\n```python\nimport boto3\nfrom boto3.dynamodb.conditions import Key\n\n# Create a table with a GSI using KEYS_ONLY projection\ndynamodb = boto3.resource('dynamodb', region_name='us-east-1')\ndynamodb.create_table(\n    TableName='test-table',\n    BillingMode='PAY_PER_REQUEST',\n    KeySchema=[{'AttributeName': 'partitionKey', 'KeyType': 'HASH'}],\n    GlobalSecondaryIndexes=[{\n        'IndexName': 'GSI-K1',\n        'KeySchema': [\n            {'AttributeName': 'gsiK1PartitionKey', 'KeyType': 'HASH'},\n            {'AttributeName': 'gsiK1SortKey', 'KeyType': 'RANGE'}\n        ],\n        'Projection': {'ProjectionType': 'KEYS_ONLY'}\n    }],\n    AttributeDefinitions=[\n        {'AttributeName': 'partitionKey', 'AttributeType': 'S'},\n        {'AttributeName': 'gsiK1PartitionKey', 'AttributeType': 'S'},\n        {'AttributeName': 'gsiK1SortKey', 'AttributeType': 'S'}\n    ]\n)\n\n# Add an item with some extra attributes\ntable = dynamodb.Table('test-table')\ntable.put_item(Item={\n    'partitionKey': 'pk-1',\n    'gsiK1PartitionKey': 'gsi-pk',\n    'gsiK1SortKey': 'gsi-sk',\n    'someAttribute': 'lore ipsum'\n})\n\n# Query using the GSI\nresult = table.query(\n    KeyConditionExpression=Key('gsiK1PartitionKey').eq('gsi-pk'),\n    IndexName='GSI-K1'\n)\n\n# Expected: Only keys should be returned\n# Actual: All attributes are returned\nprint(result['Items'])\n```\n\nThe same issue occurs with LSIs and with the `INCLUDE` projection type. When using `INCLUDE`, only the specified non-key attributes should be included in the results, but this doesn't seem to be working either.\n\nI believe this is a regression as this used to work correctly in previous versions.",
+  "actions": [
+    {
+      "source_message_index": 62,
+      "filepath": "moto/dynamodb/models/table.py",
+      "old_string": "\n        if filter_expression is not None:\n            results = [item for item in results if filter_expression.expr(item)]\n\n        if projection_expressions:\n            results = [r.project(projection_expressions) for r in results]\n\n        return results, scanned_count, last_evaluated_key\n",
+      "new_string": "\n        if filter_expression is not None:\n            results = [item for item in results if filter_expression.expr(item)]\n\n        # Apply index projections if using an index\n        if index_name:\n            index = self.get_index(index_name)\n            results = [index.project(copy.deepcopy(item)) for item in results]\n\n        # Apply projection expressions if specified\n        if projection_expressions:\n            results = [r.project(projection_expressions) for r in results]\n\n        return results, scanned_count, last_evaluated_key\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

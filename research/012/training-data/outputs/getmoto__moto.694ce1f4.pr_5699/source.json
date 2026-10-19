@@ -1,0 +1,21 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 1689,
+  "instance_id": "getmoto__moto.694ce1f4.pr_5699",
+  "repo": "getmoto/moto",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "getmoto__moto.694ce1f4.pr_5699.y1wve1wy",
+  "messages_sha256": "a8e87a77342997939c25a5e5c40704d67e7a59a3566a89ead2d6a7297cc9a3bb",
+  "issue": "CloudFront list_invalidations returns Items element even when there are no invalidations\n\nDescription\n\nI'm using the CloudFront API to list invalidations for a distribution, but I've noticed an issue when there are no invalidations present.\n\nWhen calling `list_invalidations()` on a distribution that has no invalidations, the API returns an XML response that includes an empty `Items` element:\n\n```\n<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<InvalidationList>\n   <IsTruncated>false</IsTruncated>\n   <Items>\n   </Items>\n   <Marker></Marker>\n   <MaxItems>100</MaxItems>\n   <Quantity>0</Quantity>\n</InvalidationList>\n```\n\nHowever, according to the AWS CloudFront API documentation, when there are no invalidations, the `Items` element should not be present at all in the response.\n\nHere's a simple reproduction script:\n\n```python\nimport boto3\n\nclient = boto3.client('cloudfront', region_name='us-west-1')\nresponse = client.list_invalidations(DistributionId='SOME_DISTRIBUTION_ID')\n\n# The Items element is present even though Quantity is 0\nprint('Quantity:', response['InvalidationList']['Quantity'])\nprint('Items present:', 'Items' in response['InvalidationList'])\n```\n\nExpected behavior:\n- When there are no invalidations (Quantity = 0), the `Items` element should not be present in the response\n\nActual behavior:\n- The `Items` element is always present in the response, even when there are no invalidations\n\nThis causes issues with code that expects the AWS API to behave according to the documentation.",
+  "actions": [
+    {
+      "source_message_index": 42,
+      "filepath": "moto/cloudfront/responses.py",
+      "old_string": "INVALIDATIONS_TEMPLATE = \"\"\"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<InvalidationList>\n   <IsTruncated>false</IsTruncated>\n   <Items>\n      {% for invalidation in invalidations %}\n      <InvalidationSummary>\n         <CreateTime>{{ invalidation.create_time }}</CreateTime>\n         <Id>{{ invalidation.invalidation_id }}</Id>\n         <Status>{{ invalidation.status }}</Status>\n      </InvalidationSummary>\n      {% endfor %}\n   </Items>\n   <Marker></Marker>\n   <MaxItems>100</MaxItems>\n   <Quantity>{{ invalidations|length }}</Quantity>\n</InvalidationList>\n\"\"\"",
+      "new_string": "INVALIDATIONS_TEMPLATE = \"\"\"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<InvalidationList>\n   <IsTruncated>false</IsTruncated>\n   {% if invalidations|length > 0 %}\n   <Items>\n      {% for invalidation in invalidations %}\n      <InvalidationSummary>\n         <CreateTime>{{ invalidation.create_time }}</CreateTime>\n         <Id>{{ invalidation.invalidation_id }}</Id>\n         <Status>{{ invalidation.status }}</Status>\n      </InvalidationSummary>\n      {% endfor %}\n   </Items>\n   {% endif %}\n   <Marker></Marker>\n   <MaxItems>100</MaxItems>\n   <Quantity>{{ invalidations|length }}</Quantity>\n</InvalidationList>\n\"\"\"",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

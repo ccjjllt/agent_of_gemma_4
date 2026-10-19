@@ -1,0 +1,28 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 1630,
+  "instance_id": "getmoto__moto.694ce1f4.pr_4791",
+  "repo": "getmoto/moto",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "getmoto__moto.694ce1f4.pr_4791.y1wve1wy",
+  "messages_sha256": "3bb23740f00b816e8cfba35f3c07d61528d8b57a77a6eb917c49fa2ea56a169b",
+  "issue": "Timer fired event doesn't schedule a decision task\n\n### Describe the bug\n\nWhen a timer fires in a SWF workflow execution, it doesn't schedule a decision task afterward. This causes the workflow to get stuck because no decision task is created after the timer fires.\n\n### How to Reproduce\n\nHere's a simple reproduction script that demonstrates the issue:\n\n```python\nfrom moto import mock_swf\nimport boto3\nfrom time import sleep\nimport threading\n\n@mock_swf\ndef reproduce_issue():\n    # Set up SWF client and register domain/workflow\n    swf = boto3.client('swf', region_name='us-east-1')\n    swf.register_domain(name='test-domain', workflowExecutionRetentionPeriodInDays='1')\n    swf.register_workflow_type(\n        domain='test-domain',\n        name='test-workflow',\n        version='1.0',\n        defaultTaskList={'name': 'default'},\n        defaultExecutionStartToCloseTimeout='300',\n        defaultTaskStartToCloseTimeout='60'\n    )\n    \n    # Start a workflow execution\n    swf.start_workflow_execution(\n        domain='test-domain',\n        workflowId='test-workflow-id',\n        workflowType={'name': 'test-workflow', 'version': '1.0'},\n        taskList={'name': 'default'}\n    )\n    \n    # Poll for decision task and start a timer\n    decision_task = swf.poll_for_decision_task(\n        domain='test-domain',\n        taskList={'name': 'default'}\n    )\n    swf.respond_decision_task_completed(\n        taskToken=decision_task['taskToken'],\n        decisions=[\n            {\n                'decisionType': 'StartTimer',\n                'startTimerDecisionAttributes': {\n                    'timerId': 'timer-1',\n                    'startToFireTimeout': '1'\n                }\n            }\n        ]\n    )\n    \n    # Wait for timer to fire\n    sleep(2)\n    \n    # Try to poll for a new decision task - this should return a task if the timer fired correctly\n    # but it doesn't because no decision task was scheduled\n    new_decision_task = swf.poll_for_decision_task(\n        domain='test-domain',\n        taskList={'name': 'default'}\n    )\n    \n    print(\"Expected: Decision task with history containing TimerFired event\")\n    print(f\"Actual: {new_decision_task}\")\n    # No decision task is returned because none was scheduled after the timer fired\n\nreproduce_issue()\n```\n\nWhen running this code, no new decision task is scheduled after the timer fires. This means the workflow execution gets stuck because there's no way for the workflow to continue processing after a timer fires.\n\n### Expected behavior\n\nAfter a timer fires, a decision task should be automatically scheduled so the workflow can continue processing.\n\n<END WRITING>",
+  "actions": [
+    {
+      "source_message_index": 42,
+      "filepath": "moto/swf/models/workflow_execution.py",
+      "old_string": "    def _fire_timer(self, started_event_id: int, timer_id: str) -> None:\n        self._add_event(\n            \"TimerFired\", started_event_id=started_event_id, timer_id=timer_id\n        )\n        self._timers.pop(timer_id)",
+      "new_string": "    def _fire_timer(self, started_event_id: int, timer_id: str) -> None:\n        self._add_event(\n            \"TimerFired\", started_event_id=started_event_id, timer_id=timer_id\n        )\n        self._timers.pop(timer_id)\n        self.schedule_decision_task()",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 46,
+      "filepath": "moto/swf/models/workflow_execution.py",
+      "old_string": "    def _fire_timer(self, started_event_id: int, timer_id: str) -> None:\n        self._add_event(\n            \"TimerFired\", started_event_id=started_event_id, timer_id=timer_id\n        )\n        self._timers.pop(timer_id)\n        self.schedule_decision_task()",
+      "new_string": "    def _fire_timer(self, started_event_id: int, timer_id: str) -> None:\n        self._add_event(\n            \"TimerFired\", started_event_id=started_event_id, timer_id=timer_id\n        )\n        self._timers.pop(timer_id)\n        # Only schedule a decision task if the workflow execution is still open\n        if self.open:\n            self.schedule_decision_task()",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

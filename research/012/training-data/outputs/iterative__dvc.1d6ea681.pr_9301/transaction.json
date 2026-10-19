@@ -1,0 +1,214 @@
+{
+  "sample_id": "p012-iterative__dvc.1d6ea681.pr_9301",
+  "transaction_id": "p012-iterative__dvc.1d6ea681.pr_9301",
+  "producer_revision": "p012-local-2",
+  "synthetic": false,
+  "origin_kind": "cpu_replayed_source_edit_subset",
+  "group": {
+    "issue": "iterative__dvc.1d6ea681.pr_9301",
+    "repo": "iterative/dvc",
+    "commit": "4afe66d23ffdc4961fceb529ccd9690354c60656",
+    "split": "train"
+  },
+  "source": {
+    "uri": "https://huggingface.co/datasets/SWE-bench/SWE-smith-trajectories/tree/08e109b4a59eaeebf80e4675cd125d42e7ac99a4",
+    "license": "MIT dataset; repository license in provenance.json",
+    "sha256": "bbc1454c705d915916b39293468619d850a90057c1f8ff2c3c53df733436af61",
+    "teacher": "claude-3-7-sonnet-20250219",
+    "traj_id": "iterative__dvc.1d6ea681.pr_9301.gu84ey6c"
+  },
+  "protocol_id": "p012-repair-v1",
+  "tool_schema": {
+    "path": "research/012/agent/repair_tools_v1.json",
+    "canonical_sha256": "91ec82b15fe0961b3ef9e686fac268706ce954a69cabaa0d705c63d41088e267",
+    "names": [
+      "run_command",
+      "read_file",
+      "edit_file",
+      "write_file",
+      "get_status"
+    ],
+    "repair_role_holds_submit_patch": false
+  },
+  "messages": [
+    {
+      "role": "system",
+      "content": "Use the supplied repository tools. Preserve unrelated behavior. Treat tool failures as observations and correct the action before retrying. Do not modify tests."
+    },
+    {
+      "role": "user",
+      "content": "Implement the following requested change in the repository.\n\n# Studio webhook notifications not working after parameter renaming\n\n## Description\n\nAfter recent changes to the `post` function in `dvc/utils/studio.py`, webhook notifications to Studio are no longer working correctly. The issue appears to be related to parameter renaming and inconsistent usage between the `post` function and its callers.\n\nWhen trying to push changes to a repository with Studio integration enabled, the webhook notification fails silently. This breaks the integration between DVC and Studio, preventing automatic updates of experiments and models in the Studio UI.\n\n## How to Reproduce\n\n1. Set up a DVC project with Studio integration\n2. Configure Studio token in DVC config\n3. Make changes to your repository and push them\n4. Check Studio - the changes won't appear\n\n```python\n# Example code to reproduce:\nfrom dvc.utils.studio import notify_refs\n\n# This will fail silently\nnotify_refs(\n    \"git@github.com:user/repo.git\",\n    \"YOUR_STUDIO_TOKEN\",\n    pushed=[\"refs/heads/main\"],\n    removed=[]\n)\n```\n\nExpected behavior: The notification should be sent to Studio and changes should appear in the UI.\nActual behavior: The notification fails silently and no changes appear in Studio.\n\n## Additional Context\n\nThe issue seems to be related to parameter renaming in the `post` function, where `url` and `base_url` parameters were swapped/renamed, but the calling code in `notify_refs` wasn't updated accordingly. Also, the `allow_redirects=False` parameter is missing in the latest implementation.\n\nScope of this editing session: update the following production files and report the resulting local change for handover: dvc/utils/studio.py. No full task validation has been performed in this session."
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_00",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": {
+              "filepath": "dvc/utils/studio.py",
+              "start_line": 54,
+              "end_line": 82
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_00",
+      "name": "read_file",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"filepath\": \"dvc/utils/studio.py\", \"content\": \"    extra_keys = refs.keys() - {\\\"pushed\\\", \\\"removed\\\"}\\n    assert not extra_keys, f\\\"got extra args: {extra_keys}\\\"\\n\\n    refs = compact(refs)\\n    if not refs:\\n        return {}\\n\\n    logger.debug(\\n        \\\"notifying Studio%s about updated experiments\\\",\\n        f\\\" ({base_url})\\\" if base_url else \\\"\\\",\\n    )\\n    data = {\\\"repo_url\\\": repo_url, \\\"client\\\": \\\"dvc\\\", \\\"refs\\\": refs}\\n\\n    try:\\n        r = post(\\\"/webhook/dvc\\\", token, data, url=studio_url)\\n    except requests.RequestException as e:\\n        logger.trace(\\\"\\\", exc_info=True)\\n\\n        msg = str(e)\\n        if e.response is None:\\n            logger.warning(\\\"failed to notify Studio: %s\\\", msg.lower())\\n            return {}\\n\\n        r = e.response\\n        d = ignore(Exception, default={})(r.json)()\\n        status = r.status_code\\n        if detail := d.get(\\\"detail\\\"):\\n            msg = f\\\"{detail} ({status=})\\\"\\n        logger.warning(\\\"failed to notify Studio: %s\\\", msg.lower())\", \"start_line\": 54, \"end_line\": 82, \"total_lines\": 140, \"is_truncated\": false}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_01",
+          "type": "function",
+          "function": {
+            "name": "edit_file",
+            "arguments": {
+              "filepath": "dvc/utils/studio.py",
+              "old_string": "\n    try:\n        r = post(\"/webhook/dvc\", token, data, url=studio_url)\n    except requests.RequestException as e:\n",
+              "new_string": "\n    try:\n        r = post(\"/webhook/dvc\", token, data, url=base_url)\n    except requests.RequestException as e:\n",
+              "allow_multiple": false
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_01",
+      "name": "edit_file",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"filepath\": \"dvc/utils/studio.py\", \"occurrences\": 1, \"strategy\": \"exact\", \"diff\": \"--- a/dvc/utils/studio.py\\n+++ b/dvc/utils/studio.py\\n@@ -65,7 +65,7 @@\\n     data = {\\\"repo_url\\\": repo_url, \\\"client\\\": \\\"dvc\\\", \\\"refs\\\": refs}\\n \\n     try:\\n-        r = post(\\\"/webhook/dvc\\\", token, data, url=studio_url)\\n+        r = post(\\\"/webhook/dvc\\\", token, data, url=base_url)\\n     except requests.RequestException as e:\\n         logger.trace(\\\"\\\", exc_info=True)\\n \\n\", \"is_truncated\": false}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_02",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": {
+              "filepath": "dvc/utils/studio.py",
+              "start_line": 28,
+              "end_line": 57
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_02",
+      "name": "read_file",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"filepath\": \"dvc/utils/studio.py\", \"content\": \"\\ndef post(\\n    endpoint: str,\\n    token: str,\\n    data: dict[str, Any],\\n    url: Optional[str] = STUDIO_URL,\\n    max_retries: int = 3,\\n    timeout: int = 5,\\n) -> \\\"Response\\\":\\n    endpoint = urljoin(url or STUDIO_URL, endpoint)\\n    session = requests.Session()\\n    session.mount(endpoint, HTTPAdapter(max_retries=max_retries))\\n    logger.trace(\\\"Sending %s to %s\\\", data, endpoint)  # type: ignore[attr-defined]\\n    headers = {\\\"Authorization\\\": f\\\"token {token}\\\"}\\n    r = session.post(endpoint, json=data, headers=headers, timeout=timeout)\\n    r.raise_for_status()\\n    return r\\n\\n\\ndef notify_refs(\\n    repo_url: str,\\n    token: str,\\n    *,\\n    base_url: Optional[str] = STUDIO_URL,\\n    **refs: list[str],\\n) -> dict[str, Any]:\\n    extra_keys = refs.keys() - {\\\"pushed\\\", \\\"removed\\\"}\\n    assert not extra_keys, f\\\"got extra args: {extra_keys}\\\"\\n\\n    refs = compact(refs)\", \"start_line\": 28, \"end_line\": 57, \"total_lines\": 140, \"is_truncated\": false}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_03",
+          "type": "function",
+          "function": {
+            "name": "edit_file",
+            "arguments": {
+              "filepath": "dvc/utils/studio.py",
+              "old_string": "\n    headers = {\"Authorization\": f\"token {token}\"}\n    r = session.post(endpoint, json=data, headers=headers, timeout=timeout)\n    r.raise_for_status()\n    return r\n",
+              "new_string": "\n    headers = {\"Authorization\": f\"token {token}\"}\n    r = session.post(endpoint, json=data, headers=headers, timeout=timeout, allow_redirects=False)\n    r.raise_for_status()\n    return r\n",
+              "allow_multiple": false
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_03",
+      "name": "edit_file",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"filepath\": \"dvc/utils/studio.py\", \"occurrences\": 1, \"strategy\": \"exact\", \"diff\": \"--- a/dvc/utils/studio.py\\n+++ b/dvc/utils/studio.py\\n@@ -39,7 +39,7 @@\\n     session.mount(endpoint, HTTPAdapter(max_retries=max_retries))\\n     logger.trace(\\\"Sending %s to %s\\\", data, endpoint)  # type: ignore[attr-defined]\\n     headers = {\\\"Authorization\\\": f\\\"token {token}\\\"}\\n-    r = session.post(endpoint, json=data, headers=headers, timeout=timeout)\\n+    r = session.post(endpoint, json=data, headers=headers, timeout=timeout, allow_redirects=False)\\n     r.raise_for_status()\\n     return r\\n \\n\", \"is_truncated\": false}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_04",
+          "type": "function",
+          "function": {
+            "name": "get_status",
+            "arguments": {}
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_04",
+      "name": "get_status",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"tool_calls_used\": 4, \"patch_submitted\": false, \"patch_size\": 0, \"tool_calls_remaining\": 96, \"max_tool_calls\": 100, \"command_timeout_seconds\": 30}"
+    },
+    {
+      "role": "assistant",
+      "content": "{\n  \"candidate_id\": \"p012-iterative__dvc.1d6ea681.pr_9301\",\n  \"files\": [\n    {\n      \"path\": \"dvc/utils/studio.py\",\n      \"after_sha256\": \"1ed502daf99ca361a2dce708199f1def0119ab06a6d057189f0a909a57f2928c\"\n    }\n  ],\n  \"requirement_done\": true,\n  \"requirement_scope\": \"local production edits applied and syntactically parsed; full-task validation NOT performed in this session\",\n  \"verification\": {\n    \"observation\": \"get_status\",\n    \"status\": \"ok\",\n    \"scope\": \"post-edit local patch status of the same workspace; no repository test suite or whole-issue oracle executed\"\n  },\n  \"unresolved\": [\n    \"no whole-issue oracle executed; task_resolved=null\",\n    \"behavior recovery chain to be upgraded by a later step, not fabricated here\"\n  ],\n  \"needs_other_route\": false\n}",
+      "tool_calls": []
+    }
+  ],
+  "target_assistant_steps": [
+    1,
+    3,
+    4,
+    5
+  ],
+  "behavior": "local_edit",
+  "needs_replay": false,
+  "attempt_status": "local_edits_applied",
+  "observed_outcome": {
+    "action_succeeded": true,
+    "task_resolved": null,
+    "behavior_verified": false,
+    "syntax_parse_passed": true,
+    "local_patch_nonempty": true,
+    "handover_reported": true,
+    "scope": "All selected structured production str_replace actions replayed from fixed buggy snapshot with five official tools (no submit_patch); post-edit status observed via get_status; session ends with a handover report, not a submission. This is local edit supervision, not a resolved task or full trajectory."
+  },
+  "handover": {
+    "candidate_id": "p012-iterative__dvc.1d6ea681.pr_9301",
+    "files": [
+      {
+        "path": "dvc/utils/studio.py",
+        "after_sha256": "1ed502daf99ca361a2dce708199f1def0119ab06a6d057189f0a909a57f2928c"
+      }
+    ],
+    "requirement_done": true,
+    "requirement_scope": "local production edits applied and syntactically parsed; full-task validation NOT performed in this session",
+    "verification": {
+      "observation": "get_status",
+      "status": "ok",
+      "scope": "post-edit local patch status of the same workspace; no repository test suite or whole-issue oracle executed"
+    },
+    "unresolved": [
+      "no whole-issue oracle executed; task_resolved=null",
+      "behavior recovery chain to be upgraded by a later step, not fabricated here"
+    ],
+    "needs_other_route": false
+  },
+  "source_resolved_label": true,
+  "source_label_not_revalidated": true,
+  "replay_boundary": "Unchanged official v31 tool functions minus submit_patch, with macOS local transport, production subset. Read locations derived from source edit targets; this is edit/action SFT, not search-policy supervision.",
+  "continuation_policy": "New read/edit/status tool observations only; no old assistant future or old tool observations reused."
+}

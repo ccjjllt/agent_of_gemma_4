@@ -1,0 +1,42 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00005-of-00008.parquet",
+  "row_index": 2966,
+  "instance_id": "iterative__dvc.1d6ea681.pr_9550",
+  "repo": "iterative/dvc",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "iterative__dvc.1d6ea681.pr_9550.b6nfaqm3",
+  "messages_sha256": "ea8bbe7cb5819b9a66570d2734c3edf2876f93576d004dbd11cf63879b1d51ca",
+  "issue": "# Parameter name mismatch in dvc add command causes failures\n\n## Description\n\nWhen using the `dvc add` command with the `--to-remote` option, there's an issue with parameter naming that causes failures. The command fails because of a mismatch between parameter names in different parts of the code.\n\n## Steps to reproduce\n\n1. Create a simple DVC project\n2. Try to add a file with the `--to-remote` and `--remote-jobs` options:\n\n```bash\ndvc init\necho \"test data\" > data.txt\ndvc add data.txt --to-remote --remote-jobs 4\n```\n\nThis will fail with an error related to parameter naming.\n\n## Expected behavior\n\nThe command should successfully add the file and transfer it to the remote storage with the specified number of jobs.\n\n## Actual behavior\n\nThe command fails because in the `CmdAdd.run()` method, the parameter is passed as `jobs=self.args.remote_jobs`, but in the `add()` function it's expecting a parameter named `remote_jobs` instead of `jobs`.\n\nThis inconsistency in parameter naming causes the validation to fail and prevents the command from working properly when using both `--to-remote` and `--remote-jobs` options together.",
+  "actions": [
+    {
+      "source_message_index": 20,
+      "filepath": "dvc/repo/add.py",
+      "old_string": "\n@locked\n@scm_context\ndef add(\n    repo: \"Repo\",\n    targets: Union[\"StrOrBytesPath\", Iterator[\"StrOrBytesPath\"]],\n    no_commit: bool = False,\n    glob: bool = False,\n    out: Optional[str] = None,\n    remote: Optional[str] = None,\n    to_remote: bool = False,\n    jobs: Optional[int] = None,\n    force: bool = False,\n    relink: bool = True,\n) -> list[\"Stage\"]:\n    add_targets = find_targets(targets, glob=glob)\n    if not add_targets:\n        return []\n\n    validate_args(\n        add_targets,\n        no_commit=no_commit,\n        external=external,\n        out=out,\n        remote=remote,\n        to_remote=to_remote,\n        jobs=jobs,\n    )\n",
+      "new_string": "\n@locked\n@scm_context\ndef add(\n    repo: \"Repo\",\n    targets: Union[\"StrOrBytesPath\", Iterator[\"StrOrBytesPath\"]],\n    no_commit: bool = False,\n    glob: bool = False,\n    out: Optional[str] = None,\n    remote: Optional[str] = None,\n    to_remote: bool = False,\n    remote_jobs: Optional[int] = None,\n    force: bool = False,\n    relink: bool = True,\n) -> list[\"Stage\"]:\n    add_targets = find_targets(targets, glob=glob)\n    if not add_targets:\n        return []\n\n    validate_args(\n        add_targets,\n        no_commit=no_commit,\n        out=out,\n        remote=remote,\n        to_remote=to_remote,\n        remote_jobs=remote_jobs,\n    )\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 22,
+      "filepath": "dvc/repo/add.py",
+      "old_string": "\ndef validate_args(targets: List[str], **kwargs: Any) -> None:\n    invalid_opt = None\n    to_remote = kwargs.get(\"to_remote\")\n\n    if to_remote or kwargs.get(\"out\"):\n        message = \"{option} can't be used with \"\n        message += \"--to-remote\" if to_remote else \"-o\"\n        if len(targets) != 1:\n            invalid_opt = \"multiple targets\"\n        elif kwargs.get(\"no_commit\"):\n            invalid_opt = \"--no-commit option\"\n        elif kwargs.get(\"external\"):\n            invalid_opt = \"--external option\"\n    else:\n        message = \"{option} can't be used without --to-remote\"\n        if kwargs.get(\"remote\"):\n            invalid_opt = \"--remote\"\n        elif kwargs.get(\"jobs\"):\n            invalid_opt = \"--remote-jobs\"\n\n    if invalid_opt is not None:\n        raise InvalidArgumentError(message.format(option=invalid_opt))\n",
+      "new_string": "\ndef validate_args(targets: List[str], **kwargs: Any) -> None:\n    invalid_opt = None\n    to_remote = kwargs.get(\"to_remote\")\n\n    if to_remote or kwargs.get(\"out\"):\n        message = \"{option} can't be used with \"\n        message += \"--to-remote\" if to_remote else \"-o\"\n        if len(targets) != 1:\n            invalid_opt = \"multiple targets\"\n        elif kwargs.get(\"no_commit\"):\n            invalid_opt = \"--no-commit option\"\n    else:\n        message = \"{option} can't be used without --to-remote\"\n        if kwargs.get(\"remote\"):\n            invalid_opt = \"--remote\"\n        elif kwargs.get(\"remote_jobs\"):\n            invalid_opt = \"--remote-jobs\"\n\n    if invalid_opt is not None:\n        raise InvalidArgumentError(message.format(option=invalid_opt))\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 24,
+      "filepath": "dvc/repo/add.py",
+      "old_string": "\n    if to_remote or out:\n        assert len(stages_with_targets) == 1\n        (source, (stage, _)) = next(iter(stages_with_targets.items()))\n        _add_transfer(stage, source, remote, to_remote, jobs=jobs, force=force)\n        return [stage]\n",
+      "new_string": "\n    if to_remote or out:\n        assert len(stages_with_targets) == 1\n        (source, (stage, _)) = next(iter(stages_with_targets.items()))\n        _add_transfer(stage, source, remote, to_remote, jobs=remote_jobs, force=force)\n        return [stage]\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 28,
+      "filepath": "dvc/commands/add.py",
+      "old_string": "\n    def run(self):\n        from dvc.exceptions import DvcException\n\n        try:\n            self.repo.add(\n                self.args.targets,\n                no_commit=self.args.no_commit,\n                glob=self.args.glob,\n                out=self.args.out,\n                remote=self.args.remote,\n                to_remote=self.args.to_remote,\n                jobs=self.args.remote_jobs,\n                force=self.args.force,\n                relink=self.args.relink,\n            )\n        except FileNotFoundError:\n            logger.exception(\"\")\n            return 1\n        except DvcException:\n            logger.exception(\"\")\n            return 1\n        return 0\n",
+      "new_string": "\n    def run(self):\n        from dvc.exceptions import DvcException\n\n        try:\n            self.repo.add(\n                self.args.targets,\n                no_commit=self.args.no_commit,\n                glob=self.args.glob,\n                out=self.args.out,\n                remote=self.args.remote,\n                to_remote=self.args.to_remote,\n                remote_jobs=self.args.remote_jobs,\n                force=self.args.force,\n                relink=self.args.relink,\n            )\n        except FileNotFoundError:\n            logger.exception(\"\")\n            return 1\n        except DvcException:\n            logger.exception(\"\")\n            return 1\n        return 0\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

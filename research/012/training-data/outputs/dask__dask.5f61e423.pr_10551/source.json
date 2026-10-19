@@ -1,0 +1,35 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 1991,
+  "instance_id": "dask__dask.5f61e423.pr_10551",
+  "repo": "dask/dask",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "dask__dask.5f61e423.pr_10551.y1wve1wy",
+  "messages_sha256": "4b85990cd88816661951453da6694e5ee220daf7566ae5bfc447d06508c76bc3",
+  "issue": "# NumPy array handling missing from tolist_dispatch\n\nWhen working with NumPy arrays in Dask, I've discovered that the `tolist_dispatch` function no longer handles NumPy arrays properly. This causes issues when trying to convert NumPy arrays to Python lists in various operations.\n\n## Description\n\nThe `tolist_dispatch` function is registered for pandas Series, Index, and Categorical objects, but not for NumPy arrays. This causes failures in operations that rely on converting NumPy arrays to Python lists, particularly when working with xarray datasets and when using certain indexing operations.\n\n## Steps to reproduce\n\nHere's a simple example that demonstrates the issue when converting from xarray to a Dask dataframe:\n\n```python\nimport numpy as np\nimport xarray as xr\nimport dask.array as da\nimport dask.dataframe as dd\n\n# Create sample data\nx = np.random.randn(10)\ny = np.arange(10, dtype='uint8')\nt = list('abcdefghij')\n\n# Create xarray dataset with dask array\nds = xr.Dataset({'a': ('t', da.from_array(x, chunks=4)), \n                 'b': ('t', y), \n                 't': ('t', t)})\n\n# This fails with the current implementation\ndf = ds.to_dask_dataframe(set_index=True)\n```\n\nThe operation fails because the code attempts to use a function called `_percentile` which is not defined, as the code path that should handle NumPy arrays through `tolist_dispatch` is no longer available.\n\nSimilar issues occur when working with certain indexing operations, particularly when using `loc` with partitions that should be converted to plain scalars.",
+  "actions": [
+    {
+      "source_message_index": 24,
+      "filepath": "dask/dataframe/backends.py",
+      "old_string": "@tolist_dispatch.register((pd.Series, pd.Index, pd.Categorical))\ndef tolist_pandas(obj):\n    return obj.tolist()\n",
+      "new_string": "@tolist_dispatch.register((pd.Series, pd.Index, pd.Categorical))\ndef tolist_pandas(obj):\n    return obj.tolist()\n\n\n@tolist_dispatch.register(np.ndarray)\ndef tolist_numpy(obj):\n    return obj.tolist()\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 40,
+      "filepath": "dask/dataframe/partitionquantiles.py",
+      "old_string": "from __future__ import annotations\n\nimport math\n\nimport numpy as np\nimport pandas as pd\nfrom pandas.api.types import is_datetime64_dtype, is_integer_dtype\nfrom tlz import merge_sorted, take\n\nfrom dask.dataframe.utils import is_series_like\nfrom dask.utils import is_cupy_type",
+      "new_string": "from __future__ import annotations\n\nimport math\n\nimport numpy as np\nimport pandas as pd\nfrom pandas.api.types import is_datetime64_dtype, is_integer_dtype\nfrom tlz import merge_sorted, take\n\nfrom dask.array.percentile import _percentile\nfrom dask.dataframe.utils import is_series_like\nfrom dask.utils import is_cupy_type",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 46,
+      "filepath": "dask/dataframe/partitionquantiles.py",
+      "old_string": "from __future__ import annotations\n\nimport math\n\nimport numpy as np\nimport pandas as pd\nfrom pandas.api.types import is_datetime64_dtype, is_integer_dtype\nfrom tlz import merge_sorted, take\n\nfrom dask.array.percentile import _percentile\nfrom dask.dataframe.utils import is_series_like\nfrom dask.utils import is_cupy_type",
+      "new_string": "from __future__ import annotations\n\nimport math\n\nimport numpy as np\nimport pandas as pd\nfrom pandas.api.types import is_datetime64_dtype, is_integer_dtype\nfrom tlz import merge_sorted, take\n\nfrom dask.array.percentile import _percentile\nfrom dask.array.utils import array_safe\nfrom dask.dataframe.utils import is_series_like\nfrom dask.utils import is_cupy_type",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

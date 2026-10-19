@@ -1,0 +1,42 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00005-of-00008.parquet",
+  "row_index": 2448,
+  "instance_id": "pydantic__pydantic.acb0f10f.pr_11271",
+  "repo": "pydantic/pydantic",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "pydantic__pydantic.acb0f10f.pr_11271.pkq6bdpw",
+  "messages_sha256": "0401724809dd09e6344d2104db43c4c06ee0c3b088ae598e953a10b5fd8df2fc",
+  "issue": "# Core schema validation behavior changed with environment variables\n\nI noticed that the behavior of core schema validation has changed in a way that breaks my code.\n\n## Description\n\nThe environment variable for controlling core schema validation has changed. Previously, validation would only run when `PYDANTIC_VALIDATE_CORE_SCHEMAS` was set. Now it seems validation runs by default unless `PYDANTIC_SKIP_VALIDATING_CORE_SCHEMAS` is set.\n\nThis is causing issues with my code that relies on the previous behavior.\n\n## Reproduction\n\n```python\nimport os\nfrom pydantic import BaseModel, ConfigDict\n\n# Previously this would work fine without validation\n# Now it fails with schema validation errors\n\n# Set up a model with invalid configuration\nos.environ.pop('PYDANTIC_VALIDATE_CORE_SCHEMAS', None)  # Make sure old var is not set\nos.environ.pop('PYDANTIC_SKIP_VALIDATING_CORE_SCHEMAS', None)  # Make sure new var is not set\n\n# This now fails with schema validation error, but used to work:\nclass MyModel(BaseModel):\n    model_config = {\"extra\": \"invalid-value\"}  # Invalid value for extra\n    \n    name: str\n```\n\nThe above code used to work fine when `PYDANTIC_VALIDATE_CORE_SCHEMAS` wasn't set, but now it fails with a schema validation error unless I explicitly set `PYDANTIC_SKIP_VALIDATING_CORE_SCHEMAS`.",
+  "actions": [
+    {
+      "source_message_index": 24,
+      "filepath": "pydantic/_internal/_core_utils.py",
+      "old_string": "\ndef validate_core_schema(schema: CoreSchema) -> CoreSchema:\n    if 'PYDANTIC_SKIP_VALIDATING_CORE_SCHEMAS' in os.environ:\n        return schema\n    return _validate_core_schema(schema)\n",
+      "new_string": "\ndef validate_core_schema(schema: CoreSchema) -> CoreSchema:\n    # Check for both the new and old environment variables\n    if ('PYDANTIC_SKIP_VALIDATING_CORE_SCHEMAS' in os.environ or \n        ('PYDANTIC_VALIDATE_CORE_SCHEMAS' not in os.environ)):\n        return schema\n    return _validate_core_schema(schema)\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 26,
+      "filepath": "pydantic/_internal/_core_utils.py",
+      "old_string": "\ndef validate_core_schema(schema: CoreSchema) -> CoreSchema:\n    # Check for both the new and old environment variables\n    if ('PYDANTIC_SKIP_VALIDATING_CORE_SCHEMAS' in os.environ or \n        ('PYDANTIC_VALIDATE_CORE_SCHEMAS' not in os.environ)):\n        return schema\n    return _validate_core_schema(schema)\n",
+      "new_string": "\ndef validate_core_schema(schema: CoreSchema) -> CoreSchema:\n    # Check for both the new and old environment variables\n    # Skip validation if PYDANTIC_SKIP_VALIDATING_CORE_SCHEMAS is set\n    # or if PYDANTIC_VALIDATE_CORE_SCHEMAS is not set (for backward compatibility)\n    if 'PYDANTIC_SKIP_VALIDATING_CORE_SCHEMAS' in os.environ:\n        return schema\n    \n    # For backward compatibility: only validate if PYDANTIC_VALIDATE_CORE_SCHEMAS is set\n    if 'PYDANTIC_VALIDATE_CORE_SCHEMAS' not in os.environ:\n        return schema\n        \n    return _validate_core_schema(schema)\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 32,
+      "filepath": "pydantic/_internal/_core_utils.py",
+      "old_string": "\ndef validate_core_schema(schema: CoreSchema) -> CoreSchema:\n    # Check for both the new and old environment variables\n    # Skip validation if PYDANTIC_SKIP_VALIDATING_CORE_SCHEMAS is set\n    # or if PYDANTIC_VALIDATE_CORE_SCHEMAS is not set (for backward compatibility)\n    if 'PYDANTIC_SKIP_VALIDATING_CORE_SCHEMAS' in os.environ:\n        return schema\n    \n    # For backward compatibility: only validate if PYDANTIC_VALIDATE_CORE_SCHEMAS is set\n    if 'PYDANTIC_VALIDATE_CORE_SCHEMAS' not in os.environ:\n        return schema\n        \n    return _validate_core_schema(schema)\n",
+      "new_string": "\ndef validate_core_schema(schema: CoreSchema) -> CoreSchema:\n    # Skip validation if PYDANTIC_SKIP_VALIDATING_CORE_SCHEMAS is set\n    if 'PYDANTIC_SKIP_VALIDATING_CORE_SCHEMAS' in os.environ:\n        return schema\n    \n    # For backward compatibility: only validate if PYDANTIC_VALIDATE_CORE_SCHEMAS is set\n    if 'PYDANTIC_VALIDATE_CORE_SCHEMAS' in os.environ:\n        return _validate_core_schema(schema)\n    \n    # Default behavior: don't validate (for backward compatibility)\n    return schema\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 56,
+      "filepath": "pydantic/_internal/_core_utils.py",
+      "old_string": "\ndef validate_core_schema(schema: CoreSchema) -> CoreSchema:\n    # Skip validation if PYDANTIC_SKIP_VALIDATING_CORE_SCHEMAS is set\n    if 'PYDANTIC_SKIP_VALIDATING_CORE_SCHEMAS' in os.environ:\n        return schema\n    \n    # For backward compatibility: only validate if PYDANTIC_VALIDATE_CORE_SCHEMAS is set\n    if 'PYDANTIC_VALIDATE_CORE_SCHEMAS' in os.environ:\n        return _validate_core_schema(schema)\n    \n    # Default behavior: don't validate (for backward compatibility)\n    return schema\n",
+      "new_string": "\ndef validate_core_schema(schema: CoreSchema) -> CoreSchema:\n    \"\"\"Validate a core schema if required by environment variables.\n    \n    The behavior is controlled by two environment variables:\n    - PYDANTIC_SKIP_VALIDATING_CORE_SCHEMAS: If set, validation is skipped regardless of other settings\n    - PYDANTIC_VALIDATE_CORE_SCHEMAS: If set (and PYDANTIC_SKIP_VALIDATING_CORE_SCHEMAS is not set),\n                                     validation is performed\n    \n    For backward compatibility, if neither variable is set, validation is skipped.\n    \"\"\"\n    # Skip validation if PYDANTIC_SKIP_VALIDATING_CORE_SCHEMAS is set\n    if 'PYDANTIC_SKIP_VALIDATING_CORE_SCHEMAS' in os.environ:\n        return schema\n    \n    # Validate if PYDANTIC_VALIDATE_CORE_SCHEMAS is set\n    if 'PYDANTIC_VALIDATE_CORE_SCHEMAS' in os.environ:\n        return _validate_core_schema(schema)\n    \n    # Default behavior: don't validate (for backward compatibility)\n    return schema\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

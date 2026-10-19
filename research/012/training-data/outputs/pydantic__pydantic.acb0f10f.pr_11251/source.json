@@ -1,0 +1,35 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 2022,
+  "instance_id": "pydantic__pydantic.acb0f10f.pr_11251",
+  "repo": "pydantic/pydantic",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "pydantic__pydantic.acb0f10f.pr_11251.y1wve1wy",
+  "messages_sha256": "55950f98a59e6333d50b96e57ab21866faa4a52fcd55625de6811f6f46a50af8",
+  "issue": "# Function attributes not preserved in model_post_init\n\nI found an issue with the `model_post_init` method in Pydantic models. When a model has both private attributes and a `model_post_init` method with a docstring, the docstring gets lost.\n\n```python\nclass Model(BaseModel):\n    _a: int\n\n    def model_post_init(self, context, /) -> None:\n        \"\"\"Custom docstring\"\"\"\n\n# The docstring is lost\nprint(Model.model_post_init.__doc__)  # Returns None instead of 'Custom docstring'\n```\n\nThis happens because the model_post_init method is being wrapped without preserving its attributes. Other function attributes like `__name__` and `__module__` are probably affected too.\n\nI noticed this while working on a model that needed both private attributes and a documented post-init method. The docstring is important for our API documentation generation.",
+  "actions": [
+    {
+      "source_message_index": 40,
+      "filepath": "pydantic/_internal/_model_construction.py",
+      "old_string": "                if original_model_post_init is not None:\n                    # if there are private_attributes and a model_post_init function, we handle both\n\n                    def wrapped_model_post_init(self: BaseModel, context: Any, /) -> None:\n                        \"\"\"We need to both initialize private attributes and call the user-defined model_post_init\n                        method.\n                        \"\"\"\n                        init_private_attributes(self, context)\n                        original_model_post_init(self, context)\n\n                    namespace['model_post_init'] = wrapped_model_post_init",
+      "new_string": "                if original_model_post_init is not None:\n                    # if there are private_attributes and a model_post_init function, we handle both\n\n                    def wrapped_model_post_init(self: BaseModel, context: Any, /) -> None:\n                        \"\"\"We need to both initialize private attributes and call the user-defined model_post_init\n                        method.\n                        \"\"\"\n                        init_private_attributes(self, context)\n                        original_model_post_init(self, context)\n\n                    # Preserve attributes from the original function\n                    for attr in functools.WRAPPER_ASSIGNMENTS:\n                        if hasattr(original_model_post_init, attr):\n                            setattr(wrapped_model_post_init, attr, getattr(original_model_post_init, attr))\n\n                    namespace['model_post_init'] = wrapped_model_post_init",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 42,
+      "filepath": "pydantic/_internal/_model_construction.py",
+      "old_string": "from __future__ import annotations as _annotations\n\nimport builtins\nimport operator\nimport sys\nimport typing\nimport warnings\nimport weakref\nfrom abc import ABCMeta\nfrom functools import lru_cache, partial\nfrom types import FunctionType\nfrom typing import Any, Callable, Generic, Literal, NoReturn, cast",
+      "new_string": "from __future__ import annotations as _annotations\n\nimport builtins\nimport functools\nimport operator\nimport sys\nimport typing\nimport warnings\nimport weakref\nfrom abc import ABCMeta\nfrom functools import lru_cache, partial\nfrom types import FunctionType\nfrom typing import Any, Callable, Generic, Literal, NoReturn, cast",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 66,
+      "filepath": "pydantic/_internal/_model_construction.py",
+      "old_string": "                    # Preserve attributes from the original function\n                    for attr in functools.WRAPPER_ASSIGNMENTS:\n                        if hasattr(original_model_post_init, attr):\n                            setattr(wrapped_model_post_init, attr, getattr(original_model_post_init, attr))",
+      "new_string": "                    # Preserve attributes from the original function\n                    functools.update_wrapper(wrapped_model_post_init, original_model_post_init)",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

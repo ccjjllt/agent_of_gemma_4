@@ -1,0 +1,21 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00001-of-00008.parquet",
+  "row_index": 2171,
+  "instance_id": "dask__dask.5f61e423.pr_7191",
+  "repo": "dask/dask",
+  "source_resolved": true,
+  "teacher_source": "claude-3-5-sonnet-20241022",
+  "traj_id": "dask__dask.5f61e423.pr_7191.87igi3sy",
+  "messages_sha256": "d58775b8d8bc98c377c8a4128c1a2e463c2164d198de8a0592269ff35941e47b",
+  "issue": "# `multiprocessing.get` fails with HighLevelGraph objects\n\nWhen using `dask.multiprocessing.get` with a HighLevelGraph, it fails with an exception. This happens when the graph contains non-indexable objects.\n\n## Reproduction\n\n```python\nfrom dask.delayed import delayed\nfrom dask.multiprocessing import get\n\nclass NoIndex:\n    def __init__(self, x):\n        self.x = x\n        \n    def __getitem__(self, key):\n        raise Exception('Oh no!')\n\n# Create a delayed object with a non-indexable value\nx = delayed(lambda x: x)(NoIndex(1))\n\n# This fails with \"Oh no!\" exception\n(res,) = get(x.dask, x.__dask_keys__())\n```\n\nThe issue appears to be related to how HighLevelGraph objects are handled in the multiprocessing scheduler. When a graph contains a non-indexable object, the scheduler tries to access it incorrectly, resulting in an exception.\n\nThis is causing problems in our workflow where we need to process complex objects that don't support indexing through the multiprocessing scheduler.\n\n<!-- BEGIN RELEASE NOTES -->\n- multiprocessing\n  - Fix handling of HighLevelGraph objects in multiprocessing scheduler\n<!-- END RELEASE NOTES -->",
+  "actions": [
+    {
+      "source_message_index": 20,
+      "filepath": "dask/highlevelgraph.py",
+      "old_string": "        try:\n            return self.layers[key[0]][key]  # type: ignore\n        except (KeyError, IndexError, TypeError):\n            pass",
+      "new_string": "        try:\n            # Handle non-indexable objects by checking if key is a tuple/sequence first\n            if isinstance(key, (tuple, list)):\n                return self.layers[key[0]][key]  # type: ignore\n        except (KeyError, IndexError, TypeError):\n            pass",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

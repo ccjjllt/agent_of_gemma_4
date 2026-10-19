@@ -1,0 +1,83 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "hydra/_internal/instantiate/_instantiate2.py",
+      "start_line": 364,
+      "end_line": 399
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "hydra/_internal/instantiate/_instantiate2.py",
+      "content": "        if convert in (ConvertMode.ALL, ConvertMode.PARTIAL, ConvertMode.OBJECT):\n            # If ALL or PARTIAL or OBJECT, use plain list as container\n            return items\n        else:\n            # Otherwise, use ListConfig as container\n            lst = OmegaConf.create(items, flags={\"allow_objects\": True})\n            lst._set_parent(node)\n            return lst\n\n    elif OmegaConf.is_dict(node):\n        exclude_keys = set({\"_target_\", \"_convert_\", \"_recursive_\", \"_partial_\"})\n        if _is_target(node):\n            _target_ = _resolve_target(node.get(_Keys.TARGET), full_key)\n            kwargs = {}\n            for key, value in node.items():\n                if key not in exclude_keys:\n                    if recursive:\n                        value = instantiate_node(\n                            value, convert=convert, recursive=recursive\n                        )\n                    kwargs[key] = _convert_node(value, convert)\n\n            return _call_target(_target_, partial, args, kwargs, full_key)\n        else:\n            # If ALL or PARTIAL non structured or OBJECT non structured,\n            # instantiate in dict and resolve interpolations eagerly.\n            if convert == ConvertMode.ALL or (\n                convert in (ConvertMode.PARTIAL, ConvertMode.OBJECT)\n                and node._metadata.object_type in (None, dict)\n            ):\n                dict_items = {}\n                for key, value in node.items():\n                    # list items inherits recursive flag from the containing dict.\n                    dict_items[key] = instantiate_node(\n                        value, convert=convert, recursive=recursive\n                    )",
+      "start_line": 364,
+      "end_line": 399,
+      "total_lines": 415,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "hydra/_internal/instantiate/_instantiate2.py",
+      "old_string": "\n            kwargs = {}\n            for key, value in node.items():\n                if key not in exclude_keys:\n                    if recursive:\n                        value = instantiate_node(\n                            value, convert=convert, recursive=recursive\n                        )\n                    kwargs[key] = _convert_node(value, convert)\n\n            return _call_target(_target_, partial, args, kwargs, full_key)\n",
+      "new_string": "\n            kwargs = {}\n            if partial:\n                # When partial=True, handle missing values by skipping them\n                for key in node.keys():\n                    if key not in exclude_keys:\n                        try:\n                            value = node[key]\n                            if recursive:\n                                value = instantiate_node(\n                                    value, convert=convert, recursive=recursive\n                                )\n                            kwargs[key] = _convert_node(value, convert)\n                        except MissingMandatoryValue:\n                            # Skip missing values in partial mode\n                            continue\n            else:\n                # Normal non-partial behavior\n                for key, value in node.items():\n                    if key not in exclude_keys:\n                        if recursive:\n                            value = instantiate_node(\n                                value, convert=convert, recursive=recursive\n                            )\n                        kwargs[key] = _convert_node(value, convert)\n\n            return _call_target(_target_, partial, args, kwargs, full_key)\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "hydra/_internal/instantiate/_instantiate2.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/hydra/_internal/instantiate/_instantiate2.py\n+++ b/hydra/_internal/instantiate/_instantiate2.py\n@@ -375,13 +375,29 @@\n         if _is_target(node):\n             _target_ = _resolve_target(node.get(_Keys.TARGET), full_key)\n             kwargs = {}\n-            for key, value in node.items():\n-                if key not in exclude_keys:\n-                    if recursive:\n-                        value = instantiate_node(\n-                            value, convert=convert, recursive=recursive\n-                        )\n-                    kwargs[key] = _convert_node(value, convert)\n+            if partial:\n+                # When partial=True, handle missing values by skipping them\n+                for key in node.keys():\n+                    if key not in exclude_keys:\n+                        try:\n+                            value = node[key]\n+                            if recursive:\n+                                value = instantiate_node(\n+                                    value, convert=convert, recursive=recursive\n+                                )\n+                            kwargs[key] = _convert_node(value, convert)\n+                        except MissingMandatoryValue:\n+                            # Skip missing values in partial mode\n+                            continue\n+            else:\n+                # Normal non-partial behavior\n+                for key, value in node.items():\n+                    if key not in exclude_keys:\n+                        if recursive:\n+                            value = instantiate_node(\n+                                value, convert=convert, recursive=recursive\n+                            )\n+                        kwargs[key] = _convert_node(value, convert)\n \n             return _call_target(_target_, partial, args, kwargs, full_key)\n         else:\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "hydra/_internal/instantiate/_instantiate2.py",
+      "start_line": 1,
+      "end_line": 23
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "hydra/_internal/instantiate/_instantiate2.py",
+      "content": "# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved\n\nimport copy\nimport functools\nfrom enum import Enum\nfrom textwrap import dedent\nfrom typing import Any, Callable, Dict, List, Sequence, Tuple, Union\n\nfrom omegaconf import OmegaConf, SCMode\nfrom omegaconf._utils import is_structured_config\n\nfrom hydra._internal.utils import _locate\nfrom hydra.errors import InstantiationException\nfrom hydra.types import ConvertMode, TargetConf\n\n\nclass _Keys(str, Enum):\n    \"\"\"Special keys in configs used by instantiate.\"\"\"\n\n    TARGET = \"_target_\"\n    CONVERT = \"_convert_\"\n    RECURSIVE = \"_recursive_\"\n    ARGS = \"_args_\"",
+      "start_line": 1,
+      "end_line": 23,
+      "total_lines": 431,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "hydra/_internal/instantiate/_instantiate2.py",
+      "old_string": "\nfrom omegaconf import OmegaConf, SCMode\nfrom omegaconf._utils import is_structured_config\n",
+      "new_string": "\nfrom omegaconf import OmegaConf, SCMode, MissingMandatoryValue\nfrom omegaconf._utils import is_structured_config\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "hydra/_internal/instantiate/_instantiate2.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/hydra/_internal/instantiate/_instantiate2.py\n+++ b/hydra/_internal/instantiate/_instantiate2.py\n@@ -6,7 +6,7 @@\n from textwrap import dedent\n from typing import Any, Callable, Dict, List, Sequence, Tuple, Union\n \n-from omegaconf import OmegaConf, SCMode\n+from omegaconf import OmegaConf, SCMode, MissingMandatoryValue\n from omegaconf._utils import is_structured_config\n \n from hydra._internal.utils import _locate\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "get_status",
+    "arguments": {},
+    "response": {
+      "status": "ok",
+      "tool_calls_used": 4,
+      "patch_submitted": false,
+      "patch_size": 0,
+      "tool_calls_remaining": 96,
+      "max_tool_calls": 100,
+      "command_timeout_seconds": 30
+    }
+  }
+]

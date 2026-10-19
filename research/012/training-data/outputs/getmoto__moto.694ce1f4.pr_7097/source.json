@@ -1,0 +1,42 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 2990,
+  "instance_id": "getmoto__moto.694ce1f4.pr_7097",
+  "repo": "getmoto/moto",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "getmoto__moto.694ce1f4.pr_7097.40o1rcbf",
+  "messages_sha256": "948cc5f756d99ca8b18d25381d07e6388c14a592028788fea3ca38a3f81b3624",
+  "issue": "# [Bug]: Missing CallerReference in Route53 hosted zone responses\n\n## Description\n\nI'm experiencing an issue with the Route53 API responses. When creating or retrieving hosted zones, the `CallerReference` field is missing from the response. This field should be included in the response as it's part of the AWS Route53 API specification.\n\n## Steps to reproduce\n\n1. Create a hosted zone with a CallerReference\n2. Try to retrieve the hosted zone\n3. Notice that the CallerReference is missing from the response\n\n```python\nimport boto3\n\n# Create a connection to Route53\nconn = boto3.client('route53', region_name='us-east-1')\n\n# Create a hosted zone with a CallerReference\nname = 'testdns.aws.com.'\ncaller_ref = 'my-unique-reference-123'\nzone = conn.create_hosted_zone(Name=name, CallerReference=caller_ref)['HostedZone']\n\n# Get the hosted zone\nres = conn.get_hosted_zone(Id=zone['Id'])\n\n# The CallerReference is missing from the response\nprint(res['HostedZone'])  # CallerReference field is not present\n```\n\n## Expected behavior\n\nThe `CallerReference` field should be included in the response when creating or retrieving a hosted zone. Additionally, when listing hosted zones, each zone in the list should include the `CallerReference` field and the `Config` section with the zone's configuration.\n\n## Actual behavior\n\nThe `CallerReference` field is missing from the responses. This affects:\n- `get_hosted_zone` response\n- `create_hosted_zone` response\n- `list_hosted_zones` response\n\nAdditionally, in the `list_hosted_zones` response, the `Config` section with zone configuration (including comments and private zone status) is also missing.\n\n## Additional information\n\nThis issue causes problems when trying to verify that the correct CallerReference was used or when trying to access zone configuration details from the list_hosted_zones response.",
+  "actions": [
+    {
+      "source_message_index": 40,
+      "filepath": "moto/route53/responses.py",
+      "old_string": "GET_HOSTED_ZONE_RESPONSE = \"\"\"<GetHostedZoneResponse xmlns=\"https://route53.amazonaws.com/doc/2012-12-12/\">\n   <HostedZone>\n      <Id>/hostedzone/{{ zone.id }}</Id>\n      <n>{{ zone.name }}</n>\n      <ResourceRecordSetCount>{{ zone.rrsets|count }}</ResourceRecordSetCount>\n      <Config>\n        {% if zone.comment %}\n            <Comment>{{ zone.comment }}</Comment>\n        {% endif %}\n        <PrivateZone>{{ 'true' if zone.private_zone else 'false' }}</PrivateZone>\n      </Config>\n   </HostedZone>\n   {% if not zone.private_zone %}\n   <DelegationSet>\n      <Id>{{ zone.delegation_set.id }}</Id>\n      <NameServers>\n        {% for name in zone.delegation_set.name_servers %}<NameServer>{{ name }}</NameServer>{% endfor %}\n      </NameServers>\n   </DelegationSet>\n   {% endif %}\n   {% if zone.private_zone %}\n   <VPCs>\n      {% for vpc in zone.vpcs %}\n      <VPC>\n         <VPCId>{{vpc.vpc_id}}</VPCId>\n         <VPCRegion>{{vpc.vpc_region}}</VPCRegion>\n      </VPC>\n      {% endfor %}\n   </VPCs>\n   {% endif %}\n</GetHostedZoneResponse>\"\"\"",
+      "new_string": "GET_HOSTED_ZONE_RESPONSE = \"\"\"<GetHostedZoneResponse xmlns=\"https://route53.amazonaws.com/doc/2012-12-12/\">\n   <HostedZone>\n      <Id>/hostedzone/{{ zone.id }}</Id>\n      <n>{{ zone.name }}</n>\n      <CallerReference>{{ zone.caller_reference }}</CallerReference>\n      <ResourceRecordSetCount>{{ zone.rrsets|count }}</ResourceRecordSetCount>\n      <Config>\n        {% if zone.comment %}\n            <Comment>{{ zone.comment }}</Comment>\n        {% endif %}\n        <PrivateZone>{{ 'true' if zone.private_zone else 'false' }}</PrivateZone>\n      </Config>\n   </HostedZone>\n   {% if not zone.private_zone %}\n   <DelegationSet>\n      <Id>{{ zone.delegation_set.id }}</Id>\n      <NameServers>\n        {% for name in zone.delegation_set.name_servers %}<NameServer>{{ name }}</NameServer>{% endfor %}\n      </NameServers>\n   </DelegationSet>\n   {% endif %}\n   {% if zone.private_zone %}\n   <VPCs>\n      {% for vpc in zone.vpcs %}\n      <VPC>\n         <VPCId>{{vpc.vpc_id}}</VPCId>\n         <VPCRegion>{{vpc.vpc_region}}</VPCRegion>\n      </VPC>\n      {% endfor %}\n   </VPCs>\n   {% endif %}\n</GetHostedZoneResponse>\"\"\"",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 44,
+      "filepath": "moto/route53/responses.py",
+      "old_string": "GET_HOSTED_ZONE_RESPONSE = \"\"\"<GetHostedZoneResponse xmlns=\"https://route53.amazonaws.com/doc/2012-12-12/\">\n   <HostedZone>\n      <Id>/hostedzone/{{ zone.id }}</Id>\n      <n>{{ zone.name }}</n>\n      <ResourceRecordSetCount>{{ zone.rrsets|count }}</ResourceRecordSetCount>\n      <Config>\n        {% if zone.comment %}\n            <Comment>{{ zone.comment }}</Comment>\n        {% endif %}\n        <PrivateZone>{{ 'true' if zone.private_zone else 'false' }}</PrivateZone>\n      </Config>\n   </HostedZone>",
+      "new_string": "GET_HOSTED_ZONE_RESPONSE = \"\"\"<GetHostedZoneResponse xmlns=\"https://route53.amazonaws.com/doc/2012-12-12/\">\n   <HostedZone>\n      <Id>/hostedzone/{{ zone.id }}</Id>\n      <n>{{ zone.name }}</n>\n      <CallerReference>{{ zone.caller_reference }}</CallerReference>\n      <ResourceRecordSetCount>{{ zone.rrsets|count }}</ResourceRecordSetCount>\n      <Config>\n        {% if zone.comment %}\n            <Comment>{{ zone.comment }}</Comment>\n        {% endif %}\n        <PrivateZone>{{ 'true' if zone.private_zone else 'false' }}</PrivateZone>\n      </Config>\n   </HostedZone>",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 46,
+      "filepath": "moto/route53/responses.py",
+      "old_string": "      <Id>/hostedzone/{{ zone.id }}</Id>\n      <n>{{ zone.name }}</n>\n      <ResourceRecordSetCount>{{ zone.rrsets|count }}</ResourceRecordSetCount>",
+      "new_string": "      <Id>/hostedzone/{{ zone.id }}</Id>\n      <n>{{ zone.name }}</n>\n      <CallerReference>{{ zone.caller_reference }}</CallerReference>\n      <ResourceRecordSetCount>{{ zone.rrsets|count }}</ResourceRecordSetCount>",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 56,
+      "filepath": "moto/route53/responses.py",
+      "old_string": "      <Id>/hostedzone/{{ zone.id }}</Id>\n      <n>{{ zone.name }}</n>\n      <ResourceRecordSetCount>{{ zone.rrsets|count }}</ResourceRecordSetCount>",
+      "new_string": "      <Id>/hostedzone/{{ zone.id }}</Id>\n      <n>{{ zone.name }}</n>\n      <CallerReference>{{ zone.caller_reference }}</CallerReference>\n      <ResourceRecordSetCount>{{ zone.rrsets|count }}</ResourceRecordSetCount>",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

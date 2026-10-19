@@ -1,0 +1,49 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "hydra/_internal/callbacks.py",
+      "start_line": 41,
+      "end_line": 72
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "hydra/_internal/callbacks.py",
+      "content": "            if cached_callback is not None:\n                self.callbacks = cached_callback.callbacks\n                return\n\n        self.callbacks = []\n        from hydra.utils import instantiate\n\n        if config is not None and OmegaConf.select(config, \"hydra.callbacks\"):\n            for params in config.hydra.callbacks.values():\n                self.callbacks.append(instantiate(params))\n        cache[id(config)] = self\n\n    def _notify(self, function_name: str, **kwargs: Any) -> None:\n        for c in self.callbacks:\n            try:\n                getattr(c, function_name)(**kwargs)\n            except Exception as e:\n                warnings.warn(\n                    f\"Callback {type(c).__name__}.{function_name} raised {type(e).__name__}: {e}\"\n                )\n\n    def on_run_start(self, config: DictConfig, **kwargs: Any) -> None:\n        self._notify(function_name=\"on_run_start\", config=config, **kwargs)\n\n    def on_run_end(self, config: DictConfig, **kwargs: Any) -> None:\n        self._notify(function_name=\"on_run_end\", config=config, **kwargs)\n\n    def on_multirun_start(self, config: DictConfig, **kwargs: Any) -> None:\n        self._notify(function_name=\"on_multirun_start\", config=config, **kwargs)\n\n    def on_multirun_end(self, config: DictConfig, **kwargs: Any) -> None:\n        self._notify(function_name=\"on_multirun_end\", config=config, **kwargs)",
+      "start_line": 41,
+      "end_line": 72,
+      "total_lines": 102,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "hydra/_internal/callbacks.py",
+      "old_string": "    def _notify(self, function_name: str, **kwargs: Any) -> None:\n        for c in self.callbacks:\n            try:\n                getattr(c, function_name)(**kwargs)\n            except Exception as e:\n                warnings.warn(\n                    f\"Callback {type(c).__name__}.{function_name} raised {type(e).__name__}: {e}\"\n                )",
+      "new_string": "    def _notify(self, function_name: str, **kwargs: Any) -> None:\n        # For end callbacks, execute in reverse order\n        callbacks = reversed(self.callbacks) if function_name.endswith(\"_end\") else self.callbacks\n        for c in callbacks:\n            try:\n                getattr(c, function_name)(**kwargs)\n            except Exception as e:\n                warnings.warn(\n                    f\"Callback {type(c).__name__}.{function_name} raised {type(e).__name__}: {e}\"\n                )",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "hydra/_internal/callbacks.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/hydra/_internal/callbacks.py\n+++ b/hydra/_internal/callbacks.py\n@@ -51,7 +51,9 @@\n         cache[id(config)] = self\n \n     def _notify(self, function_name: str, **kwargs: Any) -> None:\n-        for c in self.callbacks:\n+        # For end callbacks, execute in reverse order\n+        callbacks = reversed(self.callbacks) if function_name.endswith(\"_end\") else self.callbacks\n+        for c in callbacks:\n             try:\n                 getattr(c, function_name)(**kwargs)\n             except Exception as e:\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "get_status",
+    "arguments": {},
+    "response": {
+      "status": "ok",
+      "tool_calls_used": 2,
+      "patch_submitted": false,
+      "patch_size": 0,
+      "tool_calls_remaining": 98,
+      "max_tool_calls": 100,
+      "command_timeout_seconds": 30
+    }
+  }
+]

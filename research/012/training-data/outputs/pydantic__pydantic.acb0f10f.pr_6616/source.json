@@ -1,0 +1,21 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 339,
+  "instance_id": "pydantic__pydantic.acb0f10f.pr_6616",
+  "repo": "pydantic/pydantic",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "pydantic__pydantic.acb0f10f.pr_6616.l2emvimq",
+  "messages_sha256": "e1d04b48d8d7603c725e466c4fef93afa9f77375c70771608895f313dd1d1f51",
+  "issue": "# [Bug]: Dataclass fields with init=False are not included in validation when they have default values\n\n## Bug summary\n\nWhen using `pydantic.dataclasses.dataclass`, fields with `init=False` that have a default value or default_factory are not being included in the validation process. This means these fields are not accessible through the model's `__pydantic_fields__` attribute and are not included in serialization operations.\n\n## Code for reproduction\n\n```python\nimport dataclasses\nimport pydantic\nfrom pydantic import RootModel\n\n@pydantic.dataclasses.dataclass\nclass Model:\n    x: int = dataclasses.field(default=3, init=False)\n\nm = Model()\nprint('x' in Model.__pydantic_fields__)  # Should be True, but returns False\nprint(m.x)  # This works and returns 3\nprint(RootModel[Model](m).model_dump())  # Should include 'x', but doesn't\n```\n\n## Actual outcome\n\nThe field with `init=False` is not included in the `__pydantic_fields__` attribute and is not included in the serialized output:\n\n```\nFalse\n3\n{}\n```\n\n## Expected outcome\n\nThe field should be included in the `__pydantic_fields__` attribute and in the serialized output:\n\n```\nTrue\n3\n{'x': 3}\n```\n\n## Additional information\n\nThis issue also affects fields with `default_factory` that have `init=False`:\n\n```python\n@pydantic.dataclasses.dataclass\nclass Model:\n    x: int = dataclasses.field(default_factory=lambda: 3, init=False)\n\nm = Model()\nprint('x' in Model.__pydantic_fields__)  # Should be True, but returns False\nprint(m.x)  # This works and returns 3\nprint(RootModel[Model](m).model_dump())  # Should include 'x', but doesn't\n```\n\nThe issue appears to be in the `collect_dataclass_fields` function where fields with `init=False` are being skipped regardless of whether they have default values or not.\n\n## Pydantic Version\n\n2.1.1",
+  "actions": [
+    {
+      "source_message_index": 22,
+      "filepath": "pydantic/_internal/_fields.py",
+      "old_string": "\n                if not dataclass_field.init:\n                    # TODO: We should probably do something with this so that validate_assignment behaves properly\n                    #   Issue: https://github.com/pydantic/pydantic/issues/5470\n                    continue\n",
+      "new_string": "\n                if not dataclass_field.init:\n                    # Skip fields with init=False only if they don't have a default value or default_factory\n                    if dataclass_field.default is dataclasses.MISSING and dataclass_field.default_factory is dataclasses.MISSING:\n                        # TODO: We should probably do something with this so that validate_assignment behaves properly\n                        #   Issue: https://github.com/pydantic/pydantic/issues/5470\n                        continue\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

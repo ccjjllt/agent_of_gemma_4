@@ -1,0 +1,214 @@
+{
+  "sample_id": "p012-graphql-python__graphene.82903263.pr_1581",
+  "transaction_id": "p012-graphql-python__graphene.82903263.pr_1581",
+  "producer_revision": "p012-local-2",
+  "synthetic": false,
+  "origin_kind": "cpu_replayed_source_edit_subset",
+  "group": {
+    "issue": "graphql-python__graphene.82903263.pr_1581",
+    "repo": "graphql-python/graphene",
+    "commit": "7568d663f5b305d43ae830f79d04646451dbd3a5",
+    "split": "train"
+  },
+  "source": {
+    "uri": "https://huggingface.co/datasets/SWE-bench/SWE-smith-trajectories/tree/08e109b4a59eaeebf80e4675cd125d42e7ac99a4",
+    "license": "MIT dataset; repository license in provenance.json",
+    "sha256": "2ec3233a33cab3b5e44bd0ed25639a03fd9c1064fd0385610afcd64a675de8c5",
+    "teacher": "claude-3-7-sonnet-20250219",
+    "traj_id": "graphql-python__graphene.82903263.pr_1581.y1wve1wy"
+  },
+  "protocol_id": "p012-repair-v1",
+  "tool_schema": {
+    "path": "research/012/agent/repair_tools_v1.json",
+    "canonical_sha256": "91ec82b15fe0961b3ef9e686fac268706ce954a69cabaa0d705c63d41088e267",
+    "names": [
+      "run_command",
+      "read_file",
+      "edit_file",
+      "write_file",
+      "get_status"
+    ],
+    "repair_role_holds_submit_patch": false
+  },
+  "messages": [
+    {
+      "role": "system",
+      "content": "Use the supplied repository tools. Preserve unrelated behavior. Treat tool failures as observations and correct the action before retrying. Do not modify tests."
+    },
+    {
+      "role": "user",
+      "content": "Implement the following requested change in the repository.\n\nDateTime scalar fails to parse ISO 8601 format with Z timezone indicator\n\nWhile working with the DateTime scalar, I found that it fails to parse ISO 8601 formatted dates that use the 'Z' timezone indicator.\n\nA simple reproduction case:\n\n```python\nfrom graphene import Schema, ObjectType, String, DateTime\n\nclass Query(ObjectType):\n    datetime = String(in_=DateTime())\n    \n    def resolve_datetime(self, info, in_):\n        return in_.isoformat()\n\nschema = Schema(query=Query)\n\n# This fails\nisoformat = '2011-11-04T00:05:23Z'\nresult = schema.execute('query DateTime($time: DateTime){ datetime(in: $time) }', variables={'time': isoformat})\nprint(result.errors)  # Shows parsing error\n```\n\nThe issue is that when using the 'Z' timezone indicator (which represents UTC), the DateTime scalar fails to parse it correctly. This is a common format used in many APIs and JSON responses.\n\nExpected behavior:\n- The DateTime scalar should correctly parse ISO 8601 formatted dates with the 'Z' timezone indicator\n- The above query should return the datetime value without errors\n\nActual behavior:\n- The DateTime scalar fails to parse the input with a ValueError\n- The query returns an error instead of the expected datetime value\n\nThis affects any GraphQL queries where clients might send datetime values with the 'Z' timezone indicator, which is a standard way to represent UTC time in ISO 8601.\n\nScope of this editing session: update the following production files and report the resulting local change for handover: graphene/types/datetime.py. No full task validation has been performed in this session."
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_00",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": {
+              "filepath": "graphene/types/datetime.py",
+              "start_line": 53,
+              "end_line": 88
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_00",
+      "name": "read_file",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"filepath\": \"graphene/types/datetime.py\", \"content\": \"        if not isinstance(dt, (datetime.datetime, datetime.date)):\\n            raise GraphQLError(f\\\"DateTime cannot represent value: {repr(dt)}\\\")\\n        return dt.isoformat()\\n\\n    @classmethod\\n    def parse_literal(cls, node, _variables=None):\\n        if not isinstance(node, StringValueNode):\\n            raise GraphQLError(\\n                f\\\"DateTime cannot represent non-string value: {print_ast(node)}\\\"\\n            )\\n        return cls.parse_value(node.value)\\n\\n    @staticmethod\\n    def parse_value(value):\\n        if isinstance(value, datetime.datetime):\\n            return value\\n        if not isinstance(value, str):\\n            raise GraphQLError(\\n                f\\\"DateTime cannot represent non-string value: {repr(value)}\\\"\\n            )\\n        try:\\n            return datetime.datetime.fromisoformat(value)\\n        except ValueError:\\n            raise GraphQLError(f\\\"DateTime cannot represent value: {repr(value)}\\\")\\n\\n\\nclass Time(Scalar):\\n    \\\"\\\"\\\"\\n    The `Time` scalar type represents a Time value as\\n    specified by\\n    [iso8601](https://en.wikipedia.org/wiki/ISO_8601).\\n    \\\"\\\"\\\"\\n\\n    @staticmethod\\n    def serialize(time):\\n        if not isinstance(time, datetime.time):\", \"start_line\": 53, \"end_line\": 88, \"total_lines\": 109, \"is_truncated\": false}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_01",
+          "type": "function",
+          "function": {
+            "name": "edit_file",
+            "arguments": {
+              "filepath": "graphene/types/datetime.py",
+              "old_string": "    @staticmethod\n    def parse_value(value):\n        if isinstance(value, datetime.datetime):\n            return value\n        if not isinstance(value, str):\n            raise GraphQLError(\n                f\"DateTime cannot represent non-string value: {repr(value)}\"\n            )\n        try:\n            return datetime.datetime.fromisoformat(value)\n        except ValueError:\n            raise GraphQLError(f\"DateTime cannot represent value: {repr(value)}\")",
+              "new_string": "    @staticmethod\n    def parse_value(value):\n        if isinstance(value, datetime.datetime):\n            return value\n        if not isinstance(value, str):\n            raise GraphQLError(\n                f\"DateTime cannot represent non-string value: {repr(value)}\"\n            )\n        try:\n            # Handle 'Z' timezone indicator by replacing it with '+00:00'\n            if value.endswith('Z'):\n                value = value[:-1] + '+00:00'\n            return datetime.datetime.fromisoformat(value)\n        except ValueError:\n            raise GraphQLError(f\"DateTime cannot represent value: {repr(value)}\")",
+              "allow_multiple": false
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_01",
+      "name": "edit_file",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"filepath\": \"graphene/types/datetime.py\", \"occurrences\": 1, \"strategy\": \"exact\", \"diff\": \"--- a/graphene/types/datetime.py\\n+++ b/graphene/types/datetime.py\\n@@ -71,6 +71,9 @@\\n                 f\\\"DateTime cannot represent non-string value: {repr(value)}\\\"\\n             )\\n         try:\\n+            # Handle 'Z' timezone indicator by replacing it with '+00:00'\\n+            if value.endswith('Z'):\\n+                value = value[:-1] + '+00:00'\\n             return datetime.datetime.fromisoformat(value)\\n         except ValueError:\\n             raise GraphQLError(f\\\"DateTime cannot represent value: {repr(value)}\\\")\\n\", \"is_truncated\": false}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_02",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": {
+              "filepath": "graphene/types/datetime.py",
+              "start_line": 61,
+              "end_line": 91
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_02",
+      "name": "read_file",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"filepath\": \"graphene/types/datetime.py\", \"content\": \"                f\\\"DateTime cannot represent non-string value: {print_ast(node)}\\\"\\n            )\\n        return cls.parse_value(node.value)\\n\\n    @staticmethod\\n    def parse_value(value):\\n        if isinstance(value, datetime.datetime):\\n            return value\\n        if not isinstance(value, str):\\n            raise GraphQLError(\\n                f\\\"DateTime cannot represent non-string value: {repr(value)}\\\"\\n            )\\n        try:\\n            # Handle 'Z' timezone indicator by replacing it with '+00:00'\\n            if value.endswith('Z'):\\n                value = value[:-1] + '+00:00'\\n            return datetime.datetime.fromisoformat(value)\\n        except ValueError:\\n            raise GraphQLError(f\\\"DateTime cannot represent value: {repr(value)}\\\")\\n\\n\\nclass Time(Scalar):\\n    \\\"\\\"\\\"\\n    The `Time` scalar type represents a Time value as\\n    specified by\\n    [iso8601](https://en.wikipedia.org/wiki/ISO_8601).\\n    \\\"\\\"\\\"\\n\\n    @staticmethod\\n    def serialize(time):\\n        if not isinstance(time, datetime.time):\", \"start_line\": 61, \"end_line\": 91, \"total_lines\": 112, \"is_truncated\": false}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_03",
+          "type": "function",
+          "function": {
+            "name": "edit_file",
+            "arguments": {
+              "filepath": "graphene/types/datetime.py",
+              "old_string": "        try:\n            # Handle 'Z' timezone indicator by replacing it with '+00:00'\n            if value.endswith('Z'):\n                value = value[:-1] + '+00:00'\n            return datetime.datetime.fromisoformat(value)\n        except ValueError:\n            raise GraphQLError(f\"DateTime cannot represent value: {repr(value)}\")",
+              "new_string": "        try:\n            # Handle 'Z' timezone indicator by replacing it with '+00:00'\n            # Only replace 'Z' at the end of the string to ensure we don't modify\n            # 'Z' characters that might appear elsewhere in the string\n            if value.endswith('Z'):\n                value = value[:-1] + '+00:00'\n            return datetime.datetime.fromisoformat(value)\n        except ValueError:\n            raise GraphQLError(f\"DateTime cannot represent value: {repr(value)}\")",
+              "allow_multiple": false
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_03",
+      "name": "edit_file",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"filepath\": \"graphene/types/datetime.py\", \"occurrences\": 1, \"strategy\": \"exact\", \"diff\": \"--- a/graphene/types/datetime.py\\n+++ b/graphene/types/datetime.py\\n@@ -72,6 +72,8 @@\\n             )\\n         try:\\n             # Handle 'Z' timezone indicator by replacing it with '+00:00'\\n+            # Only replace 'Z' at the end of the string to ensure we don't modify\\n+            # 'Z' characters that might appear elsewhere in the string\\n             if value.endswith('Z'):\\n                 value = value[:-1] + '+00:00'\\n             return datetime.datetime.fromisoformat(value)\\n\", \"is_truncated\": false}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_04",
+          "type": "function",
+          "function": {
+            "name": "get_status",
+            "arguments": {}
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_04",
+      "name": "get_status",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"tool_calls_used\": 4, \"patch_submitted\": false, \"patch_size\": 0, \"tool_calls_remaining\": 96, \"max_tool_calls\": 100, \"command_timeout_seconds\": 30}"
+    },
+    {
+      "role": "assistant",
+      "content": "{\n  \"candidate_id\": \"p012-graphql-python__graphene.82903263.pr_1581\",\n  \"files\": [\n    {\n      \"path\": \"graphene/types/datetime.py\",\n      \"after_sha256\": \"65169790bcb7768b3f1f2befc9d66f0628b229ec2fd339a5d96b3f27239e95f3\"\n    }\n  ],\n  \"requirement_done\": true,\n  \"requirement_scope\": \"local production edits applied and syntactically parsed; full-task validation NOT performed in this session\",\n  \"verification\": {\n    \"observation\": \"get_status\",\n    \"status\": \"ok\",\n    \"scope\": \"post-edit local patch status of the same workspace; no repository test suite or whole-issue oracle executed\"\n  },\n  \"unresolved\": [\n    \"no whole-issue oracle executed; task_resolved=null\",\n    \"behavior recovery chain to be upgraded by a later step, not fabricated here\"\n  ],\n  \"needs_other_route\": false\n}",
+      "tool_calls": []
+    }
+  ],
+  "target_assistant_steps": [
+    1,
+    3,
+    4,
+    5
+  ],
+  "behavior": "local_edit",
+  "needs_replay": false,
+  "attempt_status": "local_edits_applied",
+  "observed_outcome": {
+    "action_succeeded": true,
+    "task_resolved": null,
+    "behavior_verified": false,
+    "syntax_parse_passed": true,
+    "local_patch_nonempty": true,
+    "handover_reported": true,
+    "scope": "All selected structured production str_replace actions replayed from fixed buggy snapshot with five official tools (no submit_patch); post-edit status observed via get_status; session ends with a handover report, not a submission. This is local edit supervision, not a resolved task or full trajectory."
+  },
+  "handover": {
+    "candidate_id": "p012-graphql-python__graphene.82903263.pr_1581",
+    "files": [
+      {
+        "path": "graphene/types/datetime.py",
+        "after_sha256": "65169790bcb7768b3f1f2befc9d66f0628b229ec2fd339a5d96b3f27239e95f3"
+      }
+    ],
+    "requirement_done": true,
+    "requirement_scope": "local production edits applied and syntactically parsed; full-task validation NOT performed in this session",
+    "verification": {
+      "observation": "get_status",
+      "status": "ok",
+      "scope": "post-edit local patch status of the same workspace; no repository test suite or whole-issue oracle executed"
+    },
+    "unresolved": [
+      "no whole-issue oracle executed; task_resolved=null",
+      "behavior recovery chain to be upgraded by a later step, not fabricated here"
+    ],
+    "needs_other_route": false
+  },
+  "source_resolved_label": true,
+  "source_label_not_revalidated": true,
+  "replay_boundary": "Unchanged official v31 tool functions minus submit_patch, with macOS local transport, production subset. Read locations derived from source edit targets; this is edit/action SFT, not search-policy supervision.",
+  "continuation_policy": "New read/edit/status tool observations only; no old assistant future or old tool observations reused."
+}

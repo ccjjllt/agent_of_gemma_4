@@ -1,0 +1,21 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 2305,
+  "instance_id": "iterative__dvc.1d6ea681.pr_8118",
+  "repo": "iterative/dvc",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "iterative__dvc.1d6ea681.pr_8118.40o1rcbf",
+  "messages_sha256": "cacb2579b3a0ca1e7b9cf1691155cb3c39660c2ca4fe9c51ce4e00035fbb6dd2",
+  "issue": "# AttributeError in rwlock when accessing fs.path.join\n\nWhen using DVC, I'm encountering an AttributeError related to the filesystem path handling in the rwlock module.\n\n## The problem is\n```python\nAttributeError: 'LocalFileSystem' object has no attribute 'path'\n```\n\nThis happens when trying to perform operations that use the rwlock functionality, like adding files or running stages.\n\n## To Reproduce\nCreate a simple DVC project and try to add a file:\n\n```bash\n$ mkdir dvc-test && cd dvc-test\n$ dvc init\n$ echo \"test data\" > data.txt\n$ dvc add data.txt\n```\n\nThe error occurs because the code is trying to access `fs.path.join()` but the filesystem object doesn't have a `path` attribute. Instead, it should be using `fs.join()` directly.\n\n## Expected behavior\nDVC should be able to properly handle file paths when using rwlock functionality, allowing operations like `dvc add` and `dvc run` to complete successfully.\n\nThis affects many core DVC operations that rely on the rwlock mechanism for file locking.\n\n_Originally posted by @user in https://github.com/iterative/dvc/issues/1234_\n\n<END WRITING>",
+  "actions": [
+    {
+      "source_message_index": 28,
+      "filepath": "dvc/rwlock.py",
+      "old_string": "@contextmanager\ndef _edit_rwlock(lock_dir, fs):\n    path = fs.path.join(lock_dir, \"rwlock\")\n    try:\n        with fs.open(path, encoding=\"utf-8\") as fobj:\n            lock = SCHEMA(json.load(fobj))\n    except FileNotFoundError:\n        lock = SCHEMA({})\n    except json.JSONDecodeError as exc:\n        raise RWLockFileCorruptedError(path) from exc\n    except Invalid as exc:\n        raise RWLockFileFormatError(path) from exc",
+      "new_string": "@contextmanager\ndef _edit_rwlock(lock_dir, fs):\n    path = fs.join(lock_dir, \"rwlock\")\n    try:\n        with fs.open(path, encoding=\"utf-8\") as fobj:\n            lock = SCHEMA(json.load(fobj))\n    except FileNotFoundError:\n        lock = SCHEMA({})\n    except json.JSONDecodeError as exc:\n        raise RWLockFileCorruptedError(path) from exc\n    except Invalid as exc:\n        raise RWLockFileFormatError(path) from exc",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

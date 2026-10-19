@@ -1,0 +1,151 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "freezegun/api.py",
+      "start_line": 572,
+      "end_line": 612
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "freezegun/api.py",
+      "content": "    def update_step_width(self, step_width: float) -> None:\n        self.step_width = step_width\n\n    def move_to(self, target_datetime: _Freezable) -> None:\n        \"\"\"Moves frozen date to the given ``target_datetime``\"\"\"\n        target_datetime = _parse_time_to_freeze(target_datetime)\n        delta = target_datetime - self.time_to_freeze\n        self.tick(delta=delta)\n\n\nclass _freeze_time:\n\n    def __init__(\n        self,\n        time_to_freeze_str: Optional[_Freezable],\n        tz_offset: Union[int, datetime.timedelta],\n        ignore: List[str],\n        tick: bool,\n        as_arg: bool,\n        as_kwarg: str,\n        auto_tick_seconds: float,\n    ):\n        self.time_to_freeze = _parse_time_to_freeze(time_to_freeze_str)\n        self.tz_offset = _parse_tz_offset(tz_offset)\n        self.ignore = tuple(ignore)\n        self.tick = tick\n        self.auto_tick_seconds = auto_tick_seconds\n        self.undo_changes: List[Tuple[types.ModuleType, str, Any]] = []\n        self.modules_at_start: Set[str] = set()\n        self.as_arg = as_arg\n        self.as_kwarg = as_kwarg\n\n    @overload\n    def __call__(self, func: Type[T2]) -> Type[T2]:\n        ...\n\n    @overload\n    def __call__(self, func: \"Callable[P, Awaitable[Any]]\") -> \"Callable[P, Awaitable[Any]]\":\n        ...\n\n    @overload",
+      "start_line": 572,
+      "end_line": 612,
+      "total_lines": 958,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "freezegun/api.py",
+      "old_string": "    def __init__(\n        self,\n        time_to_freeze_str: Optional[_Freezable],\n        tz_offset: Union[int, datetime.timedelta],\n        ignore: List[str],\n        tick: bool,\n        as_arg: bool,\n        as_kwarg: str,\n        auto_tick_seconds: float,\n    ):\n        self.time_to_freeze = _parse_time_to_freeze(time_to_freeze_str)\n        self.tz_offset = _parse_tz_offset(tz_offset)\n        self.ignore = tuple(ignore)\n        self.tick = tick\n        self.auto_tick_seconds = auto_tick_seconds\n        self.undo_changes: List[Tuple[types.ModuleType, str, Any]] = []\n        self.modules_at_start: Set[str] = set()",
+      "new_string": "    def __init__(\n        self,\n        time_to_freeze_str: Optional[_Freezable],\n        tz_offset: Union[int, datetime.timedelta],\n        ignore: List[str],\n        tick: bool,\n        as_arg: bool,\n        as_kwarg: str,\n        auto_tick_seconds: float,\n        real_asyncio: bool = False,\n    ):\n        self.time_to_freeze = _parse_time_to_freeze(time_to_freeze_str)\n        self.tz_offset = _parse_tz_offset(tz_offset)\n        self.ignore = tuple(ignore)\n        self.tick = tick\n        self.auto_tick_seconds = auto_tick_seconds\n        self.real_asyncio = real_asyncio\n        self.undo_changes: List[Tuple[types.ModuleType, str, Any]] = []\n        self.modules_at_start: Set[str] = set()",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "freezegun/api.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/freezegun/api.py\n+++ b/freezegun/api.py\n@@ -590,12 +590,14 @@\n         as_arg: bool,\n         as_kwarg: str,\n         auto_tick_seconds: float,\n+        real_asyncio: bool = False,\n     ):\n         self.time_to_freeze = _parse_time_to_freeze(time_to_freeze_str)\n         self.tz_offset = _parse_tz_offset(tz_offset)\n         self.ignore = tuple(ignore)\n         self.tick = tick\n         self.auto_tick_seconds = auto_tick_seconds\n+        self.real_asyncio = real_asyncio\n         self.undo_changes: List[Tuple[types.ModuleType, str, Any]] = []\n         self.modules_at_start: Set[str] = set()\n         self.as_arg = as_arg\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "freezegun/api.py",
+      "start_line": 776,
+      "end_line": 813
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "freezegun/api.py",
+      "content": "                elif mod_name.startswith(self.ignore) or mod_name.endswith('.six.moves'):\n                    continue\n                elif (not hasattr(module, \"__name__\") or module.__name__ in ('datetime', 'time')):\n                    continue\n\n                module_attrs = _get_cached_module_attributes(module)\n                for attribute_name, attribute_value in module_attrs:\n                    fake = fakes.get(id(attribute_value))\n                    if fake:\n                        setattr(module, attribute_name, fake)\n                        add_change((module, attribute_name, attribute_value))\n\n        # To avoid breaking `asyncio.sleep()`, let asyncio event loops see real\n        # monotonic time even though we've just frozen `time.monotonic()` which\n        # is normally used there. If we didn't do this, `await asyncio.sleep()`\n        # would be hanging forever breaking many tests that use `freeze_time`.\n        #\n        # Note that we cannot statically tell the class of asyncio event loops\n        # because it is not officially documented and can actually be changed\n        # at run time using `asyncio.set_event_loop_policy`. That's why we check\n        # the type by creating a loop here and destroying it immediately.\n        event_loop = asyncio.new_event_loop()\n        event_loop.close()\n        EventLoopClass = type(event_loop)\n        add_change((EventLoopClass, \"time\", EventLoopClass.time))\n        EventLoopClass.time = lambda self: real_monotonic()\n\n        return freeze_factory\n\n    def stop(self) -> None:\n        freeze_factories.pop()\n        ignore_lists.pop()\n        tick_flags.pop()\n        tz_offsets.pop()\n\n        if not freeze_factories:\n            datetime.datetime = real_datetime  # type: ignore[misc]\n            datetime.date = real_date  # type: ignore[misc]",
+      "start_line": 776,
+      "end_line": 813,
+      "total_lines": 960,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "freezegun/api.py",
+      "old_string": "        # To avoid breaking `asyncio.sleep()`, let asyncio event loops see real\n        # monotonic time even though we've just frozen `time.monotonic()` which\n        # is normally used there. If we didn't do this, `await asyncio.sleep()`\n        # would be hanging forever breaking many tests that use `freeze_time`.\n        #\n        # Note that we cannot statically tell the class of asyncio event loops\n        # because it is not officially documented and can actually be changed\n        # at run time using `asyncio.set_event_loop_policy`. That's why we check\n        # the type by creating a loop here and destroying it immediately.\n        event_loop = asyncio.new_event_loop()\n        event_loop.close()\n        EventLoopClass = type(event_loop)\n        add_change((EventLoopClass, \"time\", EventLoopClass.time))\n        EventLoopClass.time = lambda self: real_monotonic()",
+      "new_string": "        # To avoid breaking `asyncio.sleep()`, let asyncio event loops see real\n        # monotonic time even though we've just frozen `time.monotonic()` which\n        # is normally used there. If we didn't do this, `await asyncio.sleep()`\n        # would be hanging forever breaking many tests that use `freeze_time`.\n        #\n        # Note that we cannot statically tell the class of asyncio event loops\n        # because it is not officially documented and can actually be changed\n        # at run time using `asyncio.set_event_loop_policy`. That's why we check\n        # the type by creating a loop here and destroying it immediately.\n        event_loop = asyncio.new_event_loop()\n        event_loop.close()\n        EventLoopClass = type(event_loop)\n        add_change((EventLoopClass, \"time\", EventLoopClass.time))\n        if self.real_asyncio:\n            EventLoopClass.time = lambda self: real_monotonic()\n        else:\n            EventLoopClass.time = lambda self: fake_monotonic()",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "freezegun/api.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/freezegun/api.py\n+++ b/freezegun/api.py\n@@ -798,7 +798,10 @@\n         event_loop.close()\n         EventLoopClass = type(event_loop)\n         add_change((EventLoopClass, \"time\", EventLoopClass.time))\n-        EventLoopClass.time = lambda self: real_monotonic()\n+        if self.real_asyncio:\n+            EventLoopClass.time = lambda self: real_monotonic()\n+        else:\n+            EventLoopClass.time = lambda self: fake_monotonic()\n \n         return freeze_factory\n \n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "freezegun/api.py",
+      "start_line": 881,
+      "end_line": 906
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "freezegun/api.py",
+      "content": "                elif self.as_arg:\n                    result = func(time_factory, *args, **kwargs)  # type: ignore\n                elif self.as_kwarg:\n                    kwargs[self.as_kwarg] = time_factory\n                    result = func(*args, **kwargs)\n                else:\n                    result = func(*args, **kwargs)\n            return result\n\n        return wrapper\n\n\ndef freeze_time(time_to_freeze: Optional[_Freezable]=None, tz_offset: Union[int, datetime.timedelta]=0, ignore: Optional[List[str]]=None, tick: bool=False, as_arg: bool=False, as_kwarg: str='',\n                auto_tick_seconds: float=0) -> _freeze_time:\n    acceptable_times: Any = (type(None), str, datetime.date, datetime.timedelta,\n             types.FunctionType, types.GeneratorType)\n\n    if MayaDT is not None:\n        acceptable_times += MayaDT,\n\n    if not isinstance(time_to_freeze, acceptable_times):\n        raise TypeError(('freeze_time() expected None, a string, date instance, datetime '\n                         'instance, MayaDT, timedelta instance, function or a generator, but got '\n                         'type {}.').format(type(time_to_freeze)))\n    if tick and not _is_cpython:\n        raise SystemError('Calling freeze_time with tick=True is only compatible with CPython')",
+      "start_line": 881,
+      "end_line": 906,
+      "total_lines": 963,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "freezegun/api.py",
+      "old_string": "def freeze_time(time_to_freeze: Optional[_Freezable]=None, tz_offset: Union[int, datetime.timedelta]=0, ignore: Optional[List[str]]=None, tick: bool=False, as_arg: bool=False, as_kwarg: str='',\n                auto_tick_seconds: float=0) -> _freeze_time:",
+      "new_string": "def freeze_time(time_to_freeze: Optional[_Freezable]=None, tz_offset: Union[int, datetime.timedelta]=0, ignore: Optional[List[str]]=None, tick: bool=False, as_arg: bool=False, as_kwarg: str='',\n                auto_tick_seconds: float=0, real_asyncio: bool=False) -> _freeze_time:",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "freezegun/api.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/freezegun/api.py\n+++ b/freezegun/api.py\n@@ -891,7 +891,7 @@\n \n \n def freeze_time(time_to_freeze: Optional[_Freezable]=None, tz_offset: Union[int, datetime.timedelta]=0, ignore: Optional[List[str]]=None, tick: bool=False, as_arg: bool=False, as_kwarg: str='',\n-                auto_tick_seconds: float=0) -> _freeze_time:\n+                auto_tick_seconds: float=0, real_asyncio: bool=False) -> _freeze_time:\n     acceptable_times: Any = (type(None), str, datetime.date, datetime.timedelta,\n              types.FunctionType, types.GeneratorType)\n \n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "freezegun/api.py",
+      "start_line": 912,
+      "end_line": 944
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "freezegun/api.py",
+      "content": "        return freeze_time(next(time_to_freeze), tz_offset, ignore, tick, as_arg, as_kwarg, auto_tick_seconds)\n\n    if MayaDT is not None and isinstance(time_to_freeze, MayaDT):\n        return freeze_time(time_to_freeze.datetime(), tz_offset, ignore,\n                           tick, as_arg, as_kwarg, auto_tick_seconds)\n\n    if ignore is None:\n        ignore = []\n    ignore = ignore[:]\n    if config.settings.default_ignore_list:\n        ignore.extend(config.settings.default_ignore_list)\n\n    return _freeze_time(\n        time_to_freeze_str=time_to_freeze,\n        tz_offset=tz_offset,\n        ignore=ignore,\n        tick=tick,\n        as_arg=as_arg,\n        as_kwarg=as_kwarg,\n        auto_tick_seconds=auto_tick_seconds,\n    )\n\n\n# Setup adapters for sqlite\ntry:\n    # noinspection PyUnresolvedReferences\n    import sqlite3\nexcept ImportError:\n    # Some systems have trouble with this\n    pass\nelse:\n    # These are copied from Python sqlite3.dbapi2\n    def adapt_date(val: datetime.date) -> str:",
+      "start_line": 912,
+      "end_line": 944,
+      "total_lines": 963,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "freezegun/api.py",
+      "old_string": "    return _freeze_time(\n        time_to_freeze_str=time_to_freeze,\n        tz_offset=tz_offset,\n        ignore=ignore,\n        tick=tick,\n        as_arg=as_arg,\n        as_kwarg=as_kwarg,\n        auto_tick_seconds=auto_tick_seconds,\n    )",
+      "new_string": "    return _freeze_time(\n        time_to_freeze_str=time_to_freeze,\n        tz_offset=tz_offset,\n        ignore=ignore,\n        tick=tick,\n        as_arg=as_arg,\n        as_kwarg=as_kwarg,\n        auto_tick_seconds=auto_tick_seconds,\n        real_asyncio=real_asyncio,\n    )",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "freezegun/api.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/freezegun/api.py\n+++ b/freezegun/api.py\n@@ -929,6 +929,7 @@\n         as_arg=as_arg,\n         as_kwarg=as_kwarg,\n         auto_tick_seconds=auto_tick_seconds,\n+        real_asyncio=real_asyncio,\n     )\n \n \n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "get_status",
+    "arguments": {},
+    "response": {
+      "status": "ok",
+      "tool_calls_used": 8,
+      "patch_submitted": false,
+      "patch_size": 0,
+      "tool_calls_remaining": 92,
+      "max_tool_calls": 100,
+      "command_timeout_seconds": 30
+    }
+  }
+]

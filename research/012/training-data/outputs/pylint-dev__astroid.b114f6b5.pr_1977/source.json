@@ -1,0 +1,49 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00006-of-00008.parquet",
+  "row_index": 517,
+  "instance_id": "pylint-dev__astroid.b114f6b5.pr_1977",
+  "repo": "pylint-dev/astroid",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "pylint-dev__astroid.b114f6b5.pr_1977.trb5dnqc",
+  "messages_sha256": "7c07a1d7d5ae418b32048ffc3351430fe2cc458b371fcac685088b4808647c7e",
+  "issue": "### Bug report\n\n**Bug summary**\n\nAfter the recent changes, it seems that the handling of UnionType has been removed, which is causing issues during the inference process.\n\n**Code for reproduction**\n\nHere's a simple script to demonstrate the problem:\n\n```python\nfrom astroid import nodes, bases\n\n# Attempt to create a UnionType node\ntry:\n    union_node = bases.UnionType(nodes.Const(1), nodes.Const(2))\n    print(union_node)\nexcept Exception as e:\n    print(f\"Error: {e}\")\n```\n\n**Actual outcome**\n\nRunning the above code results in an error indicating that UnionType is not recognized or improperly handled.\n\n**Expected outcome**\n\nThe code should successfully create a UnionType node and print its representation without any errors.\n\n**Environment**\n\n- Operating system: Linux\n- Python version: 3.10.16\n- Astroid version: latest master\n\nThis issue seems to have been introduced with the recent removal of UnionType handling in the codebase.",
+  "actions": [
+    {
+      "source_message_index": 24,
+      "filepath": "astroid/bases.py",
+      "old_string": "\nclass AsyncGenerator(Generator):\n    \"\"\"Special node representing an async generator.\"\"\"\n\n    def __init__(self, *args, **kwargs):\n        super().__init__(*args, **kwargs)\n        AsyncGenerator.special_attributes = objectmodel.AsyncGeneratorModel()\n\n    def pytype(self) -> Literal[\"builtins.async_generator\"]:\n        return \"builtins.async_generator\"\n\n    def display_type(self) -> str:\n        return \"AsyncGenerator\"\n\n    def __repr__(self) -> str:\n        return f\"<AsyncGenerator({self._proxied.name}) l.{self.lineno} at 0x{id(self)}>\"\n\n    def __str__(self) -> str:\n        return f\"AsyncGenerator({self._proxied.name})\"\n",
+      "new_string": "\nclass AsyncGenerator(Generator):\n    \"\"\"Special node representing an async generator.\"\"\"\n\n    def __init__(self, *args, **kwargs):\n        super().__init__(*args, **kwargs)\n        AsyncGenerator.special_attributes = objectmodel.AsyncGeneratorModel()\n\n    def pytype(self) -> Literal[\"builtins.async_generator\"]:\n        return \"builtins.async_generator\"\n\n    def display_type(self) -> str:\n        return \"AsyncGenerator\"\n\n    def __repr__(self) -> str:\n        return f\"<AsyncGenerator({self._proxied.name}) l.{self.lineno} at 0x{id(self)}>\"\n\n    def __str__(self) -> str:\n        return f\"AsyncGenerator({self._proxied.name})\"\n\n\nclass UnionType(BaseInstance):\n    \"\"\"Special node representing new style typing unions.\n\n    Proxied class is set once for all in raw_building.\n    \"\"\"\n\n    def __init__(\n        self,\n        left: UnionType | nodes.ClassDef | nodes.Const,\n        right: UnionType | nodes.ClassDef | nodes.Const,\n        parent: nodes.NodeNG | None = None,\n    ) -> None:\n        super().__init__()\n        self.parent = parent\n        self.left = left\n        self.right = right\n\n    def callable(self) -> Literal[False]:\n        return False\n\n    def bool_value(self, context: InferenceContext | None = None) -> Literal[True]:\n        return True\n\n    def pytype(self) -> Literal[\"types.UnionType\"]:\n        return \"types.UnionType\"\n\n    def display_type(self) -> str:\n        return \"UnionType\"\n\n    def __repr__(self) -> str:\n        return f\"<UnionType({self._proxied.name}) l.{self.lineno} at 0x{id(self)}>\"\n\n    def __str__(self) -> str:\n        return f\"UnionType({self._proxied.name})\"\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 26,
+      "filepath": "astroid/bases.py",
+      "old_string": "\n    def __init__(\n        self,\n        proxied: (\n            nodes.ClassDef | nodes.FunctionDef | nodes.Lambda | UnboundMethod | None\n        ) = None,\n    ) -> None:\n        if proxied is None:\n            # This is a hack to allow calling this __init__ during bootstrapping of\n            # builtin classes and their docstrings.\n            # For Const and Generator nodes the _proxied attribute is set during bootstrapping\n            # as we first need to build the ClassDef that they can proxy.\n            # Thus, if proxied is None self should be a Const or Generator\n            # as that is the only way _proxied will be correctly set as a ClassDef.\n            assert isinstance(self, (nodes.Const, Generator))\n        else:\n            self._proxied = proxied\n",
+      "new_string": "\n    def __init__(\n        self,\n        proxied: (\n            nodes.ClassDef | nodes.FunctionDef | nodes.Lambda | UnboundMethod | None\n        ) = None,\n    ) -> None:\n        if proxied is None:\n            # This is a hack to allow calling this __init__ during bootstrapping of\n            # builtin classes and their docstrings.\n            # For Const, Generator, and UnionType nodes the _proxied attribute\n            # is set during bootstrapping\n            # as we first need to build the ClassDef that they can proxy.\n            # Thus, if proxied is None self should be a Const or Generator\n            # as that is the only way _proxied will be correctly set as a ClassDef.\n            assert isinstance(self, (nodes.Const, Generator, UnionType))\n        else:\n            self._proxied = proxied\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 28,
+      "filepath": "astroid/raw_building.py",
+      "old_string": "\n        bases.AsyncGenerator._proxied = _AsyncGeneratorType\n        builder.object_build(bases.AsyncGenerator._proxied, types.AsyncGeneratorType)\n\n    builtin_types = (\n",
+      "new_string": "\n        bases.AsyncGenerator._proxied = _AsyncGeneratorType\n        builder.object_build(bases.AsyncGenerator._proxied, types.AsyncGeneratorType)\n\n    if hasattr(types, \"UnionType\"):\n        _UnionTypeType = nodes.ClassDef(\n            types.UnionType.__name__,\n            lineno=0,\n            col_offset=0,\n            end_lineno=0,\n            end_col_offset=0,\n            parent=astroid_builtin,\n        )\n        union_type_doc_node = (\n            nodes.Const(value=types.UnionType.__doc__)\n            if types.UnionType.__doc__\n            else None\n        )\n        _UnionTypeType.postinit(\n            bases=[],\n            body=[],\n            decorators=None,\n            doc_node=union_type_doc_node,\n        )\n        bases.UnionType._proxied = _UnionTypeType\n        builder.object_build(bases.UnionType._proxied, types.UnionType)\n\n    builtin_types = (\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 32,
+      "filepath": "astroid/bases.py",
+      "old_string": "\nclass UnionType(BaseInstance):\n    \"\"\"Special node representing new style typing unions.\n\n    Proxied class is set once for all in raw_building.\n    \"\"\"\n",
+      "new_string": "\nclass UnionType(BaseInstance):\n    \"\"\"Special node representing new style typing unions.\n\n    Proxied class is set once for all in raw_building.\n    \"\"\"\n    \n    _proxied = None\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 40,
+      "filepath": "astroid/bases.py",
+      "old_string": "\n    def __repr__(self) -> str:\n        return f\"<UnionType({self._proxied.name}) l.{self.lineno} at 0x{id(self)}>\"\n\n    def __str__(self) -> str:\n        return f\"UnionType({self._proxied.name})\"\n",
+      "new_string": "\n    def __repr__(self) -> str:\n        proxied_name = getattr(self._proxied, 'name', 'UnionType') if self._proxied else 'UnionType'\n        return f\"<UnionType({proxied_name}) l.{self.lineno} at 0x{id(self)}>\"\n\n    def __str__(self) -> str:\n        proxied_name = getattr(self._proxied, 'name', 'UnionType') if self._proxied else 'UnionType'\n        return f\"UnionType({proxied_name})\"\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

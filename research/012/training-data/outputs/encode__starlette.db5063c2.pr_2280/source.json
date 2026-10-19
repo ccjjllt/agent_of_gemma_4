@@ -1,0 +1,56 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 847,
+  "instance_id": "encode__starlette.db5063c2.pr_2280",
+  "repo": "encode/starlette",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "encode__starlette.db5063c2.pr_2280.294zl2o7",
+  "messages_sha256": "fe30949ccbe5d6be55de8caebd5cbc52fdd58821040023d9f871e67a1c617cb7",
+  "issue": "# Domain parameter missing from SessionMiddleware\n\n### Describe the bug\n\nI noticed that the `domain` parameter is missing from the `SessionMiddleware` class. This parameter is essential for setting cookies across subdomains.\n\nWhen trying to use the `domain` parameter with `SessionMiddleware`, I get an error because the parameter doesn't exist in the constructor anymore.\n\n### How to Reproduce\n\nHere's a simple example that demonstrates the issue:\n\n```python\nfrom starlette.applications import Starlette\nfrom starlette.middleware import Middleware\nfrom starlette.middleware.sessions import SessionMiddleware\nfrom starlette.routing import Route\n\nasync def view_session(request):\n    return JSONResponse({\"session\": request.session})\n\nasync def update_session(request):\n    data = await request.json()\n    request.session.update(data)\n    return JSONResponse({\"session\": request.session})\n\n# This will fail because 'domain' parameter is not accepted\napp = Starlette(\n    routes=[\n        Route('/view_session', endpoint=view_session),\n        Route('/update_session', endpoint=update_session, methods=['POST'])\n    ],\n    middleware=[\n        Middleware(SessionMiddleware, secret_key='example', domain='.example.com')\n    ]\n)\n```\n\nWhen running this code, you'll get an error because the `domain` parameter is not accepted by the `SessionMiddleware` constructor.\n\n### Expected behavior\n\nThe `SessionMiddleware` should accept a `domain` parameter that allows setting cookies for specific domains or subdomains. When provided, the cookie should include a `domain=<value>` directive in the Set-Cookie header.\n\nFor example, when setting `domain='.example.com'`, the Set-Cookie header should include `domain=.example.com`, allowing the cookie to be shared across subdomains of example.com.\n\n### Environment\n\n- Python version: 3.10\n- Starlette version: latest\n\n### Additional context\n\nThis functionality is important for applications that need to share session data across subdomains. Without the `domain` parameter, cookies are restricted to the specific domain that set them, which breaks functionality for multi-domain applications.",
+  "actions": [
+    {
+      "source_message_index": 16,
+      "filepath": "starlette/middleware/sessions.py",
+      "old_string": "\nclass SessionMiddleware:\n    def __init__(\n        self,\n        app: ASGIApp,\n        secret_key: str | Secret,\n        session_cookie: str = \"session\",\n        max_age: int | None = 14 * 24 * 60 * 60,  # 14 days, in seconds\n        path: str = \"/\",\n        same_site: typing.Literal[\"lax\", \"strict\", \"none\"] = \"lax\",\n        https_only: bool = False,\n    ) -> None:\n        self.app = app\n        self.signer = itsdangerous.TimestampSigner(str(secret_key))\n        self.session_cookie = session_cookie\n        self.max_age = max_age\n        self.path = path\n        self.security_flags = \"httponly; samesite=\" + same_site\n        if https_only:  # Secure flag can be used with HTTPS only\n            self.security_flags += \"; secure\"\n",
+      "new_string": "\nclass SessionMiddleware:\n    def __init__(\n        self,\n        app: ASGIApp,\n        secret_key: str | Secret,\n        session_cookie: str = \"session\",\n        max_age: int | None = 14 * 24 * 60 * 60,  # 14 days, in seconds\n        path: str = \"/\",\n        same_site: typing.Literal[\"lax\", \"strict\", \"none\"] = \"lax\",\n        https_only: bool = False,\n        domain: str | None = None,\n    ) -> None:\n        self.app = app\n        self.signer = itsdangerous.TimestampSigner(str(secret_key))\n        self.session_cookie = session_cookie\n        self.max_age = max_age\n        self.path = path\n        self.domain = domain\n        self.security_flags = \"httponly; samesite=\" + same_site\n        if https_only:  # Secure flag can be used with HTTPS only\n            self.security_flags += \"; secure\"\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 18,
+      "filepath": "starlette/middleware/sessions.py",
+      "old_string": "\n                    header_value = \"{session_cookie}={data}; path={path}; {max_age}{security_flags}\".format(\n                        session_cookie=self.session_cookie,\n                        data=data.decode(\"utf-8\"),\n                        path=self.path,\n                        max_age=f\"Max-Age={self.max_age}; \" if self.max_age else \"\",\n                        security_flags=self.security_flags,\n                    )\n",
+      "new_string": "\n                    header_value = \"{session_cookie}={data}; path={path}; {domain}{max_age}{security_flags}\".format(\n                        session_cookie=self.session_cookie,\n                        data=data.decode(\"utf-8\"),\n                        path=self.path,\n                        domain=f\"domain={self.domain}; \" if self.domain else \"\",\n                        max_age=f\"Max-Age={self.max_age}; \" if self.max_age else \"\",\n                        security_flags=self.security_flags,\n                    )\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 20,
+      "filepath": "starlette/middleware/sessions.py",
+      "old_string": "\n                    header_value = \"{session_cookie}={data}; path={path}; {expires}{security_flags}\".format(\n                        session_cookie=self.session_cookie,\n                        data=\"null\",\n                        path=self.path,\n                        expires=\"expires=Thu, 01 Jan 1970 00:00:00 GMT; \",\n                        security_flags=self.security_flags,\n                    )\n",
+      "new_string": "\n                    header_value = \"{session_cookie}={data}; path={path}; {domain}{expires}{security_flags}\".format(\n                        session_cookie=self.session_cookie,\n                        data=\"null\",\n                        path=self.path,\n                        domain=f\"domain={self.domain}; \" if self.domain else \"\",\n                        expires=\"expires=Thu, 01 Jan 1970 00:00:00 GMT; \",\n                        security_flags=self.security_flags,\n                    )\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 32,
+      "filepath": "starlette/middleware/sessions.py",
+      "old_string": "\n                        domain=f\"domain={self.domain}; \" if self.domain else \"\",\n",
+      "new_string": "\n                        domain=f\"domain={self.domain}; \" if self.domain and self.domain.strip() else \"\",\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 34,
+      "filepath": "starlette/middleware/sessions.py",
+      "old_string": "\n                    header_value = \"{session_cookie}={data}; path={path}; {domain}{max_age}{security_flags}\".format(\n                        session_cookie=self.session_cookie,\n                        data=data.decode(\"utf-8\"),\n                        path=self.path,\n                        domain=f\"domain={self.domain}; \" if self.domain else \"\",\n                        max_age=f\"Max-Age={self.max_age}; \" if self.max_age else \"\",\n                        security_flags=self.security_flags,\n                    )\n",
+      "new_string": "\n                    header_value = \"{session_cookie}={data}; path={path}; {domain}{max_age}{security_flags}\".format(\n                        session_cookie=self.session_cookie,\n                        data=data.decode(\"utf-8\"),\n                        path=self.path,\n                        domain=f\"domain={self.domain}; \" if self.domain and self.domain.strip() else \"\",\n                        max_age=f\"Max-Age={self.max_age}; \" if self.max_age else \"\",\n                        security_flags=self.security_flags,\n                    )\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 36,
+      "filepath": "starlette/middleware/sessions.py",
+      "old_string": "\n                    header_value = \"{session_cookie}={data}; path={path}; {domain}{expires}{security_flags}\".format(\n                        session_cookie=self.session_cookie,\n                        data=\"null\",\n                        path=self.path,\n                        domain=f\"domain={self.domain}; \" if self.domain else \"\",\n                        expires=\"expires=Thu, 01 Jan 1970 00:00:00 GMT; \",\n                        security_flags=self.security_flags,\n                    )\n",
+      "new_string": "\n                    header_value = \"{session_cookie}={data}; path={path}; {domain}{expires}{security_flags}\".format(\n                        session_cookie=self.session_cookie,\n                        data=\"null\",\n                        path=self.path,\n                        domain=f\"domain={self.domain}; \" if self.domain and self.domain.strip() else \"\",\n                        expires=\"expires=Thu, 01 Jan 1970 00:00:00 GMT; \",\n                        security_flags=self.security_flags,\n                    )\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

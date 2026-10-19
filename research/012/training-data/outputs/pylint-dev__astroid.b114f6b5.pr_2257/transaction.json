@@ -1,0 +1,162 @@
+{
+  "sample_id": "p012-pylint-dev__astroid.b114f6b5.pr_2257",
+  "transaction_id": "p012-pylint-dev__astroid.b114f6b5.pr_2257",
+  "producer_revision": "p012-local-2",
+  "synthetic": false,
+  "origin_kind": "cpu_replayed_source_edit_subset",
+  "group": {
+    "issue": "pylint-dev__astroid.b114f6b5.pr_2257",
+    "repo": "pylint-dev/astroid",
+    "commit": "652f0bc59b4a6b1814292425a9786d18d5e4d60b",
+    "split": "train"
+  },
+  "source": {
+    "uri": "https://huggingface.co/datasets/SWE-bench/SWE-smith-trajectories/tree/08e109b4a59eaeebf80e4675cd125d42e7ac99a4",
+    "license": "MIT dataset; repository license in provenance.json",
+    "sha256": "eb4489074f05b8cb5fb2be06510db3ab2d2175f53785183f807f21dce68ae447",
+    "teacher": "claude-3-7-sonnet-20250219",
+    "traj_id": "pylint-dev__astroid.b114f6b5.pr_2257.srb063y2"
+  },
+  "protocol_id": "p012-repair-v1",
+  "tool_schema": {
+    "path": "research/012/agent/repair_tools_v1.json",
+    "canonical_sha256": "91ec82b15fe0961b3ef9e686fac268706ce954a69cabaa0d705c63d41088e267",
+    "names": [
+      "run_command",
+      "read_file",
+      "edit_file",
+      "write_file",
+      "get_status"
+    ],
+    "repair_role_holds_submit_patch": false
+  },
+  "messages": [
+    {
+      "role": "system",
+      "content": "Use the supplied repository tools. Preserve unrelated behavior. Treat tool failures as observations and correct the action before retrying. Do not modify tests."
+    },
+    {
+      "role": "user",
+      "content": "Implement the following requested change in the repository.\n\nInference cache not working when context is None\n\nWhen inferring a node without an explicit context, the inference cache is not being used correctly. This causes redundant inference operations to be performed, which can lead to performance issues.\n\nTo reproduce:\n\n```python\nclass InferMeTwice:\n    item = 10\n\n# First inference call\nInferMeTwice()\n# Second inference call on the same node\nInferMeTwice()\n```\n\nThe second call to infer the same node should use the cached result from the first call, but it's performing the inference operation again.\n\nThe issue appears to be in the `infer` method of `NodeNG` class where the cache key is not properly set or checked when the context is None. This causes the inference engine to re-evaluate the same node multiple times instead of using the cached result.\n\nThis can significantly impact performance in larger codebases where the same nodes are inferred multiple times during static analysis.\n\nScope of this editing session: update the following production files and report the resulting local change for handover: astroid/nodes/node_ng.py. No full task validation has been performed in this session."
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_00",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": {
+              "filepath": "astroid/nodes/node_ng.py",
+              "start_line": 111,
+              "end_line": 202
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_00",
+      "name": "read_file",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"filepath\": \"astroid/nodes/node_ng.py\", \"content\": \"        self.end_col_offset = end_col_offset\\n        \\\"\\\"\\\"The end column this node appears on in the source code.\\n\\n        Note: This is after the last symbol.\\n        \\\"\\\"\\\"\\n\\n        self.position: Position | None = None\\n        \\\"\\\"\\\"Position of keyword(s) and name.\\n\\n        Used as fallback for block nodes which might not provide good\\n        enough positional information. E.g. ClassDef, FunctionDef.\\n        \\\"\\\"\\\"\\n\\n    def infer(\\n        self, context: InferenceContext | None = None, **kwargs: Any\\n    ) -> Generator[InferenceResult]:\\n        \\\"\\\"\\\"Get a generator of the inferred values.\\n\\n        This is the main entry point to the inference system.\\n\\n        .. seealso:: :ref:`inference`\\n\\n        If the instance has some explicit inference function set, it will be\\n        called instead of the default interface.\\n\\n        :returns: The inferred values.\\n        :rtype: iterable\\n        \\\"\\\"\\\"\\n        if context is not None:\\n            context = context.extra_context.get(self, context)\\n        if self._explicit_inference is not None:\\n            # explicit_inference is not bound, give it self explicitly\\n            try:\\n                if context is None:\\n                    yield from self._explicit_inference(\\n                        self,  # type: ignore[arg-type]\\n                        context,\\n                        **kwargs,\\n                    )\\n                    return\\n                for result in self._explicit_inference(\\n                    self,  # type: ignore[arg-type]\\n                    context,\\n                    **kwargs,\\n                ):\\n                    context.nodes_inferred += 1\\n                    yield result\\n                return\\n            except UseInferenceDefault:\\n                pass\\n\\n        if not context:\\n            # nodes_inferred?\\n            yield from self._infer(context=context, **kwargs)\\n            return\\n\\n        key = (self, context.lookupname, context.callcontext, context.boundnode)\\n        if key in context.inferred:\\n            yield from context.inferred[key]\\n            return\\n\\n        results = []\\n\\n        # Limit inference amount to help with performance issues with\\n        # exponentially exploding possible results.\\n        limit = AstroidManager().max_inferable_values\\n        for i, result in enumerate(self._infer(context=context, **kwargs)):\\n            if i >= limit or (context.nodes_inferred > context.max_inferred):\\n                results.append(util.Uninferable)\\n                yield util.Uninferable\\n                break\\n            results.append(result)\\n            yield result\\n            context.nodes_inferred += 1\\n\\n        # Cache generated results for subsequent inferences of the\\n        # same node using the same context\\n        context.inferred[key] = tuple(results)\\n        return\\n\\n    def repr_name(self) -> str:\\n        \\\"\\\"\\\"Get a name for nice representation.\\n\\n        This is either :attr:`name`, :attr:`attrname`, or the empty string.\\n        \\\"\\\"\\\"\\n        if all(name not in self._astroid_fields for name in (\\\"name\\\", \\\"attrname\\\")):\\n            return getattr(self, \\\"name\\\", \\\"\\\") or getattr(self, \\\"attrname\\\", \\\"\\\")\\n        return \\\"\\\"\\n\\n    def __str__(self) -> str:\\n        rname = self.repr_name()\\n        cname = type(self).__name__\", \"start_line\": 111, \"end_line\": 202, \"total_lines\": 798, \"is_truncated\": false}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_01",
+          "type": "function",
+          "function": {
+            "name": "edit_file",
+            "arguments": {
+              "filepath": "astroid/nodes/node_ng.py",
+              "old_string": "\n    def infer(\n        self, context: InferenceContext | None = None, **kwargs: Any\n    ) -> Generator[InferenceResult]:\n        \"\"\"Get a generator of the inferred values.\n\n        This is the main entry point to the inference system.\n\n        .. seealso:: :ref:`inference`\n\n        If the instance has some explicit inference function set, it will be\n        called instead of the default interface.\n\n        :returns: The inferred values.\n        :rtype: iterable\n        \"\"\"\n        if context is not None:\n            context = context.extra_context.get(self, context)\n        if self._explicit_inference is not None:\n            # explicit_inference is not bound, give it self explicitly\n            try:\n                if context is None:\n                    yield from self._explicit_inference(\n                        self,  # type: ignore[arg-type]\n                        context,\n                        **kwargs,\n                    )\n                    return\n                for result in self._explicit_inference(\n                    self,  # type: ignore[arg-type]\n                    context,\n                    **kwargs,\n                ):\n                    context.nodes_inferred += 1\n                    yield result\n                return\n            except UseInferenceDefault:\n                pass\n\n        if not context:\n            # nodes_inferred?\n            yield from self._infer(context=context, **kwargs)\n            return\n\n        key = (self, context.lookupname, context.callcontext, context.boundnode)\n        if key in context.inferred:\n            yield from context.inferred[key]\n            return\n\n        results = []\n\n        # Limit inference amount to help with performance issues with\n        # exponentially exploding possible results.\n        limit = AstroidManager().max_inferable_values\n        for i, result in enumerate(self._infer(context=context, **kwargs)):\n            if i >= limit or (context.nodes_inferred > context.max_inferred):\n                results.append(util.Uninferable)\n                yield util.Uninferable\n                break\n            results.append(result)\n            yield result\n            context.nodes_inferred += 1\n\n        # Cache generated results for subsequent inferences of the\n        # same node using the same context\n        context.inferred[key] = tuple(results)\n        return\n",
+              "new_string": "\n    def infer(\n        self, context: InferenceContext | None = None, **kwargs: Any\n    ) -> Generator[InferenceResult]:\n        \"\"\"Get a generator of the inferred values.\n\n        This is the main entry point to the inference system.\n\n        .. seealso:: :ref:`inference`\n\n        If the instance has some explicit inference function set, it will be\n        called instead of the default interface.\n\n        :returns: The inferred values.\n        :rtype: iterable\n        \"\"\"\n        if context is not None:\n            context = context.extra_context.get(self, context)\n        if self._explicit_inference is not None:\n            # explicit_inference is not bound, give it self explicitly\n            try:\n                if context is None:\n                    yield from self._explicit_inference(\n                        self,  # type: ignore[arg-type]\n                        context,\n                        **kwargs,\n                    )\n                    return\n                for result in self._explicit_inference(\n                    self,  # type: ignore[arg-type]\n                    context,\n                    **kwargs,\n                ):\n                    context.nodes_inferred += 1\n                    yield result\n                return\n            except UseInferenceDefault:\n                pass\n\n        # Create a context if none exists to enable caching\n        if context is None:\n            context = InferenceContext()\n            \n        key = (self, context.lookupname, context.callcontext, context.boundnode)\n        if key in context.inferred:\n            yield from context.inferred[key]\n            return\n\n        results = []\n\n        # Limit inference amount to help with performance issues with\n        # exponentially exploding possible results.\n        limit = AstroidManager().max_inferable_values\n        for i, result in enumerate(self._infer(context=context, **kwargs)):\n            if i >= limit or (context.nodes_inferred > context.max_inferred):\n                results.append(util.Uninferable)\n                yield util.Uninferable\n                break\n            results.append(result)\n            yield result\n            context.nodes_inferred += 1\n\n        # Cache generated results for subsequent inferences of the\n        # same node using the same context\n        context.inferred[key] = tuple(results)\n        return\n",
+              "allow_multiple": false
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_01",
+      "name": "edit_file",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"filepath\": \"astroid/nodes/node_ng.py\", \"occurrences\": 1, \"strategy\": \"exact\", \"diff\": \"--- a/astroid/nodes/node_ng.py\\n+++ b/astroid/nodes/node_ng.py\\n@@ -159,11 +159,10 @@\\n             except UseInferenceDefault:\\n                 pass\\n \\n-        if not context:\\n-            # nodes_inferred?\\n-            yield from self._infer(context=context, **kwargs)\\n-            return\\n-\\n+        # Create a context if none exists to enable caching\\n+        if context is None:\\n+            context = InferenceContext()\\n+            \\n         key = (self, context.lookupname, context.callcontext, context.boundnode)\\n         if key in context.inferred:\\n             yield from context.inferred[key]\\n\", \"is_truncated\": false}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_02",
+          "type": "function",
+          "function": {
+            "name": "get_status",
+            "arguments": {}
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_02",
+      "name": "get_status",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"tool_calls_used\": 2, \"patch_submitted\": false, \"patch_size\": 0, \"tool_calls_remaining\": 98, \"max_tool_calls\": 100, \"command_timeout_seconds\": 30}"
+    },
+    {
+      "role": "assistant",
+      "content": "{\n  \"candidate_id\": \"p012-pylint-dev__astroid.b114f6b5.pr_2257\",\n  \"files\": [\n    {\n      \"path\": \"astroid/nodes/node_ng.py\",\n      \"after_sha256\": \"8d2a8bc6d7ba9e72cdfaf25ee04b9b9b452ff83f42f9d5e7b5d80da7138b338e\"\n    }\n  ],\n  \"requirement_done\": true,\n  \"requirement_scope\": \"local production edits applied and syntactically parsed; full-task validation NOT performed in this session\",\n  \"verification\": {\n    \"observation\": \"get_status\",\n    \"status\": \"ok\",\n    \"scope\": \"post-edit local patch status of the same workspace; no repository test suite or whole-issue oracle executed\"\n  },\n  \"unresolved\": [\n    \"no whole-issue oracle executed; task_resolved=null\",\n    \"behavior recovery chain to be upgraded by a later step, not fabricated here\"\n  ],\n  \"needs_other_route\": false\n}",
+      "tool_calls": []
+    }
+  ],
+  "target_assistant_steps": [
+    1,
+    2,
+    3
+  ],
+  "behavior": "local_edit",
+  "needs_replay": false,
+  "attempt_status": "local_edits_applied",
+  "observed_outcome": {
+    "action_succeeded": true,
+    "task_resolved": null,
+    "behavior_verified": false,
+    "syntax_parse_passed": true,
+    "local_patch_nonempty": true,
+    "handover_reported": true,
+    "scope": "All selected structured production str_replace actions replayed from fixed buggy snapshot with five official tools (no submit_patch); post-edit status observed via get_status; session ends with a handover report, not a submission. This is local edit supervision, not a resolved task or full trajectory."
+  },
+  "handover": {
+    "candidate_id": "p012-pylint-dev__astroid.b114f6b5.pr_2257",
+    "files": [
+      {
+        "path": "astroid/nodes/node_ng.py",
+        "after_sha256": "8d2a8bc6d7ba9e72cdfaf25ee04b9b9b452ff83f42f9d5e7b5d80da7138b338e"
+      }
+    ],
+    "requirement_done": true,
+    "requirement_scope": "local production edits applied and syntactically parsed; full-task validation NOT performed in this session",
+    "verification": {
+      "observation": "get_status",
+      "status": "ok",
+      "scope": "post-edit local patch status of the same workspace; no repository test suite or whole-issue oracle executed"
+    },
+    "unresolved": [
+      "no whole-issue oracle executed; task_resolved=null",
+      "behavior recovery chain to be upgraded by a later step, not fabricated here"
+    ],
+    "needs_other_route": false
+  },
+  "source_resolved_label": true,
+  "source_label_not_revalidated": true,
+  "replay_boundary": "Unchanged official v31 tool functions minus submit_patch, with macOS local transport, production subset. Read locations derived from source edit targets; this is edit/action SFT, not search-policy supervision.",
+  "continuation_policy": "New read/edit/status tool observations only; no old assistant future or old tool observations reused."
+}

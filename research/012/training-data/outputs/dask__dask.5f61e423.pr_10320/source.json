@@ -1,0 +1,42 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 1356,
+  "instance_id": "dask__dask.5f61e423.pr_10320",
+  "repo": "dask/dask",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "dask__dask.5f61e423.pr_10320.y1wve1wy",
+  "messages_sha256": "f49cdaae848e9eaf4baeb9b3719c680a7ffcea6f7b959f194e1aa5f3423f5063",
+  "issue": "# \"not in\" filter not working with parquet files\n\nI'm having an issue with the \"not in\" filter when reading parquet files. It seems like the filter is being ignored completely.\n\nFor example:\n\n```python\nimport dask.dataframe as dd\nimport pandas as pd\nimport pyarrow as pa\nimport pyarrow.parquet as pq\n\n# Create a simple dataset\ntable = pa.Table.from_arrays(\n    [pa.array([10, 20, 30]), pa.array(['aa', 'bb', 'bb'])], \n    schema=pa.schema([('value', pa.int32()), ('id', pa.string())])\n)\n\n# Write to parquet\npq.write_table(table, 'test_file.parq')\n\n# Try to filter with 'not in'\nresult = dd.read_parquet('test_file.parq', filters=[('id', 'not in', ['bb'])])\nprint(result.compute())\n```\n\nExpected output should be only the row with id='aa', but instead I get an empty dataframe.\n\nThe same issue happens with more complex data structures too. When I use a 'not in' filter, it seems to filter out everything instead of just the specified values.\n\nOther filters like '=', '<', '>', 'in' seem to work fine, it's just 'not in' that's broken.",
+  "actions": [
+    {
+      "source_message_index": 20,
+      "filepath": "dask/dataframe/io/parquet/core.py",
+      "old_string": "                        or operator == \"in\"\n                        and any(min <= item <= max for item in value)\n                    ):\n                        out_parts.append(part)\n                        out_statistics.append(stats)",
+      "new_string": "                        or operator == \"in\"\n                        and any(min <= item <= max for item in value)\n                        or operator == \"not in\"\n                        and (null_count or not all(min <= item <= max for item in value))\n                    ):\n                        out_parts.append(part)\n                        out_statistics.append(stats)",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 24,
+      "filepath": "dask/dataframe/io/parquet/core.py",
+      "old_string": "            if operator == \"in\" and not isinstance(value, (list, set, tuple)):\n                raise TypeError(\"Value of 'in' filter must be a list, set, or tuple.\")",
+      "new_string": "            if (operator == \"in\" or operator == \"not in\") and not isinstance(value, (list, set, tuple)):\n                raise TypeError(f\"Value of '{operator}' filter must be a list, set, or tuple.\")",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 32,
+      "filepath": "dask/dataframe/io/parquet/core.py",
+      "old_string": "                        or operator == \"not in\"\n                        and (null_count or not all(min <= item <= max for item in value))",
+      "new_string": "                        or operator == \"not in\"\n                        and (null_count or min > max or any(item < min or item > max for item in value))",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 34,
+      "filepath": "dask/dataframe/io/parquet/core.py",
+      "old_string": "                        or operator == \"not in\"\n                        and (null_count or min > max or any(item < min or item > max for item in value))",
+      "new_string": "                        or operator == \"not in\"\n                        and (null_count or not all(min <= item <= max for item in value) or min < max)",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

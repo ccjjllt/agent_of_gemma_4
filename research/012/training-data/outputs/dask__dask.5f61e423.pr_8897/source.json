@@ -1,0 +1,42 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 1119,
+  "instance_id": "dask__dask.5f61e423.pr_8897",
+  "repo": "dask/dask",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "dask__dask.5f61e423.pr_8897.bfmoygij",
+  "messages_sha256": "eb6b97986b1f26d59d912faa05baaff1ca4226c99a042e2a75cd1a0567f862f5",
+  "issue": "# Empty DataFrames cause IndexError in is_monotonic methods\n\n## Description\n\nWhen checking if a Series or Index is monotonic (increasing or decreasing) and there are empty partitions, an IndexError is raised. This happens because the code tries to access the first and last elements of an empty DataFrame.\n\n## Steps to reproduce\n\n```python\nimport pandas as pd\nimport dask.dataframe as dd\n\n# Create a DataFrame with some data\ndf = pd.DataFrame({'a': [1, 2, 3, 4], 'b': [4, 3, 2, 1]})\nddf = dd.from_pandas(df, npartitions=2)\n\n# Filter to create empty partitions\ndf = df[df['a'] >= 3]\nddf = ddf[ddf['a'] >= 3]\n\n# This raises an IndexError\nddf['a'].is_monotonic_increasing.compute()\n```\n\n## Error message\n\n```\nIndexError: single positional indexer is out-of-bounds\n```\n\nOr in some cases:\n\n```\nIndexError: index 0 is out of bounds for axis 0 with size 0\n```\n\n## Expected behavior\n\nThe is_monotonic_increasing and is_monotonic_decreasing properties should handle empty partitions gracefully, similar to how pandas handles empty DataFrames.\n\n## Additional information\n\nThis issue affects both Series and Index objects. The problem occurs when filtering operations result in empty partitions, which is a common scenario in data processing pipelines.\n\n<END WRITING>",
+  "actions": [
+    {
+      "source_message_index": 42,
+      "filepath": "dask/dataframe/methods.py",
+      "old_string": "\ndef _monotonic_chunk(x, prop):\n    data = x if is_index_like(x) else x.iloc\n    return pd.DataFrame(\n        data=[[getattr(x, prop), data[0], data[-1]]],\n        columns=[\"monotonic\", \"first\", \"last\"],\n    )\n",
+      "new_string": "\ndef _monotonic_chunk(x, prop):\n    data = x if is_index_like(x) else x.iloc\n    if len(data) == 0:\n        # Handle empty partitions\n        return pd.DataFrame(\n            data=[[True, None, None]],\n            columns=[\"monotonic\", \"first\", \"last\"],\n        )\n    return pd.DataFrame(\n        data=[[getattr(x, prop), data[0], data[-1]]],\n        columns=[\"monotonic\", \"first\", \"last\"],\n    )\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 44,
+      "filepath": "dask/dataframe/methods.py",
+      "old_string": "\ndef _monotonic_combine(concatenated, prop):\n    if concatenated.empty:\n        data = None\n    else:\n        s = pd.Series(concatenated[[\"first\", \"last\"]].to_numpy().ravel())\n        is_monotonic = concatenated[\"monotonic\"].all() and getattr(s, prop)\n        data = [[is_monotonic, s.iloc[0], s.iloc[-1]]]\n    return pd.DataFrame(data, columns=[\"monotonic\", \"first\", \"last\"])\n",
+      "new_string": "\ndef _monotonic_combine(concatenated, prop):\n    if concatenated.empty:\n        data = None\n    else:\n        # Filter out None values before creating the Series\n        first_last_values = concatenated[[\"first\", \"last\"]].to_numpy().ravel()\n        first_last_values = [x for x in first_last_values if x is not None]\n        \n        if not first_last_values:\n            # All partitions were empty\n            is_monotonic = True\n            first_val = None\n            last_val = None\n        else:\n            s = pd.Series(first_last_values)\n            is_monotonic = concatenated[\"monotonic\"].all() and getattr(s, prop)\n            first_val = s.iloc[0]\n            last_val = s.iloc[-1]\n            \n        data = [[is_monotonic, first_val, last_val]]\n    return pd.DataFrame(data, columns=[\"monotonic\", \"first\", \"last\"])\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 46,
+      "filepath": "dask/dataframe/methods.py",
+      "old_string": "\ndef _monotonic_aggregate(concatenated, prop):\n    s = pd.Series(concatenated[[\"first\", \"last\"]].to_numpy().ravel())\n    return concatenated[\"monotonic\"].all() and getattr(s, prop)\n",
+      "new_string": "\ndef _monotonic_aggregate(concatenated, prop):\n    # Filter out None values before creating the Series\n    first_last_values = concatenated[[\"first\", \"last\"]].to_numpy().ravel()\n    first_last_values = [x for x in first_last_values if x is not None]\n    \n    if not first_last_values:\n        # All partitions were empty, consider it monotonic\n        return True\n        \n    s = pd.Series(first_last_values)\n    return concatenated[\"monotonic\"].all() and getattr(s, prop)\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 50,
+      "filepath": "dask/dataframe/methods.py",
+      "old_string": "\ndef _monotonic_chunk(x, prop):\n    data = x if is_index_like(x) else x.iloc\n    if len(data) == 0:\n        # Handle empty partitions\n        return pd.DataFrame(\n            data=[[True, None, None]],\n            columns=[\"monotonic\", \"first\", \"last\"],\n        )\n    return pd.DataFrame(\n        data=[[getattr(x, prop), data[0], data[-1]]],\n        columns=[\"monotonic\", \"first\", \"last\"],\n    )\n",
+      "new_string": "\ndef _monotonic_chunk(x, prop):\n    data = x if is_index_like(x) else x.iloc\n    \n    # Check if x is empty\n    if len(x) == 0:\n        # Handle empty partitions\n        return pd.DataFrame(\n            data=[[True, None, None]],\n            columns=[\"monotonic\", \"first\", \"last\"],\n        )\n    \n    return pd.DataFrame(\n        data=[[getattr(x, prop), data[0], data[-1]]],\n        columns=[\"monotonic\", \"first\", \"last\"],\n    )\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

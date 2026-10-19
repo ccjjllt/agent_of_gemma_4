@@ -1,0 +1,21 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 1588,
+  "instance_id": "facebookresearch__hydra.0f03eb60.pr_1915",
+  "repo": "facebookresearch/hydra",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "facebookresearch__hydra.0f03eb60.pr_1915.y1wve1wy",
+  "messages_sha256": "f0c928a5d80720ea29d59235a396f438844ebf8fbf15d2e42f45e5e4d92b0fbc",
+  "issue": "# Instantiate fails with callable target keyword when using nested classes\n\n## Description\n\nI'm trying to use Hydra's instantiate functionality with nested classes as targets, but it's failing. This works fine with regular functions and top-level classes, but breaks with nested classes.\n\n## Reproduction\n\nHere's a minimal example that demonstrates the issue:\n\n```python\nfrom hydra.utils import instantiate\n\nclass OuterClass:\n    class Nested:\n        def __init__(self):\n            pass\n        \n        @staticmethod\n        def method():\n            return \"OuterClass.Nested.method return\"\n\n# This works fine\nresult1 = instantiate({}, _target_=OuterClass)  # Returns an OuterClass instance\n\n# This fails\nresult2 = instantiate({}, _target_=OuterClass.Nested)  # Error!\n```\n\n## Error\n\nWhen trying to instantiate with a nested class as the target, I get the following error:\n\n```\nTraceback (most recent call last):\n  File \"<stdin>\", line 1, in <module>\n  File \"/path/to/hydra/_internal/instantiate/_instantiate2.py\", line 98, in _call_target\n    return target(*args, **kwargs)\n  File \"/path/to/hydra/_internal/instantiate/_instantiate2.py\", line 100, in _convert_target_to_string\n    if callable(t):\n      return f\"{t.__module__}.{t.__qualname__}\"\n  File \"/path/to/hydra/_internal/utils.py\", line 56, in instantiate\n    return _instantiate2._instantiate_impl(config, *args, **kwargs)\nValueError: Cannot convert nested class to string representation\n```\n\nThe issue seems to be related to how nested classes are handled when converting targets to strings. Regular functions and top-level classes work fine, but nested classes cause problems.",
+  "actions": [
+    {
+      "source_message_index": 34,
+      "filepath": "hydra/_internal/instantiate/_instantiate2.py",
+      "old_string": "def _convert_target_to_string(t: Any) -> Any:\n    if isinstance(t, type):\n        return f\"{t.__module__}.{t.__name__}\"\n    elif callable(t):\n        return f\"{t.__module__}.{t.__qualname__}\"\n    else:\n        return t",
+      "new_string": "def _convert_target_to_string(t: Any) -> Any:\n    if isinstance(t, type):\n        # For nested classes, use __qualname__ which includes the outer class name\n        if \".\" in t.__qualname__:\n            return f\"{t.__module__}.{t.__qualname__}\"\n        else:\n            return f\"{t.__module__}.{t.__name__}\"\n    elif callable(t):\n        return f\"{t.__module__}.{t.__qualname__}\"\n    else:\n        return t",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

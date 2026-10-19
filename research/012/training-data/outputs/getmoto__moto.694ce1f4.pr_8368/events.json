@@ -1,0 +1,83 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/ds/models.py",
+      "start_line": 634,
+      "end_line": 671
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/ds/models.py",
+      "content": "        directory = self.directories[directory_id]\n        trust = Trust(\n            directory_id=directory_id,\n            remote_domain_name=remote_domain_name,\n            trust_password=trust_password,\n            trust_direction=trust_direction,\n            trust_type=trust_type,\n            conditional_forwarder_ip_addrs=conditional_forwarder_ip_addrs,\n            selective_auth=selective_auth,\n        )\n        directory.trusts.append(trust)\n        return trust.trust_id\n\n    @paginate(pagination_model=PAGINATION_MODEL)\n    def describe_trusts(\n        self, directory_id: str, trust_ids: Optional[List[str]]\n    ) -> List[Trust]:\n        self._validate_directory_id(directory_id)\n        directory = self.directories[directory_id]\n        trusts = directory.trusts\n        if trust_ids:\n            trusts = [t for t in directory.trusts if t.trust_id in trust_ids]\n        else:\n            trusts = directory.trusts\n        return trusts\n\n    def delete_trust(\n        self, trust_id: str, delete_associated_conditional_forwarder: Optional[bool]\n    ) -> str:\n        # TODO: Implement handle for delete_associated_conditional_forwarder once conditional forwarder is implemented\n        delete_associated_conditional_forwarder = (\n            delete_associated_conditional_forwarder or False\n        )\n        for directory in self.directories.values():\n            for trust in directory.trusts:\n                if trust.trust_id == trust_id:\n                    directory.trusts.remove(trust)\n                    return trust_id",
+      "start_line": 634,
+      "end_line": 671,
+      "total_lines": 737,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/ds/models.py",
+      "old_string": "\n    @paginate(pagination_model=PAGINATION_MODEL)\n    def describe_trusts(\n        self, directory_id: str, trust_ids: Optional[List[str]]\n    ) -> List[Trust]:\n        self._validate_directory_id(directory_id)\n        directory = self.directories[directory_id]\n        trusts = directory.trusts\n        if trust_ids:\n            trusts = [t for t in directory.trusts if t.trust_id in trust_ids]\n        else:\n            trusts = directory.trusts\n        return trusts\n",
+      "new_string": "\n    @paginate(pagination_model=PAGINATION_MODEL)\n    def describe_trusts(\n        self, directory_id: Optional[str] = None, trust_ids: Optional[List[str]] = None\n    ) -> List[Trust]:\n        # If directory_id is provided, return trusts for that directory only\n        if directory_id:\n            self._validate_directory_id(directory_id)\n            directory = self.directories[directory_id]\n            trusts = directory.trusts\n            if trust_ids:\n                trusts = [t for t in trusts if t.trust_id in trust_ids]\n            return trusts\n        \n        # If no directory_id is provided, return all trusts across all directories\n        all_trusts = []\n        for directory in self.directories.values():\n            if trust_ids:\n                all_trusts.extend([t for t in directory.trusts if t.trust_id in trust_ids])\n            else:\n                all_trusts.extend(directory.trusts)\n        return all_trusts\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/ds/models.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/ds/models.py\n+++ b/moto/ds/models.py\n@@ -646,16 +646,25 @@\n \n     @paginate(pagination_model=PAGINATION_MODEL)\n     def describe_trusts(\n-        self, directory_id: str, trust_ids: Optional[List[str]]\n+        self, directory_id: Optional[str] = None, trust_ids: Optional[List[str]] = None\n     ) -> List[Trust]:\n-        self._validate_directory_id(directory_id)\n-        directory = self.directories[directory_id]\n-        trusts = directory.trusts\n-        if trust_ids:\n-            trusts = [t for t in directory.trusts if t.trust_id in trust_ids]\n-        else:\n+        # If directory_id is provided, return trusts for that directory only\n+        if directory_id:\n+            self._validate_directory_id(directory_id)\n+            directory = self.directories[directory_id]\n             trusts = directory.trusts\n-        return trusts\n+            if trust_ids:\n+                trusts = [t for t in trusts if t.trust_id in trust_ids]\n+            return trusts\n+        \n+        # If no directory_id is provided, return all trusts across all directories\n+        all_trusts = []\n+        for directory in self.directories.values():\n+            if trust_ids:\n+                all_trusts.extend([t for t in directory.trusts if t.trust_id in trust_ids])\n+            else:\n+                all_trusts.extend(directory.trusts)\n+        return all_trusts\n \n     def delete_trust(\n         self, trust_id: str, delete_associated_conditional_forwarder: Optional[bool]\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/ds/responses.py",
+      "start_line": 175,
+      "end_line": 211
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/ds/responses.py",
+      "content": "        conditional_forwarder_ip_addrs = self._get_param(\"ConditionalForwarderIpAddrs\")\n        selective_auth = self._get_param(\"SelectiveAuth\")\n        trust_id = self.ds_backend.create_trust(\n            directory_id=directory_id,\n            remote_domain_name=remote_domain_name,\n            trust_password=trust_password,\n            trust_direction=trust_direction,\n            trust_type=trust_type,\n            conditional_forwarder_ip_addrs=conditional_forwarder_ip_addrs,\n            selective_auth=selective_auth,\n        )\n        return json.dumps(dict(TrustId=trust_id))\n\n    def describe_trusts(self) -> str:\n        directory_id = self._get_param(\"DirectoryId\")\n        trust_ids = self._get_param(\"TrustIds\")\n        next_token = self._get_param(\"NextToken\")\n        limit = self._get_param(\"Limit\")\n        trusts, next_token = self.ds_backend.describe_trusts(\n            directory_id=directory_id,\n            trust_ids=trust_ids,\n            next_token=next_token,\n            limit=limit,\n        )\n        trust_list = [trust.to_dict() for trust in trusts]\n        return json.dumps(dict(Trusts=trust_list, nextToken=next_token))\n\n    def delete_trust(self) -> str:\n        trust_id = self._get_param(\"TrustId\")\n        delete_associated_conditional_forwarder = self._get_param(\n            \"DeleteAssociatedConditionalForwarder\"\n        )\n        trust_id = self.ds_backend.delete_trust(\n            trust_id=trust_id,\n            delete_associated_conditional_forwarder=delete_associated_conditional_forwarder,\n        )\n        return json.dumps(dict(TrustId=trust_id))",
+      "start_line": 175,
+      "end_line": 211,
+      "total_lines": 270,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/ds/responses.py",
+      "old_string": "\n    def describe_trusts(self) -> str:\n        directory_id = self._get_param(\"DirectoryId\")\n        trust_ids = self._get_param(\"TrustIds\")\n        next_token = self._get_param(\"NextToken\")\n        limit = self._get_param(\"Limit\")\n        trusts, next_token = self.ds_backend.describe_trusts(\n            directory_id=directory_id,\n            trust_ids=trust_ids,\n            next_token=next_token,\n            limit=limit,\n        )\n",
+      "new_string": "\n    def describe_trusts(self) -> str:\n        directory_id = self._get_param(\"DirectoryId\", None)\n        trust_ids = self._get_param(\"TrustIds\")\n        next_token = self._get_param(\"NextToken\")\n        limit = self._get_param(\"Limit\")\n        trusts, next_token = self.ds_backend.describe_trusts(\n            directory_id=directory_id,\n            trust_ids=trust_ids,\n            next_token=next_token,\n            limit=limit,\n        )\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/ds/responses.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/ds/responses.py\n+++ b/moto/ds/responses.py\n@@ -186,7 +186,7 @@\n         return json.dumps(dict(TrustId=trust_id))\n \n     def describe_trusts(self) -> str:\n-        directory_id = self._get_param(\"DirectoryId\")\n+        directory_id = self._get_param(\"DirectoryId\", None)\n         trust_ids = self._get_param(\"TrustIds\")\n         next_token = self._get_param(\"NextToken\")\n         limit = self._get_param(\"Limit\")\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "get_status",
+    "arguments": {},
+    "response": {
+      "status": "ok",
+      "tool_calls_used": 4,
+      "patch_submitted": false,
+      "patch_size": 0,
+      "tool_calls_remaining": 96,
+      "max_tool_calls": 100,
+      "command_timeout_seconds": 30
+    }
+  }
+]

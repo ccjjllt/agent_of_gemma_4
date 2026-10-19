@@ -1,0 +1,35 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00005-of-00008.parquet",
+  "row_index": 1649,
+  "instance_id": "getmoto__moto.694ce1f4.pr_7603",
+  "repo": "getmoto/moto",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "getmoto__moto.694ce1f4.pr_7603.3m850zh5",
+  "messages_sha256": "8d9d9acbeb38f6aacf63979e3b80a5a84f2db4952e2414a2c972e4fe0e2bfdb3",
+  "issue": "### Issue: Query Execution Fails Without Result Configuration\n\n#### Description\n\nWhen attempting to start a query execution without specifying a result configuration, the operation fails unexpectedly. This issue arises when using the `start_query_execution` method in the Athena client.\n\n#### Steps to Reproduce\n\n1. Set up an Athena client in the `us-east-1` region.\n2. Create a basic workgroup named `athena_workgroup`.\n3. Attempt to start a query execution with the following parameters:\n   - `QueryString`: 'query1'\n   - `QueryExecutionContext`: `{'Database': 'string'}`\n   - `WorkGroup`: 'athena_workgroup'\n\n#### Expected Behavior\n\nThe query execution should start successfully, and a `QueryExecutionId` should be returned in the response.\n\n#### Actual Behavior\n\nThe query execution fails, and the expected `QueryExecutionId` is not present in the response.\n\nThis issue seems to be related to the handling of the `OutputLocation` in the configuration. It appears that the absence of a result configuration is not being managed correctly, leading to the failure.",
+  "actions": [
+    {
+      "source_message_index": 34,
+      "filepath": "moto/athena/models.py",
+      "old_string": "\nclass Execution(BaseModel):\n    def __init__(\n        self,\n        query: str,\n        context: str,\n        config: Dict[str, Any],\n        workgroup: Optional[WorkGroup],\n        execution_parameters: Optional[List[str]],\n    ):\n        self.id = str(mock_random.uuid4())\n        self.query = query\n        self.context = context\n        self.config = config\n        self.workgroup = workgroup\n        self.execution_parameters = execution_parameters\n        self.start_time = time.time()\n        self.status = \"SUCCEEDED\"\n\n        if \"OutputLocation\" in self.config:\n            if not self.config[\"OutputLocation\"].endswith(\"/\"):\n                self.config[\"OutputLocation\"] += \"/\"\n            self.config[\"OutputLocation\"] += f\"{self.id}.csv\"\n",
+      "new_string": "\nclass Execution(BaseModel):\n    def __init__(\n        self,\n        query: str,\n        context: str,\n        config: Optional[Dict[str, Any]],\n        workgroup: Optional[WorkGroup],\n        execution_parameters: Optional[List[str]],\n    ):\n        self.id = str(mock_random.uuid4())\n        self.query = query\n        self.context = context\n        self.config = config if config is not None else {}\n        self.workgroup = workgroup\n        self.execution_parameters = execution_parameters\n        self.start_time = time.time()\n        self.status = \"SUCCEEDED\"\n\n        if self.config and \"OutputLocation\" in self.config:\n            if not self.config[\"OutputLocation\"].endswith(\"/\"):\n                self.config[\"OutputLocation\"] += \"/\"\n            self.config[\"OutputLocation\"] += f\"{self.id}.csv\"\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 36,
+      "filepath": "moto/athena/models.py",
+      "old_string": "\n    def start_query_execution(\n        self,\n        query: str,\n        context: str,\n        config: Dict[str, Any],\n        workgroup: str,\n        execution_parameters: Optional[List[str]],\n    ) -> str:\n",
+      "new_string": "\n    def start_query_execution(\n        self,\n        query: str,\n        context: str,\n        config: Optional[Dict[str, Any]],\n        workgroup: str,\n        execution_parameters: Optional[List[str]],\n    ) -> str:\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 38,
+      "filepath": "moto/athena/models.py",
+      "old_string": "\n    def _store_query_result_in_s3(self, exec_id: str) -> None:\n        try:\n            output_location = self.executions[exec_id].config[\"OutputLocation\"]\n            bucket, key = bucket_and_name_from_url(output_location)\n\n            query_result = \"\"\n            for row in self.query_results[exec_id].rows:\n                query_result += \",\".join(\n                    [\n                        f'\"{r[\"VarCharValue\"]}\"' if \"VarCharValue\" in r else \"\"\n                        for r in row[\"Data\"]\n                    ]\n                )\n                query_result += \"\\n\"\n\n            s3_backends[self.account_id][self.partition].put_object(\n                bucket_name=bucket,  # type: ignore\n                key_name=key,  # type: ignore\n                value=query_result.encode(\"utf-8\"),\n            )\n        except:  # noqa\n            # Execution may not exist\n            # OutputLocation may not exist\n            pass\n",
+      "new_string": "\n    def _store_query_result_in_s3(self, exec_id: str) -> None:\n        try:\n            if exec_id not in self.executions or \"OutputLocation\" not in self.executions[exec_id].config:\n                return\n                \n            output_location = self.executions[exec_id].config[\"OutputLocation\"]\n            bucket, key = bucket_and_name_from_url(output_location)\n\n            query_result = \"\"\n            for row in self.query_results[exec_id].rows:\n                query_result += \",\".join(\n                    [\n                        f'\"{r[\"VarCharValue\"]}\"' if \"VarCharValue\" in r else \"\"\n                        for r in row[\"Data\"]\n                    ]\n                )\n                query_result += \"\\n\"\n\n            s3_backends[self.account_id][self.partition].put_object(\n                bucket_name=bucket,  # type: ignore\n                key_name=key,  # type: ignore\n                value=query_result.encode(\"utf-8\"),\n            )\n        except:  # noqa\n            # Execution may not exist\n            # OutputLocation may not exist\n            pass\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

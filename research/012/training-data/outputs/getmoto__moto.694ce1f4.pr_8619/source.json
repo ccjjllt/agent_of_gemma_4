@@ -1,0 +1,35 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00007-of-00008.parquet",
+  "row_index": 2303,
+  "instance_id": "getmoto__moto.694ce1f4.pr_8619",
+  "repo": "getmoto/moto",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "getmoto__moto.694ce1f4.pr_8619.40o1rcbf",
+  "messages_sha256": "5275c4f115cefa2321adb9d0f937fd3bc53a617ba05b08a5ac0bf0920b6e1ec1",
+  "issue": "### Deletion of Identity Pools Fails\n\n#### Description\n\nIt seems that the functionality to delete identity pools is currently not working as expected. When attempting to delete an identity pool, the operation does not complete successfully, and the identity pool remains in the list of available pools.\n\n#### Steps to Reproduce\n\n1. Create an identity pool using the `create_identity_pool` method.\n2. Attempt to delete the created identity pool using the `delete_identity_pool` method.\n3. List all identity pools using the `list_identity_pools` method.\n\n#### Expected Result\n\nThe identity pool should be removed from the list of available pools after deletion.\n\n#### Actual Result\n\nThe identity pool still appears in the list of available pools, indicating that the deletion did not occur.\n\n#### Additional Information\n\nThis issue might be related to recent changes in the codebase. It would be helpful to review the recent modifications to the identity pool management functions.",
+  "actions": [
+    {
+      "source_message_index": 26,
+      "filepath": "moto/cognitoidentity/models.py",
+      "old_string": "    def list_identity_pools(self) -> str:\n        \"\"\"\n        The MaxResults-parameter has not yet been implemented\n        \"\"\"\n        return json.dumps(\n            {\n                \"IdentityPools\": [\n                    json.loads(pool.to_json()) for pool in self.identity_pools.values()\n                ]\n            }\n        )\n\n\ncognitoidentity_backends = BackendDict(CognitoIdentityBackend, \"cognito-identity\")",
+      "new_string": "    def list_identity_pools(self) -> str:\n        \"\"\"\n        The MaxResults-parameter has not yet been implemented\n        \"\"\"\n        return json.dumps(\n            {\n                \"IdentityPools\": [\n                    json.loads(pool.to_json()) for pool in self.identity_pools.values()\n                ]\n            }\n        )\n        \n    def delete_identity_pool(self, identity_pool_id: str) -> None:\n        \"\"\"\n        Delete an identity pool by ID\n        \"\"\"\n        if identity_pool_id not in self.identity_pools:\n            raise ResourceNotFoundError(identity_pool_id)\n            \n        # Remove the identity pool\n        del self.identity_pools[identity_pool_id]\n        \n        # Also remove any associated identities\n        if identity_pool_id in self.pools_identities:\n            del self.pools_identities[identity_pool_id]\n            \n        return \"\"\n\n\ncognitoidentity_backends = BackendDict(CognitoIdentityBackend, \"cognito-identity\")",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 28,
+      "filepath": "moto/cognitoidentity/responses.py",
+      "old_string": "    def list_identity_pools(self) -> str:\n        return self.backend.list_identity_pools()",
+      "new_string": "    def list_identity_pools(self) -> str:\n        return self.backend.list_identity_pools()\n        \n    def delete_identity_pool(self) -> str:\n        return self.backend.delete_identity_pool(self._get_param(\"IdentityPoolId\"))",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 40,
+      "filepath": "moto/cognitoidentity/models.py",
+      "old_string": "    def list_identities(self, identity_pool_id: str) -> str:\n        \"\"\"\n        The MaxResults-parameter has not yet been implemented\n        \"\"\"\n        return json.dumps(self.pools_identities[identity_pool_id])",
+      "new_string": "    def list_identities(self, identity_pool_id: str) -> str:\n        \"\"\"\n        The MaxResults-parameter has not yet been implemented\n        \"\"\"\n        if identity_pool_id not in self.pools_identities:\n            raise ResourceNotFoundError(identity_pool_id)\n            \n        return json.dumps(self.pools_identities[identity_pool_id])",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

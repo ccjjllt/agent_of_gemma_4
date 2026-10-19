@@ -1,0 +1,35 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00003-of-00008.parquet",
+  "row_index": 2123,
+  "instance_id": "getmoto__moto.694ce1f4.pr_7177",
+  "repo": "getmoto/moto",
+  "source_resolved": true,
+  "teacher_source": "claude-3-5-sonnet-20241022",
+  "traj_id": "getmoto__moto.694ce1f4.pr_7177.acrhtxgk",
+  "messages_sha256": "cda18ae32cef7cb1a03003a3ce689ee60636fb029e4df68f0ce57c194fa33f26",
+  "issue": "support list_group_memberships_for_member in identitystore\nfeature request for list_group_memberships_for_member\r\n\r\nRef: https://docs.getmoto.org/en/latest/docs/services/identitystore.html",
+  "actions": [
+    {
+      "source_message_index": 16,
+      "filepath": "moto/identitystore/models.py",
+      "old_string": "\n    PAGINATION_MODEL = {\n        \"list_group_memberships\": {\n            \"input_token\": \"next_token\",\n            \"limit_key\": \"max_results\",\n            \"limit_default\": 100,\n            \"unique_attribute\": \"MembershipId\",\n        },\n        \"list_groups\": {\n            \"input_token\": \"next_token\",\n            \"limit_key\": \"max_results\",\n            \"limit_default\": 100,\n            \"unique_attribute\": \"GroupId\",\n        },\n        \"list_users\": {\n            \"input_token\": \"next_token\",\n            \"limit_key\": \"max_results\",\n            \"limit_default\": 100,\n            \"unique_attribute\": \"UserId\",\n        },\n    }\n",
+      "new_string": "\n    PAGINATION_MODEL = {\n        \"list_group_memberships\": {\n            \"input_token\": \"next_token\",\n            \"limit_key\": \"max_results\",\n            \"limit_default\": 100,\n            \"unique_attribute\": \"MembershipId\",\n        },\n        \"list_group_memberships_for_member\": {\n            \"input_token\": \"next_token\",\n            \"limit_key\": \"max_results\",\n            \"limit_default\": 100,\n            \"unique_attribute\": \"MembershipId\",\n        },\n        \"list_groups\": {\n            \"input_token\": \"next_token\",\n            \"limit_key\": \"max_results\",\n            \"limit_default\": 100,\n            \"unique_attribute\": \"GroupId\",\n        },\n        \"list_users\": {\n            \"input_token\": \"next_token\",\n            \"limit_key\": \"max_results\",\n            \"limit_default\": 100,\n            \"unique_attribute\": \"UserId\",\n        },\n    }\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 18,
+      "filepath": "moto/identitystore/models.py",
+      "old_string": "\n    def delete_group_membership(\n        self, identity_store_id: str, membership_id: str\n    ) -> None:\n        identity_store = self.__get_identity_store(identity_store_id)\n        if membership_id in identity_store.group_memberships:\n            del identity_store.group_memberships[membership_id]\n\n    def __get_identity_store(self, store_id: str) -> IdentityStoreData:\n",
+      "new_string": "\n    def delete_group_membership(\n        self, identity_store_id: str, membership_id: str\n    ) -> None:\n        identity_store = self.__get_identity_store(identity_store_id)\n        if membership_id in identity_store.group_memberships:\n            del identity_store.group_memberships[membership_id]\n\n    @paginate(pagination_model=PAGINATION_MODEL)\n    def list_group_memberships_for_member(\n        self, identity_store_id: str, member_id: Dict[str, str]\n    ) -> List[Any]:\n        identity_store = self.__get_identity_store(identity_store_id)\n        user_id = member_id[\"UserId\"]\n\n        if user_id not in identity_store.users:\n            raise ResourceNotFoundException(\n                message=\"Member does not exist\", resource_type=\"USER\"\n            )\n\n        return [\n            m\n            for m in identity_store.group_memberships.values()\n            if m[\"MemberId\"][\"UserId\"] == user_id\n        ]\n\n    def __get_identity_store(self, store_id: str) -> IdentityStoreData:\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 20,
+      "filepath": "moto/identitystore/responses.py",
+      "old_string": "\n    def delete_user(self) -> str:\n        identity_store_id = self._get_param(\"IdentityStoreId\")\n        user_id = self._get_param(\"UserId\")\n        self.identitystore_backend.delete_user(\n            identity_store_id=identity_store_id,\n            user_id=user_id,\n        )\n        return json.dumps(dict())\n\n    def named_tuple_to_dict(\n        self, value: Optional[NamedTuple]\n    ) -> Optional[Dict[str, Any]]:\n",
+      "new_string": "\n    def delete_user(self) -> str:\n        identity_store_id = self._get_param(\"IdentityStoreId\")\n        user_id = self._get_param(\"UserId\")\n        self.identitystore_backend.delete_user(\n            identity_store_id=identity_store_id,\n            user_id=user_id,\n        )\n        return json.dumps(dict())\n\n    def list_group_memberships_for_member(self) -> str:\n        identity_store_id = self._get_param(\"IdentityStoreId\")\n        member_id = self._get_param(\"MemberId\")\n        max_results = self._get_param(\"MaxResults\")\n        next_token = self._get_param(\"NextToken\")\n        (\n            group_memberships,\n            next_token,\n        ) = self.identitystore_backend.list_group_memberships_for_member(\n            identity_store_id=identity_store_id,\n            member_id=member_id,\n            max_results=max_results,\n            next_token=next_token,\n        )\n\n        return json.dumps(\n            dict(GroupMemberships=group_memberships, NextToken=next_token)\n        )\n\n    def named_tuple_to_dict(\n        self, value: Optional[NamedTuple]\n    ) -> Optional[Dict[str, Any]]:\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

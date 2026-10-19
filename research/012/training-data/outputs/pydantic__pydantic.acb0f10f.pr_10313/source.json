@@ -1,0 +1,77 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00005-of-00008.parquet",
+  "row_index": 1161,
+  "instance_id": "pydantic__pydantic.acb0f10f.pr_10313",
+  "repo": "pydantic/pydantic",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "pydantic__pydantic.acb0f10f.pr_10313.97n8z9ug",
+  "messages_sha256": "974885b63a1a53e13780bb35c517800f15c2d3db1b2be04e6385e4e16acc7619",
+  "issue": "### Issue: Dataclass Initialization Fails with Custom Namespace\n\n#### Description\nAfter the recent changes, initializing a pydantic dataclass with a custom types namespace seems to be causing issues. The dataclass does not complete its setup, leading to unexpected behavior during runtime.\n\n#### Steps to Reproduce\n1. Define a pydantic dataclass with a custom types namespace.\n2. Attempt to initialize the dataclass.\n3. Observe that the initialization does not complete as expected, and the dataclass is not fully functional.\n\n#### Expected Behavior\nThe dataclass should initialize correctly with the provided custom types namespace, allowing for normal operation.\n\n#### Actual Behavior\nThe initialization process is interrupted, and the dataclass remains incomplete, leading to errors when attempting to use it.\n\n#### System Details\n- **Python Version**: 3.10.16\n- **Platform**: Linux\n- **Pydantic Version**: (version from the test environment)\n\nPlease investigate this issue as it is causing significant disruptions in workflows that rely on custom namespaces for dataclasses.",
+  "actions": [
+    {
+      "source_message_index": 60,
+      "filepath": "pydantic/dataclasses.py",
+      "old_string": "\n        # TODO `parent_namespace` is currently None, but we could do the same thing as Pydantic models:\n        # fetch the parent ns using `parent_frame_namespace` (if the dataclass was defined in a function),\n        # and possibly cache it (see the `__pydantic_parent_namespace__` logic for models).\n        _pydantic_dataclasses.complete_dataclass(cls, config_wrapper, raise_errors=False)\n",
+      "new_string": "\n        # TODO `parent_namespace` is currently None, but we could do the same thing as Pydantic models:\n        # fetch the parent ns using `parent_frame_namespace` (if the dataclass was defined in a function),\n        # and possibly cache it (see the `__pydantic_parent_namespace__` logic for models).\n        _pydantic_dataclasses.complete_dataclass(cls, config_wrapper, raise_errors=False, types_namespace={})\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 66,
+      "filepath": "pydantic/_internal/_typing_extra.py",
+      "old_string": "\n@deprecated(\n    '`eval_type_lenient` is deprecated, use `try_eval_type` instead.',\n",
+      "new_string": "\ndef merge_cls_and_parent_ns(cls: type[Any], types_namespace: dict[str, Any]) -> dict[str, Any]:\n    \"\"\"Merge the class namespace with the parent namespace.\n    \n    This function adds the class itself to the namespace, which is useful for self-referencing types.\n    \n    Args:\n        cls: The class to add to the namespace.\n        types_namespace: The existing namespace to merge with.\n        \n    Returns:\n        The merged namespace.\n    \"\"\"\n    # Make a copy to avoid modifying the original\n    result = types_namespace.copy()\n    # Add the class itself to the namespace\n    result[cls.__name__] = cls\n    return result\n\n\n@deprecated(\n    '`eval_type_lenient` is deprecated, use `try_eval_type` instead.',\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 70,
+      "filepath": "pydantic/_internal/_dataclasses.py",
+      "old_string": "\ndef set_dataclass_fields(\n    cls: type[StandardDataclass],\n    ns_resolver: NsResolver | None = None,\n    config_wrapper: _config.ConfigWrapper | None = None,\n) -> None:\n    \"\"\"Collect and set `cls.__pydantic_fields__`.\n\n    Args:\n        cls: The class.\n        ns_resolver: Namespace resolver to use when getting dataclass annotations.\n        config_wrapper: The config wrapper instance, defaults to `None`.\n    \"\"\"\n    typevars_map = get_standard_typevars_map(cls)\n    fields = collect_dataclass_fields(\n        cls, ns_resolver=ns_resolver, typevars_map=typevars_map, config_wrapper=config_wrapper\n    )\n\n    cls.__pydantic_fields__ = fields  # type: ignore\n",
+      "new_string": "\ndef set_dataclass_fields(\n    cls: type[StandardDataclass],\n    ns_resolver: NsResolver | dict[str, Any] | None = None,\n    config_wrapper: _config.ConfigWrapper | None = None,\n) -> None:\n    \"\"\"Collect and set `cls.__pydantic_fields__`.\n\n    Args:\n        cls: The class.\n        ns_resolver: Namespace resolver or dictionary to use when getting dataclass annotations.\n        config_wrapper: The config wrapper instance, defaults to `None`.\n    \"\"\"\n    typevars_map = get_standard_typevars_map(cls)\n    \n    # Convert dictionary to NsResolver if needed\n    if isinstance(ns_resolver, dict):\n        resolver = NsResolver()\n        # Add the dictionary to the base namespace\n        resolver._base_ns_tuple = NamespacesTuple({}, ns_resolver)\n        ns_resolver = resolver\n    \n    fields = collect_dataclass_fields(\n        cls, ns_resolver=ns_resolver, typevars_map=typevars_map, config_wrapper=config_wrapper\n    )\n\n    cls.__pydantic_fields__ = fields  # type: ignore\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 72,
+      "filepath": "pydantic/_internal/_dataclasses.py",
+      "old_string": "\nfrom ._fields import collect_dataclass_fields\nfrom ._generate_schema import GenerateSchema, InvalidSchemaError\nfrom ._generics import get_standard_typevars_map\nfrom ._mock_val_ser import set_dataclass_mocks\nfrom ._namespace_utils import NsResolver\nfrom ._signature import generate_pydantic_signature\nfrom ._utils import LazyClassAttribute\n",
+      "new_string": "\nfrom ._fields import collect_dataclass_fields\nfrom ._generate_schema import GenerateSchema, InvalidSchemaError\nfrom ._generics import get_standard_typevars_map\nfrom ._mock_val_ser import set_dataclass_mocks\nfrom ._namespace_utils import NsResolver, NamespacesTuple\nfrom ._signature import generate_pydantic_signature\nfrom ._utils import LazyClassAttribute\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 78,
+      "filepath": "pydantic/_internal/_generate_schema.py",
+      "old_string": "\n    def __init__(\n        self,\n        config_wrapper: ConfigWrapper,\n        ns_resolver: NsResolver | None = None,\n        typevars_map: Mapping[TypeVar, Any] | None = None,\n    ) -> None:\n        # we need a stack for recursing into nested models\n        self._config_wrapper_stack = ConfigWrapperStack(config_wrapper)\n        self._ns_resolver = ns_resolver or NsResolver()\n        self._typevars_map = typevars_map\n        self.field_name_stack = _FieldNameStack()\n        self.model_type_stack = _ModelTypeStack()\n        self.defs = _Definitions()\n",
+      "new_string": "\n    def __init__(\n        self,\n        config_wrapper: ConfigWrapper,\n        ns_resolver: NsResolver | dict[str, Any] | None = None,\n        typevars_map: Mapping[TypeVar, Any] | None = None,\n    ) -> None:\n        # we need a stack for recursing into nested models\n        self._config_wrapper_stack = ConfigWrapperStack(config_wrapper)\n        \n        # Convert dictionary to NsResolver if needed\n        if isinstance(ns_resolver, dict):\n            resolver = NsResolver()\n            # Add the dictionary to the base namespace\n            resolver._base_ns_tuple = NamespacesTuple({}, ns_resolver)\n            self._ns_resolver = resolver\n        else:\n            self._ns_resolver = ns_resolver or NsResolver()\n            \n        self._typevars_map = typevars_map\n        self.field_name_stack = _FieldNameStack()\n        self.model_type_stack = _ModelTypeStack()\n        self.defs = _Definitions()\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 80,
+      "filepath": "pydantic/_internal/_generate_schema.py",
+      "old_string": "\nfrom ._forward_ref import PydanticRecursiveRef\nfrom ._generics import get_args, get_origin, get_standard_typevars_map, is_generic_alias\nfrom ._internal_dataclass import slots_dataclass\nfrom ._namespace_utils import NsResolver\nfrom ._typing_extra import (\n    eval_type,\n    get_cls_type_hints,\n    get_function_type_hints,\n    get_origin_for_generic_type,\n    is_annotated,\n    is_classvar_annotation,\n    is_finalvar_annotation,\n    is_literal_type,\n    is_namedtuple,\n    is_none_type,\n    is_typeddict,\n    is_typeddict_special,\n    is_union,\n    origin_is_union,\n    parent_frame_namespace,\n    parent_module_namespace,\n    parent_namespace,\n    try_eval_type,\n    unwrap_annotated,\n)\n",
+      "new_string": "\nfrom ._forward_ref import PydanticRecursiveRef\nfrom ._generics import get_args, get_origin, get_standard_typevars_map, is_generic_alias\nfrom ._internal_dataclass import slots_dataclass\nfrom ._namespace_utils import NsResolver, NamespacesTuple\nfrom ._typing_extra import (\n    eval_type,\n    get_cls_type_hints,\n    get_function_type_hints,\n    get_origin_for_generic_type,\n    is_annotated,\n    is_classvar_annotation,\n    is_finalvar_annotation,\n    is_literal_type,\n    is_namedtuple,\n    is_none_type,\n    is_typeddict,\n    is_typeddict_special,\n    is_union,\n    origin_is_union,\n    parent_frame_namespace,\n    parent_module_namespace,\n    parent_namespace,\n    try_eval_type,\n    unwrap_annotated,\n)\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 86,
+      "filepath": "pydantic/_internal/_dataclasses.py",
+      "old_string": "\n    typevars_map = get_standard_typevars_map(cls)\n    gen_schema = GenerateSchema(\n        config_wrapper,\n        ns_resolver=types_namespace,\n        typevars_map=typevars_map,\n    )\n",
+      "new_string": "\n    typevars_map = get_standard_typevars_map(cls)\n    \n    # Create a namespace resolver with the types_namespace\n    if types_namespace is not None:\n        ns_resolver = NsResolver()\n        # Add the types_namespace to the base namespace\n        ns_resolver._base_ns_tuple = NamespacesTuple({}, types_namespace)\n    else:\n        ns_resolver = None\n        \n    gen_schema = GenerateSchema(\n        config_wrapper,\n        ns_resolver=ns_resolver,\n        typevars_map=typevars_map,\n    )\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 102,
+      "filepath": "pydantic/_internal/_generate_schema.py",
+      "old_string": "\n    def _resolve_forward_ref(self, obj: Any) -> Any:\n        # we assume that types_namespace has the target of forward references in its scope,\n        # but this could fail, for example, if calling Validator on an imported type which contains\n        # forward references to other types only defined in the module from which it was imported\n        # `Validator(SomeImportedTypeAliasWithAForwardReference)`\n        # or the equivalent for BaseModel\n        # class Model(BaseModel):\n        #   x: SomeImportedTypeAliasWithAForwardReference\n        try:\n            obj = _typing_extra.eval_type_backport(obj, *self._types_namespace)\n        except NameError as e:\n            raise PydanticUndefinedAnnotation.from_name_error(e) from e\n",
+      "new_string": "\n    def _resolve_forward_ref(self, obj: Any) -> Any:\n        # we assume that types_namespace has the target of forward references in its scope,\n        # but this could fail, for example, if calling Validator on an imported type which contains\n        # forward references to other types only defined in the module from which it was imported\n        # `Validator(SomeImportedTypeAliasWithAForwardReference)`\n        # or the equivalent for BaseModel\n        # class Model(BaseModel):\n        #   x: SomeImportedTypeAliasWithAForwardReference\n        try:\n            globalns, localns = self._types_namespace\n            \n            # If obj is a ForwardRef and its name is in localns, use it directly\n            if isinstance(obj, ForwardRef) and obj.__forward_arg__ in localns:\n                return localns[obj.__forward_arg__]\n                \n            obj = _typing_extra.eval_type_backport(obj, globalns, localns)\n        except NameError as e:\n            raise PydanticUndefinedAnnotation.from_name_error(e) from e\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 106,
+      "filepath": "pydantic/dataclasses.py",
+      "old_string": "\ndef dataclass(\n    _cls: type[_T] | None = None,\n    *,\n    init: Literal[False] = False,\n    repr: bool = True,\n    eq: bool = True,\n    order: bool = False,\n    unsafe_hash: bool = False,\n    frozen: bool | None = None,\n    config: ConfigDict | type[object] | None = None,\n    validate_on_init: bool | None = None,\n    kw_only: bool = False,\n    slots: bool = False,\n) -> Callable[[type[_T]], type[PydanticDataclass]] | type[PydanticDataclass]:\n",
+      "new_string": "\ndef dataclass(\n    _cls: type[_T] | None = None,\n    *,\n    init: Literal[False] = False,\n    repr: bool = True,\n    eq: bool = True,\n    order: bool = False,\n    unsafe_hash: bool = False,\n    frozen: bool | None = None,\n    config: ConfigDict | type[object] | None = None,\n    validate_on_init: bool | None = None,\n    kw_only: bool = False,\n    slots: bool = False,\n    types_namespace: dict[str, Any] | None = None,\n) -> Callable[[type[_T]], type[PydanticDataclass]] | type[PydanticDataclass]:\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

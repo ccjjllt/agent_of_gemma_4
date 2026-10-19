@@ -1,0 +1,28 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00006-of-00008.parquet",
+  "row_index": 1568,
+  "instance_id": "getmoto__moto.694ce1f4.pr_7181",
+  "repo": "getmoto/moto",
+  "source_resolved": true,
+  "teacher_source": "claude-3-7-sonnet-20250219",
+  "traj_id": "getmoto__moto.694ce1f4.pr_7181.pla88axh",
+  "messages_sha256": "1b82fcb101206f741c5902644fbac11f3501855de48509015ca4f093b8672692",
+  "issue": "### Pagination not working for list_account_assignments\n\n#### Bug description\n\nWhen attempting to paginate through account assignments using the `list_account_assignments` method, the pagination does not function as expected. The `NextToken` is not returned, and the results are not split according to the `MaxResults` parameter.\n\n#### Steps to reproduce\n\n1. Create multiple account assignments using the `create_account_assignment` method.\n2. Call `list_account_assignments` with `MaxResults` set to a value less than the total number of assignments.\n3. Observe that the response does not include a `NextToken`, and all assignments are returned in a single response instead of being paginated.\n\n#### Expected behavior\n\nThe response should include a `NextToken` when the number of assignments exceeds `MaxResults`, allowing for proper pagination.\n\n#### Environment\n\n- **Python version**: 3.12.9\n- **Moto version**: Latest\n- **Boto3 version**: Latest\n- **OS**: Linux\n\n#### Additional context\n\nThis issue affects the ability to handle large sets of account assignments efficiently, as pagination is not functioning.",
+  "actions": [
+    {
+      "source_message_index": 30,
+      "filepath": "moto/ssoadmin/models.py",
+      "old_string": "\n    def list_account_assignments(\n        self, instance_arn: str, account_id: str, permission_set_arn: str\n    ) -> List[Dict[str, str]]:\n        \"\"\"\n        Pagination has not yet been implemented\n        \"\"\"\n        account_assignments = []\n        for assignment in self.account_assignments:\n            if (\n                assignment.instance_arn == instance_arn\n                and assignment.target_id == account_id\n                and assignment.permission_set_arn == permission_set_arn\n            ):\n                account_assignments.append(\n                    {\n                        \"AccountId\": account_id,\n                        \"PermissionSetArn\": assignment.permission_set_arn,\n                        \"PrincipalType\": assignment.principal_type,\n                        \"PrincipalId\": assignment.principal_id,\n                    }\n                )\n        return account_assignments\n",
+      "new_string": "\n    @paginate(PAGINATION_MODEL)\n    def list_account_assignments(\n        self, instance_arn: str, account_id: str, permission_set_arn: str\n    ) -> List[Dict[str, str]]:\n        \"\"\"\n        List account assignments with pagination support\n        \"\"\"\n        account_assignments = []\n        for assignment in self.account_assignments:\n            if (\n                assignment.instance_arn == instance_arn\n                and assignment.target_id == account_id\n                and assignment.permission_set_arn == permission_set_arn\n            ):\n                account_assignments.append(\n                    {\n                        \"AccountId\": account_id,\n                        \"PermissionSetArn\": assignment.permission_set_arn,\n                        \"PrincipalType\": assignment.principal_type,\n                        \"PrincipalId\": assignment.principal_id,\n                    }\n                )\n        return account_assignments\n",
+      "allow_multiple": false
+    },
+    {
+      "source_message_index": 32,
+      "filepath": "moto/ssoadmin/responses.py",
+      "old_string": "\n    def list_account_assignments(self) -> str:\n        params = json.loads(self.body)\n        instance_arn = params.get(\"InstanceArn\")\n        account_id = params.get(\"AccountId\")\n        permission_set_arn = params.get(\"PermissionSetArn\")\n        assignments = self.ssoadmin_backend.list_account_assignments(\n            instance_arn=instance_arn,\n            account_id=account_id,\n            permission_set_arn=permission_set_arn,\n        )\n        return json.dumps({\"AccountAssignments\": assignments})\n",
+      "new_string": "\n    def list_account_assignments(self) -> str:\n        params = json.loads(self.body)\n        instance_arn = params.get(\"InstanceArn\")\n        account_id = params.get(\"AccountId\")\n        permission_set_arn = params.get(\"PermissionSetArn\")\n        max_results = params.get(\"MaxResults\")\n        next_token = params.get(\"NextToken\")\n        \n        assignments, next_token = self.ssoadmin_backend.list_account_assignments(\n            instance_arn=instance_arn,\n            account_id=account_id,\n            permission_set_arn=permission_set_arn,\n            max_results=max_results,\n            next_token=next_token,\n        )\n        \n        response = {\"AccountAssignments\": assignments}\n        if next_token:\n            response[\"NextToken\"] = next_token\n            \n        return json.dumps(response)\n",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}

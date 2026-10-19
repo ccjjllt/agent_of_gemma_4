@@ -1,0 +1,151 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/sts/models.py",
+      "start_line": 124,
+      "end_line": 169
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/sts/models.py",
+      "content": "    def assume_role_with_web_identity(self, **kwargs: Any) -> AssumedRole:\n        return self.assume_role(**kwargs)\n\n    def assume_role_with_saml(self, **kwargs: Any) -> AssumedRole:\n        del kwargs[\"principal_arn\"]\n        saml_assertion_encoded = kwargs.pop(\"saml_assertion\")\n        saml_assertion_decoded = b64decode(saml_assertion_encoded)\n\n        namespaces = {\n            \"urn:oasis:names:tc:SAML:2.0:protocol\": \"samlp\",\n            \"urn:oasis:names:tc:SAML:2.0:assertion\": \"saml\",\n        }\n        saml_assertion = xmltodict.parse(\n            saml_assertion_decoded.decode(\"utf-8\"),\n            force_cdata=True,\n            process_namespaces=True,\n            namespaces=namespaces,\n        )\n\n        target_role = None\n        saml_assertion_attributes = saml_assertion[\"samlp:Response\"][\"saml:Assertion\"][\n            \"saml:AttributeStatement\"\n        ][\"saml:Attribute\"]\n        for attribute in saml_assertion_attributes:\n            if (\n                attribute[\"@Name\"]\n                == \"https://aws.amazon.com/SAML/Attributes/RoleSessionName\"\n            ):\n                kwargs[\"role_session_name\"] = attribute[\"saml:AttributeValue\"][\"#text\"]\n            if (\n                attribute[\"@Name\"]\n                == \"https://aws.amazon.com/SAML/Attributes/SessionDuration\"\n            ):\n                kwargs[\"duration\"] = int(attribute[\"saml:AttributeValue\"][\"#text\"])\n\n        if \"duration\" not in kwargs:\n            kwargs[\"duration\"] = DEFAULT_STS_SESSION_DURATION\n\n        account_id, access_key = self._create_access_key(role=target_role)  # type: ignore\n        kwargs[\"account_id\"] = account_id\n        kwargs[\"region_name\"] = self.region_name\n        kwargs[\"access_key\"] = access_key\n\n        kwargs[\"external_id\"] = None\n        kwargs[\"policy\"] = None\n        role = AssumedRole(**kwargs)",
+      "start_line": 124,
+      "end_line": 169,
+      "total_lines": 203,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/sts/models.py",
+      "old_string": "        saml_assertion = xmltodict.parse(\n            saml_assertion_decoded.decode(\"utf-8\"),\n            force_cdata=True,\n            process_namespaces=True,\n            namespaces=namespaces,\n        )\n\n        target_role = None\n        saml_assertion_attributes = saml_assertion[\"samlp:Response\"][\"saml:Assertion\"][\n            \"saml:AttributeStatement\"\n        ][\"saml:Attribute\"]\n        for attribute in saml_assertion_attributes:\n            if (\n                attribute[\"@Name\"]\n                == \"https://aws.amazon.com/SAML/Attributes/RoleSessionName\"\n            ):\n                kwargs[\"role_session_name\"] = attribute[\"saml:AttributeValue\"][\"#text\"]\n            if (\n                attribute[\"@Name\"]\n                == \"https://aws.amazon.com/SAML/Attributes/SessionDuration\"\n            ):\n                kwargs[\"duration\"] = int(attribute[\"saml:AttributeValue\"][\"#text\"])",
+      "new_string": "        saml_assertion = xmltodict.parse(\n            saml_assertion_decoded.decode(\"utf-8\"),\n            force_cdata=True,\n            process_namespaces=True,\n            namespaces=namespaces,\n        )\n\n        target_role = None\n        # Access the SAML assertion attributes using the correct namespace format\n        saml_assertion_attributes = saml_assertion[\"samlp:Response\"][\"saml:Assertion\"][\n            \"saml:AttributeStatement\"\n        ][\"saml:Attribute\"]\n        for attribute in saml_assertion_attributes:\n            if (\n                attribute[\"@Name\"]\n                == \"https://aws.amazon.com/SAML/Attributes/RoleSessionName\"\n            ):\n                # Use the correct namespace format for AttributeValue\n                attr_value = attribute.get(\"saml:AttributeValue\", {})\n                if isinstance(attr_value, dict):\n                    kwargs[\"role_session_name\"] = attr_value.get(\"#text\")\n                else:\n                    kwargs[\"role_session_name\"] = attr_value\n            if (\n                attribute[\"@Name\"]\n                == \"https://aws.amazon.com/SAML/Attributes/SessionDuration\"\n            ):\n                # Use the correct namespace format for AttributeValue\n                attr_value = attribute.get(\"saml:AttributeValue\", {})\n                if isinstance(attr_value, dict):\n                    kwargs[\"duration\"] = int(attr_value.get(\"#text\", 0))\n                else:\n                    kwargs[\"duration\"] = int(attr_value)",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/sts/models.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/sts/models.py\n+++ b/moto/sts/models.py\n@@ -141,6 +141,7 @@\n         )\n \n         target_role = None\n+        # Access the SAML assertion attributes using the correct namespace format\n         saml_assertion_attributes = saml_assertion[\"samlp:Response\"][\"saml:Assertion\"][\n             \"saml:AttributeStatement\"\n         ][\"saml:Attribute\"]\n@@ -149,12 +150,22 @@\n                 attribute[\"@Name\"]\n                 == \"https://aws.amazon.com/SAML/Attributes/RoleSessionName\"\n             ):\n-                kwargs[\"role_session_name\"] = attribute[\"saml:AttributeValue\"][\"#text\"]\n+                # Use the correct namespace format for AttributeValue\n+                attr_value = attribute.get(\"saml:AttributeValue\", {})\n+                if isinstance(attr_value, dict):\n+                    kwargs[\"role_session_name\"] = attr_value.get(\"#text\")\n+                else:\n+                    kwargs[\"role_session_name\"] = attr_value\n             if (\n                 attribute[\"@Name\"]\n                 == \"https://aws.amazon.com/SAML/Attributes/SessionDuration\"\n             ):\n-                kwargs[\"duration\"] = int(attribute[\"saml:AttributeValue\"][\"#text\"])\n+                # Use the correct namespace format for AttributeValue\n+                attr_value = attribute.get(\"saml:AttributeValue\", {})\n+                if isinstance(attr_value, dict):\n+                    kwargs[\"duration\"] = int(attr_value.get(\"#text\", 0))\n+                else:\n+                    kwargs[\"duration\"] = int(attr_value)\n \n         if \"duration\" not in kwargs:\n             kwargs[\"duration\"] = DEFAULT_STS_SESSION_DURATION\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/sts/models.py",
+      "start_line": 131,
+      "end_line": 180
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/sts/models.py",
+      "content": "\n        namespaces = {\n            \"urn:oasis:names:tc:SAML:2.0:protocol\": \"samlp\",\n            \"urn:oasis:names:tc:SAML:2.0:assertion\": \"saml\",\n        }\n        saml_assertion = xmltodict.parse(\n            saml_assertion_decoded.decode(\"utf-8\"),\n            force_cdata=True,\n            process_namespaces=True,\n            namespaces=namespaces,\n        )\n\n        target_role = None\n        # Access the SAML assertion attributes using the correct namespace format\n        saml_assertion_attributes = saml_assertion[\"samlp:Response\"][\"saml:Assertion\"][\n            \"saml:AttributeStatement\"\n        ][\"saml:Attribute\"]\n        for attribute in saml_assertion_attributes:\n            if (\n                attribute[\"@Name\"]\n                == \"https://aws.amazon.com/SAML/Attributes/RoleSessionName\"\n            ):\n                # Use the correct namespace format for AttributeValue\n                attr_value = attribute.get(\"saml:AttributeValue\", {})\n                if isinstance(attr_value, dict):\n                    kwargs[\"role_session_name\"] = attr_value.get(\"#text\")\n                else:\n                    kwargs[\"role_session_name\"] = attr_value\n            if (\n                attribute[\"@Name\"]\n                == \"https://aws.amazon.com/SAML/Attributes/SessionDuration\"\n            ):\n                # Use the correct namespace format for AttributeValue\n                attr_value = attribute.get(\"saml:AttributeValue\", {})\n                if isinstance(attr_value, dict):\n                    kwargs[\"duration\"] = int(attr_value.get(\"#text\", 0))\n                else:\n                    kwargs[\"duration\"] = int(attr_value)\n\n        if \"duration\" not in kwargs:\n            kwargs[\"duration\"] = DEFAULT_STS_SESSION_DURATION\n\n        account_id, access_key = self._create_access_key(role=target_role)  # type: ignore\n        kwargs[\"account_id\"] = account_id\n        kwargs[\"region_name\"] = self.region_name\n        kwargs[\"access_key\"] = access_key\n\n        kwargs[\"external_id\"] = None\n        kwargs[\"policy\"] = None\n        role = AssumedRole(**kwargs)",
+      "start_line": 131,
+      "end_line": 180,
+      "total_lines": 214,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/sts/models.py",
+      "old_string": "        target_role = None\n        # Access the SAML assertion attributes using the correct namespace format\n        saml_assertion_attributes = saml_assertion[\"samlp:Response\"][\"saml:Assertion\"][\n            \"saml:AttributeStatement\"\n        ][\"saml:Attribute\"]\n        for attribute in saml_assertion_attributes:\n            if (\n                attribute[\"@Name\"]\n                == \"https://aws.amazon.com/SAML/Attributes/RoleSessionName\"\n            ):\n                # Use the correct namespace format for AttributeValue\n                attr_value = attribute.get(\"saml:AttributeValue\", {})\n                if isinstance(attr_value, dict):\n                    kwargs[\"role_session_name\"] = attr_value.get(\"#text\")\n                else:\n                    kwargs[\"role_session_name\"] = attr_value\n            if (\n                attribute[\"@Name\"]\n                == \"https://aws.amazon.com/SAML/Attributes/SessionDuration\"\n            ):\n                # Use the correct namespace format for AttributeValue\n                attr_value = attribute.get(\"saml:AttributeValue\", {})\n                if isinstance(attr_value, dict):\n                    kwargs[\"duration\"] = int(attr_value.get(\"#text\", 0))\n                else:\n                    kwargs[\"duration\"] = int(attr_value)",
+      "new_string": "        target_role = None\n        # Access the SAML assertion attributes using the correct namespace format\n        saml_assertion_attributes = saml_assertion[\"samlp:Response\"][\"saml:Assertion\"][\n            \"saml:AttributeStatement\"\n        ][\"saml:Attribute\"]\n        for attribute in saml_assertion_attributes:\n            if (\n                attribute[\"@Name\"]\n                == \"https://aws.amazon.com/SAML/Attributes/RoleSessionName\"\n            ):\n                # Use the correct namespace format for AttributeValue\n                attr_value = attribute.get(\"saml:AttributeValue\", {})\n                if isinstance(attr_value, dict):\n                    kwargs[\"role_session_name\"] = attr_value.get(\"#text\")\n                else:\n                    kwargs[\"role_session_name\"] = attr_value\n            elif (\n                attribute[\"@Name\"]\n                == \"https://aws.amazon.com/SAML/Attributes/SessionDuration\"\n            ):\n                # Use the correct namespace format for AttributeValue\n                attr_value = attribute.get(\"saml:AttributeValue\", {})\n                if isinstance(attr_value, dict):\n                    kwargs[\"duration\"] = int(attr_value.get(\"#text\", 0))\n                else:\n                    kwargs[\"duration\"] = int(attr_value)\n            elif (\n                attribute[\"@Name\"]\n                == \"https://aws.amazon.com/SAML/Attributes/Role\"\n            ):\n                # Extract the role ARN from the Role attribute\n                attr_value = attribute.get(\"saml:AttributeValue\", {})\n                if isinstance(attr_value, dict) and \"#text\" in attr_value:\n                    role_principal_arn = attr_value[\"#text\"].split(\",\")\n                    if len(role_principal_arn) == 2:\n                        target_role = role_principal_arn[1]  # The second part is the role ARN\n                else:\n                    role_principal_arn = attr_value.split(\",\")\n                    if len(role_principal_arn) == 2:\n                        target_role = role_principal_arn[1]  # The second part is the role ARN",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/sts/models.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/sts/models.py\n+++ b/moto/sts/models.py\n@@ -156,7 +156,7 @@\n                     kwargs[\"role_session_name\"] = attr_value.get(\"#text\")\n                 else:\n                     kwargs[\"role_session_name\"] = attr_value\n-            if (\n+            elif (\n                 attribute[\"@Name\"]\n                 == \"https://aws.amazon.com/SAML/Attributes/SessionDuration\"\n             ):\n@@ -166,6 +166,20 @@\n                     kwargs[\"duration\"] = int(attr_value.get(\"#text\", 0))\n                 else:\n                     kwargs[\"duration\"] = int(attr_value)\n+            elif (\n+                attribute[\"@Name\"]\n+                == \"https://aws.amazon.com/SAML/Attributes/Role\"\n+            ):\n+                # Extract the role ARN from the Role attribute\n+                attr_value = attribute.get(\"saml:AttributeValue\", {})\n+                if isinstance(attr_value, dict) and \"#text\" in attr_value:\n+                    role_principal_arn = attr_value[\"#text\"].split(\",\")\n+                    if len(role_principal_arn) == 2:\n+                        target_role = role_principal_arn[1]  # The second part is the role ARN\n+                else:\n+                    role_principal_arn = attr_value.split(\",\")\n+                    if len(role_principal_arn) == 2:\n+                        target_role = role_principal_arn[1]  # The second part is the role ARN\n \n         if \"duration\" not in kwargs:\n             kwargs[\"duration\"] = DEFAULT_STS_SESSION_DURATION\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/sts/models.py",
+      "start_line": 132,
+      "end_line": 159
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/sts/models.py",
+      "content": "        namespaces = {\n            \"urn:oasis:names:tc:SAML:2.0:protocol\": \"samlp\",\n            \"urn:oasis:names:tc:SAML:2.0:assertion\": \"saml\",\n        }\n        saml_assertion = xmltodict.parse(\n            saml_assertion_decoded.decode(\"utf-8\"),\n            force_cdata=True,\n            process_namespaces=True,\n            namespaces=namespaces,\n        )\n\n        target_role = None\n        # Access the SAML assertion attributes using the correct namespace format\n        saml_assertion_attributes = saml_assertion[\"samlp:Response\"][\"saml:Assertion\"][\n            \"saml:AttributeStatement\"\n        ][\"saml:Attribute\"]\n        for attribute in saml_assertion_attributes:\n            if (\n                attribute[\"@Name\"]\n                == \"https://aws.amazon.com/SAML/Attributes/RoleSessionName\"\n            ):\n                # Use the correct namespace format for AttributeValue\n                attr_value = attribute.get(\"saml:AttributeValue\", {})\n                if isinstance(attr_value, dict):\n                    kwargs[\"role_session_name\"] = attr_value.get(\"#text\")\n                else:\n                    kwargs[\"role_session_name\"] = attr_value\n            elif (",
+      "start_line": 132,
+      "end_line": 159,
+      "total_lines": 228,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/sts/models.py",
+      "old_string": "        # Access the SAML assertion attributes using the correct namespace format\n        saml_assertion_attributes = saml_assertion[\"samlp:Response\"][\"saml:Assertion\"][\n            \"saml:AttributeStatement\"\n        ][\"saml:Attribute\"]",
+      "new_string": "        # Access the SAML assertion attributes using the correct namespace format\n        saml_assertion_attributes = saml_assertion[\"samlp:Response\"][\"saml:Assertion\"][\n            \"saml:AttributeStatement\"\n        ][\"saml:Attribute\"]\n        \n        # Ensure saml_assertion_attributes is a list\n        if not isinstance(saml_assertion_attributes, list):\n            saml_assertion_attributes = [saml_assertion_attributes]",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/sts/models.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/sts/models.py\n+++ b/moto/sts/models.py\n@@ -145,6 +145,10 @@\n         saml_assertion_attributes = saml_assertion[\"samlp:Response\"][\"saml:Assertion\"][\n             \"saml:AttributeStatement\"\n         ][\"saml:Attribute\"]\n+        \n+        # Ensure saml_assertion_attributes is a list\n+        if not isinstance(saml_assertion_attributes, list):\n+            saml_assertion_attributes = [saml_assertion_attributes]\n         for attribute in saml_assertion_attributes:\n             if (\n                 attribute[\"@Name\"]\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "moto/sts/models.py",
+      "start_line": 176,
+      "end_line": 203
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/sts/models.py",
+      "content": "            ):\n                # Extract the role ARN from the Role attribute\n                attr_value = attribute.get(\"saml:AttributeValue\", {})\n                if isinstance(attr_value, dict) and \"#text\" in attr_value:\n                    role_principal_arn = attr_value[\"#text\"].split(\",\")\n                    if len(role_principal_arn) == 2:\n                        target_role = role_principal_arn[1]  # The second part is the role ARN\n                else:\n                    role_principal_arn = attr_value.split(\",\")\n                    if len(role_principal_arn) == 2:\n                        target_role = role_principal_arn[1]  # The second part is the role ARN\n\n        if \"duration\" not in kwargs:\n            kwargs[\"duration\"] = DEFAULT_STS_SESSION_DURATION\n\n        account_id, access_key = self._create_access_key(role=target_role)  # type: ignore\n        kwargs[\"account_id\"] = account_id\n        kwargs[\"region_name\"] = self.region_name\n        kwargs[\"access_key\"] = access_key\n\n        kwargs[\"external_id\"] = None\n        kwargs[\"policy\"] = None\n        role = AssumedRole(**kwargs)\n        self.assumed_roles.append(role)\n        return role\n\n    def get_caller_identity(\n        self, access_key_id: str, region: str",
+      "start_line": 176,
+      "end_line": 203,
+      "total_lines": 232,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "moto/sts/models.py",
+      "old_string": "        if \"duration\" not in kwargs:\n            kwargs[\"duration\"] = DEFAULT_STS_SESSION_DURATION\n\n        account_id, access_key = self._create_access_key(role=target_role)  # type: ignore",
+      "new_string": "        # Make sure we have a role_session_name\n        if \"role_session_name\" not in kwargs:\n            kwargs[\"role_session_name\"] = \"default-session-name\"\n            \n        if \"duration\" not in kwargs:\n            kwargs[\"duration\"] = DEFAULT_STS_SESSION_DURATION\n\n        # If target_role is None, use the provided role_arn from the request\n        if target_role is None:\n            target_role = kwargs.get(\"role_arn\")\n            \n        account_id, access_key = self._create_access_key(role=target_role)  # type: ignore",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "moto/sts/models.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/moto/sts/models.py\n+++ b/moto/sts/models.py\n@@ -185,9 +185,17 @@\n                     if len(role_principal_arn) == 2:\n                         target_role = role_principal_arn[1]  # The second part is the role ARN\n \n+        # Make sure we have a role_session_name\n+        if \"role_session_name\" not in kwargs:\n+            kwargs[\"role_session_name\"] = \"default-session-name\"\n+            \n         if \"duration\" not in kwargs:\n             kwargs[\"duration\"] = DEFAULT_STS_SESSION_DURATION\n \n+        # If target_role is None, use the provided role_arn from the request\n+        if target_role is None:\n+            target_role = kwargs.get(\"role_arn\")\n+            \n         account_id, access_key = self._create_access_key(role=target_role)  # type: ignore\n         kwargs[\"account_id\"] = account_id\n         kwargs[\"region_name\"] = self.region_name\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "get_status",
+    "arguments": {},
+    "response": {
+      "status": "ok",
+      "tool_calls_used": 8,
+      "patch_submitted": false,
+      "patch_size": 0,
+      "tool_calls_remaining": 92,
+      "max_tool_calls": 100,
+      "command_timeout_seconds": 30
+    }
+  }
+]

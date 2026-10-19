@@ -1,0 +1,21 @@
+{
+  "source_file": "research/011/data-scaling-20261018/shards/tool-00001-of-00008.parquet",
+  "row_index": 2247,
+  "instance_id": "getmoto__moto.694ce1f4.pr_5794",
+  "repo": "getmoto/moto",
+  "source_resolved": true,
+  "teacher_source": "claude-3-5-sonnet-20241022",
+  "traj_id": "getmoto__moto.694ce1f4.pr_5794.87igi3sy",
+  "messages_sha256": "65b25ac97398ffc5c3e6afd106e2289f7afc5ec8960498bb79000dbd56cafd61",
+  "issue": "# Access tokens not properly invalidated during global sign out\n\n## Bug description\n\nWhen a user performs a global sign out, their refresh tokens are properly invalidated but their access tokens remain valid. This creates a security vulnerability where a user who has signed out can still access resources using their old access token.\n\n## Steps to reproduce\n\n1. Create a user pool and client\n2. Authenticate a user to get access and refresh tokens\n3. Call the global_sign_out API with the access token\n4. Try to use the refresh token - this correctly fails with \"Refresh Token has been revoked\"\n5. Try to use the access token - this incorrectly succeeds when it should fail\n\n## Example code to reproduce\n\n```python\nimport boto3\n\n# Set up Cognito client\ncognito = boto3.client('cognito-idp', 'us-west-2')\n\n# Authenticate user (simplified - in real code you'd need to handle the auth flow)\nauth_result = cognito.initiate_auth(\n    ClientId='your-client-id',\n    AuthFlow='USER_PASSWORD_AUTH',\n    AuthParameters={\n        'USERNAME': 'test_user',\n        'PASSWORD': 'Password123!'\n    }\n)\n\n# Get tokens\naccess_token = auth_result['AuthenticationResult']['AccessToken']\nrefresh_token = auth_result['AuthenticationResult']['RefreshToken']\n\n# Sign out globally\ncognito.global_sign_out(AccessToken=access_token)\n\n# Try to use the access token - this should fail but currently works\ntry:\n    user_info = cognito.get_user(AccessToken=access_token)\n    print(\"BUG: Access token still works after sign out!\")\n    print(user_info)\nexcept Exception as e:\n    print(\"Expected behavior: Access token was properly invalidated\")\n    print(e)\n```\n\n## Expected behavior\n\nAfter calling global_sign_out, both refresh tokens AND access tokens should be invalidated. Any attempt to use either token should result in a NotAuthorizedException.\n\n## Actual behavior\n\nAfter calling global_sign_out, only refresh tokens are invalidated. Access tokens remain valid and can still be used to access resources.",
+  "actions": [
+    {
+      "source_message_index": 42,
+      "filepath": "moto/cognitoidp/models.py",
+      "old_string": "    def sign_out(self, username: str) -> None:\n        for token, token_tuple in list(self.refresh_tokens.items()):\n            if token_tuple is None:\n                continue\n            _, logged_in_user, _ = token_tuple\n            if username == logged_in_user:\n                self.refresh_tokens[token] = None",
+      "new_string": "    def sign_out(self, username: str) -> None:\n        # Invalidate refresh tokens\n        for token, token_tuple in list(self.refresh_tokens.items()):\n            if token_tuple is None:\n                continue\n            _, logged_in_user, _ = token_tuple\n            if username == logged_in_user:\n                self.refresh_tokens[token] = None\n        \n        # Invalidate access tokens\n        for token, token_tuple in list(self.access_tokens.items()):\n            _, logged_in_user = token_tuple\n            if username == logged_in_user:\n                del self.access_tokens[token]\n        \n        # Invalidate id tokens\n        for token, token_tuple in list(self.id_tokens.items()):\n            _, logged_in_user = token_tuple\n            if username == logged_in_user:\n                del self.id_tokens[token]",
+      "allow_multiple": false
+    }
+  ],
+  "patch_column_used": false
+}
