@@ -20,3 +20,7 @@
 
 ## 2026-10-20 ~05:45Z: GPU full已推
 - kernel `ccjjllt/p013-31b-diag` v1，8 attempts（4 tasks x 2 arms, AB/BA），4xL4，est 15-25min wall (~0.5-0.9h quota)。推前配额 `quota-before-gpu-full.json`：剩9.17h。
+
+## 2026-10-20 ~06:05Z: GPU v1 ERROR = wrong GPU shape (T4x2), not agent bug
+- `ccjjllt/p013-31b-diag-pair` v1 (pushed WITHOUT --accelerator): session landed on non-4xL4 → coordinator assert `Requires four L4 GPUs` at 122s, 0 attempts run, cost ~0.03h (9.17→9.14h). Same P012 precedent ("缺 L4 machine_shape，上了T4x2") and P011 V1 precedent.
+- Fix: re-push with `--accelerator NvidiaL4` (+ competition binding already in metadata). Same-id versioned push → 409 Conflict twice (also seen on CPU kernel); new-id works. New kernel `ccjjllt/p013-31b-diag-pair-v2` v1 pushed ~06:10Z with --accelerator NvidiaL4, no title warning. Dir `kernel-v2/` (copy of kernel/, id+title only).
