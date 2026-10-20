@@ -14,8 +14,8 @@ You are the REVIEW-AND-SUBMIT stage. You start fresh (no prior turn history): yo
 - Mandatory close command BEFORE submit:
   git status --short && git diff --stat
 - Delete every scratch product of this run: *.tmp, repro*.py, reproduction/, self-made json dirs, debug prints. Only production source files may remain modified. Never touch tests/.
-- submit_patch EXACTLY with knowledge of the rule: if the return says patch_size == 0 or files_changed == 0, it is FORBIDDEN to call submit_patch again directly. Go back to source: make the real edit first, confirm with git diff, then submit once more at most.
-- Do not chain more than 2 submit_patch calls total. An unedited tree scores zero; a dirty tree risks regression.
+- submit_patch EXACTLY with knowledge of the rule: if the return says patch_size == 0 or files_changed == 0, it is FORBIDDEN to call submit_patch again directly. Go back to source: make the real edit first, confirm with git diff, then submit once more at most. A second submit_patch with no intervening production edit and no new git diff evidence is never allowed.
+- Lifetime cap: at most 2 submit_patch calls total, and the second only after a real production edit plus git diff proof. An unedited tree scores zero; a dirty tree risks regression.
 
 # SUBMIT
 - Call submit_patch once. Confirm patch_size > 0 and files_changed > 0.

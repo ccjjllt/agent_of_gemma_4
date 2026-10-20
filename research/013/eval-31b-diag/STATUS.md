@@ -24,3 +24,8 @@
 ## 2026-10-20 ~06:05Z: GPU v1 ERROR = wrong GPU shape (T4x2), not agent bug
 - `ccjjllt/p013-31b-diag-pair` v1 (pushed WITHOUT --accelerator): session landed on non-4xL4 → coordinator assert `Requires four L4 GPUs` at 122s, 0 attempts run, cost ~0.03h (9.17→9.14h). Same P012 precedent ("缺 L4 machine_shape，上了T4x2") and P011 V1 precedent.
 - Fix: re-push with `--accelerator NvidiaL4` (+ competition binding already in metadata). Same-id versioned push → 409 Conflict twice (also seen on CPU kernel); new-id works. New kernel `ccjjllt/p013-31b-diag-pair-v2` v1 pushed ~06:10Z with --accelerator NvidiaL4, no title warning. Dir `kernel-v2/` (copy of kernel/, id+title only).
+
+## 2026-10-20 ~06:30Z: 诊断完成 0/4 vs 0/4，修正一次后复测
+- 报告 `diag-report.md`：B-4006过程占优（edit@9/124/交接/review）；B-3180零编辑负证据；B-7205同修复但交接晚致review预算尽；B-6757 review连交2次0/0违规。绑定约束是墙钟（工具调用中位~2-4分钟），非call计数。
+- 修正（CPU）：repair.md加墙钟交接（120s读/200s改/300s交，<180s立即交，call12未改则下一调用必edit，handoff附time_remaining）；review.md禁无新edit二次提交（终身2次，第二次须真实edit+git diff）；single.md同步。
+- 重建carrier（新prompt sha），CPU预检v3 `ccjjllt/p013-31b-diag-cpu-prepare-v3` v1已推（免费）。待COMPLETE→推GPU full v3（kernel-v3, --accelerator NvidiaL4）。
