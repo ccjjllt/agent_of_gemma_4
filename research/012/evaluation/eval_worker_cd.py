@@ -49,25 +49,52 @@ def phase(name):
 
 def salvage_candidate_stores(tag):
     # Skills stage patch_store/working-state under the sandbox system temp dir,
-    # which may sit nested inside scratch (e.g. scratch/sandboxes/<task>/tmp).
-    # Walk recursively and salvage BEFORE sandbox cleanup; discovery failure is
-    # recorded, never silent.
+    # which may sit nested inside scratch or outside it when the sandbox
+    # subprocess does not inherit the worker TMPDIR. Walk scratch plus the
+    # kernel system temp dirs recursively and salvage BEFORE sandbox cleanup;
+    # discovery failure is recorded, never silent. State dirs are namespaced
+    # by task-root hash, so sharing the system-temp walk is safe.
     import shutil as _shutil
+    import tempfile as _tempfile
     found = []
     try:
         scratch = Path(SPEC['scratch'])
-        for store in ('p005_snapshots', 'p005_working_state'):
-            for src in sorted(scratch.rglob(store)):
-                if not src.is_dir() or src.is_symlink():
-                    continue
+        roots = [scratch]
+        for _tmp in {_tempfile.gettempdir(), '/tmp'}:
+            _p = Path(_tmp)
+            if _p.is_dir() and _p.resolve() != scratch.resolve():
+                roots.append(_p)
+        skip_dirs = {'venv', '.venv', '.git', '__pycache__', 'node_modules',
+                     'site-packages', 'dist-info', 'dist-packages'}
+        for _root in roots:
+            for dirpath, dirnames, _filenames in __import__('os').walk(_root, topdown=True):
                 try:
-                    rel = src.relative_to(scratch)
+                    depth = len(Path(dirpath).relative_to(_root).parts)
                 except ValueError:
+                    dirnames[:] = []
                     continue
-                dest = ATTEMPT / 'candidate-stores' / rel
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                _shutil.copytree(src, dest, dirs_exist_ok=True)
-                found.append(str(rel))
+                if depth > 6:
+                    dirnames[:] = []
+                    continue
+                dirnames[:] = sorted(d for d in dirnames
+                                     if d not in skip_dirs and not d.startswith('.'))
+                for store in ('p005_snapshots', 'p005_working_state'):
+                    if store not in dirnames:
+                        continue
+                    src = Path(dirpath) / store
+                    if not src.is_dir() or src.is_symlink():
+                        continue
+                    try:
+                        rel = src.relative_to(_root)
+                    except ValueError:
+                        continue
+                    if _root != scratch and scratch.resolve() in src.resolve().parents:
+                        continue
+                    dest = ATTEMPT / 'candidate-stores' / (
+                        '.' if _root == scratch else '_systmp') / rel
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    _shutil.copytree(src, dest, dirs_exist_ok=True)
+                    found.append(str((_root, str(rel))))
     except Exception:
         atomic_text(ATTEMPT / f'candidate-store-{tag}-error.txt', traceback.format_exc())
     atomic_json(ATTEMPT / f'candidate-store-{tag}-manifest.json',

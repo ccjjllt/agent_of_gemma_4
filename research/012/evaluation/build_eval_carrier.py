@@ -66,6 +66,19 @@ JOBS = {
                "d": "P012 new architecture; coordinator/locator/acceptance/selector base; repair role alone carries new p012-repair-v1 adapter (b8653b17); five repair tools, no repair skills."},
            "extra_datasets": ["ccjjllt/p012-p011-step70-adapter",
                              "ccjjllt/p012-new-adapter-128"]},
+    "fcd12": {"outdir": "evaluation-run-fcd12", "trees": ("agent-f", "agent-c", "agent-d"),
+           "variants": ("f", "c", "d"), "adapters": (None, None, None),
+           "repair_adapters": (None, "c_lora", "d_lora"),
+           "template": "eval_coordinator_template_cd.py", "worker": "eval_worker_cd.py",
+           "kernel_id": "ccjjllt/p012-eval-fcd12", "zip_prefix": "p012-eval-fcd12",
+           "study": "P012 full-matrix f/c/d on all 12 frozen dev tasks: f=corrected base control, c=P011 step70 repair role, d=new p012-repair-v1 repair role",
+           "research_condition": "f/c/d on all 12 frozen dev tasks, r1. f isolates the corrected skill-free repair tool env as base control; c-f estimates P011 repair migration; d-f the in-architecture adapter gain; d-c new-vs-P011 gain. Single round (r1); dev criteria with empty PASS_TO_PASS, not convertible to public score. No training in this job.",
+           "source_arms": {
+               "f": "P012 new architecture, all roles base; repair role skill-free five tools. Corrected base control matching C/D tool env.",
+               "c": "P012 new architecture; coordinator/locator/acceptance/selector base; repair role alone carries P011 step70 adapter (71687cf9); five repair tools, no repair skills.",
+               "d": "P012 new architecture; coordinator/locator/acceptance/selector base; repair role alone carries new p012-repair-v1 adapter (b8653b17); five repair tools, no repair skills."},
+           "extra_datasets": ["ccjjllt/p012-p011-step70-adapter",
+                             "ccjjllt/p012-new-adapter-128"]},
 }
 DEFAULT_JOB = "ab"
 RUN_PREFIX = "run-012-eval-ab"
@@ -261,7 +274,11 @@ def main(prepare_only=False, kernel_id=None, eval_dataset=None, job=None):
         assert template.count("%%SELECTED_VARIANTS_PY%%") == 1
         template = template.replace(
             "%%SELECTED_VARIANTS_PY%%", repr(tuple(variant_keys)))
-    assert "%%" not in template.split("MANIFEST_TEXT")[0] or True
+    # Residual-token guard scoped to our own token namespace: vendored skill
+    # scripts legitimately contain %%PLACEHOLDERS%% of their own.
+    for _leftover in ("BUNDLE_PY", "HASHES_PY", "MANIFEST_PY", "TASK_IDS_PY",
+                      "TASK_META_PY", "VARIANTS_PY", "SELECTED_VARIANTS_PY"):
+        assert ("%%" + _leftover + "%%") not in template, _leftover
     (OUT / "coordinator.py").write_text(template)
 
     shutil.copyfile(HERE / cfg["worker"], OUT / "attempt_worker.py")
@@ -384,7 +401,7 @@ if __name__ == "__main__":
             ds = a.split("=", 1)[1]
         elif a.startswith("--job="):
             jb = a.split("=", 1)[1]
-    if jb not in (None, "ab", "cd", "bcd6"):
-        raise SystemExit("--job must be ab, cd or bcd6")
+    if jb not in (None, *JOBS):
+        raise SystemExit("--job must be one of: " + ", ".join(sorted(JOBS)))
     main(prepare_only="--prepare-only" in args, kernel_id=kid, eval_dataset=ds,
          job=jb)

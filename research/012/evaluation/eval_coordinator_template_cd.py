@@ -635,48 +635,51 @@ try:
         run_manifest['server_startup_seconds'] = time.monotonic() - startup
         run_manifest['server_base_url'] = str(server.base_url)
         atomic_json(RUN_ROOT / 'run_manifest.json', run_manifest)
-    pair_queue = [schedule[i:i + n_arms] for i in range(0, len(schedule), n_arms)]
-    while pair_queue or active:
-        if pair_queue and time.monotonic() >= EVALUATION_DEADLINE:
+    # Greedy single-entry backfill: launch one attempt per free slot instead of
+    # whole task groups, so no GPU slot idles on 3-arm groups. Launch order and
+    # per-entry task_slot/variant/within_pair_launch_order are retained in the
+    # schedule and per-attempt manifests for post-hoc analysis.
+    entry_queue = list(schedule)
+    while entry_queue or active:
+        if entry_queue and time.monotonic() >= EVALUATION_DEADLINE:
             raise TimeoutError('Whole-run evaluation deadline; keep partial evidence, no retry')
-        while pair_queue and len(active) + len(pair_queue[0]) <= MAX_CONCURRENT:
+        while entry_queue and len(active) < MAX_CONCURRENT:
             if time.monotonic() >= EVALUATION_DEADLINE:
                 break
-            pair = pair_queue.pop(0)
+            entry = entry_queue.pop(0)
             set_phase('cpu_prepare' if PREPARE_ONLY else 'evaluation',
-                      task_slot=pair[0]['task_slot'], task_id=pair[0]['task_id'],
-                      repeat_id=pair[0]['repeat_id'],
-                      active_workers=len(active) + len(pair),
-                      remaining_pairs=len(pair_queue))
-            for entry in pair:
-                attempt = Path(entry['results_dir'])
-                attempt.mkdir(parents=True, exist_ok=False)
-                scratch = Path('/tmp') / RUN_ID / entry['attempt_id']
-                scratch.mkdir(parents=True, exist_ok=False)
-                agent = scratch / 'agent'
-                shutil.copytree(AGENT_ROOT / entry['variant'], agent)
-                specification = {'entry': entry, 'data_dir': str(DATA_DIR), 'agent_dir': str(agent),
-                                 'tasks_subset': str(TASKS_SUBSET_PATH), 'scratch': str(scratch),
-                                 'base_url': 'http://127.0.0.1:8000/v1' if PREPARE_ONLY else str(server.base_url),
-                                 'served_model': str(MODEL_PATH) if PREPARE_ONLY else str(getattr(server, 'effective_model_path', MODEL_PATH)),
-                                 'model_alias': TARGET_MODEL_NAME,
-                                 'budgets': VARIANT_CONDITIONS[entry['variant']]['budgets'],
-                                 'prepare_only': PREPARE_ONLY, 'total_tasks': len(full_schedule),
-                                 'verification_timeout_seconds': VERIFICATION_TIMEOUT_SECONDS}
-                spec_path = attempt / 'worker_spec.json'
-                atomic_json(spec_path, specification)
-                env = dict(os.environ, TMPDIR=str(scratch), TMP=str(scratch), TEMP=str(scratch),
-                           PYTHONUNBUFFERED='1', CUDA_VISIBLE_DEVICES='', OMP_NUM_THREADS='1',
-                           TOKENIZERS_PARALLELISM='false')
-                log = (attempt / 'worker.log').open('w')
-                process = subprocess.Popen([sys.executable, '-u', str(worker_path), str(spec_path)],
-                                           cwd=scratch, env=env, stdout=log, stderr=subprocess.STDOUT)
-                started = time.monotonic()
-                active.append((entry, process, log, started))
-                state[entry['attempt_id']].update(status='running', pid=process.pid, started_at=time.time())
-                atomic_json(attempt / 'attempt_manifest.json', state[entry['attempt_id']])
-                atomic_json(RUN_ROOT / 'attempt_status.json', state)
-                print(f'Launched {entry["attempt_id"]} pid={process.pid} active={len(active)}', flush=True)
+                      task_slot=entry['task_slot'], task_id=entry['task_id'],
+                      repeat_id=entry['repeat_id'],
+                      active_workers=len(active) + 1,
+                      remaining_entries=len(entry_queue))
+            attempt = Path(entry['results_dir'])
+            attempt.mkdir(parents=True, exist_ok=False)
+            scratch = Path('/tmp') / RUN_ID / entry['attempt_id']
+            scratch.mkdir(parents=True, exist_ok=False)
+            agent = scratch / 'agent'
+            shutil.copytree(AGENT_ROOT / entry['variant'], agent)
+            specification = {'entry': entry, 'data_dir': str(DATA_DIR), 'agent_dir': str(agent),
+                             'tasks_subset': str(TASKS_SUBSET_PATH), 'scratch': str(scratch),
+                             'base_url': 'http://127.0.0.1:8000/v1' if PREPARE_ONLY else str(server.base_url),
+                             'served_model': str(MODEL_PATH) if PREPARE_ONLY else str(getattr(server, 'effective_model_path', MODEL_PATH)),
+                             'model_alias': TARGET_MODEL_NAME,
+                             'budgets': VARIANT_CONDITIONS[entry['variant']]['budgets'],
+                             'prepare_only': PREPARE_ONLY, 'total_tasks': len(full_schedule),
+                             'verification_timeout_seconds': VERIFICATION_TIMEOUT_SECONDS}
+            spec_path = attempt / 'worker_spec.json'
+            atomic_json(spec_path, specification)
+            env = dict(os.environ, TMPDIR=str(scratch), TMP=str(scratch), TEMP=str(scratch),
+                       PYTHONUNBUFFERED='1', CUDA_VISIBLE_DEVICES='', OMP_NUM_THREADS='1',
+                       TOKENIZERS_PARALLELISM='false')
+            log = (attempt / 'worker.log').open('w')
+            process = subprocess.Popen([sys.executable, '-u', str(worker_path), str(spec_path)],
+                                       cwd=scratch, env=env, stdout=log, stderr=subprocess.STDOUT)
+            started = time.monotonic()
+            active.append((entry, process, log, started))
+            state[entry['attempt_id']].update(status='running', pid=process.pid, started_at=time.time())
+            atomic_json(attempt / 'attempt_manifest.json', state[entry['attempt_id']])
+            atomic_json(RUN_ROOT / 'attempt_status.json', state)
+            print(f'Launched {entry["attempt_id"]} pid={process.pid} active={len(active)}', flush=True)
             assert len(active) <= MAX_CONCURRENT
         for record in active[:]:
             entry, process, log, started = record
@@ -691,7 +694,7 @@ try:
             if process.poll() is not None:
                 collect(entry, process, log, started, forced)
                 active.remove(record)
-        if active and (not pair_queue or len(active) + len(pair_queue[0]) > MAX_CONCURRENT):
+        if active and (not entry_queue or len(active) >= MAX_CONCURRENT):
             time.sleep(1)
 except BaseException as exc:
     failure = exc

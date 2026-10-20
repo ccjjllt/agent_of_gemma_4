@@ -123,7 +123,7 @@
   attempt dir，不经过沙箱 temp），或钩子直接定位 sandbox_temp(toplevel)。
   下次 carrier 先修钩子再跑。
 
-## C/D 路由修正（本地已完成，未推送，未跑 GPU）
+## C/D 路由修正（已验证：v5 prepare COMPLETE；见下方记录）
 
 - v4 的真实错误：`c_lora/d_lora` 被声明在根协调器 `agent.yaml`，
   `repair.yaml` 无 adapter；按官方按角色解析，修复调用实际走 base。
@@ -136,7 +136,31 @@
 - GPU 约定：后续一律用 ccjjllt 配额；当前查得 ccjjllt 剩余约 14.93h。
   GPU 命令在运行时恢复获授权账号并校验账号身份，不依赖凭据文件的持久状态。
 
-## bcd6 小矩阵（步骤 2，进行中；ccjjllt）
+## fcd12 全矩阵（步骤 1，ccjjllt 在途；审计后推送）
+
+- 推前修了审计发现的三项：worker 打捞 `is`→`==`；残留 token 检查改为
+  命名空间作用域（此前 `or True` 恒真——顺带发现 vendored skill 脚本自带
+  `%%ROOT%%` 占位符，所以全量 `%%` 检查本就会误报）；调度改为贪心单
+  attempt 补位（3 臂原子组会让第 4 槽稳态空闲 25%，且 36 跑在旧调度下
+  deadline 余量只剩约 187s）。
+- 打捞 walk 加了裁剪（跳过 venv/.git 等、深度 ≤6），避免全盘扫系统 /tmp。
+- fcd12 prepare v1 COMPLETE（三臂编译，c/d LoRA 就位）。
+- fcd12 full v2 COMPLETE（36/36，wall 4531s；贪心调度一次跑完，有余量）。
+  f=2/12（334、2010），c=1/12（2010），d=1/12（2010）。
+  修正路由后 base 对照 f 仍是最好的臂（c−f=−1，d−f=−1）；三臂唯一共同
+  解出的是 2010。现有两个 adapter 在修复角色上均未显示收益。
+- 通过 patch 抽验：2010 三臂都是真源码修复（generate.py
+  `apply_overwrites_to_context`）；但 f 的 2010 patch 很脏（带
+  `generate.py.tmp`、`reproduction/`、`test_cookiecutter.json` 残留），
+  判据照样通过——提交前必须加 patch 卫生门，否则正式提交有风险。
+- 打捞最终结论：72 个 manifest 全 0。查 trace 证实模型零次调用
+  `run_skill_script`，`snapshot` 全是 prompt 回声——store 从未被创建，
+  不是钩子漏捞。未选中候选的事后裁判在现有协议下结构性不可做；
+  要做必须改代码强制快照，不能靠 prompt。
+- 波动提醒：bcd6 里 c-334 通过，本轮 c-334 未通过（patch 0 打满预算）；
+  单轮 r1 噪声大，任何一题的胜负都不做确认性解读。
+
+## bcd6 小矩阵（步骤 2，ccjjllt，COMPLETE）
 
 - 新增 `agent-f`：修正后 base 对照（与 C/D 同架构，修复角色 base、无 skills）。
 - worker 打捞钩子改为递归式、沙箱销毁前执行（`post-evaluate` + `pre-cleanup`
@@ -146,8 +170,14 @@
 - 途中修了两个新 bug：子集任务文件与 TASK_IDS 不一致；
   supervisor 硬编码 `2/24` 导致三臂 prepare 被判 incomplete。
 - bcd6 prepare v3 COMPLETE（三臂编译，c/d LoRA 就位，f 无 adapter）。
-- bcd6 full v4 已推（18 attempts，f/c/d × 6 题）。跑完后再做步骤 1
-  （corrected C/D full 24 attempts）。
+- bcd6 full v4 COMPLETE（18/18）：f=2/6（334、469），c=1/6（334），d=0/6。
+  修正路由后，base 对照 f 反而优于两个 LoRA 臂（c−f=−1，d−f=−2，n=6 探索性，
+  不做确认性结论）。三份通过 patch 均为真源码修复（334：api.py 加
+  `import datetime`；469：encodings.py PrefixFileWrapper），附带无害的
+  repro 脚本与偶发冗余 import；空洞通过路径不存在。
+- 打捞钩子半成功：36 个 manifest 全部落袋，但 `found` 均为 0——store 不在
+  scratch 树下（沙箱子进程未继承 worker 的 TMPDIR），需把搜索根扩大到
+  系统临时目录后再验证。未选中候选依然不可恢复，本轮只有已提交 patch 可判。
 
 ## Corrected C/D prepare v5（2026-10-20，ccjjllt，COMPLETE）
 
