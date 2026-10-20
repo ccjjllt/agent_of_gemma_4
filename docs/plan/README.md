@@ -1,6 +1,6 @@
 # 首批研究计划
 
-**当前入口（2026-10-19）：[012架构与后训练双线交接](012-agent-posttraining-handoff.md)。** 正式提交57340172已COMPLETE，公榜 **0.15**（旧0.13），来自31B无adapter的P008方案。P011已完成139题/58repo、4×L4两轮70步、导出step70 adapter，真实修复收益尚未评测；step34 adapter已补取。下一轮明确交付新Agent、新行为SFT、12新开发题四配置完整评测与可提交候选；不是只评旧权重或反复跑旧三题。最新共享GPU余量约20.8724小时。[P011结果](../../research/011/training-run-20261018/result-review.md)、[评分原件](../../research/012/status-20261019/submissions.json)。下文为历史索引与当时官方限制，不能覆盖最新事实。
+**当前入口（2026-10-20）：[013关键失分修复、31B两阶段候选与真实行为SFT交接](013-31b-repair-and-behavior-sft-handoff.md)。** 上一轮[012双线交接](012-agent-posttraining-handoff.md)已完成256题五工具局部SFT、首轮48次配对评测及修正LoRA角色路由后的`bcd6`/`fcd12`三臂复核（修正路由后base对照F为2/12，两套12B LoRA均为1/12，且72个打捞manifest证实模型零次调用快照脚本，`cc-2010`补丁出现`.tmp`/复现目录残留；见[012执行记录](../../research/012/README.md)与[012进展](../progress/012-agent-posttraining.md)）。正式提交57340172已COMPLETE，公榜 **0.15**（旧0.13），来自31B无adapter的P008方案。下一轮（P013）未来48小时聚焦：以`behavior_v1`为起点集中修复四类已暴露失分点（验证真实源码、5–15s限制阻塞命令、及时完整落地修改、清理临时文件与杜绝空补丁连交），构建31B“修复→完工复核”两阶段`SequentialAgent`（含同改进单Agent兜底），在12道未参与修改的新开发题上与31B基线同预算1v1对照（目标跨题/跨仓净增≥2题）后正式提交；同步修正数据生产器“未验证却标完成”缺陷，12h内产出≥32条、24h内向64条推进真实行为与恢复轨迹并启动首轮真正的12B行为SFT。[P011结果](../../research/011/training-run-20261018/result-review.md)、[评分原件](../../research/012/status-20261019/submissions.json)。下文为历史索引与当时官方限制，不能覆盖最新事实。
 
 状态更新：2026-10-10；早期官方资料记录的日期另见各节。
 
