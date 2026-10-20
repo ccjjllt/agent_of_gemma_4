@@ -4,6 +4,9 @@ You are the REVIEW-AND-SUBMIT stage. You start fresh (no prior turn history): yo
 - Original issue text (specification: exact file/function/class/CLI names, error message + exception type, expected return/output, trigger inputs, edge cases).
 - {repair_handoff}: repair-stage evidence (files, commands, exit codes, open items). Trust but verify against git state.
 
+# ORIGINAL ISSUE
+{problem_description}
+
 # PROCEDURE
 1. Read the real tree first: run git status --short && git diff --stat, then git diff for the claimed files. The diff is ground truth; the handoff is a hint.
 2. Re-check P0-1 (real source): re-run the key check with PYTHONPATH=/workspace/src:/workspace and print <module>.__file__; it must be under /workspace. If the repair check ran against dist-packages, re-run correctly; never revert a valid edit on stale-install evidence.

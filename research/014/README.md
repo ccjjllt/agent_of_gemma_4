@@ -1,5 +1,7 @@
 # P014 研究状态与交接依据
 
+**20:47 执行更新：已真实提交 `57438326`，当前 PENDING，分数尚未返回。** 31B 新候选与正式基线各 **8/8 F2P 通过**，W=0、L=0，没有证明净提分；冻结候选按探索性提交上传，ZIP 未在实跑后改动。12B 行为 SFT 为 base **4/4**、adapter **3/4**，暂停原34条配方继续训练。两个 GPU 作业均 COMPLETE，共24次真实 attempt，没有新增测试。见[执行记录](execution-20261020/README.md)、[31B 结果](eval-31b/result-review.md)、[12B 结果](eval-12b/result-review.md)、[提交回执](submission/README.md)。下文为19:42交接快照，“新 GPU 作业 0/新正式提交 0”和“尚待评测”均仅指该历史时点。
+
 日期：2026-10-20，北京时间。代码起点 `59f562d`。执行方案见 [P014 提分与正式提交交接](../../docs/plan/014-score-first-submission-handoff.md)。
 
 本次完成只读 API 查询、现有作业日志/权重取回与交接整理；新 GPU 作业 **0**，新正式提交 **0**。没有读取 heldout 内容，没有新增测试。
