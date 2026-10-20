@@ -122,3 +122,37 @@
 - 教训：候选打捞必须以 selector 交接文件为 attempt 级强制产物（落盘到
   attempt dir，不经过沙箱 temp），或钩子直接定位 sandbox_temp(toplevel)。
   下次 carrier 先修钩子再跑。
+
+## C/D 路由修正（本地已完成，未推送，未跑 GPU）
+
+- v4 的真实错误：`c_lora/d_lora` 被声明在根协调器 `agent.yaml`，
+  `repair.yaml` 无 adapter；按官方按角色解析，修复调用实际走 base。
+- 已改：根协调器去 adapter；`repair.yaml` 独自声明 `c_lora/d_lora`；
+  修复角色去掉 skills，只剩五个训练约定工具；carrier 增加
+  根/修复/其余角色三层断言，不再只查根 adapter。
+- `research/012/evaluation-run-cd` 已用 `--job=cd --prepare-only` 本地重建；
+  生成 manifest 中 `coordinator_adapter=null`，
+  `repair_adapter=c_lora/d_lora`；未推送 kernel，未消耗 GPU。
+- GPU 约定：后续一律用 ccjjllt 配额；当前查得 ccjjllt 剩余约 14.93h。
+  GPU 命令在运行时恢复获授权账号并校验账号身份，不依赖凭据文件的持久状态。
+
+## bcd6 小矩阵（步骤 2，进行中；ccjjllt）
+
+- 新增 `agent-f`：修正后 base 对照（与 C/D 同架构，修复角色 base、无 skills）。
+- worker 打捞钩子改为递归式、沙箱销毁前执行（`post-evaluate` + `pre-cleanup`
+  两次打捞并留 manifest；此前只拷 `scratch/p005_*` 顶层是漏捞根因）。
+- carrier 推广到 N 臂 + 任务子集：6 题按“每仓 sha256 顺序分层”
+  （schema1+cc2+fp2+conan1）预先固定，保持冻结相对顺序；属探索性子集。
+- 途中修了两个新 bug：子集任务文件与 TASK_IDS 不一致；
+  supervisor 硬编码 `2/24` 导致三臂 prepare 被判 incomplete。
+- bcd6 prepare v3 COMPLETE（三臂编译，c/d LoRA 就位，f 无 adapter）。
+- bcd6 full v4 已推（18 attempts，f/c/d × 6 题）。跑完后再做步骤 1
+  （corrected C/D full 24 attempts）。
+
+## Corrected C/D prepare v5（2026-10-20，ccjjllt，COMPLETE）
+
+- 推送 `ccjjllt/p012-eval-cd` v5（修正后 carrier，prepare-only），
+  supervisor 状态 `prepared`，双 LoRA 挂载验 sha 通过，
+  C/D 两臂编译通过；prepare 只做编译检查，不含模型调用与判分。
+- 本轮 Kaggle 调用均在同一命令内恢复 ccjjllt token 并核对
+  `username: ccjjllt` 后执行；不再依赖 token 文件的持久状态。

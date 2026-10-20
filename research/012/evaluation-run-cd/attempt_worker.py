@@ -47,6 +47,33 @@ def phase(name):
     print(json.dumps({'attempt_id': ENTRY['attempt_id'], 'phase': name, 'time': time.time()}), flush=True)
 
 
+def salvage_candidate_stores(tag):
+    # Skills stage patch_store/working-state under the sandbox system temp dir,
+    # which may sit nested inside scratch (e.g. scratch/sandboxes/<task>/tmp).
+    # Walk recursively and salvage BEFORE sandbox cleanup; discovery failure is
+    # recorded, never silent.
+    import shutil as _shutil
+    found = []
+    try:
+        scratch = Path(SPEC['scratch'])
+        for store in ('p005_snapshots', 'p005_working_state'):
+            for src in sorted(scratch.rglob(store)):
+                if not src.is_dir() or src.is_symlink():
+                    continue
+                try:
+                    rel = src.relative_to(scratch)
+                except ValueError:
+                    continue
+                dest = ATTEMPT / 'candidate-stores' / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                _shutil.copytree(src, dest, dirs_exist_ok=True)
+                found.append(str(rel))
+    except Exception:
+        atomic_text(ATTEMPT / f'candidate-store-{tag}-error.txt', traceback.format_exc())
+    atomic_json(ATTEMPT / f'candidate-store-{tag}-manifest.json',
+                {'tag': tag, 'found': found, 'count': len(found)})
+
+
 def execute():
     evaluator = ctx = result = None
     start = time.monotonic()
@@ -135,17 +162,7 @@ def execute():
         result = asyncio.run(evaluator.evaluate_task(
             task=task, task_index=ENTRY['ordinal'], total_tasks=SPEC['total_tasks'], context=ctx))
         phase('archive')
-        for store in ('p005_snapshots', 'p005_working_state'):
-            try:
-                import shutil as _shutil
-                src = Path(SPEC['scratch']) / store
-                if src.is_dir():
-                    dest = ATTEMPT / 'candidate-stores' / store
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    _shutil.copytree(src, dest, dirs_exist_ok=True)
-            except Exception:
-                atomic_text(ATTEMPT / ('candidate-store-' + store + '-error.txt'),
-                            traceback.format_exc())
+        salvage_candidate_stores('post-evaluate')
         payload = {'instance_id': result.instance_id, 'repo': result.repo, 'resolved': result.resolved,
                    'agent_patch_size': len(result.agent_patch or ''), 'test_exit_code': result.test_exit_code,
                    'duration_seconds': result.duration_seconds, 'tool_calls': result.tool_calls,
@@ -177,6 +194,7 @@ def execute():
                 atomic_text(ATTEMPT / 'submitted_patch_before_exception.patch', ctx.submitted_patch)
         if evaluator is not None:
             try:
+                salvage_candidate_stores('pre-cleanup')
                 evaluator.docker.cleanup_all()
             except Exception:
                 atomic_text(ATTEMPT / 'sandbox_cleanup_error.txt', traceback.format_exc())

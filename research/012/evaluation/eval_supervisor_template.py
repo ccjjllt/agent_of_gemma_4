@@ -158,7 +158,9 @@ finally:
             states[attempt_id]['status'] = 'outer_wall_timeout' if timed_out else 'interrupted_or_not_run'
     write_json(RUN_ROOT / 'attempt_status.json', states)
     expected = 'prepared' if PREPARE_ONLY else 'completed'
-    complete = len(states) == (2 if PREPARE_ONLY else 24) and all(item.get('status') == expected for item in states.values())
+    run_config = json.loads((Path(__file__).parent / 'run-config.json').read_text())
+    expected_attempts = len(run_config['variants']) if PREPARE_ONLY else run_config['planned_attempts']
+    complete = len(states) == expected_attempts and all(item.get('status') == expected for item in states.values())
     ok = process is not None and process.returncode == 0 and complete and not timed_out and error is None
     report = {'run_id': RUN_ID, 'status': ('prepared' if PREPARE_ONLY else 'completed') if ok else 'partial_or_failed',
               'mode': 'cpu_prepare' if PREPARE_ONLY else 'evaluate',
@@ -217,4 +219,4 @@ finally:
     print(json.dumps({'status': report['status'], 'output': str(RUN_ROOT), 'archive': str(archive_path),
                       'completed_attempts': report['completed_attempts'], 'wall_seconds': report['wall_seconds']}), flush=True)
 if not ok:
-    raise RuntimeError('Eval A/B incomplete; see retained supervisor report, logs and per-attempt evidence')
+    raise RuntimeError('Eval run incomplete; see retained supervisor report, logs and per-attempt evidence')

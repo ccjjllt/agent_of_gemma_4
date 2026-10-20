@@ -41,7 +41,7 @@ AGENT_ROOT = Path('/kaggle/working/agent_exec') / RUN_ID
 INPUT_ROOT = Path('/kaggle/input')
 WORKING_DIR = Path('/kaggle/working')
 TARGET_MODEL_NAME = 'gemma-4-12b-it-qat-w4a16-ct'
-SELECTED_VARIANTS = ('c', 'd')
+SELECTED_VARIANTS = %%SELECTED_VARIANTS_PY%%
 REPEAT_ID = 'r1'
 MAX_CONCURRENT = 4
 ATTEMPT_WALL_SECONDS = 1020  # 480 agent + 300 judge + up to 240 setup/cleanup.
@@ -180,8 +180,13 @@ for variant, file_map in BUNDLE.items():
         atomic_text(AGENT_ROOT / variant / relative, content)
 
 schedule = []
+n_arms = len(SELECTED_VARIANTS)
 for slot, task_id in enumerate(TASK_IDS, 1):
-    order = SELECTED_VARIANTS if slot % 2 else tuple(reversed(SELECTED_VARIANTS))
+    if n_arms == 2:
+        order = SELECTED_VARIANTS if slot % 2 else tuple(reversed(SELECTED_VARIANTS))
+    else:
+        shift = slot % n_arms
+        order = tuple(SELECTED_VARIANTS[shift:] + SELECTED_VARIANTS[:shift])
     for launch_order, variant in enumerate(order, 1):
         ordinal = len(schedule) + 1
         attempt_id = f'{ordinal:02d}-{task_id}-{REPEAT_ID}-{variant}'
@@ -191,9 +196,9 @@ for slot, task_id in enumerate(TASK_IDS, 1):
                          'results_dir': str(RUN_ROOT / variant / REPEAT_ID / 'attempts' / attempt_id),
                          'config_sha256': EXPECTED_CONFIG_HASHES[variant]})
 full_schedule = list(schedule)
-assert len(full_schedule) == 24
+assert len(full_schedule) == len(TASK_IDS) * n_arms
 if PREPARE_ONLY:
-    schedule = schedule[:2]  # Construct both official agents; no model or judge.
+    schedule = schedule[:n_arms]  # Construct all official agents; no model or judge.
 state = {entry['attempt_id']: dict(entry, status='planned') for entry in schedule}
 atomic_json(RUN_ROOT / 'full_schedule.json', full_schedule)
 atomic_json(RUN_ROOT / 'attempt_status.json', state)
@@ -333,9 +338,10 @@ else:
     print('WARNING: task deps dir missing; criterion tests may fail on imports',
           flush=True)
 
-# Eval-Job-2 (C/D): mount and verify both frozen adapters, then stage one
-# named LoRA per arm. C = P011 step70 (migration onto the repair role);
-# D = new p012-repair-v1 adapter (128 steps). Locator/acceptance/selector stay base.
+# LoRA staging: mount and verify each frozen adapter, then stage one named
+# LoRA per LoRA-carrying arm. Only repair.yaml references the LoRA; every
+# other role (including the coordinator) stays base. Arms without a pin
+# (e.g. the corrected base control) stage nothing.
 ADAPTER_PINS = {
     'c': {'dataset': 'p012-p011-step70-adapter', 'lora_name': 'c_lora',
           'adapter_model.safetensors': '71687cf933c3570284521485466cb089bf44b7a01458809386eef6716e6530e2',
@@ -344,8 +350,10 @@ ADAPTER_PINS = {
           'adapter_model.safetensors': 'b8653b173d52f48abdbde962e6e4fabec7f8c684a8cf485353a0828f74a6149d',
           'adapter_config.json': 'c2af66dd243e7e8957c7938922743d5ad21291d1a8faea90e913c9a0b8075694'},
 }
+LORA_VARIANTS = [v for v in SELECTED_VARIANTS if v in ADAPTER_PINS]
+assert LORA_VARIANTS, 'At least one arm must carry a repair-role LoRA'
 adapter_identity = {}
-for _variant in SELECTED_VARIANTS:
+for _variant in LORA_VARIANTS:
     _pin = ADAPTER_PINS[_variant]
     for _k, _v in _pin.items():
         if _k not in ('dataset', 'lora_name'):
@@ -431,14 +439,14 @@ TASKS_PATH = Path(os.environ.get('P012_EVAL_TASKS_PATH', str(Path(__file__).pare
 subset_bytes = TASKS_PATH.read_bytes()
 tasks_sha = hashlib.sha256(subset_bytes).hexdigest()
 tasks_size = len(subset_bytes)
-assert tasks_sha == EXPERIMENT['data']['source_sha256'], 'Selected diagnostic rows changed'
-assert tasks_size == EXPERIMENT['data']['source_bytes']
+assert tasks_sha == EXPERIMENT['data']['selected_sha256'], 'Selected diagnostic rows changed'
+assert tasks_size == EXPERIMENT['data']['selected_bytes']
 TASKS_SUBSET_PATH = FROZEN_DIR / 'tasks-selected.jsonl'
 TASKS_SUBSET_PATH.write_bytes(subset_bytes)
 tasks_subset_sha = tasks_sha
 tasks = load_tasks(TASKS_SUBSET_PATH)
 by_id = {task.instance_id: task for task in tasks}
-assert len(tasks) == 12 and set(by_id) == set(TASK_IDS)
+assert len(tasks) == len(TASK_IDS) and set(by_id) == set(TASK_IDS)
 from swegemma.deduplication import resolve_task_snapshot_paths
 snapshot_verification = {}
 for task in tasks:
@@ -464,7 +472,16 @@ common = EXPERIMENT['common']
 for variant in SELECTED_VARIANTS:
     condition = VARIANT_CONDITIONS[variant]
     config = yaml.safe_load(BUNDLE[variant]['agent.yaml'])
-    assert config.get('adapter') == condition['adapter'] and config['tools'] == condition['tools']
+    assert config.get('adapter') == condition['coordinator_adapter'] and config['tools'] == condition['tools']
+    repair_config = yaml.safe_load(BUNDLE[variant]['repair.yaml'])
+    assert repair_config.get('adapter') == condition['repair_adapter'], (
+        f'LoRA must be routed to the repair role, not the coordinator: {variant}')
+    assert repair_config.get('model') == TARGET_MODEL_NAME
+    assert repair_config.get('tools') == ['run_command', 'read_file', 'edit_file', 'write_file', 'get_status']
+    assert not repair_config.get('skills'), f'Repair role must be skill-free: {variant}'
+    for role in ('locator.yaml', 'acceptance.yaml', 'selector.yaml'):
+        assert yaml.safe_load(BUNDLE[variant][role]).get('adapter') is None, (
+            f'Only the repair role may carry a LoRA: {variant}/{role}')
     assert yaml.safe_load(BUNDLE[variant]['configs/sampling.yaml']) == condition['sampling']
     assert yaml.safe_load(BUNDLE[variant]['eval_config.yaml'])['evaluation'] == condition['budgets']
     assert condition['budgets']['max_time_minutes'] == 8
@@ -475,16 +492,22 @@ assert 'verification_timeout_seconds' in inspect.signature(EvalConfig).parameter
 
 eval_signature = inspect.signature(Evaluator.evaluate_task)
 assert 'context' in eval_signature.parameters, f'Unsupported evaluate_task API: {eval_signature}'
-# Check support before any call; never catch TypeError and rerun an already-started task.
+# Discovery only proves the staged LoRA files exist; role routing was already
+# proven above by asserting repair.yaml (not the coordinator) declares the
+# LoRA, and that every non-repair role declares none.
 seen_adapters = {}
 for variant in SELECTED_VARIANTS:
     found = discover_adapters(str(AGENT_ROOT / variant), adapter_extensions=ALLOWED_ADAPTER_EXTENSIONS)
     seen_adapters[variant] = sorted(found.adapters)
-    assert sorted(found.adapters) == [ADAPTER_PINS[variant]['lora_name']], (
-        f'Variant {variant} must serve exactly its frozen LoRA: {found.adapters}')
-adapters = discover_adapters(str(AGENT_ROOT / 'c'), adapter_extensions=ALLOWED_ADAPTER_EXTENSIONS)
-d_lora_path = AGENT_ROOT / 'd' / 'adapters' / ADAPTER_PINS['d']['lora_name']
-assert (d_lora_path / 'adapter_model.safetensors').is_file()
+    expected = [ADAPTER_PINS[variant]['lora_name']] if variant in LORA_VARIANTS else []
+    assert sorted(found.adapters) == expected, (
+        f'Variant {variant} must stage exactly its frozen LoRAs: {found.adapters}')
+adapters = discover_adapters(str(AGENT_ROOT / LORA_VARIANTS[0]), adapter_extensions=ALLOWED_ADAPTER_EXTENSIONS)
+lora_modules = {}
+for _variant in LORA_VARIANTS[1:]:
+    _lora_path = AGENT_ROOT / _variant / 'adapters' / ADAPTER_PINS[_variant]['lora_name']
+    assert (_lora_path / 'adapter_model.safetensors').is_file()
+    lora_modules[ADAPTER_PINS[_variant]['lora_name']] = str(_lora_path)
 litellm.drop_params = True
 gpu_count = torch.cuda.device_count()
 tp_size = 4 if gpu_count >= 4 else (2 if gpu_count >= 2 else 1)
@@ -498,7 +521,7 @@ run_manifest = {
     'variant_conditions': VARIANT_CONDITIONS, 'verification_timeout_seconds': VERIFICATION_TIMEOUT_SECONDS, 'research_condition': EXPERIMENT['research_condition'],     'sandbox': 'subprocess',
     'model_path': str(MODEL_PATH), 'model_alias': TARGET_MODEL_NAME,
     'input_dirs': {'data': str(DATA_DIR), 'wheelhouse': str(WHEELHOUSE_DIR), 'model': str(MODEL_PATH)},
-    'server_start_count': 0, 'model_requests': 0 if PREPARE_ONLY else 'four isolated concurrent Evaluators (two simultaneous pairs); sampled via /metrics',
+    'server_start_count': 0, 'model_requests': 0 if PREPARE_ONLY else f'{MAX_CONCURRENT} isolated concurrent Evaluators; sampled via /metrics',
     'context_cache': {'min_tokens': 2048, 'ttl_seconds': 1800, 'cache_intervals': 10},
     'events_compaction': {'compaction_interval': 15, 'overlap_size': 2,
                           'token_threshold': 14336, 'event_retention_size': 5},
@@ -561,7 +584,7 @@ if not PREPARE_ONLY:
         enable_lora=True, extra_args=['--max-num-seqs', '4', '--hf-overrides', '{"architectures": ["Gemma4ForCausalLM"], "model_type": "gemma4"}'],
         tensor_parallel_size=tp_size, startup_timeout=60 * 10),
         adapter_manifest=adapters,
-        lora_modules={ADAPTER_PINS['d']['lora_name']: str(d_lora_path)})
+        lora_modules=lora_modules)
 
     atomic_json(RUN_ROOT / 'server-log-path.json', {'path': str(server.log_path)})
     run_manifest['server_command'] = server.build_cmd()
@@ -612,7 +635,7 @@ try:
         run_manifest['server_startup_seconds'] = time.monotonic() - startup
         run_manifest['server_base_url'] = str(server.base_url)
         atomic_json(RUN_ROOT / 'run_manifest.json', run_manifest)
-    pair_queue = [schedule[i:i + 2] for i in range(0, len(schedule), 2)]
+    pair_queue = [schedule[i:i + n_arms] for i in range(0, len(schedule), n_arms)]
     while pair_queue or active:
         if pair_queue and time.monotonic() >= EVALUATION_DEADLINE:
             raise TimeoutError('Whole-run evaluation deadline; keep partial evidence, no retry')
@@ -638,7 +661,7 @@ try:
                                  'served_model': str(MODEL_PATH) if PREPARE_ONLY else str(getattr(server, 'effective_model_path', MODEL_PATH)),
                                  'model_alias': TARGET_MODEL_NAME,
                                  'budgets': VARIANT_CONDITIONS[entry['variant']]['budgets'],
-                                 'prepare_only': PREPARE_ONLY, 'total_tasks': 24,
+                                 'prepare_only': PREPARE_ONLY, 'total_tasks': len(full_schedule),
                                  'verification_timeout_seconds': VERIFICATION_TIMEOUT_SECONDS}
                 spec_path = attempt / 'worker_spec.json'
                 atomic_json(spec_path, specification)

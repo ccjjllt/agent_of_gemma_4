@@ -1,12 +1,12 @@
-"""Build P012 Eval-Job-1 (A/B, 12 tasks, no adapters) carrier.
+"""Build P012 eval carriers (12 tasks; A/B or corrected C/D).
 
 Reads:
-  research/012/evaluation/agent-a/ and agent-b/ (frozen agent trees)
+  research/012/evaluation/agent-{a,b,c,d}/ (frozen agent trees)
   research/012/evaluation/tasks-selected.jsonl (frozen dev tasks + test_patch)
-  research/012/evaluation/eval_coordinator_template.py (pattern adapted from P010)
-  research/012/evaluation/eval_worker_ab.py
-Writes:
-  research/012/evaluation-run-ab/{coordinator.py, attempt_worker.py,
+  research/012/evaluation/eval_coordinator_template*.py
+  research/012/evaluation/eval_worker_*.py
+Writes, per --job:
+  research/012/evaluation-run-{ab,cd}/{coordinator.py, attempt_worker.py,
     tasks-selected.jsonl, experiment-manifest.json, run-config.json,
     kernel/train.py, kernel/kernel-metadata.json}
 No GPU work here. New training is not started by this carrier.
@@ -36,14 +36,34 @@ JOBS = {
                "b": "P012 new architecture: base coordinator + locator/repair/acceptance/selector AgentTools, five-tool repair role, selector-only submit, candidate namespaced state"},
            "extra_datasets": []},
     "cd": {"outdir": "evaluation-run-cd", "trees": ("agent-c", "agent-d"),
-           "variants": ("c", "d"), "adapters": ("c_lora", "d_lora"),
+           "variants": ("c", "d"), "adapters": (None, None),
+           "repair_adapters": ("c_lora", "d_lora"),
            "template": "eval_coordinator_template_cd.py", "worker": "eval_worker_cd.py",
            "kernel_id": "ccjjllt/p012-eval-cd", "zip_prefix": "p012-eval-cd",
-           "study": "P012 four-config comparison, job 2: C (new arch + P011 step70 repair adapters) vs D (new arch + new p012-repair-v1 adapter)",
-           "research_condition": "C/D on the same 12 frozen dev tasks: C-B (from job 1) estimates P011 repair-role migration; D-C estimates new post-training gain over P011; D-B the in-architecture adapter gain. Locator/acceptance/selector stay base in both. No training in this job.",
+           "study": "P012 four-config comparison, job 2 corrected: C (base coordinator, P011 step70 repair role) vs D (base coordinator, new p012-repair-v1 repair role)",
+           "research_condition": "Corrected C/D on the same 12 frozen dev tasks: coordinators and locator/acceptance/selector stay base; only the repair role differs by LoRA (C=P011 step70, D=new p012-repair-v1). Between-arm C/D comparison isolates the repair-role adapter. Comparisons to job-1 B need a corrected base control because C/D repair has no skills while old B repair had skills. No training in this job.",
            "source_arms": {
-               "c": "P012 new architecture; locator/acceptance/selector base; both repairs on P011 step70 adapter (71687cf9)",
-               "d": "P012 new architecture; locator/acceptance/selector base; both repairs on new p012-repair-v1 adapter (b8653b17)"},
+               "c": "P012 new architecture; coordinator/locator/acceptance/selector base; repair role alone carries P011 step70 adapter (71687cf9); five repair tools, no repair skills. Corrected routing: v4 mistakenly put this LoRA on the coordinator while repair stayed base.",
+               "d": "P012 new architecture; coordinator/locator/acceptance/selector base; repair role alone carries new p012-repair-v1 adapter (b8653b17); five repair tools, no repair skills. Corrected routing: v4 mistakenly put this LoRA on the coordinator while repair stayed base."},
+           "extra_datasets": ["ccjjllt/p012-p011-step70-adapter",
+                             "ccjjllt/p012-new-adapter-128"]},
+    "bcd6": {"outdir": "evaluation-run-bcd6", "trees": ("agent-f", "agent-c", "agent-d"),
+           "variants": ("f", "c", "d"), "adapters": (None, None, None),
+           "repair_adapters": (None, "c_lora", "d_lora"),
+           "template": "eval_coordinator_template_cd.py", "worker": "eval_worker_cd.py",
+           "kernel_id": "ccjjllt/p012-eval-bcd6", "zip_prefix": "p012-eval-bcd6",
+           "study": "P012 corrected small matrix f/c/d on 6 fixed stratified tasks: f=corrected base control, c=P011 step70 repair role, d=new p012-repair-v1 repair role",
+           "research_condition": "f/c/d on 6 pre-fixed stratified dev tasks (per-repo sha256 order, frozen relative order kept: schema-331, cc-1779, cc-2010, fp-334, fp-469, conan-16559). f isolates the corrected skill-free repair tool env as base control; c-f estimates P011 repair migration; d-f the in-architecture adapter gain; d-c new-vs-P011 gain. Exploratory: the subset rule is mechanical but fixed after old outcomes were seen; final decisions need full-task runs. No training in this job.",
+           "task_subset": ["keleshev__schema.24a30457.pr_331",
+                         "cookiecutter__cookiecutter.b4451231.pr_1779",
+                         "cookiecutter__cookiecutter.b4451231.pr_2010",
+                         "kurtmckee__feedparser.cad965a3.pr_334",
+                         "kurtmckee__feedparser.cad965a3.pr_469",
+                         "conan-io__conan.86f29e13.pr_16559"],
+           "source_arms": {
+               "f": "P012 new architecture, all roles base; repair role skill-free five tools. Corrected base control matching C/D tool env.",
+               "c": "P012 new architecture; coordinator/locator/acceptance/selector base; repair role alone carries P011 step70 adapter (71687cf9); five repair tools, no repair skills.",
+               "d": "P012 new architecture; coordinator/locator/acceptance/selector base; repair role alone carries new p012-repair-v1 adapter (b8653b17); five repair tools, no repair skills."},
            "extra_datasets": ["ccjjllt/p012-p011-step70-adapter",
                              "ccjjllt/p012-new-adapter-128"]},
 }
@@ -83,21 +103,44 @@ def main(prepare_only=False, kernel_id=None, eval_dataset=None, job=None):
     (OUT / "kernel").mkdir(exist_ok=True)
     KERNEL_ID = kernel_id or cfg["kernel_id"]
     EVAL_DATASET = eval_dataset or "ccjjllt/p012-eval-tasks"
-    (v0, v1), (t0, t1), (ad0, ad1) = cfg["variants"], cfg["trees"], cfg["adapters"]
-    bundle_0, hashes_0 = read_tree(t0)
-    bundle_1, hashes_1 = read_tree(t1)
+    variant_keys = list(cfg["variants"])
+    tree_names = list(cfg["trees"])
+    root_ads = list(cfg["adapters"])
+    repair_ads = list(cfg.get("repair_adapters", root_ads))
+    assert len(variant_keys) == len(tree_names) == len(root_ads) == len(repair_ads) >= 2
+    bundles, file_hashes = {}, {}
+    for vk, tree in zip(variant_keys, tree_names):
+        bundles[vk], file_hashes[vk] = read_tree(tree)
     tasks_path = HERE / "tasks-selected.jsonl"
     tasks_bytes = tasks_path.read_bytes()
     tasks_sha = hashlib.sha256(tasks_bytes).hexdigest()
     import json as _json
 
-    tasks = [_json.loads(x) for x in tasks_bytes.splitlines() if x.strip()]
-    assert len(tasks) == 12, len(tasks)
+    frozen_lines = [x for x in tasks_bytes.splitlines() if x.strip()]
+    frozen_tasks = [_json.loads(x) for x in frozen_lines]
+    assert len(frozen_tasks) == 12, len(frozen_tasks)
+    subset = cfg.get("task_subset")
+    if subset is not None:
+        frozen_ids = [t["instance_id"] for t in frozen_tasks]
+        assert len(subset) == len(set(subset)) and 0 < len(subset) < len(frozen_ids)
+        assert set(subset) <= set(frozen_ids)
+        assert [i for i in frozen_ids if i in set(subset)] == list(subset), \
+            "subset must list frozen rows in frozen relative order"
+        keep = set(subset)
+        subset_lines = [x for x, t in zip(frozen_lines, frozen_tasks)
+                        if t["instance_id"] in keep]
+        assert len(subset_lines) == len(subset)
+        subset_bytes = b"\n".join(subset_lines) + b"\n"
+    else:
+        subset_bytes = b"\n".join(frozen_lines) + b"\n"
+    selected_sha = hashlib.sha256(subset_bytes).hexdigest()
+    tasks = [_json.loads(x) for x in subset_bytes.splitlines() if x.strip()]
     task_ids = [t["instance_id"] for t in tasks]
-    assert len(set(task_ids)) == 12
+    assert len(set(task_ids)) == len(task_ids) >= 1
     for t in tasks:
         assert t["test_patch"] and t["FAIL_TO_PASS"], t["instance_id"]
         assert not t["patch"], t["instance_id"]
+    planned_attempts = len(task_ids) * len(variant_keys)
 
     task_meta = {}
     for t in tasks:
@@ -127,16 +170,23 @@ def main(prepare_only=False, kernel_id=None, eval_dataset=None, job=None):
         cfg = yaml.safe_load(bundle["agent.yaml"])
         return cfg.get("adapter")
 
-    variants = {
-        v0: {"tools": root_tools(v0, bundle_0), "skills": root_skills(v0, bundle_0),
-             "budgets": budgets, "sampling": sampling, "adapter": ad0 or root_adapter(bundle_0)},
-        v1: {"tools": root_tools(v1, bundle_1), "skills": root_skills(v1, bundle_1),
-             "budgets": budgets, "sampling": sampling, "adapter": ad1 or root_adapter(bundle_1)},
-    }
-    # The frozen agent.yaml adapter declaration is authoritative; the job table
-    # must agree with it.
-    assert variants[v0]["adapter"] == ad0, (v0, variants[v0]["adapter"], ad0)
-    assert variants[v1]["adapter"] == ad1, (v1, variants[v1]["adapter"], ad1)
+    def repair_adapter(bundle):
+        cfg = yaml.safe_load(bundle["repair.yaml"])
+        return cfg.get("adapter")
+
+    variants = {}
+    for vk, tree, ad, rd in zip(variant_keys, tree_names, root_ads, repair_ads):
+        bundle = bundles[vk]
+        variants[vk] = {"tools": root_tools(vk, bundle), "skills": root_skills(vk, bundle),
+                        "budgets": budgets, "sampling": sampling,
+                        "adapter": ad or root_adapter(bundle),
+                        "coordinator_adapter": ad or root_adapter(bundle),
+                        "repair_adapter": rd or repair_adapter(bundle)}
+    # Root and repair adapter declarations are both authoritative; the job
+    # table must agree with the frozen YAML files.
+    for vk, ad, rd in zip(variant_keys, root_ads, repair_ads):
+        assert variants[vk]["coordinator_adapter"] == ad, (vk, variants[vk]["coordinator_adapter"], ad)
+        assert variants[vk]["repair_adapter"] == rd, (vk, variants[vk]["repair_adapter"], rd)
 
     manifest = {
         "study": cfg["study"],
@@ -152,7 +202,7 @@ def main(prepare_only=False, kernel_id=None, eval_dataset=None, job=None):
         "verification_timeout_seconds": 300,
         "task_ids": task_ids,
         "repeats": ["r1"],
-        "planned_attempts": 24,
+        "planned_attempts": planned_attempts,
         "max_concurrent_attempts": 4,
         "server_max_num_seqs": 4,
         "image_pin": IMAGE,
@@ -161,8 +211,13 @@ def main(prepare_only=False, kernel_id=None, eval_dataset=None, job=None):
             "source": "research/012/evaluation/tasks-selected.jsonl (frozen dev tasks + criterion test_patch)",
             "source_sha256": tasks_sha,
             "source_bytes": len(tasks_bytes),
+            "selected_sha256": selected_sha,
+            "selected_bytes": len(subset_bytes),
             "selected_task_ids": task_ids,
-            "selected_rows": 12,
+            "selected_rows": len(task_ids),
+            "task_subset_rule": cfg.get("task_subset_rule",
+                "all 12 frozen dev tasks" if cfg.get("task_subset") is None else
+                "pre-fixed stratified subset: per-repo sha256 order (schema 1, cookiecutter 2, feedparser 2, conan 1), frozen relative order kept"),
             "heldout_or_reserved_accessed": False,
             "task_dependencies": {
                 "floors": ["Jinja2>=2.7,<4.0.0", "click>=7.0", "pyyaml",
@@ -187,8 +242,8 @@ def main(prepare_only=False, kernel_id=None, eval_dataset=None, job=None):
     }
     manifest_text = json.dumps(manifest, ensure_ascii=False, indent=2)
 
-    bundle = {v0: bundle_0, v1: bundle_1}
-    hashes = {v0: hashes_0, v1: hashes_1}
+    bundle = dict(bundles)
+    hashes = dict(file_hashes)
 
     template = (HERE / cfg["template"]).read_text()
     subs = {
@@ -202,20 +257,24 @@ def main(prepare_only=False, kernel_id=None, eval_dataset=None, job=None):
     for token, value in subs.items():
         assert template.count(token) == 1, token
         template = template.replace(token, value)
+    if "%%SELECTED_VARIANTS_PY%%" in template:
+        assert template.count("%%SELECTED_VARIANTS_PY%%") == 1
+        template = template.replace(
+            "%%SELECTED_VARIANTS_PY%%", repr(tuple(variant_keys)))
     assert "%%" not in template.split("MANIFEST_TEXT")[0] or True
     (OUT / "coordinator.py").write_text(template)
 
     shutil.copyfile(HERE / cfg["worker"], OUT / "attempt_worker.py")
-    shutil.copyfile(tasks_path, OUT / "tasks-selected.jsonl")
+    (OUT / "tasks-selected.jsonl").write_bytes(subset_bytes)
     shutil.copyfile(HERE / "eval_supervisor_template.py", OUT / "supervisor.py")
     (OUT / "experiment-manifest.json").write_text(manifest_text + "\n")
     run_config = {
         "study": manifest["study"],
         "job": job or DEFAULT_JOB,
         "kernel": KERNEL_ID,
-        "variants": [v0, v1],
+        "variants": variant_keys,
         "task_ids": task_ids,
-        "planned_attempts": 24,
+        "planned_attempts": planned_attempts,
         "platform_seconds": 5400,
         "worker_seconds": 5280,
         "evaluation_deadline_seconds": 5100,
@@ -223,6 +282,7 @@ def main(prepare_only=False, kernel_id=None, eval_dataset=None, job=None):
         "attempt_outer_seconds": 1020,
         "max_concurrent_attempts": 4,
         "tasks_sha256": tasks_sha,
+        "selected_sha256": selected_sha,
         "experiment_manifest_sha256": hashlib.sha256(
             manifest_text.encode()).hexdigest(),
     }
@@ -240,6 +300,7 @@ def main(prepare_only=False, kernel_id=None, eval_dataset=None, job=None):
         "prepare_only": prepare_only,
         "task_ids": task_ids,
         "tasks_sha256": tasks_sha,
+        "selected_sha256": selected_sha,
         "image_pin": IMAGE,
         "files": packed,
     }, ensure_ascii=False, indent=2) + "\n")
@@ -305,8 +366,8 @@ def main(prepare_only=False, kernel_id=None, eval_dataset=None, job=None):
     (kdir / "kernel-metadata.json").write_text(
         json.dumps(meta, ensure_ascii=False, indent=2) + "\n")
     print(json.dumps({"kernel": KERNEL_ID, "job": job or DEFAULT_JOB,
-                      "variants": [v0, v1],
-                      "tasks": len(task_ids), "attempts": 24,
+                      "variants": variant_keys,
+                      "tasks": len(task_ids), "attempts": planned_attempts,
                       "prepare_only": prepare_only,
                       "bundle_files": sum(len(v) for v in bundle.values()),
                       "carrier_bytes": len(payload)}))
@@ -323,7 +384,7 @@ if __name__ == "__main__":
             ds = a.split("=", 1)[1]
         elif a.startswith("--job="):
             jb = a.split("=", 1)[1]
-    if jb not in (None, "ab", "cd"):
-        raise SystemExit("--job must be ab or cd")
+    if jb not in (None, "ab", "cd", "bcd6"):
+        raise SystemExit("--job must be ab, cd or bcd6")
     main(prepare_only="--prepare-only" in args, kernel_id=kid, eval_dataset=ds,
          job=jb)
