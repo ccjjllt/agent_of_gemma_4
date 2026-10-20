@@ -1,0 +1,27 @@
+PYTHONPATH=src:. python - <<'PY'
+import json, sys
+import marshmallow
+from apispec.ext.marshmallow.field_converter import FieldConverterMixin
+print(json.dumps({'module_origin': FieldConverterMixin.__module__}))
+from packaging.version import Version
+class C(FieldConverterMixin):
+    def __init__(self, v):
+        self.openapi_version = Version(v)
+        self.field_mapping = dict(FieldConverterMixin.field_mapping)
+class S(marshmallow.Schema):
+    x = marshmallow.fields.Int()
+cases = []
+def run(name, version, field, ret, expect):
+    conv = C(version)
+    try:
+        got = conv.field2nullable(field, dict(ret))
+        cases.append({'case': name, 'pass': got == expect, 'got': got})
+    except Exception as e:
+        cases.append({'case': name, 'pass': False, 'error': type(e).__name__ + ': ' + str(e)})
+run('nested_30', '3.0.0', marshmallow.fields.Nested(S, allow_none=True), {'$ref': '#/components/schemas/S'}, {})
+run('nested_31', '3.1.0', marshmallow.fields.Nested(S, allow_none=True), {'$ref': '#/components/schemas/S'}, {'anyOf': [{'$ref': '#/components/schemas/S'}, {'type': 'null'}]})
+run('string_30', '3.0.0', marshmallow.fields.String(allow_none=True), {'type': 'string'}, {'nullable': True})
+run('nested_20', '2.0.0', marshmallow.fields.Nested(S, allow_none=True), {'$ref': '#/components/schemas/S'}, {'x-nullable': True})
+print(json.dumps({'cases': cases}, sort_keys=True))
+sys.exit(0 if cases and all(c['pass'] for c in cases) else 1)
+PY

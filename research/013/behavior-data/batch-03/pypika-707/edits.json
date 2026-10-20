@@ -1,0 +1,20 @@
+[
+ {
+  "filepath": "pypika/dialects.py",
+  "old_string": "\nclass ClickHouseQueryBuilder(QueryBuilder):\n    QUERY_CLS = ClickHouseQuery\n\n    _distinct_on: List[Term]\n    _limit_by: Optional[TypedTuple[int, int, List[Term]]]\n\n    def __init__(self, **kwargs) -> None:\n        super().__init__(**kwargs)\n        self._final = False\n        self._distinct_on = []\n        self._limit_by = None\n\n    def __copy__(self) -> \"ClickHouseQueryBuilder\":\n        newone = super().__copy__()\n        newone._limit_by = copy(self._limit_by)\n        return newone\n\n    @builder\n    def final(self) -> \"ClickHouseQueryBuilder\":\n        self._final = True\n",
+  "new_string": "\nclass ClickHouseQueryBuilder(QueryBuilder):\n    QUERY_CLS = ClickHouseQuery\n\n    _distinct_on: List[Term]\n    _limit_by: Optional[TypedTuple[int, int, List[Term]]]\n\n    def __init__(self, **kwargs) -> None:\n        super().__init__(**kwargs)\n        self._final = False\n        self._distinct_on = []\n        self._limit_by = None\n        self._sample = None\n        self._sample_offset = None\n\n    def __copy__(self) -> \"ClickHouseQueryBuilder\":\n        newone = super().__copy__()\n        newone._limit_by = copy(self._limit_by)\n        newone._final = self._final\n        newone._sample = self._sample\n        newone._sample_offset = self._sample_offset\n        return newone\n\n    @builder\n    def final(self) -> \"ClickHouseQueryBuilder\":\n        self._final = True\n        \n    @builder\n    def sample(self, sample_size: int, offset: int = None) -> \"ClickHouseQueryBuilder\":\n        self._sample = sample_size\n        self._sample_offset = offset\n",
+  "allow_multiple": false
+ },
+ {
+  "filepath": "pypika/dialects.py",
+  "old_string": "\n    def _apply_pagination(self, querystring: str, **kwargs) -> str:\n        # LIMIT BY isn't really a pagination per se but since we need\n        # to add this to the query right before an actual LIMIT clause\n        # this is good enough.\n        if self._limit_by:\n            querystring += self._limit_by_sql(**kwargs)\n        return super()._apply_pagination(querystring, **kwargs)\n",
+  "new_string": "\n    def _apply_pagination(self, querystring: str, **kwargs) -> str:\n        # LIMIT BY isn't really a pagination per se but since we need\n        # to add this to the query right before an actual LIMIT clause\n        # this is good enough.\n        if self._limit_by:\n            querystring += self._limit_by_sql(**kwargs)\n            \n        # Apply FINAL and SAMPLE clauses before pagination\n        if self._final:\n            querystring += self._final_sql()\n            \n        if self._sample is not None:\n            querystring += self._sample_sql()\n            \n        return super()._apply_pagination(querystring, **kwargs)\n        \n    def _final_sql(self) -> str:\n        return \" FINAL\"\n        \n    def _sample_sql(self) -> str:\n        if self._sample_offset is not None:\n            return f\" SAMPLE {self._sample} OFFSET {self._sample_offset}\"\n        return f\" SAMPLE {self._sample}\"\n",
+  "allow_multiple": false
+ },
+ {
+  "filepath": "pypika/dialects.py",
+  "old_string": "\n    def _delete_sql(**kwargs: Any) -> str:\n        return 'ALTER TABLE'\n",
+  "new_string": "\n    def _delete_sql(self, **kwargs: Any) -> str:\n        return 'ALTER TABLE'\n",
+  "allow_multiple": false
+ }
+]

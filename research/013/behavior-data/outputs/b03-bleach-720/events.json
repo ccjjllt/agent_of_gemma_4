@@ -1,0 +1,64 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "bleach/linkifier.py",
+      "start_line": 490,
+      "end_line": 528
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "bleach/linkifier.py",
+      "content": "        attrs[\"_text\"] = text\n\n        attrs = self.apply_callbacks(attrs, False)\n\n        if attrs is None:\n            # We're dropping the \"a\" tag and everything else and replacing\n            # it with character data. So emit that token.\n            yield {\"type\": \"Characters\", \"data\": text}\n\n        else:\n            new_text = attrs.pop(\"_text\", \"\")\n            a_token[\"data\"] = attrs\n\n            if text == new_text:\n                # The callbacks didn't change the text, so we yield the new \"a\"\n                # token, then whatever else was there, then the end \"a\" token\n                yield a_token\n                yield from token_buffer[1:]\n\n            else:\n                # If the callbacks changed the text, then we're going to drop\n                # all the tokens between the start and end \"a\" tags and replace\n                # it with the new text\n                yield a_token\n                yield {\"type\": \"Characters\", \"data\": str(new_text)}\n                yield token_buffer[-1]\n\n    def extract_entities(self, token):\n        \"\"\"Handles Characters tokens with entities\n\n        Our overridden tokenizer doesn't do anything with entities. However,\n        that means that the serializer will convert all ``&`` in Characters\n        tokens to ``&amp;``.\n\n        Since we don't want that, we extract entities here and convert them to\n        Entity tokens so the serializer will let them be.\n\n        :arg token: the Characters token to work on\n",
+      "start_line": 490,
+      "end_line": 528,
+      "total_lines": 633,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "run_command",
+    "arguments": {
+      "command": "PYTHONPATH=. python - <<'PY'\nimport importlib.util, json, sys\nspec = importlib.util.spec_from_file_location('ws_linkifier', 'bleach/linkifier.py')\nmod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)\nprint(json.dumps({'module_origin': spec.origin}))\nimport bleach\nbleach.linkifier.LinkifyFilter = mod.LinkifyFilter\ncases = []\ndef run(name, got, expect):\n    cases.append({'case': name, 'pass': got == expect, 'got': got})\nrun('entities_in_anchor_text',\n    bleach.linkify('<p><a href=\"/\">Some&nbsp;entity&rsquo;s</a>More&nbsp;entity&rsquo;s</p>'),\n    '<p><a href=\"/\" rel=\"nofollow\">Some&nbsp;entity&rsquo;s</a>More&nbsp;entity&rsquo;s</p>')\nrun('plain_url_still_linkified',\n    bleach.linkify('http://example.com'),\n    '<a href=\"http://example.com\" rel=\"nofollow\">http://example.com</a>')\nrun('entity_outside_anchor_untouched',\n    bleach.linkify('a &amp; b http://example.com'),\n    'a &amp; b <a href=\"http://example.com\" rel=\"nofollow\">http://example.com</a>')\nprint(json.dumps({'cases': cases}, sort_keys=True))\nsys.exit(0 if cases and all(c['pass'] for c in cases) else 1)\nPY\n"
+    },
+    "response": {
+      "status": "error",
+      "error_type": "CommandError",
+      "error_message": "{\"module_origin\": \"bleach/linkifier.py\"}\n{\"cases\": [{\"case\": \"entities_in_anchor_text\", \"got\": \"<p><a href=\\\"/\\\" rel=\\\"nofollow\\\">Some&amp;nbsp;entity&amp;rsquo;s</a>More&nbsp;entity&rsquo;s</p>\", \"pass\": false}, {\"case\": \"plain_url_still_linkified\", \"got\": \"<a href=\\\"http://example.com\\\" rel=\\\"nofollow\\\">http://example.com</a>\", \"pass\": true}, {\"case\": \"entity_outside_anchor_untouched\", \"got\": \"a &amp; b <a href=\\\"http://example.com\\\" rel=\\\"nofollow\\\">http://example.com</a>\", \"pass\": true}]}\n",
+      "details": {
+        "stdout": "{\"module_origin\": \"bleach/linkifier.py\"}\n{\"cases\": [{\"case\": \"entities_in_anchor_text\", \"got\": \"<p><a href=\\\"/\\\" rel=\\\"nofollow\\\">Some&amp;nbsp;entity&amp;rsquo;s</a>More&nbsp;entity&rsquo;s</p>\", \"pass\": false}, {\"case\": \"plain_url_still_linkified\", \"got\": \"<a href=\\\"http://example.com\\\" rel=\\\"nofollow\\\">http://example.com</a>\", \"pass\": true}, {\"case\": \"entity_outside_anchor_untouched\", \"got\": \"a &amp; b <a href=\\\"http://example.com\\\" rel=\\\"nofollow\\\">http://example.com</a>\", \"pass\": true}]}\n",
+        "stderr": "",
+        "exit_code": 1
+      }
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "bleach/linkifier.py",
+      "old_string": "\n            if text == new_text:\n                # The callbacks didn't change the text, so we yield the new \"a\"\n                # token, then whatever else was there, then the end \"a\" token\n                yield a_token\n                yield from token_buffer[1:]\n\n            else:\n                # If the callbacks changed the text, then we're going to drop\n                # all the tokens between the start and end \"a\" tags and replace\n                # it with the new text\n                yield a_token\n                yield {\"type\": \"Characters\", \"data\": str(new_text)}\n                yield token_buffer[-1]\n",
+      "new_string": "\n            if text == new_text:\n                # The callbacks didn't change the text, so we yield the new \"a\"\n                # token, then whatever else was there, then the end \"a\" token\n                yield a_token\n                # Process any entities in the text tokens\n                for token in token_buffer[1:-1]:\n                    if token[\"type\"] == \"Characters\":\n                        yield from self.extract_entities(token)\n                    else:\n                        yield token\n                yield token_buffer[-1]\n\n            else:\n                # If the callbacks changed the text, then we're going to drop\n                # all the tokens between the start and end \"a\" tags and replace\n                # it with the new text\n                yield a_token\n                # Process any entities in the new text\n                yield from self.extract_entities({\"type\": \"Characters\", \"data\": str(new_text)})\n                yield token_buffer[-1]\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "bleach/linkifier.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/bleach/linkifier.py\n+++ b/bleach/linkifier.py\n@@ -504,14 +504,21 @@\n                 # The callbacks didn't change the text, so we yield the new \"a\"\n                 # token, then whatever else was there, then the end \"a\" token\n                 yield a_token\n-                yield from token_buffer[1:]\n+                # Process any entities in the text tokens\n+                for token in token_buffer[1:-1]:\n+                    if token[\"type\"] == \"Characters\":\n+                        yield from self.extract_entities(token)\n+                    else:\n+                        yield token\n+                yield token_buffer[-1]\n \n             else:\n                 # If the callbacks changed the text, then we're going to drop\n                 # all the tokens between the start and end \"a\" tags and replace\n                 # it with the new text\n                 yield a_token\n-                yield {\"type\": \"Characters\", \"data\": str(new_text)}\n+                # Process any entities in the new text\n+                yield from self.extract_entities({\"type\": \"Characters\", \"data\": str(new_text)})\n                 yield token_buffer[-1]\n \n     def extract_entities(self, token):\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "run_command",
+    "arguments": {
+      "command": "PYTHONPATH=. python - <<'PY'\nimport importlib.util, json, sys\nspec = importlib.util.spec_from_file_location('ws_linkifier', 'bleach/linkifier.py')\nmod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)\nprint(json.dumps({'module_origin': spec.origin}))\nimport bleach\nbleach.linkifier.LinkifyFilter = mod.LinkifyFilter\ncases = []\ndef run(name, got, expect):\n    cases.append({'case': name, 'pass': got == expect, 'got': got})\nrun('entities_in_anchor_text',\n    bleach.linkify('<p><a href=\"/\">Some&nbsp;entity&rsquo;s</a>More&nbsp;entity&rsquo;s</p>'),\n    '<p><a href=\"/\" rel=\"nofollow\">Some&nbsp;entity&rsquo;s</a>More&nbsp;entity&rsquo;s</p>')\nrun('plain_url_still_linkified',\n    bleach.linkify('http://example.com'),\n    '<a href=\"http://example.com\" rel=\"nofollow\">http://example.com</a>')\nrun('entity_outside_anchor_untouched',\n    bleach.linkify('a &amp; b http://example.com'),\n    'a &amp; b <a href=\"http://example.com\" rel=\"nofollow\">http://example.com</a>')\nprint(json.dumps({'cases': cases}, sort_keys=True))\nsys.exit(0 if cases and all(c['pass'] for c in cases) else 1)\nPY\n"
+    },
+    "response": {
+      "status": "ok",
+      "stdout": "{\"module_origin\": \"bleach/linkifier.py\"}\n{\"cases\": [{\"case\": \"entities_in_anchor_text\", \"got\": \"<p><a href=\\\"/\\\" rel=\\\"nofollow\\\">Some&nbsp;entity&rsquo;s</a>More&nbsp;entity&rsquo;s</p>\", \"pass\": true}, {\"case\": \"plain_url_still_linkified\", \"got\": \"<a href=\\\"http://example.com\\\" rel=\\\"nofollow\\\">http://example.com</a>\", \"pass\": true}, {\"case\": \"entity_outside_anchor_untouched\", \"got\": \"a &amp; b <a href=\\\"http://example.com\\\" rel=\\\"nofollow\\\">http://example.com</a>\", \"pass\": true}]}\n",
+      "stderr": "",
+      "exit_code": 0
+    }
+  }
+]

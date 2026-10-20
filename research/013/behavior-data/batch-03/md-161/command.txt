@@ -1,0 +1,24 @@
+PYTHONPATH=. python - <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location('ws_markdownify', 'markdownify/__init__.py')
+mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+print(json.dumps({'module_origin': spec.origin}))
+cases = []
+def run(name, html, expect):
+    got = mod.markdownify(html)
+    cases.append({'case': name, 'pass': got == expect, 'got': got})
+run('tbody_td_first_row_promoted',
+    '<table><tbody><tr><td>a</td></tr></tbody></table>',
+    '\n\n| a |\n| --- |\n\n')
+run('second_tbody_row_is_body',
+    '<table><tbody><tr><td>a</td></tr></tbody><tbody><tr><td>b</td></tr></tbody></table>',
+    '\n\n| a |\n| --- |\n| b |\n\n')
+run('thead_table_unchanged',
+    '<table><thead><tr><th>h</th></tr></thead><tbody><tr><td>a</td></tr></tbody></table>',
+    '\n\n| h |\n| --- |\n| a |\n\n')
+run('tbody_th_first_row_unchanged',
+    '<table><tbody><tr><th>h</th></tr><tr><td>a</td></tr></tbody></table>',
+    '\n\n| h |\n| --- |\n| a |\n\n')
+print(json.dumps({'cases': cases}, sort_keys=True))
+sys.exit(0 if cases and all(c['pass'] for c in cases) else 1)
+PY

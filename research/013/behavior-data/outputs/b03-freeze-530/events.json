@@ -1,0 +1,64 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "freezegun/config.py",
+      "start_line": 19,
+      "end_line": 51
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "freezegun/config.py",
+      "content": "\nclass Settings:\n    def __init__(self, default_ignore_list: Optional[List[str]]=None) -> None:\n        self.default_ignore_list = default_ignore_list or DEFAULT_IGNORE_LIST[:]\n\n\nsettings = Settings()\n\n\nclass ConfigurationError(Exception):\n    pass\n\n\ndef configure(default_ignore_list: Optional[List[str]]=None, extend_ignore_list: Optional[List[str]]=None) -> None:\n    if default_ignore_list is not None and extend_ignore_list is not None:\n        raise ConfigurationError(\"Either default_ignore_list or extend_ignore_list might be given, not both\")\n    if default_ignore_list is not None:\n        settings.default_ignore_list = default_ignore_list\n    if extend_ignore_list:\n        settings.default_ignore_list = [*settings.default_ignore_list, *extend_ignore_list]\n\n\ndef reset_config() -> None:\n    global settings\n    settings = Settings()",
+      "start_line": 19,
+      "end_line": 43,
+      "total_lines": 43,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "run_command",
+    "arguments": {
+      "command": "PYTHONPATH=. python - <<'PY'\nimport importlib.util, json, sys\nspec = importlib.util.spec_from_file_location('ws_freezegun_config', 'freezegun/config.py')\nmod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)\nprint(json.dumps({'module_origin': spec.origin}))\ncases = []\nmod.reset_config()\nmod.configure(extend_ignore_list=['a', 'b', 'a', 'c', 'b'])\ngot = list(mod.settings.default_ignore_list)\ndeduped = list(dict.fromkeys(got))\ncases.append({'case': 'extend_dedupes_preserving_order', 'pass': got == deduped and got[-3:] == ['a', 'b', 'c'], 'got': got[-5:]})\nmod.reset_config()\nmod.configure(default_ignore_list=['x'])\ncases.append({'case': 'default_list_replace', 'pass': list(mod.settings.default_ignore_list) == ['x'], 'got': list(mod.settings.default_ignore_list)})\nprint(json.dumps({'cases': cases}, sort_keys=True))\nsys.exit(0 if cases and all(c['pass'] for c in cases) else 1)\nPY\n"
+    },
+    "response": {
+      "status": "error",
+      "error_type": "CommandError",
+      "error_message": "{\"module_origin\": \"freezegun/config.py\"}\n{\"cases\": [{\"case\": \"extend_dedupes_preserving_order\", \"got\": [\"a\", \"b\", \"a\", \"c\", \"b\"], \"pass\": false}, {\"case\": \"default_list_replace\", \"got\": [\"x\"], \"pass\": true}]}\n",
+      "details": {
+        "stdout": "{\"module_origin\": \"freezegun/config.py\"}\n{\"cases\": [{\"case\": \"extend_dedupes_preserving_order\", \"got\": [\"a\", \"b\", \"a\", \"c\", \"b\"], \"pass\": false}, {\"case\": \"default_list_replace\", \"got\": [\"x\"], \"pass\": true}]}\n",
+        "stderr": "",
+        "exit_code": 1
+      }
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "freezegun/config.py",
+      "old_string": "\ndef configure(default_ignore_list: Optional[List[str]]=None, extend_ignore_list: Optional[List[str]]=None) -> None:\n    if default_ignore_list is not None and extend_ignore_list is not None:\n        raise ConfigurationError(\"Either default_ignore_list or extend_ignore_list might be given, not both\")\n    if default_ignore_list is not None:\n        settings.default_ignore_list = default_ignore_list\n    if extend_ignore_list:\n        settings.default_ignore_list = [*settings.default_ignore_list, *extend_ignore_list]\n",
+      "new_string": "\ndef configure(default_ignore_list: Optional[List[str]]=None, extend_ignore_list: Optional[List[str]]=None) -> None:\n    if default_ignore_list is not None and extend_ignore_list is not None:\n        raise ConfigurationError(\"Either default_ignore_list or extend_ignore_list might be given, not both\")\n    if default_ignore_list is not None:\n        settings.default_ignore_list = default_ignore_list\n    if extend_ignore_list:\n        # Create a combined list and remove duplicates while preserving order\n        combined_list = settings.default_ignore_list.copy()\n        for item in extend_ignore_list:\n            if item not in combined_list:\n                combined_list.append(item)\n        settings.default_ignore_list = combined_list\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "freezegun/config.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/freezegun/config.py\n+++ b/freezegun/config.py\n@@ -35,7 +35,12 @@\n     if default_ignore_list is not None:\n         settings.default_ignore_list = default_ignore_list\n     if extend_ignore_list:\n-        settings.default_ignore_list = [*settings.default_ignore_list, *extend_ignore_list]\n+        # Create a combined list and remove duplicates while preserving order\n+        combined_list = settings.default_ignore_list.copy()\n+        for item in extend_ignore_list:\n+            if item not in combined_list:\n+                combined_list.append(item)\n+        settings.default_ignore_list = combined_list\n \n \n def reset_config() -> None:\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "run_command",
+    "arguments": {
+      "command": "PYTHONPATH=. python - <<'PY'\nimport importlib.util, json, sys\nspec = importlib.util.spec_from_file_location('ws_freezegun_config', 'freezegun/config.py')\nmod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)\nprint(json.dumps({'module_origin': spec.origin}))\ncases = []\nmod.reset_config()\nmod.configure(extend_ignore_list=['a', 'b', 'a', 'c', 'b'])\ngot = list(mod.settings.default_ignore_list)\ndeduped = list(dict.fromkeys(got))\ncases.append({'case': 'extend_dedupes_preserving_order', 'pass': got == deduped and got[-3:] == ['a', 'b', 'c'], 'got': got[-5:]})\nmod.reset_config()\nmod.configure(default_ignore_list=['x'])\ncases.append({'case': 'default_list_replace', 'pass': list(mod.settings.default_ignore_list) == ['x'], 'got': list(mod.settings.default_ignore_list)})\nprint(json.dumps({'cases': cases}, sort_keys=True))\nsys.exit(0 if cases and all(c['pass'] for c in cases) else 1)\nPY\n"
+    },
+    "response": {
+      "status": "ok",
+      "stdout": "{\"module_origin\": \"freezegun/config.py\"}\n{\"cases\": [{\"case\": \"extend_dedupes_preserving_order\", \"got\": [\"gi\", \"prompt_toolkit\", \"a\", \"b\", \"c\"], \"pass\": true}, {\"case\": \"default_list_replace\", \"got\": [\"x\"], \"pass\": true}]}\n",
+      "stderr": "",
+      "exit_code": 0
+    }
+  }
+]

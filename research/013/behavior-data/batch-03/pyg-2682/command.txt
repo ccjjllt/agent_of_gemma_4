@@ -1,0 +1,17 @@
+PYTHONPATH=. python - <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location('ws_dotnet', 'pygments/lexers/dotnet.py')
+mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+spec2 = importlib.util.spec_from_file_location('ws_mapping', 'pygments/lexers/_mapping.py')
+mapping = importlib.util.module_from_spec(spec2); spec2.loader.exec_module(mapping)
+print(json.dumps({'module_origin': spec.origin}))
+cases = []
+cases.append({'case': 'visual_basic_alias_registered', 'pass': 'visual-basic' in mod.VbNetLexer.aliases and 'visualbasic' in mod.VbNetLexer.aliases, 'got': mod.VbNetLexer.aliases})
+entry = mapping.LEXERS.get('VbNetLexer')
+cases.append({'case': 'mapping_registry_lists_visual_basic', 'pass': entry is not None and 'visual-basic' in entry[2], 'got': entry[2] if entry else None})
+from pygments.token import Keyword
+toks = list(mod.CSharpLexer().get_tokens('var x = 1;'))
+cases.append({'case': 'csharp_var_is_type', 'pass': any(t[1] == 'var' and 'Keyword.Type' in str(t[0]) for t in toks), 'got': [(str(t[0]), t[1]) for t in toks if t[1].strip()][:3]})
+print(json.dumps({'cases': cases}, sort_keys=True))
+sys.exit(0 if cases and all(c['pass'] for c in cases) else 1)
+PY

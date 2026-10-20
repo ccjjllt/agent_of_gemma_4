@@ -1,0 +1,166 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "sqlparse/engine/grouping.py",
+      "start_line": 44,
+      "end_line": 70
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "sqlparse/engine/grouping.py",
+      "content": "                # this indicates invalid sql and unbalanced tokens.\n                # instead of break, continue in case other \"valid\" groups exist\n                continue\n            close_idx = tidx\n            tlist.group_tokens(cls, open_idx, close_idx)\n            tidx_offset += close_idx - open_idx\n\n\ndef group_brackets(tlist):\n    _group_matching(tlist, sql.SquareBrackets)\n\n\ndef group_parenthesis(tlist):\n    _group_matching(tlist, sql.Parenthesis)\n\n\ndef group_case(tlist):\n    _group_matching(tlist, sql.Case)\n\n\ndef group_if(tlist):\n    _group_matching(tlist, sql.If)\n\n\ndef group_for(tlist):\n    _group_matching(tlist, sql.For)\n",
+      "start_line": 44,
+      "end_line": 70,
+      "total_lines": 485,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "run_command",
+    "arguments": {
+      "command": "PYTHONPATH=. python - <<'PY'\nimport importlib.util, json, sys\nspec = importlib.util.spec_from_file_location('ws_grouping', 'sqlparse/engine/grouping.py')\nws = importlib.util.module_from_spec(spec); spec.loader.exec_module(ws)\nprint(json.dumps({'module_origin': spec.origin}))\nfrom sqlparse import lexer, sql\nfrom sqlparse.engine import StatementSplitter\ndef parse_ws(s):\n    stmts = list(StatementSplitter().process(lexer.tokenize(s)))\n    for st in stmts:\n        ws.group(st)\n    return stmts\ncases = []\ndef inner_idents(s):\n    stmt = parse_ws(s)[0]\n    par = stmt.tokens[0]\n    assert isinstance(par, sql.Parenthesis), type(par).__name__\n    return [(type(t).__name__, t.value) for t in par.tokens]\ngot = inner_idents('(a desc)')\ncases.append({'case': 'desc_grouped_in_parens', 'pass': ('Identifier', 'a desc') in got, 'got': got})\ngot2 = inner_idents('(a ASC)')\ncases.append({'case': 'asc_grouped_in_parens', 'pass': ('Identifier', 'a ASC') in got2, 'got': got2})\ntop = parse_ws('SELECT a FROM t ORDER BY a desc')[0]\ntail = [(type(t).__name__, t.value) for t in top.tokens]\ncases.append({'case': 'top_level_order_still_grouped', 'pass': ('Identifier', 'a desc') in tail, 'got': tail})\nprint(json.dumps({'cases': cases}, sort_keys=True))\nsys.exit(0 if cases and all(c['pass'] for c in cases) else 1)\nPY\n"
+    },
+    "response": {
+      "status": "error",
+      "error_type": "CommandError",
+      "error_message": "{\"module_origin\": \"sqlparse/engine/grouping.py\"}\n{\"cases\": [{\"case\": \"desc_grouped_in_parens\", \"got\": [[\"Token\", \"(\"], [\"Identifier\", \"a\"], [\"Token\", \" \"], [\"Token\", \"desc\"], [\"Token\", \")\"]], \"pass\": false}, {\"case\": \"asc_grouped_in_parens\", \"got\": [[\"Token\", \"(\"], [\"Identifier\", \"a\"], [\"Token\", \" \"], [\"Token\", \"ASC\"], [\"Token\", \")\"]], \"pass\": false}, {\"case\": \"top_level_order_still_grouped\", \"got\": [[\"Token\", \"SELECT\"], [\"Token\", \" \"], [\"Identifier\", \"a\"], [\"Token\", \" \"], [\"Token\", \"FROM\"], [\"Token\", \" \"], [\"Identifier\", \"t\"], [\"Token\", \" \"], [\"Token\", \"ORDER BY\"], [\"Token\", \" \"], [\"Identifier\", \"a desc\"]], \"pass\": true}]}\n",
+      "details": {
+        "stdout": "{\"module_origin\": \"sqlparse/engine/grouping.py\"}\n{\"cases\": [{\"case\": \"desc_grouped_in_parens\", \"got\": [[\"Token\", \"(\"], [\"Identifier\", \"a\"], [\"Token\", \" \"], [\"Token\", \"desc\"], [\"Token\", \")\"]], \"pass\": false}, {\"case\": \"asc_grouped_in_parens\", \"got\": [[\"Token\", \"(\"], [\"Identifier\", \"a\"], [\"Token\", \" \"], [\"Token\", \"ASC\"], [\"Token\", \")\"]], \"pass\": false}, {\"case\": \"top_level_order_still_grouped\", \"got\": [[\"Token\", \"SELECT\"], [\"Token\", \" \"], [\"Identifier\", \"a\"], [\"Token\", \" \"], [\"Token\", \"FROM\"], [\"Token\", \" \"], [\"Identifier\", \"t\"], [\"Token\", \" \"], [\"Token\", \"ORDER BY\"], [\"Token\", \" \"], [\"Identifier\", \"a desc\"]], \"pass\": true}]}\n",
+        "stderr": "",
+        "exit_code": 1
+      }
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "sqlparse/engine/grouping.py",
+      "old_string": "def group_parenthesis(tlist):\n    _group_matching(tlist, sql.Parenthesis)\n",
+      "new_string": "def group_parenthesis(tlist):\n    _group_matching(tlist, sql.Parenthesis)\n    \n    # Process ORDER BY clauses inside parentheses\n    for token in tlist.tokens:\n        if isinstance(token, sql.Parenthesis):\n            _process_parenthesis_order(token)\n\ndef _process_parenthesis_order(ptoken):\n    \"\"\"Process ORDER BY clauses inside parentheses.\"\"\"\n    tidx, token = ptoken.token_next_by(t=T.Keyword.Order)\n    while token:\n        pidx, prev_ = ptoken.token_prev(tidx)\n        if prev_ and not prev_.is_whitespace and (\n            isinstance(prev_, sql.Identifier) or \n            prev_.ttype in T_NAME or \n            prev_.ttype in T_NUMERICAL\n        ):\n            ptoken.group_tokens(sql.Identifier, pidx, tidx)\n            tidx = pidx\n        tidx, token = ptoken.token_next_by(t=T.Keyword.Order, idx=tidx)\n",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "sqlparse/engine/grouping.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/sqlparse/engine/grouping.py\n+++ b/sqlparse/engine/grouping.py\n@@ -55,6 +55,25 @@\n \n def group_parenthesis(tlist):\n     _group_matching(tlist, sql.Parenthesis)\n+    \n+    # Process ORDER BY clauses inside parentheses\n+    for token in tlist.tokens:\n+        if isinstance(token, sql.Parenthesis):\n+            _process_parenthesis_order(token)\n+\n+def _process_parenthesis_order(ptoken):\n+    \"\"\"Process ORDER BY clauses inside parentheses.\"\"\"\n+    tidx, token = ptoken.token_next_by(t=T.Keyword.Order)\n+    while token:\n+        pidx, prev_ = ptoken.token_prev(tidx)\n+        if prev_ and not prev_.is_whitespace and (\n+            isinstance(prev_, sql.Identifier) or \n+            prev_.ttype in T_NAME or \n+            prev_.ttype in T_NUMERICAL\n+        ):\n+            ptoken.group_tokens(sql.Identifier, pidx, tidx)\n+            tidx = pidx\n+        tidx, token = ptoken.token_next_by(t=T.Keyword.Order, idx=tidx)\n \n \n def group_case(tlist):\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "sqlparse/engine/grouping.py",
+      "old_string": "def _process_parenthesis_order(ptoken):\n    \"\"\"Process ORDER BY clauses inside parentheses.\"\"\"\n    tidx, token = ptoken.token_next_by(t=T.Keyword.Order)\n    while token:\n        pidx, prev_ = ptoken.token_prev(tidx)\n        if prev_ and not prev_.is_whitespace and (\n            isinstance(prev_, sql.Identifier) or \n            prev_.ttype in T_NAME or \n            prev_.ttype in T_NUMERICAL\n        ):\n            ptoken.group_tokens(sql.Identifier, pidx, tidx)\n            tidx = pidx\n        tidx, token = ptoken.token_next_by(t=T.Keyword.Order, idx=tidx)",
+      "new_string": "def _process_parenthesis_order(ptoken):\n    \"\"\"Process ORDER BY clauses inside parentheses.\"\"\"\n    tidx, token = ptoken.token_next_by(t=T.Keyword.Order)\n    while token:\n        pidx, prev_ = ptoken.token_prev(tidx)\n        if prev_ and not prev_.is_whitespace and (\n            isinstance(prev_, sql.Identifier) or \n            isinstance(prev_, sql.Function) or\n            isinstance(prev_, sql.Operation) or\n            prev_.ttype in T_NAME or \n            prev_.ttype in T_NUMERICAL\n        ):\n            ptoken.group_tokens(sql.Identifier, pidx, tidx)\n            tidx = pidx\n        tidx, token = ptoken.token_next_by(t=T.Keyword.Order, idx=tidx)",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "sqlparse/engine/grouping.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/sqlparse/engine/grouping.py\n+++ b/sqlparse/engine/grouping.py\n@@ -68,6 +68,8 @@\n         pidx, prev_ = ptoken.token_prev(tidx)\n         if prev_ and not prev_.is_whitespace and (\n             isinstance(prev_, sql.Identifier) or \n+            isinstance(prev_, sql.Function) or\n+            isinstance(prev_, sql.Operation) or\n             prev_.ttype in T_NAME or \n             prev_.ttype in T_NUMERICAL\n         ):\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "sqlparse/engine/grouping.py",
+      "old_string": "def group_parenthesis(tlist):\n    _group_matching(tlist, sql.Parenthesis)\n    \n    # Process ORDER BY clauses inside parentheses\n    for token in tlist.tokens:\n        if isinstance(token, sql.Parenthesis):\n            _process_parenthesis_order(token)\n\ndef _process_parenthesis_order(ptoken):\n    \"\"\"Process ORDER BY clauses inside parentheses.\"\"\"\n    tidx, token = ptoken.token_next_by(t=T.Keyword.Order)\n    while token:\n        pidx, prev_ = ptoken.token_prev(tidx)\n        if prev_ and not prev_.is_whitespace and (\n            isinstance(prev_, sql.Identifier) or \n            isinstance(prev_, sql.Function) or\n            isinstance(prev_, sql.Operation) or\n            prev_.ttype in T_NAME or \n            prev_.ttype in T_NUMERICAL\n        ):\n            ptoken.group_tokens(sql.Identifier, pidx, tidx)\n            tidx = pidx\n        tidx, token = ptoken.token_next_by(t=T.Keyword.Order, idx=tidx)",
+      "new_string": "def group_parenthesis(tlist):\n    _group_matching(tlist, sql.Parenthesis)\n    \n    # Process ORDER BY clauses inside parentheses\n    for token in tlist.tokens:\n        if isinstance(token, sql.Parenthesis):\n            _process_parenthesis_order(token)\n\ndef _process_parenthesis_order(ptoken):\n    \"\"\"Process ORDER BY clauses inside parentheses.\"\"\"\n    tidx, token = ptoken.token_next_by(t=T.Keyword.Order)\n    while token:\n        pidx, prev_ = ptoken.token_prev(tidx)\n        \n        # Skip whitespace to find the actual previous token\n        while prev_ and prev_.is_whitespace and pidx > 0:\n            pidx, prev_ = ptoken.token_prev(pidx)\n            \n        if prev_ and (\n            isinstance(prev_, sql.Identifier) or \n            isinstance(prev_, sql.Function) or\n            isinstance(prev_, sql.Operation) or\n            prev_.ttype in T_NAME or \n            prev_.ttype in T_NUMERICAL\n        ):\n            # Get the index of the whitespace token if it exists\n            widx, ws = ptoken.token_next(pidx)\n            if ws and ws.is_whitespace and widx < tidx:\n                # Group the identifier, whitespace, and order keyword\n                ptoken.group_tokens(sql.Identifier, pidx, tidx)\n            else:\n                # No whitespace, just group the identifier and order keyword\n                ptoken.group_tokens(sql.Identifier, pidx, tidx)\n            tidx = pidx\n            \n        tidx, token = ptoken.token_next_by(t=T.Keyword.Order, idx=tidx)",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "sqlparse/engine/grouping.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/sqlparse/engine/grouping.py\n+++ b/sqlparse/engine/grouping.py\n@@ -66,15 +66,28 @@\n     tidx, token = ptoken.token_next_by(t=T.Keyword.Order)\n     while token:\n         pidx, prev_ = ptoken.token_prev(tidx)\n-        if prev_ and not prev_.is_whitespace and (\n+        \n+        # Skip whitespace to find the actual previous token\n+        while prev_ and prev_.is_whitespace and pidx > 0:\n+            pidx, prev_ = ptoken.token_prev(pidx)\n+            \n+        if prev_ and (\n             isinstance(prev_, sql.Identifier) or \n             isinstance(prev_, sql.Function) or\n             isinstance(prev_, sql.Operation) or\n             prev_.ttype in T_NAME or \n             prev_.ttype in T_NUMERICAL\n         ):\n-            ptoken.group_tokens(sql.Identifier, pidx, tidx)\n+            # Get the index of the whitespace token if it exists\n+            widx, ws = ptoken.token_next(pidx)\n+            if ws and ws.is_whitespace and widx < tidx:\n+                # Group the identifier, whitespace, and order keyword\n+                ptoken.group_tokens(sql.Identifier, pidx, tidx)\n+            else:\n+                # No whitespace, just group the identifier and order keyword\n+                ptoken.group_tokens(sql.Identifier, pidx, tidx)\n             tidx = pidx\n+            \n         tidx, token = ptoken.token_next_by(t=T.Keyword.Order, idx=tidx)\n \n \n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "sqlparse/engine/grouping.py",
+      "old_string": "def _process_parenthesis_order(ptoken):\n    \"\"\"Process ORDER BY clauses inside parentheses.\"\"\"\n    tidx, token = ptoken.token_next_by(t=T.Keyword.Order)\n    while token:\n        pidx, prev_ = ptoken.token_prev(tidx)\n        \n        # Skip whitespace to find the actual previous token\n        while prev_ and prev_.is_whitespace and pidx > 0:\n            pidx, prev_ = ptoken.token_prev(pidx)\n            \n        if prev_ and (\n            isinstance(prev_, sql.Identifier) or \n            isinstance(prev_, sql.Function) or\n            isinstance(prev_, sql.Operation) or\n            prev_.ttype in T_NAME or \n            prev_.ttype in T_NUMERICAL\n        ):\n            # Get the index of the whitespace token if it exists\n            widx, ws = ptoken.token_next(pidx)\n            if ws and ws.is_whitespace and widx < tidx:\n                # Group the identifier, whitespace, and order keyword\n                ptoken.group_tokens(sql.Identifier, pidx, tidx)\n            else:\n                # No whitespace, just group the identifier and order keyword\n                ptoken.group_tokens(sql.Identifier, pidx, tidx)\n            tidx = pidx\n            \n        tidx, token = ptoken.token_next_by(t=T.Keyword.Order, idx=tidx)",
+      "new_string": "def _process_parenthesis_order(ptoken):\n    \"\"\"Process ORDER BY clauses inside parentheses.\"\"\"\n    # First, find all ORDER BY keywords\n    order_positions = []\n    idx = 0\n    while idx < len(ptoken.tokens):\n        token = ptoken.tokens[idx]\n        if token.ttype == T.Keyword.Order:\n            order_positions.append(idx)\n        idx += 1\n    \n    # Process ORDER BY keywords in reverse order to avoid index shifting\n    for pos in reversed(order_positions):\n        # Find the previous non-whitespace token\n        prev_pos = pos - 1\n        while prev_pos >= 0 and ptoken.tokens[prev_pos].is_whitespace:\n            prev_pos -= 1\n            \n        if prev_pos >= 0:\n            prev_token = ptoken.tokens[prev_pos]\n            # Check if the previous token is a valid identifier, function, etc.\n            if (isinstance(prev_token, sql.Identifier) or \n                isinstance(prev_token, sql.Function) or \n                isinstance(prev_token, sql.Operation) or\n                prev_token.ttype in T_NAME or \n                prev_token.ttype in T_NUMERICAL):\n                \n                # Group the tokens\n                ptoken.group_tokens(sql.Identifier, prev_pos, pos)",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "sqlparse/engine/grouping.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/sqlparse/engine/grouping.py\n+++ b/sqlparse/engine/grouping.py\n@@ -63,32 +63,33 @@\n \n def _process_parenthesis_order(ptoken):\n     \"\"\"Process ORDER BY clauses inside parentheses.\"\"\"\n-    tidx, token = ptoken.token_next_by(t=T.Keyword.Order)\n-    while token:\n-        pidx, prev_ = ptoken.token_prev(tidx)\n-        \n-        # Skip whitespace to find the actual previous token\n-        while prev_ and prev_.is_whitespace and pidx > 0:\n-            pidx, prev_ = ptoken.token_prev(pidx)\n+    # First, find all ORDER BY keywords\n+    order_positions = []\n+    idx = 0\n+    while idx < len(ptoken.tokens):\n+        token = ptoken.tokens[idx]\n+        if token.ttype == T.Keyword.Order:\n+            order_positions.append(idx)\n+        idx += 1\n+    \n+    # Process ORDER BY keywords in reverse order to avoid index shifting\n+    for pos in reversed(order_positions):\n+        # Find the previous non-whitespace token\n+        prev_pos = pos - 1\n+        while prev_pos >= 0 and ptoken.tokens[prev_pos].is_whitespace:\n+            prev_pos -= 1\n             \n-        if prev_ and (\n-            isinstance(prev_, sql.Identifier) or \n-            isinstance(prev_, sql.Function) or\n-            isinstance(prev_, sql.Operation) or\n-            prev_.ttype in T_NAME or \n-            prev_.ttype in T_NUMERICAL\n-        ):\n-            # Get the index of the whitespace token if it exists\n-            widx, ws = ptoken.token_next(pidx)\n-            if ws and ws.is_whitespace and widx < tidx:\n-                # Group the identifier, whitespace, and order keyword\n-                ptoken.group_tokens(sql.Identifier, pidx, tidx)\n-            else:\n-                # No whitespace, just group the identifier and order keyword\n-                ptoken.group_tokens(sql.Identifier, pidx, tidx)\n-            tidx = pidx\n-            \n-        tidx, token = ptoken.token_next_by(t=T.Keyword.Order, idx=tidx)\n+        if prev_pos >= 0:\n+            prev_token = ptoken.tokens[prev_pos]\n+            # Check if the previous token is a valid identifier, function, etc.\n+            if (isinstance(prev_token, sql.Identifier) or \n+                isinstance(prev_token, sql.Function) or \n+                isinstance(prev_token, sql.Operation) or\n+                prev_token.ttype in T_NAME or \n+                prev_token.ttype in T_NUMERICAL):\n+                \n+                # Group the tokens\n+                ptoken.group_tokens(sql.Identifier, prev_pos, pos)\n \n \n def group_case(tlist):\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "sqlparse/engine/grouping.py",
+      "old_string": "def _process_parenthesis_order(ptoken):\n    \"\"\"Process ORDER BY clauses inside parentheses.\"\"\"\n    # First, find all ORDER BY keywords\n    order_positions = []\n    idx = 0\n    while idx < len(ptoken.tokens):\n        token = ptoken.tokens[idx]\n        if token.ttype == T.Keyword.Order:\n            order_positions.append(idx)\n        idx += 1\n    \n    # Process ORDER BY keywords in reverse order to avoid index shifting\n    for pos in reversed(order_positions):\n        # Find the previous non-whitespace token\n        prev_pos = pos - 1\n        while prev_pos >= 0 and ptoken.tokens[prev_pos].is_whitespace:\n            prev_pos -= 1\n            \n        if prev_pos >= 0:\n            prev_token = ptoken.tokens[prev_pos]\n            # Check if the previous token is a valid identifier, function, etc.\n            if (isinstance(prev_token, sql.Identifier) or \n                isinstance(prev_token, sql.Function) or \n                isinstance(prev_token, sql.Operation) or\n                prev_token.ttype in T_NAME or \n                prev_token.ttype in T_NUMERICAL):\n                \n                # Group the tokens\n                ptoken.group_tokens(sql.Identifier, prev_pos, pos)",
+      "new_string": "def _process_parenthesis_order(ptoken):\n    \"\"\"Process ORDER BY clauses inside parentheses.\"\"\"\n    tidx, token = ptoken.token_next_by(t=T.Keyword.Order)\n    while token:\n        pidx, prev_ = ptoken.token_prev(tidx)\n        if prev_ and not prev_.is_whitespace and (\n            imt(prev_, i=sql.Identifier, t=T.Number) or\n            isinstance(prev_, sql.Function) or\n            isinstance(prev_, sql.Operation)\n        ):\n            ptoken.group_tokens(sql.Identifier, pidx, tidx)\n            tidx = pidx\n        tidx, token = ptoken.token_next_by(t=T.Keyword.Order, idx=tidx)",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "sqlparse/engine/grouping.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/sqlparse/engine/grouping.py\n+++ b/sqlparse/engine/grouping.py\n@@ -63,33 +63,17 @@\n \n def _process_parenthesis_order(ptoken):\n     \"\"\"Process ORDER BY clauses inside parentheses.\"\"\"\n-    # First, find all ORDER BY keywords\n-    order_positions = []\n-    idx = 0\n-    while idx < len(ptoken.tokens):\n-        token = ptoken.tokens[idx]\n-        if token.ttype == T.Keyword.Order:\n-            order_positions.append(idx)\n-        idx += 1\n-    \n-    # Process ORDER BY keywords in reverse order to avoid index shifting\n-    for pos in reversed(order_positions):\n-        # Find the previous non-whitespace token\n-        prev_pos = pos - 1\n-        while prev_pos >= 0 and ptoken.tokens[prev_pos].is_whitespace:\n-            prev_pos -= 1\n-            \n-        if prev_pos >= 0:\n-            prev_token = ptoken.tokens[prev_pos]\n-            # Check if the previous token is a valid identifier, function, etc.\n-            if (isinstance(prev_token, sql.Identifier) or \n-                isinstance(prev_token, sql.Function) or \n-                isinstance(prev_token, sql.Operation) or\n-                prev_token.ttype in T_NAME or \n-                prev_token.ttype in T_NUMERICAL):\n-                \n-                # Group the tokens\n-                ptoken.group_tokens(sql.Identifier, prev_pos, pos)\n+    tidx, token = ptoken.token_next_by(t=T.Keyword.Order)\n+    while token:\n+        pidx, prev_ = ptoken.token_prev(tidx)\n+        if prev_ and not prev_.is_whitespace and (\n+            imt(prev_, i=sql.Identifier, t=T.Number) or\n+            isinstance(prev_, sql.Function) or\n+            isinstance(prev_, sql.Operation)\n+        ):\n+            ptoken.group_tokens(sql.Identifier, pidx, tidx)\n+            tidx = pidx\n+        tidx, token = ptoken.token_next_by(t=T.Keyword.Order, idx=tidx)\n \n \n def group_case(tlist):\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "sqlparse/engine/grouping.py",
+      "old_string": "def group_order(tlist):\n    \"\"\"Group together Identifier and Asc/Desc token\"\"\"\n    tidx, token = tlist.token_next_by(t=T.Keyword.Order)\n    while token:\n        pidx, prev_ = tlist.token_prev(tidx)\n        if imt(prev_, i=sql.Identifier, t=T.Number):\n            tlist.group_tokens(sql.Identifier, pidx, tidx)\n            tidx = pidx\n        tidx, token = tlist.token_next_by(t=T.Keyword.Order, idx=tidx)",
+      "new_string": "def group_order(tlist):\n    \"\"\"Group together Identifier and Asc/Desc token\"\"\"\n    tidx, token = tlist.token_next_by(t=T.Keyword.Order)\n    while token:\n        pidx, prev_ = tlist.token_prev(tidx)\n        if imt(prev_, i=sql.Identifier, t=T.Number):\n            tlist.group_tokens(sql.Identifier, pidx, tidx)\n            tidx = pidx\n        tidx, token = tlist.token_next_by(t=T.Keyword.Order, idx=tidx)\n    \n    # Process ORDER BY clauses inside parentheses\n    for token in tlist.tokens:\n        if isinstance(token, sql.Parenthesis):\n            _process_order_in_parenthesis(token)\n\ndef _process_order_in_parenthesis(ptoken):\n    \"\"\"Process ORDER BY clauses inside parentheses.\"\"\"\n    tidx, token = ptoken.token_next_by(t=T.Keyword.Order)\n    while token:\n        pidx, prev_ = ptoken.token_prev(tidx)\n        # Skip whitespace to find the actual previous token\n        while prev_ and prev_.is_whitespace and pidx > 0:\n            pidx, prev_ = ptoken.token_prev(pidx)\n            \n        if prev_ and (\n            imt(prev_, i=sql.Identifier, t=T.Number) or\n            isinstance(prev_, sql.Function) or\n            isinstance(prev_, sql.Operation)\n        ):\n            ptoken.group_tokens(sql.Identifier, pidx, tidx)\n            tidx = pidx\n        tidx, token = ptoken.token_next_by(t=T.Keyword.Order, idx=tidx)",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "sqlparse/engine/grouping.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/sqlparse/engine/grouping.py\n+++ b/sqlparse/engine/grouping.py\n@@ -408,6 +408,29 @@\n             tlist.group_tokens(sql.Identifier, pidx, tidx)\n             tidx = pidx\n         tidx, token = tlist.token_next_by(t=T.Keyword.Order, idx=tidx)\n+    \n+    # Process ORDER BY clauses inside parentheses\n+    for token in tlist.tokens:\n+        if isinstance(token, sql.Parenthesis):\n+            _process_order_in_parenthesis(token)\n+\n+def _process_order_in_parenthesis(ptoken):\n+    \"\"\"Process ORDER BY clauses inside parentheses.\"\"\"\n+    tidx, token = ptoken.token_next_by(t=T.Keyword.Order)\n+    while token:\n+        pidx, prev_ = ptoken.token_prev(tidx)\n+        # Skip whitespace to find the actual previous token\n+        while prev_ and prev_.is_whitespace and pidx > 0:\n+            pidx, prev_ = ptoken.token_prev(pidx)\n+            \n+        if prev_ and (\n+            imt(prev_, i=sql.Identifier, t=T.Number) or\n+            isinstance(prev_, sql.Function) or\n+            isinstance(prev_, sql.Operation)\n+        ):\n+            ptoken.group_tokens(sql.Identifier, pidx, tidx)\n+            tidx = pidx\n+        tidx, token = ptoken.token_next_by(t=T.Keyword.Order, idx=tidx)\n \n \n @recurse()\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "sqlparse/engine/grouping.py",
+      "old_string": "def group_parenthesis(tlist):\n    _group_matching(tlist, sql.Parenthesis)\n    \n    # Process ORDER BY clauses inside parentheses\n    for token in tlist.tokens:\n        if isinstance(token, sql.Parenthesis):\n            _process_parenthesis_order(token)\n\ndef _process_parenthesis_order(ptoken):\n    \"\"\"Process ORDER BY clauses inside parentheses.\"\"\"\n    tidx, token = ptoken.token_next_by(t=T.Keyword.Order)\n    while token:\n        pidx, prev_ = ptoken.token_prev(tidx)\n        if prev_ and not prev_.is_whitespace and (\n            imt(prev_, i=sql.Identifier, t=T.Number) or\n            isinstance(prev_, sql.Function) or\n            isinstance(prev_, sql.Operation)\n        ):\n            ptoken.group_tokens(sql.Identifier, pidx, tidx)\n            tidx = pidx\n        tidx, token = ptoken.token_next_by(t=T.Keyword.Order, idx=tidx)",
+      "new_string": "def group_parenthesis(tlist):\n    _group_matching(tlist, sql.Parenthesis)",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "sqlparse/engine/grouping.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/sqlparse/engine/grouping.py\n+++ b/sqlparse/engine/grouping.py\n@@ -55,25 +55,6 @@\n \n def group_parenthesis(tlist):\n     _group_matching(tlist, sql.Parenthesis)\n-    \n-    # Process ORDER BY clauses inside parentheses\n-    for token in tlist.tokens:\n-        if isinstance(token, sql.Parenthesis):\n-            _process_parenthesis_order(token)\n-\n-def _process_parenthesis_order(ptoken):\n-    \"\"\"Process ORDER BY clauses inside parentheses.\"\"\"\n-    tidx, token = ptoken.token_next_by(t=T.Keyword.Order)\n-    while token:\n-        pidx, prev_ = ptoken.token_prev(tidx)\n-        if prev_ and not prev_.is_whitespace and (\n-            imt(prev_, i=sql.Identifier, t=T.Number) or\n-            isinstance(prev_, sql.Function) or\n-            isinstance(prev_, sql.Operation)\n-        ):\n-            ptoken.group_tokens(sql.Identifier, pidx, tidx)\n-            tidx = pidx\n-        tidx, token = ptoken.token_next_by(t=T.Keyword.Order, idx=tidx)\n \n \n def group_case(tlist):\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "run_command",
+    "arguments": {
+      "command": "PYTHONPATH=. python - <<'PY'\nimport importlib.util, json, sys\nspec = importlib.util.spec_from_file_location('ws_grouping', 'sqlparse/engine/grouping.py')\nws = importlib.util.module_from_spec(spec); spec.loader.exec_module(ws)\nprint(json.dumps({'module_origin': spec.origin}))\nfrom sqlparse import lexer, sql\nfrom sqlparse.engine import StatementSplitter\ndef parse_ws(s):\n    stmts = list(StatementSplitter().process(lexer.tokenize(s)))\n    for st in stmts:\n        ws.group(st)\n    return stmts\ncases = []\ndef inner_idents(s):\n    stmt = parse_ws(s)[0]\n    par = stmt.tokens[0]\n    assert isinstance(par, sql.Parenthesis), type(par).__name__\n    return [(type(t).__name__, t.value) for t in par.tokens]\ngot = inner_idents('(a desc)')\ncases.append({'case': 'desc_grouped_in_parens', 'pass': ('Identifier', 'a desc') in got, 'got': got})\ngot2 = inner_idents('(a ASC)')\ncases.append({'case': 'asc_grouped_in_parens', 'pass': ('Identifier', 'a ASC') in got2, 'got': got2})\ntop = parse_ws('SELECT a FROM t ORDER BY a desc')[0]\ntail = [(type(t).__name__, t.value) for t in top.tokens]\ncases.append({'case': 'top_level_order_still_grouped', 'pass': ('Identifier', 'a desc') in tail, 'got': tail})\nprint(json.dumps({'cases': cases}, sort_keys=True))\nsys.exit(0 if cases and all(c['pass'] for c in cases) else 1)\nPY\n"
+    },
+    "response": {
+      "status": "ok",
+      "stdout": "{\"module_origin\": \"sqlparse/engine/grouping.py\"}\n{\"cases\": [{\"case\": \"desc_grouped_in_parens\", \"got\": [[\"Token\", \"(\"], [\"Identifier\", \"a desc\"], [\"Token\", \")\"]], \"pass\": true}, {\"case\": \"asc_grouped_in_parens\", \"got\": [[\"Token\", \"(\"], [\"Identifier\", \"a ASC\"], [\"Token\", \")\"]], \"pass\": true}, {\"case\": \"top_level_order_still_grouped\", \"got\": [[\"Token\", \"SELECT\"], [\"Token\", \" \"], [\"Identifier\", \"a\"], [\"Token\", \" \"], [\"Token\", \"FROM\"], [\"Token\", \" \"], [\"Identifier\", \"t\"], [\"Token\", \" \"], [\"Token\", \"ORDER BY\"], [\"Token\", \" \"], [\"Identifier\", \"a desc\"]], \"pass\": true}]}\n",
+      "stderr": "",
+      "exit_code": 0
+    }
+  }
+]

@@ -1,0 +1,195 @@
+{
+  "sample_id": "p013-b03-freeze-530",
+  "transaction_id": "p013-b03-freeze-530-tx01",
+  "producer_revision": "p013-v1",
+  "synthetic": false,
+  "origin_kind": "cpu_replayed_behavior_recovery",
+  "group": {
+    "issue": "spulec__freezegun.5f171db0.pr_530",
+    "repo": "spulec/freezegun",
+    "commit": "3ceefaddce788fc28e59436a9c91e2803a5655a2",
+    "split": "train"
+  },
+  "source": {
+    "uri": "https://huggingface.co/datasets/SWE-bench/SWE-smith-trajectories/tree/08e109b4a59eaeebf80e4675cd125d42e7ac99a4",
+    "license": "MIT dataset; Apache-2.0 touched code",
+    "sha256": "a9f28a7a34d0514eb0ae9741f1a006efc9dead0d3c10c9fec97872b0bb6ee8bf",
+    "teacher": "claude-3-7-sonnet-20250219",
+    "traj_id": "spulec__freezegun.5f171db0.pr_530.zcdsejye",
+    "frozen_evidence": "research/011/data-scaling-20261018/outputs/spulec__freezegun.5f171db0.pr_530/transaction.json"
+  },
+  "protocol_id": "p013-behavior-v1",
+  "tool_schema": {
+    "path": "research/012/agent/repair_tools_v1.json",
+    "canonical_sha256": "91ec82b15fe0961b3ef9e686fac268706ce954a69cabaa0d705c003d41088e267",
+    "names": [
+      "run_command",
+      "read_file",
+      "edit_file",
+      "write_file",
+      "get_status"
+    ],
+    "repair_role_holds_submit_patch": false
+  },
+  "messages": [
+    {
+      "role": "system",
+      "content": "Use the supplied repository tools. Preserve unrelated behavior. Treat tool failures as observations and correct the action before retrying. Do not modify tests."
+    },
+    {
+      "role": "user",
+      "content": "Implement the following requested change in the repository.\n\nDuplicate items in extend_ignore_list are not removed\n\nWhen using the `configure` function with `extend_ignore_list` multiple times, duplicate items are not being removed from the list. This can lead to unexpected behavior when freezing time.\n\nFor example:\n```python\nimport freezegun\n\n# Add some items including duplicates\nfreezegun.configure(extend_ignore_list=['tensorflow', 'pymongo', 'tensorflow', 'rabbitmq'])\n\n# Add another duplicate\nfreezegun.configure(extend_ignore_list=['tensorflow'])\n\n# When freezing time, the ignore list will contain duplicates\nfreezegun.freeze_time('2020-10-06')\n```\n\nThe resulting ignore list contains duplicate entries for 'tensorflow', which is inefficient and could potentially cause issues with pattern matching.\n\nExpected behavior: When extending the ignore list, duplicate items should be removed to ensure each item appears only once in the final list.\n\nScope of this editing session: update the following production files and submit the resulting local patch: freezegun/config.py. No full task validation has been performed in this session."
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "cpu_00",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": {
+              "filepath": "freezegun/config.py",
+              "start_line": 19,
+              "end_line": 51
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_00",
+      "name": "read_file",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"filepath\": \"freezegun/config.py\", \"content\": \"\\nclass Settings:\\n    def __init__(self, default_ignore_list: Optional[List[str]]=None) -> None:\\n        self.default_ignore_list = default_ignore_list or DEFAULT_IGNORE_LIST[:]\\n\\n\\nsettings = Settings()\\n\\n\\nclass ConfigurationError(Exception):\\n    pass\\n\\n\\ndef configure(default_ignore_list: Optional[List[str]]=None, extend_ignore_list: Optional[List[str]]=None) -> None:\\n    if default_ignore_list is not None and extend_ignore_list is not None:\\n        raise ConfigurationError(\\\"Either default_ignore_list or extend_ignore_list might be given, not both\\\")\\n    if default_ignore_list is not None:\\n        settings.default_ignore_list = default_ignore_list\\n    if extend_ignore_list:\\n        settings.default_ignore_list = [*settings.default_ignore_list, *extend_ignore_list]\\n\\n\\ndef reset_config() -> None:\\n    global settings\\n    settings = Settings()\", \"start_line\": 19, \"end_line\": 43, \"total_lines\": 43, \"is_truncated\": false}"
+    },
+    {
+      "role": "assistant",
+      "content": "Observe the stated behavior and boundary cases before editing.",
+      "tool_calls": [
+        {
+          "id": "cpu_01",
+          "type": "function",
+          "function": {
+            "name": "run_command",
+            "arguments": {
+              "command": "PYTHONPATH=. python - <<'PY'\nimport importlib.util, json, sys\nspec = importlib.util.spec_from_file_location('ws_freezegun_config', 'freezegun/config.py')\nmod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)\nprint(json.dumps({'module_origin': spec.origin}))\ncases = []\nmod.reset_config()\nmod.configure(extend_ignore_list=['a', 'b', 'a', 'c', 'b'])\ngot = list(mod.settings.default_ignore_list)\ndeduped = list(dict.fromkeys(got))\ncases.append({'case': 'extend_dedupes_preserving_order', 'pass': got == deduped and got[-3:] == ['a', 'b', 'c'], 'got': got[-5:]})\nmod.reset_config()\nmod.configure(default_ignore_list=['x'])\ncases.append({'case': 'default_list_replace', 'pass': list(mod.settings.default_ignore_list) == ['x'], 'got': list(mod.settings.default_ignore_list)})\nprint(json.dumps({'cases': cases}, sort_keys=True))\nsys.exit(0 if cases and all(c['pass'] for c in cases) else 1)\nPY\n"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_01",
+      "name": "run_command",
+      "status": "error",
+      "content": "{\"status\": \"error\", \"error_type\": \"CommandError\", \"error_message\": \"{\\\"module_origin\\\": \\\"freezegun/config.py\\\"}\\n{\\\"cases\\\": [{\\\"case\\\": \\\"extend_dedupes_preserving_order\\\", \\\"got\\\": [\\\"a\\\", \\\"b\\\", \\\"a\\\", \\\"c\\\", \\\"b\\\"], \\\"pass\\\": false}, {\\\"case\\\": \\\"default_list_replace\\\", \\\"got\\\": [\\\"x\\\"], \\\"pass\\\": true}]}\\n\", \"details\": {\"stdout\": \"{\\\"module_origin\\\": \\\"freezegun/config.py\\\"}\\n{\\\"cases\\\": [{\\\"case\\\": \\\"extend_dedupes_preserving_order\\\", \\\"got\\\": [\\\"a\\\", \\\"b\\\", \\\"a\\\", \\\"c\\\", \\\"b\\\"], \\\"pass\\\": false}, {\\\"case\\\": \\\"default_list_replace\\\", \\\"got\\\": [\\\"x\\\"], \\\"pass\\\": true}]}\\n\", \"stderr\": \"\", \"exit_code\": 1}}"
+    },
+    {
+      "role": "assistant",
+      "content": "Apply the minimal production correction supported by the observation.",
+      "tool_calls": [
+        {
+          "id": "cpu_02",
+          "type": "function",
+          "function": {
+            "name": "edit_file",
+            "arguments": {
+              "filepath": "freezegun/config.py",
+              "old_string": "\ndef configure(default_ignore_list: Optional[List[str]]=None, extend_ignore_list: Optional[List[str]]=None) -> None:\n    if default_ignore_list is not None and extend_ignore_list is not None:\n        raise ConfigurationError(\"Either default_ignore_list or extend_ignore_list might be given, not both\")\n    if default_ignore_list is not None:\n        settings.default_ignore_list = default_ignore_list\n    if extend_ignore_list:\n        settings.default_ignore_list = [*settings.default_ignore_list, *extend_ignore_list]\n",
+              "new_string": "\ndef configure(default_ignore_list: Optional[List[str]]=None, extend_ignore_list: Optional[List[str]]=None) -> None:\n    if default_ignore_list is not None and extend_ignore_list is not None:\n        raise ConfigurationError(\"Either default_ignore_list or extend_ignore_list might be given, not both\")\n    if default_ignore_list is not None:\n        settings.default_ignore_list = default_ignore_list\n    if extend_ignore_list:\n        # Create a combined list and remove duplicates while preserving order\n        combined_list = settings.default_ignore_list.copy()\n        for item in extend_ignore_list:\n            if item not in combined_list:\n                combined_list.append(item)\n        settings.default_ignore_list = combined_list\n",
+              "allow_multiple": false
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_02",
+      "name": "edit_file",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"filepath\": \"freezegun/config.py\", \"occurrences\": 1, \"strategy\": \"exact\", \"diff\": \"--- a/freezegun/config.py\\n+++ b/freezegun/config.py\\n@@ -35,7 +35,12 @@\\n     if default_ignore_list is not None:\\n         settings.default_ignore_list = default_ignore_list\\n     if extend_ignore_list:\\n-        settings.default_ignore_list = [*settings.default_ignore_list, *extend_ignore_list]\\n+        # Create a combined list and remove duplicates while preserving order\\n+        combined_list = settings.default_ignore_list.copy()\\n+        for item in extend_ignore_list:\\n+            if item not in combined_list:\\n+                combined_list.append(item)\\n+        settings.default_ignore_list = combined_list\\n \\n \\n def reset_config() -> None:\\n\", \"is_truncated\": false}"
+    },
+    {
+      "role": "assistant",
+      "content": "Repeat the identical behavior contract after the production edits.",
+      "tool_calls": [
+        {
+          "id": "cpu_03",
+          "type": "function",
+          "function": {
+            "name": "run_command",
+            "arguments": {
+              "command": "PYTHONPATH=. python - <<'PY'\nimport importlib.util, json, sys\nspec = importlib.util.spec_from_file_location('ws_freezegun_config', 'freezegun/config.py')\nmod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)\nprint(json.dumps({'module_origin': spec.origin}))\ncases = []\nmod.reset_config()\nmod.configure(extend_ignore_list=['a', 'b', 'a', 'c', 'b'])\ngot = list(mod.settings.default_ignore_list)\ndeduped = list(dict.fromkeys(got))\ncases.append({'case': 'extend_dedupes_preserving_order', 'pass': got == deduped and got[-3:] == ['a', 'b', 'c'], 'got': got[-5:]})\nmod.reset_config()\nmod.configure(default_ignore_list=['x'])\ncases.append({'case': 'default_list_replace', 'pass': list(mod.settings.default_ignore_list) == ['x'], 'got': list(mod.settings.default_ignore_list)})\nprint(json.dumps({'cases': cases}, sort_keys=True))\nsys.exit(0 if cases and all(c['pass'] for c in cases) else 1)\nPY\n"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "cpu_03",
+      "name": "run_command",
+      "status": "ok",
+      "content": "{\"status\": \"ok\", \"stdout\": \"{\\\"module_origin\\\": \\\"freezegun/config.py\\\"}\\n{\\\"cases\\\": [{\\\"case\\\": \\\"extend_dedupes_preserving_order\\\", \\\"got\\\": [\\\"gi\\\", \\\"prompt_toolkit\\\", \\\"a\\\", \\\"b\\\", \\\"c\\\"], \\\"pass\\\": true}, {\\\"case\\\": \\\"default_list_replace\\\", \\\"got\\\": [\\\"x\\\"], \\\"pass\\\": true}]}\\n\", \"stderr\": \"\", \"exit_code\": 0}"
+    },
+    {
+      "role": "assistant",
+      "content": "{\n  \"candidate_id\": \"p013-b03-freeze-530\",\n  \"files\": [\n    {\n      \"path\": \"freezegun/config.py\"\n    }\n  ],\n  \"requirement_done\": true,\n  \"verification_status\": \"pass\",\n  \"requirement_scope\": \"configure(extend_ignore_list=...) appends without duplicating, preserving order; default-list replacement untouched.; whole-issue oracle NOT run\",\n  \"verification\": {\n    \"observation\": \"run_command\",\n    \"pre_command_sha256\": \"db58f09b7f926ae64280cc053121af3e1b27dc7f00e73f7bf570ef18f930fc10\",\n    \"pre_exit_code\": 1,\n    \"post_command_sha256\": \"db58f09b7f926ae64280cc053121af3e1b27dc7f00e73f7bf570ef18f930fc10\",\n    \"post_exit_code\": 0,\n    \"same_criterion\": true,\n    \"key_output\": \"{\\\"module_origin\\\": \\\"freezegun/config.py\\\"}\\n{\\\"cases\\\": [{\\\"case\\\": \\\"extend_dedupes_preserving_order\\\", \\\"got\\\": [\\\"gi\\\", \\\"prompt_toolkit\\\", \\\"a\\\", \\\"b\\\", \\\"c\\\"], \\\"pass\\\": true}, {\\\"case\\\": \\\"default_list_replace\\\", \\\"got\\\": [\\\"x\\\"], \\\"pass\\\": true}]}\\n\",\n    \"module_file\": \"/Users/zhaohuaxiang/ccjjllt/agent_of_gemma_4/research/013/behavior-data/outputs/b03-freeze-530/workspace/freezegun/config.py\",\n    \"scope\": \"Identical behavior command before (must fail) and after (must pass) the production edits, executed live in this workspace.\"\n  },\n  \"unresolved\": [\n    \"whole-issue oracle not run; task_resolved=null\"\n  ],\n  \"needs_other_route\": false\n}",
+      "tool_calls": []
+    }
+  ],
+  "target_assistant_steps": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "behavior": "behavior_recovery",
+  "needs_replay": false,
+  "attempt_status": "behavior_verified",
+  "observed_outcome": {
+    "action_succeeded": true,
+    "task_resolved": null,
+    "behavior_verified": true,
+    "issue_reproduction_before_failed": true,
+    "issue_reproduction_after_passed": true,
+    "official_suite_ran": false,
+    "validation_scope": "configure(extend_ignore_list=...) appends without duplicating, preserving order; default-list replacement untouched."
+  },
+  "handover": {
+    "candidate_id": "p013-b03-freeze-530",
+    "files": [
+      {
+        "path": "freezegun/config.py"
+      }
+    ],
+    "requirement_done": true,
+    "verification_status": "pass",
+    "requirement_scope": "configure(extend_ignore_list=...) appends without duplicating, preserving order; default-list replacement untouched.; whole-issue oracle NOT run",
+    "verification": {
+      "observation": "run_command",
+      "pre_command_sha256": "db58f09b7f926ae64280cc053121af3e1b27dc7f00e73f7bf570ef18f930fc10",
+      "pre_exit_code": 1,
+      "post_command_sha256": "db58f09b7f926ae64280cc053121af3e1b27dc7f00e73f7bf570ef18f930fc10",
+      "post_exit_code": 0,
+      "same_criterion": true,
+      "key_output": "{\"module_origin\": \"freezegun/config.py\"}\n{\"cases\": [{\"case\": \"extend_dedupes_preserving_order\", \"got\": [\"gi\", \"prompt_toolkit\", \"a\", \"b\", \"c\"], \"pass\": true}, {\"case\": \"default_list_replace\", \"got\": [\"x\"], \"pass\": true}]}\n",
+      "module_file": "/Users/zhaohuaxiang/ccjjllt/agent_of_gemma_4/research/013/behavior-data/outputs/b03-freeze-530/workspace/freezegun/config.py",
+      "scope": "Identical behavior command before (must fail) and after (must pass) the production edits, executed live in this workspace."
+    },
+    "unresolved": [
+      "whole-issue oracle not run; task_resolved=null"
+    ],
+    "needs_other_route": false
+  },
+  "source_resolved_label": true,
+  "source_label_not_revalidated": true,
+  "replay_boundary": "Unchanged official v31 tool functions minus submit_patch, macOS local transport. Harness PATH setup only: `python` wrapper execs the same 3.9.6 interpreter with user site-packages appended after the command PYTHONPATH (workspace sources win; obsolete pathlib backport removed from user site 2026-10-20); pydantic live workspace additionally sees vendored pydantic-core 2.30.0 wheel after the command PYTHONPATH. Behavior command byte-identical. Live pre-fail/post-pass on the identical behavior command; no repository test suite.",
+  "continuation_policy": "All tool observations newly executed in the live workspace; no old assistant future or old tool observations reused."
+}

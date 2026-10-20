@@ -242,7 +242,7 @@ def ensure_python_shim():
 
 
 def run_behavior(keys, timeout_seconds=300, batch='batch-01'):
-    """Live canonical replay of batch evidence (batch-01 or batch-02). Returns (admitted, refused)."""
+    """Live canonical replay of batch evidence (batch-01, batch-02 or batch-03). Returns (admitted, refused)."""
     shimdir, interpreter = ensure_python_shim()
     denylist = load_task_split_denylist()
     admitted, refused = [], []
@@ -256,7 +256,9 @@ def run_behavior(keys, timeout_seconds=300, batch='batch-01'):
                             'reason': type(e).__name__ + ': ' + str(e)})
             dump(_refuse_outside_outdir(Path('outputs') / key / 'refusal.json'),
                  refused[-1])
-    summary_name = 'behavior-batch01-summary.json' if batch == 'batch-01' else 'behavior-batch02-summary.json'
+    summary_name = {'batch-01': 'behavior-batch01-summary.json',
+                    'batch-02': 'behavior-batch02-summary.json',
+                    'batch-03': 'behavior-batch03-summary.json'}[batch]
     dump(HERE / summary_name,
          {'admitted': [t['sample_id'] for t in admitted], 'refused': refused,
           'behavior_verified_true_count': sum(1 for t in admitted
@@ -266,7 +268,7 @@ def run_behavior(keys, timeout_seconds=300, batch='batch-01'):
 
 
 def _batch_of(ev, batch):
-    if batch in ('batch-01', 'batch-02'):
+    if batch in ('batch-01', 'batch-02', 'batch-03'):
         return batch
     raise ValueError('unknown evidence batch: ' + str(batch))
 
@@ -280,8 +282,9 @@ def behavior_one(ev, denylist, timeout_seconds, batch='batch-01'):
     if not frozen_edits:
         raise ValueError('no production edits in frozen transaction')
     sub = ev['key'].removeprefix('p013-')
-    if batch == 'batch-02' and sub.startswith('b02-'):
-        sub = sub.removeprefix('b02-')
+    for batch_prefix, short_prefix in (('batch-02', 'b02-'), ('batch-03', 'b03-')):
+        if batch == batch_prefix and sub.startswith(short_prefix):
+            sub = sub.removeprefix(short_prefix)
     command_path = HERE / _batch_of(ev, batch) / sub / 'command.txt'
     command = command_path.read_text()
     if not command.strip():
@@ -462,7 +465,7 @@ def main():
     ap.add_argument('--keys', nargs='*', default=None)
     ap.add_argument('--admit', action='store_true')
     ap.add_argument('--timeout', type=int, default=300)
-    ap.add_argument('--batch', choices=['batch-01', 'batch-02'], default='batch-01')
+    ap.add_argument('--batch', choices=['batch-01', 'batch-02', 'batch-03'], default='batch-01')
     args = ap.parse_args()
     if args.mode == 'reissue':
         results = run_reissue(args.limit, args.admit)
@@ -478,7 +481,13 @@ def main():
                           if args.batch == 'batch-01' else
                           ['xmltodict-345', 'result-121', 'slugify-148', 'slugify-149',
                            'boltons-375', 'cantools-701', 'apispec-892', 'xmltodict-363',
-                           'pydantic-5568', 'pydantic-3646', 'yamllint-572'])
+                           'pydantic-5568', 'pydantic-3646', 'yamllint-572']
+                          if args.batch == 'batch-02' else
+                          ['boltons-358', 'result-165', 'jl-160', 'jl-170',
+                           'alive-213', 'freeze-530', 'apispec-953', 'bleach-691',
+                           'bleach-720', 'bleach-722', 'pyg-2600', 'pyg-2622',
+                           'pyg-2682', 'tornado-3317', 'sqlparse-746', 'pypika-707',
+                           'md-181', 'md-161', 'mypy-12943'])
         keys = args.keys or default_keys
         admitted, refused = run_behavior(keys[:args.limit] if args.limit else keys,
                                          args.timeout, args.batch)
