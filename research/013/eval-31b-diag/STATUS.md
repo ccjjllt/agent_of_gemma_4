@@ -29,3 +29,7 @@
 - 报告 `diag-report.md`：B-4006过程占优（edit@9/124/交接/review）；B-3180零编辑负证据；B-7205同修复但交接晚致review预算尽；B-6757 review连交2次0/0违规。绑定约束是墙钟（工具调用中位~2-4分钟），非call计数。
 - 修正（CPU）：repair.md加墙钟交接（120s读/200s改/300s交，<180s立即交，call12未改则下一调用必edit，handoff附time_remaining）；review.md禁无新edit二次提交（终身2次，第二次须真实edit+git diff）；single.md同步。
 - 重建carrier（新prompt sha），CPU预检v3 `ccjjllt/p013-31b-diag-cpu-prepare-v3` v1已推（免费）。待COMPLETE→推GPU full v3（kernel-v3, --accelerator NvidiaL4）。
+
+## 2026-10-20 ~06:45Z: CPU预检v3通过，GPU复测v3已推
+- `ccjjllt/p013-31b-diag-cpu-prepare-v3` COMPLETE：2/2 prepared（SequentialAgent repair+review，修正后prompt）。
+- `ccjjllt/p013-31b-diag-pair-v3` v1已推（kernel-v3/, --accelerator NvidiaL4）。推前配额8.18h。判据：handoff步骤提前、review有提交动作、B-3180类零编辑消失。
