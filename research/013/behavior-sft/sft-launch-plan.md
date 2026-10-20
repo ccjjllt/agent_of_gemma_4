@@ -1,6 +1,8 @@
 # P013 首轮 12B 4×L4 DDP 连续 SFT 执行清单（behavior 主层）
 
-日期：2026-10-20（CPU 编码完成，GPU 待推送）。数据：`research/013/behavior-sft/`。
+**2026-10-20 晚更新：实际作业 `ccjjllt/p013-12b-behavior-sft-34/1` 已于北京时间 17:56 完成 72 步训练与独立导出，权重已取回并核对哈希。** 见 [P014 取回证据](../../014/README.md)。下一步直接做 12B base/adapter 修复对照，无须重推训练；下列账号、推送待办和估时是启动前历史记录。
+
+日期：2026-10-20。数据：`research/013/behavior-sft/`。
 本轮只训主层 34 行；P012 辅助层引用不混入（§5）。效果以后续评测为准，不声称修复收益。
 
 ## 1. 冻结数据（已就绪，可训练行数与 token 统计）
@@ -113,8 +115,7 @@ torchrun --standalone --nproc-per-node=4 -m training.train_ddp \
 
 - `research/012/training-data/encoded-train-12b.jsonl`（256 行，`02d239f1…a877`，已本地核对一致）。
 - 本轮不拼接：trainer 拒绝混合协议文件（`p012-repair-v1` ≠ `p013-behavior-v1`）。
-- 后续 schedule：stage A 训本 34 行文件；stage B 在同 recipe 下单独训 P012 文件（新 optimizer state）。
-  若未来构造单协议混合，以 step 为单位按 `primary:auxiliary = 1:1` 交替 global batch，不做行复制。
+- **后续 Stage B 暂停：** 旧 P012 256 条的虚假完成标签没有整体修正，不能因为新建 optimizer 就继续训练。先完成旧标签重发/重新编码，或仅保留有效编辑监督；是否混合及采样比例由首轮行为 adapter 的修复收益决定。
 
 ## 6. 推送就绪确认
 

@@ -1,8 +1,10 @@
-# P013 执行记录：CPU 已交付（无 GPU、无新权重、无新评分）
+# P013 执行记录：两轮诊断完成，行为 SFT 已完成，尚无新评分
 
-日期：2026-10-20。状态：48 小时目标的 CPU 部分 + GPU 就绪部分已落盘；一切 GPU 消耗动作（31B 实测、12 题配对、行为 SFT）均未执行。
+**2026-10-20 晚更新：** 已取回两轮 31B 诊断（每轮基线/候选均 0/4）、12B 行为 SFT（34 题/20 仓、72 步、独立 adapter 导出并取回）、CPU 新题预验证失败日志（缺 criteria index，尚无有效新题集）。实时正式成绩仍为 `57340172` 的 0.15；zhuating GPU 余量 30.00h。原件与下一步见 [P014 研究状态](../014/README.md)和 [P014 交接方案](../../docs/plan/014-score-first-submission-handoff.md)。
 
-## CPU 已交付（本目录，可复核）
+下面保留 P013 启动时的 CPU 交付记录。其“GPU 未执行/训练未启动/待推送”等描述只对应早期时点，已被上面的实际结果覆盖，不能据此重复推送训练。
+
+## 启动时的 CPU 交付（历史记录）
 
 1. Agent 候选：`agent/agent.yaml`（SequentialAgent repair→review）+ `agent/repair_agent.yaml`（五工具，无 submit，
    output_key=repair_handoff）+ `agent/review_agent.yaml`（六工具，include_contents:none）+
@@ -21,7 +23,7 @@
 4. 评测线：`eval-31b-pair/plan-12pair.md`（12 新开发题冻结约束 + 24 attempts 配对载体配置 + 四维对比表模板 + 决策规则；
    冻结清单与执行待 GPU）。
 
-## GPU 待办（需会话授权 + 同命令内账号校验与配额重读；本次未执行）
+## 启动时的 GPU 待办（历史记录；当前执行入口为 P014）
 
 1. 少量旧题 31B 诊断：短超时截断、路径核验命中、Call 12 编辑、Sequential 交接 vs 切单 Agent、补丁卫生。
 2. 冻结 P013 候选 ZIP → 12 新开发题 × 2 臂 24 attempts 同预算配对 → 四维对比 → 按决策规则决定是否正式提交。
@@ -30,7 +32,7 @@
 4. GPU 命令公约：同一命令内恢复获授权账号 token、核对 `username`、重读余量；绑定比赛获 4×L4；不读 heldout，
    不把预留评测题用于训练；长轨迹重估时间，不把余量当必须花完的预算。
 
-## 证据边界（诚实状态）
+## 启动时的证据边界（历史记录，不代表当前状态）
 
 - 未产生新评分：公榜基线仍为正式 0.15（`57340172` COMPLETE）；behavior_v1 的 4/12 与 P012 的 f2/12 等均为历史数据，
   12 题净胜不换算公榜分数。

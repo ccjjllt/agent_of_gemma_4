@@ -1,5 +1,11 @@
 # P013 GPU预验证状态
 
+## 2026-10-20 19:42 后实际取回更新（覆盖下文待完成状态）
+
+- `qingyu1232/p013-preverify-cpu-clone/1` **ERROR**：启动约 1.8 秒缺失 criteria index，未产生有效题集。线上源码未嵌入邻接小文件，回退旧 dataset 路径后失败；不能把本地目录齐全当作实际上传齐全。
+- `ccjjllt/p013-12b-behavior-sft-34/1` **COMPLETE**：已核实 72 optimizer steps、8 epochs、独立 adapter 导出完成，并下载权重核对哈希；尚无修复评测。
+- 原始结果与文件指纹见 [P014 取回记录](../../014/README.md)，下一步按 [P014 交接](../../../docs/plan/014-score-first-submission-handoff.md) 执行；下文保留推送与失败历史。
+
 ## 2026-10-20 v1 ERROR根因：--dir-mode zip挂载为*.zip文件，非目录
 - `qingyu1232/p013-gpu-preverify-v1-v4` ERROR@~1.5s：`FileNotFoundError: /kaggle/input/p013-task-material/tasks-13.jsonl`。
 - 等等：tasks-13.jsonl是v1平铺上传的，应在root……实际错误显示它也不存在。说明zip模式版本可能整体替换了文件布局，或挂载点不同。无论如何，加兜底：快照/criteria的.zip解包回退（两种zip内部布局均本地验证通过）+ 若tasks-13.jsonl缺失则报错指明挂载内容。
