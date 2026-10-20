@@ -10,3 +10,8 @@
 - 修复：数据集删后重建（31文件扁平：13 replay+13 criterion+index+tasks-13+marker+snapshots.zip 48MB）；缺失小文件用单版本补齐（版本合并）。
 - preverify.py适配：SNAP/CRIT/REPLAY三目录+扁平双布局自动检测；zip解包回退保留； exploded树直接拷贝+git HEAD与base_commit核对（v1_source/head_match记入result）。
 - `qingyu1232/p013-preverify-v2-flat` v1已推（--accelerator NvidiaL4，推前配额9.78h；期间共享账号被他人用掉~0.7h，非本项目支出）。
+
+## 2026-10-20 SFT同步推送（ccjjllt，与预验证并行）
+- dataset `ccjjllt/p013-behavior-data-34` ready（3文件：manifest/marker/2MB jsonl，jsonl不透明通过）。
+- kernel `ccjjllt/p013-12b-behavior-sft-34` v1已推（--accelerator NvidiaL4，machine_shape NvidiaL4，推前配额7.22h）。
+- 完成判定：optimizer_steps==72且导出完成；否则只留checkpoint+日志。
