@@ -1,0 +1,24 @@
+{
+ "key": "p013-tenacity",
+ "issue": "jd__tenacity.0d40e76f.pr_384",
+ "repo": "jd/tenacity",
+ "commit": "eb621e56de18279f873620fd6a5712b9ad9b6cb9",
+ "split": "train",
+ "frozen_source_root": "research/009/training-data-20261018/sources/tenacity",
+ "frozen_transaction": "research/009/training-data-20261018/outputs/tenacity/attempt-03/transaction.json",
+ "workspace": "research/013/behavior-data/batch-01/tenacity/workspace",
+ "user_content": "Using stop, wait and retry custom callbacks with Retrying causes mypy failures\nI am using custom callbacks for `stop` and `wait` in the form of functions accepting a retry state, passing them to the `Retrying` context manager, as documented in [the Custom Callbacks section](https://tenacity.readthedocs.io/en/latest/#other-custom-callbacks). With the latest version of tenacity, this is now causing `mypy` failures since `BaseRetrying` [now only accepts `wait` and `stop` callbacks](https://github.com/jd/tenacity/blob/a7f548520e4ee871ad8aeb354ecfa1a324c8ca19/tenacity/__init__.py#L228-L230) that are function objects of a class inheriting from `wait_base` and `stop_base`. The same will also happen if a `retry` custom callback was provided.\r\n\r\nThese changes were introduced in #304. \r\n\r\nSince wait_base and stop_base aren't exposed as part of the public API, I believe this should be updated in order to enable using `Retrying` directly with `stop`, `wait` and `retry` custom callbacks as documented.\r\n\r\nSmall example causing `mypy` failures:\r\n``` python\r\nimport tenacity\r\n\r\ndef my_stop(retry_state: tenacity.RetryCallState) -> bool:\r\n    return True\r\n\r\n\r\ndef my_retry(retry_state: tenacity.RetryCallState) -> bool:\r\n    return False\r\n\r\n\r\ndef my_wait(retry_state: tenacity.RetryCallState) -> bool:\r\n    return False\r\n\r\n\r\nfor attempt in tenacity.Retrying(retry=my_retry, wait=my_wait, stop=my_stop):\r\n    with attempt:\r\n        pass\r\n```\r\n\r\n`mypy` output:\r\n\r\n``` shell\r\n$ python3.9 -m mypy test.py \r\ntest.py:15: error: Argument \"retry\" to \"Retrying\" has incompatible type \"Callable[[RetryCallState], bool]\"; expected \"retry_base\"\r\ntest.py:15: error: Argument \"wait\" to \"Retrying\" has incompatible type \"Callable[[RetryCallState], bool]\"; expected \"wait_base\"\r\ntest.py:15: error: Argument \"stop\" to \"Retrying\" has incompatible type \"Callable[[RetryCallState], bool]\"; expected \"stop_base\"\r\nFound 3 errors in 1 file (checked 1 source file)\r\n```\r\n\r\nIf we change the same example to use the `@retry` decorator instead of the `Retrying` context manager, `mypy` reports no errors:\r\n\r\n``` python\r\nimport tenacity\r\n\r\ndef my_stop(retry_state: tenacity.RetryCallState) -> bool:\r\n    return True\r\n\r\n\r\ndef my_retry(retry_state: tenacity.RetryCallState) -> bool:\r\n    return False\r\n\r\n\r\ndef my_wait(retry_state: tenacity.RetryCallState) -> bool:\r\n    return False\r\n\r\n@tenacity.retry(wait=my_wait, stop=my_stop, retry=my_retry)\r\ndef retryable_function():\r\n    pass\r\n\r\nretryable_function()\r\n```\r\n\r\n`mypy` output:\r\n```\r\n$ python3.9 -m mypy test.py \r\nSuccess: no issues found in 1 source file\r\n```\n\nCPU transaction scope: Use fixed mypy1.4.1 to analyze the actual pinned tenacity source annotations for callback arguments to Retrying and copy using inline -c input. This is static API verification only; runtime import of this buggy branch also lacks RetryBaseT and is not claimed repaired. The complete repository benchmark has not been run.",
+ "scope": "Actual mypy1.4.1 analyzes pinned source: constructor accepts correct callback types after repair and still rejects a wrong return type. Copy signature is edited in the observed history but is not independently discriminated or supervised. Runtime RetryBaseT import mismatch remains outside this static task.",
+ "code_license": "Apache-2.0",
+ "read": {
+  "filepath": "tenacity/__init__.py",
+  "start_line": 209,
+  "end_line": 289
+ },
+ "pre_log": "pre.log",
+ "post_log": "post.log",
+ "module_log": "module-path.log",
+ "manual_pre_exit": 1,
+ "manual_post_exit": 0,
+ "pre_marker": "has incompatible type"
+}
