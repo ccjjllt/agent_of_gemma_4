@@ -33,3 +33,7 @@
 ## 2026-10-20 ~06:45Z: CPU预检v3通过，GPU复测v3已推
 - `ccjjllt/p013-31b-diag-cpu-prepare-v3` COMPLETE：2/2 prepared（SequentialAgent repair+review，修正后prompt）。
 - `ccjjllt/p013-31b-diag-pair-v3` v1已推（kernel-v3/, --accelerator NvidiaL4）。推前配额8.18h。判据：handoff步骤提前、review有提交动作、B-3180类零编辑消失。
+
+## 2026-10-20 ~07:10Z: v3复测完成，冻结p013_candidate
+- 0/4 vs 0/4（地板）。7205三判据全改善（edit@7/handoff@17/干净单提交503）；6757提交纪律修复（单提交377）；4006补丁出现（1237）；3180两轮零编辑（残留风险）。
+- 冻结决定见 `diag-report-v3.md`。下一步§4.2：12新题任务物化（click/markupsafe/pydicom 13选12，P012数据集先例）+ GPU预验证（V2修前失败/V3参考通过）+ 24 attempts配对。
