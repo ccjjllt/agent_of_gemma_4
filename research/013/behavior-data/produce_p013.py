@@ -230,7 +230,7 @@ def ensure_python_shim():
                     '# pinned pydantic source itself always wins. See ensure_python_shim.\n'
                     'EXTRA=":%s"\n'
                     'case "$PWD" in\n'
-                    '  */research/013/behavior-data/outputs/pydantic/workspace*)\n'
+                    '  */research/013/behavior-data/outputs/*pydantic*/workspace*)\n'
                     '    EXTRA=":%s%s$EXTRA" ;;\n'
                     'esac\n'
                     'export PYTHONPATH="${PYTHONPATH}${EXTRA}"\nexec "%s" "$@"\n'
@@ -241,22 +241,23 @@ def ensure_python_shim():
     return str(shimdir), producer
 
 
-def run_behavior(keys, timeout_seconds=300):
-    """Live canonical replay of batch-01 evidence. Returns (admitted, refused)."""
+def run_behavior(keys, timeout_seconds=300, batch='batch-01'):
+    """Live canonical replay of batch evidence (batch-01 or batch-02). Returns (admitted, refused)."""
     shimdir, interpreter = ensure_python_shim()
     denylist = load_task_split_denylist()
     admitted, refused = [], []
     for key in keys:
-        ev = json.loads((HERE / 'batch-01' / key / 'evidence.json').read_text())
+        ev = json.loads((HERE / batch / key / 'evidence.json').read_text())
         try:
-            tx = behavior_one(ev, denylist, timeout_seconds)
+            tx = behavior_one(ev, denylist, timeout_seconds, batch)
             admitted.append(tx)
         except Exception as e:  # noqa: BLE001 - record refusal with raw reason
             refused.append({'key': key, 'issue': ev.get('issue'),
                             'reason': type(e).__name__ + ': ' + str(e)})
             dump(_refuse_outside_outdir(Path('outputs') / key / 'refusal.json'),
                  refused[-1])
-    dump(HERE / 'behavior-batch01-summary.json',
+    summary_name = 'behavior-batch01-summary.json' if batch == 'batch-01' else 'behavior-batch02-summary.json'
+    dump(HERE / summary_name,
          {'admitted': [t['sample_id'] for t in admitted], 'refused': refused,
           'behavior_verified_true_count': sum(1 for t in admitted
                                               if t['observed_outcome']['behavior_verified'] is True),
@@ -264,7 +265,13 @@ def run_behavior(keys, timeout_seconds=300):
     return admitted, refused
 
 
-def behavior_one(ev, denylist, timeout_seconds):
+def _batch_of(ev, batch):
+    if batch in ('batch-01', 'batch-02'):
+        return batch
+    raise ValueError('unknown evidence batch: ' + str(batch))
+
+
+def behavior_one(ev, denylist, timeout_seconds, batch='batch-01'):
     repo, issue = ev['repo'], ev['issue']
     guard_train_source(repo, issue, denylist)
     frozen_tx = json.loads((ROOT / ev['frozen_transaction']).read_text())
@@ -272,7 +279,10 @@ def behavior_one(ev, denylist, timeout_seconds):
                     for tc in (m.get('tool_calls') or []) if tc['function']['name'] == 'edit_file']
     if not frozen_edits:
         raise ValueError('no production edits in frozen transaction')
-    command_path = HERE / 'batch-01' / ev['key'].removeprefix('p013-') / 'command.txt'
+    sub = ev['key'].removeprefix('p013-')
+    if batch == 'batch-02' and sub.startswith('b02-'):
+        sub = sub.removeprefix('b02-')
+    command_path = HERE / _batch_of(ev, batch) / sub / 'command.txt'
     command = command_path.read_text()
     if not command.strip():
         raise ValueError('empty behavior command')
@@ -452,6 +462,7 @@ def main():
     ap.add_argument('--keys', nargs='*', default=None)
     ap.add_argument('--admit', action='store_true')
     ap.add_argument('--timeout', type=int, default=300)
+    ap.add_argument('--batch', choices=['batch-01', 'batch-02'], default='batch-01')
     args = ap.parse_args()
     if args.mode == 'reissue':
         results = run_reissue(args.limit, args.admit)
@@ -462,9 +473,15 @@ def main():
             print(json.dumps({k: r[k] for k in ('instance_id', 'repo', 'status', 'reason', 'edits')
                               if k in r}))
     else:
-        keys = args.keys or ['yamllint', 'deepdiff', 'apispec', 'apispec-pr950',
-                             'dataset', 'pydantic', 'tenacity', 'mypy']
-        admitted, refused = run_behavior(keys[:args.limit] if args.limit else keys, args.timeout)
+        default_keys = (['yamllint', 'deepdiff', 'apispec', 'apispec-pr950',
+                           'dataset', 'pydantic', 'tenacity', 'mypy']
+                          if args.batch == 'batch-01' else
+                          ['xmltodict-345', 'result-121', 'slugify-148', 'slugify-149',
+                           'boltons-375', 'cantools-701', 'apispec-892', 'xmltodict-363',
+                           'pydantic-5568', 'pydantic-3646', 'yamllint-572'])
+        keys = args.keys or default_keys
+        admitted, refused = run_behavior(keys[:args.limit] if args.limit else keys,
+                                         args.timeout, args.batch)
         print(json.dumps({'mode': 'behavior', 'admitted': len(admitted), 'refused': len(refused)}))
         for t in admitted:
             print(json.dumps({'sample_id': t['sample_id'], 'behavior_verified': True}))

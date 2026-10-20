@@ -1,0 +1,64 @@
+[
+  {
+    "tool": "read_file",
+    "arguments": {
+      "filepath": "yamllint/cli.py",
+      "start_line": 174,
+      "end_line": 203
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "yamllint/cli.py",
+      "content": "    else:\n        user_global_config = os.path.expanduser('~/.config/yamllint/config')\n\n    try:\n        if args.config_data is not None:\n            if args.config_data != '' and ':' not in args.config_data:\n                args.config_data = f'extends: {args.config_data}'\n            conf = YamlLintConfig(content=args.config_data)\n        elif args.config_file is not None:\n            conf = YamlLintConfig(file=args.config_file)\n        elif os.path.isfile('.yamllint'):\n            conf = YamlLintConfig(file='.yamllint')\n        elif os.path.isfile('.yamllint.yaml'):\n            conf = YamlLintConfig(file='.yamllint.yaml')\n        elif os.path.isfile('.yamllint.yml'):\n            conf = YamlLintConfig(file='.yamllint.yml')\n        elif os.path.isfile(user_global_config):\n            conf = YamlLintConfig(file=user_global_config)\n        else:\n            conf = YamlLintConfig('extends: default')\n    except YamlLintConfigError as e:\n        print(e, file=sys.stderr)\n        sys.exit(-1)\n\n    if conf.locale is not None:\n        locale.setlocale(locale.LC_ALL, conf.locale)\n\n    if args.list_files:\n        for file in find_files_recursively(args.files, conf):\n            if not conf.is_file_ignored(file):",
+      "start_line": 174,
+      "end_line": 203,
+      "total_lines": 239,
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "run_command",
+    "arguments": {
+      "command": "PYTHONPATH=src:. python - <<'PY'\nimport contextlib,io,json,os,sys,tempfile\nfrom pathlib import Path\nfrom yamllint import cli\ncases=[]\noriginal=Path.cwd()\nwith tempfile.TemporaryDirectory(prefix='p009-yaml-config-') as tmp:\n    root=Path(tmp)\n    project=root/'project'\n    child=project/'a'/'b'\n    child.mkdir(parents=True)\n    (project/'.yamllint').write_text('rules: {trailing-spaces: disable}\\n')\n    explicit=root/'explicit.yml'\n    explicit.write_text('rules: {trailing-spaces: disable}\\n')\n    global_conf=root/'global.yml'\n    global_conf.write_text('rules: {trailing-spaces: disable}\\n')\n    os.environ['YAMLLINT_CONFIG_FILE']=str(global_conf)\n    def run(name,cwd,args,expected):\n        os.chdir(cwd)\n        old_stdin=sys.stdin\n        output,error=io.StringIO(),io.StringIO()\n        sys.stdin=io.StringIO('key: value  \\n')\n        try:\n            with contextlib.redirect_stdout(output),contextlib.redirect_stderr(error):\n                try:\n                    cli.run(['-f','parsable','-']+args)\n                    code=0\n                except SystemExit as e:\n                    code=e.code\n        finally:\n            sys.stdin=old_stdin\n            os.chdir(original)\n        cases.append({'case':name,'exit':code,'stdout':output.getvalue(),'stderr':error.getvalue(),'pass':code==expected})\n    global_conf.write_text('rules: {trailing-spaces: enable}\\n')\n    run('parent_config',child,[],0)\n    (child/'.yamllint').write_text('rules: {trailing-spaces: enable}\\n')\n    run('current_config_wins',child,[],1)\n    run('explicit_config_wins',child,['-c',str(explicit)],0)\n    isolated=root/'isolated'\n    isolated.mkdir()\n    global_conf.write_text('rules: {trailing-spaces: disable}\\n')\n    run('global_fallback',isolated,[],0)\nprint(json.dumps({'cases':cases},sort_keys=True))\nsys.exit(0 if all(c['pass'] for c in cases) else 1)\nPY"
+    },
+    "response": {
+      "status": "error",
+      "error_type": "CommandError",
+      "error_message": "{\"cases\": [{\"case\": \"parent_config\", \"exit\": 1, \"pass\": false, \"stderr\": \"\", \"stdout\": \"stdin:1:11: [error] trailing spaces (trailing-spaces)\\n\"}, {\"case\": \"current_config_wins\", \"exit\": 1, \"pass\": true, \"stderr\": \"\", \"stdout\": \"stdin:1:11: [error] trailing spaces (trailing-spaces)\\n\"}, {\"case\": \"explicit_config_wins\", \"exit\": 0, \"pass\": true, \"stderr\": \"\", \"stdout\": \"\"}, {\"case\": \"global_fallback\", \"exit\": 0, \"pass\": true, \"stderr\": \"\", \"stdout\": \"\"}]}\n",
+      "details": {
+        "stdout": "{\"cases\": [{\"case\": \"parent_config\", \"exit\": 1, \"pass\": false, \"stderr\": \"\", \"stdout\": \"stdin:1:11: [error] trailing spaces (trailing-spaces)\\n\"}, {\"case\": \"current_config_wins\", \"exit\": 1, \"pass\": true, \"stderr\": \"\", \"stdout\": \"stdin:1:11: [error] trailing spaces (trailing-spaces)\\n\"}, {\"case\": \"explicit_config_wins\", \"exit\": 0, \"pass\": true, \"stderr\": \"\", \"stdout\": \"\"}, {\"case\": \"global_fallback\", \"exit\": 0, \"pass\": true, \"stderr\": \"\", \"stdout\": \"\"}]}\n",
+        "stderr": "",
+        "exit_code": 1
+      }
+    }
+  },
+  {
+    "tool": "edit_file",
+    "arguments": {
+      "filepath": "yamllint/cli.py",
+      "old_string": "        elif os.path.isfile('.yamllint'):\n            conf = YamlLintConfig(file='.yamllint')\n        elif os.path.isfile('.yamllint.yaml'):\n            conf = YamlLintConfig(file='.yamllint.yaml')\n        elif os.path.isfile('.yamllint.yml'):\n            conf = YamlLintConfig(file='.yamllint.yml')\n        elif os.path.isfile(user_global_config):\n            conf = YamlLintConfig(file=user_global_config)\n        else:\n            conf = YamlLintConfig('extends: default')",
+      "new_string": "        else:\n            # Look for config files in current and parent directories\n            current_dir = os.path.abspath(os.curdir)\n            config_found = False\n            \n            while current_dir != os.path.dirname(current_dir):  # Stop at root\n                for config_name in ['.yamllint', '.yamllint.yaml', '.yamllint.yml']:\n                    config_path = os.path.join(current_dir, config_name)\n                    if os.path.isfile(config_path):\n                        conf = YamlLintConfig(file=config_path)\n                        config_found = True\n                        break\n                if config_found:\n                    break\n                current_dir = os.path.dirname(current_dir)\n            \n            # If no config found in any parent directory, try user global config\n            if not config_found:\n                if os.path.isfile(user_global_config):\n                    conf = YamlLintConfig(file=user_global_config)\n                else:\n                    conf = YamlLintConfig('extends: default')",
+      "allow_multiple": false
+    },
+    "response": {
+      "status": "ok",
+      "filepath": "yamllint/cli.py",
+      "occurrences": 1,
+      "strategy": "exact",
+      "diff": "--- a/yamllint/cli.py\n+++ b/yamllint/cli.py\n@@ -181,16 +181,28 @@\n             conf = YamlLintConfig(content=args.config_data)\n         elif args.config_file is not None:\n             conf = YamlLintConfig(file=args.config_file)\n-        elif os.path.isfile('.yamllint'):\n-            conf = YamlLintConfig(file='.yamllint')\n-        elif os.path.isfile('.yamllint.yaml'):\n-            conf = YamlLintConfig(file='.yamllint.yaml')\n-        elif os.path.isfile('.yamllint.yml'):\n-            conf = YamlLintConfig(file='.yamllint.yml')\n-        elif os.path.isfile(user_global_config):\n-            conf = YamlLintConfig(file=user_global_config)\n-        else:\n-            conf = YamlLintConfig('extends: default')\n+        else:\n+            # Look for config files in current and parent directories\n+            current_dir = os.path.abspath(os.curdir)\n+            config_found = False\n+            \n+            while current_dir != os.path.dirname(current_dir):  # Stop at root\n+                for config_name in ['.yamllint', '.yamllint.yaml', '.yamllint.yml']:\n+                    config_path = os.path.join(current_dir, config_name)\n+                    if os.path.isfile(config_path):\n+                        conf = YamlLintConfig(file=config_path)\n+                        config_found = True\n+                        break\n+                if config_found:\n+                    break\n+                current_dir = os.path.dirname(current_dir)\n+            \n+            # If no config found in any parent directory, try user global config\n+            if not config_found:\n+                if os.path.isfile(user_global_config):\n+                    conf = YamlLintConfig(file=user_global_config)\n+                else:\n+                    conf = YamlLintConfig('extends: default')\n     except YamlLintConfigError as e:\n         print(e, file=sys.stderr)\n         sys.exit(-1)\n",
+      "is_truncated": false
+    }
+  },
+  {
+    "tool": "run_command",
+    "arguments": {
+      "command": "PYTHONPATH=src:. python - <<'PY'\nimport contextlib,io,json,os,sys,tempfile\nfrom pathlib import Path\nfrom yamllint import cli\ncases=[]\noriginal=Path.cwd()\nwith tempfile.TemporaryDirectory(prefix='p009-yaml-config-') as tmp:\n    root=Path(tmp)\n    project=root/'project'\n    child=project/'a'/'b'\n    child.mkdir(parents=True)\n    (project/'.yamllint').write_text('rules: {trailing-spaces: disable}\\n')\n    explicit=root/'explicit.yml'\n    explicit.write_text('rules: {trailing-spaces: disable}\\n')\n    global_conf=root/'global.yml'\n    global_conf.write_text('rules: {trailing-spaces: disable}\\n')\n    os.environ['YAMLLINT_CONFIG_FILE']=str(global_conf)\n    def run(name,cwd,args,expected):\n        os.chdir(cwd)\n        old_stdin=sys.stdin\n        output,error=io.StringIO(),io.StringIO()\n        sys.stdin=io.StringIO('key: value  \\n')\n        try:\n            with contextlib.redirect_stdout(output),contextlib.redirect_stderr(error):\n                try:\n                    cli.run(['-f','parsable','-']+args)\n                    code=0\n                except SystemExit as e:\n                    code=e.code\n        finally:\n            sys.stdin=old_stdin\n            os.chdir(original)\n        cases.append({'case':name,'exit':code,'stdout':output.getvalue(),'stderr':error.getvalue(),'pass':code==expected})\n    global_conf.write_text('rules: {trailing-spaces: enable}\\n')\n    run('parent_config',child,[],0)\n    (child/'.yamllint').write_text('rules: {trailing-spaces: enable}\\n')\n    run('current_config_wins',child,[],1)\n    run('explicit_config_wins',child,['-c',str(explicit)],0)\n    isolated=root/'isolated'\n    isolated.mkdir()\n    global_conf.write_text('rules: {trailing-spaces: disable}\\n')\n    run('global_fallback',isolated,[],0)\nprint(json.dumps({'cases':cases},sort_keys=True))\nsys.exit(0 if all(c['pass'] for c in cases) else 1)\nPY"
+    },
+    "response": {
+      "status": "ok",
+      "stdout": "{\"cases\": [{\"case\": \"parent_config\", \"exit\": 0, \"pass\": true, \"stderr\": \"\", \"stdout\": \"\"}, {\"case\": \"current_config_wins\", \"exit\": 1, \"pass\": true, \"stderr\": \"\", \"stdout\": \"stdin:1:11: [error] trailing spaces (trailing-spaces)\\n\"}, {\"case\": \"explicit_config_wins\", \"exit\": 0, \"pass\": true, \"stderr\": \"\", \"stdout\": \"\"}, {\"case\": \"global_fallback\", \"exit\": 0, \"pass\": true, \"stderr\": \"\", \"stdout\": \"\"}]}\n",
+      "stderr": "",
+      "exit_code": 0
+    }
+  }
+]

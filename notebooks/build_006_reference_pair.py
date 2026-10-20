@@ -143,7 +143,8 @@ CPU_COMPILE = r'''
                 limits=limits, generation_constraints=generation_constraints,
                 adapter_manifest=adapters)
             STATUS.update(status='prepared', agent_type=type(agent).__name__, agent_name=agent.name,
-                          tool_types=[type(tool).__name__ for tool in agent.tools],
+                          tool_types=([type(tool).__name__ for tool in agent.tools] if hasattr(agent, 'tools') else
+                                      [type(sub).__name__ + ':' + getattr(sub, 'name', '?') for sub in getattr(agent, 'sub_agents', [])]),
                           command_timeout_seconds=config.harness.command_timeout_seconds,
                           verification_timeout_seconds=config.harness.verification_timeout_seconds,
                           model_requests=0, judge_runs=0)

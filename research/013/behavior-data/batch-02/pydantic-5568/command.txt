@@ -1,0 +1,21 @@
+PYTHONPATH=src:. python - <<'PY'
+import json,sys
+from pydantic import BaseModel,Field
+cases=[]
+try:
+    from pydantic.aliases import camel_case,pascal_case
+    for name,generator,key1,key2 in [('camel',camel_case,'snakeCaseField','anotherFieldName'),('pascal',pascal_case,'SnakeCaseField','AnotherFieldName')]:
+        class Model(BaseModel):
+            snake_case_field:str
+            another_field_name:int
+            explicit_name:int=Field(alias='fixed')
+            model_config={'alias_generator':generator}
+        value=Model.model_validate({key1:'value',key2:3,'fixed':4})
+        dumped=value.model_dump(by_alias=True)
+        expected={key1:'value',key2:3,'fixed':4}
+        cases.append({'case':name,'aliases':[Model.model_fields[k].alias for k in Model.model_fields],'dump':dumped,'pass':dumped==expected})
+except Exception as e:
+    cases.append({'case':'generator_public_api','pass':False,'error':type(e).__name__+': '+str(e)})
+print(json.dumps({'cases':cases},sort_keys=True))
+sys.exit(0 if cases and all(c['pass'] for c in cases) else 1)
+PY
