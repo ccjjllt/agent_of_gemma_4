@@ -144,9 +144,10 @@ def verify_task(task: dict, crit: dict, ds: Path, out_root: Path) -> dict:
     # V1: materialize work tree (offline; no git/network).
     # Order: (a) --clone-snapshots: fresh git clone of mirror branch
     # (needs internet; HEAD recorded and compared to base_commit);
-    # (b) opaque <snapshot>.tar.gz -> unpack; (c) pre-exploded dataset
-    # tree snapshots/<iid>/<iid>/ -> copy (.git allows HEAD verification);
-    # (d) snapshots.zip fallback (see main()).
+    # (b) per-task <iid>.zip at dataset root (opaque upload; contains the
+    # .tar.gz) -> extract tar -> unpack; (c) opaque <snapshot>.tar.gz ->
+    # unpack; (d) pre-exploded dataset tree snapshots/<iid>/<iid>/ -> copy
+    # (.git allows HEAD verification); (e) snapshots.zip fallback (main()).
     tree = work / "tree"
     tree.mkdir()
     v1_src, head_chk = "tarball", None
@@ -161,16 +162,30 @@ def verify_task(task: dict, crit: dict, ds: Path, out_root: Path) -> dict:
             except Exception:
                 head_chk = None
         else:
-            snap = SNAP_DIR / task["snapshot"]
-            exp = SNAP_DIR / iid / iid
-            if snap.is_file():
+            import zipfile as _zf2
+            snap = SNAP_DIR / task["snapshot"] if SNAP_DIR else None
+            exp = (SNAP_DIR / iid / iid) if SNAP_DIR else None
+            cand_zip = ds / f"{iid}.zip"
+            if cand_zip.is_file():
+                v1_src = "pertaskzip"
+                with _zf2.ZipFile(cand_zip) as _z2:
+                    _names = _z2.namelist()
+                    assert len(_names) == 1 and _names[0].endswith(".tar.gz"), _names
+                    _z2.extractall(work / "stage")
+                with tarfile.open(work / "stage" / _names[0], "r:gz") as t:
+                    t.extractall(work / "stage2")
+                staged = list((work / "stage2").iterdir())
+                src = staged[0] if len(staged) == 1 and staged[0].is_dir() else work / "stage2"
+                for p in src.iterdir():
+                    shutil.move(str(p), str(tree / p.name))
+            elif snap is not None and snap.is_file():
                 with tarfile.open(snap, "r:gz") as t:
                     t.extractall(work / "stage")
                 staged = list((work / "stage").iterdir())
                 src = staged[0] if len(staged) == 1 and staged[0].is_dir() else work / "stage"
                 for p in src.iterdir():
                     shutil.move(str(p), str(tree / p.name))
-            elif exp.is_dir():
+            elif exp is not None and exp.is_dir():
                 v1_src = "exploded"
                 for p in exp.iterdir():
                     if p.name == ".git":

@@ -21,3 +21,9 @@
 - 数据集混乱复盘：Kaggle对.tar.gz自动解包入库（13 tarball变数千文件，.git included）；小文件（json/py/txt）不透明通过；版本为合并语义。教训：二进制快照不走Kaggle dataset。
 - v3方案：kernel自包含（preverify.py+tasks-13+criteria+replay共224KB，同目录挂载）+ GPU实机`git clone --branch <iid> github mirror`（materialize已验base_commit）。`enable_internet=true`与`competition_sources`互斥（400 Bad Request），去比赛源后推送成功。
 - `qingyu1232/p013-preverify-v3-net` v1已推（--accelerator NvidiaL4，推前配额9.69h）。输出dev12-freeze.json+V2/V3 log。
+
+## 2026-10-20 数据集路线放弃，改CPU自包含clone（零GPU配额）
+- 定论：Kaggle对.zip/.tar.gz一律入库解包，不透明载体不可行；数千文件展开还可能破坏挂载（v2-flat整盘未挂载）。
+- 新路线：CPU kernel自带小文件（224KB）+ 实机git clone（internet=true）。CPU会话免费，无GPU形状问题，无需比赛挂载。400教训：internet与competition_sources互斥。
+- `qingyu1232/p013-preverify-cpu-clone` v1已推。输出dev12-freeze.json+V2/V3 log。
+- 待清理：`p013-task-material`、`p013-task-zips`两个污染dataset（重命名/删除，避后续误用）。
