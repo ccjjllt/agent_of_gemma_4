@@ -135,21 +135,49 @@ def verify_task(task: dict, crit: dict, ds: Path, out_root: Path) -> dict:
         shutil.rmtree(work)
     work.mkdir(parents=True)
 
-    # V1: unpack snapshot (offline; no git/network).
-    snap = SNAP_DIR / task["snapshot"]
+    # V1: materialize work tree (offline; no git/network).
+    # Order: (a) opaque <snapshot>.tar.gz -> unpack; (b) pre-exploded dataset
+    # tree snapshots/<iid>/<iid>/ -> copy (Kaggle auto-extracts .tar.gz on
+    # ingestion, so the tree may already be present; .git included allows
+    # HEAD verification); (c) snapshots.zip fallback (see main()).
     tree = work / "tree"
     tree.mkdir()
+    v1_src, head_chk = "tarball", None
     try:
-        with tarfile.open(snap, "r:gz") as t:
-            t.extractall(work / "stage")
-        staged = list((work / "stage").iterdir())
-        src = staged[0] if len(staged) == 1 and staged[0].is_dir() else work / "stage"
-        for p in src.iterdir():
-            shutil.move(str(p), str(tree / p.name))
+        snap = SNAP_DIR / task["snapshot"]
+        exp = SNAP_DIR / iid / iid
+        if snap.is_file():
+            with tarfile.open(snap, "r:gz") as t:
+                t.extractall(work / "stage")
+            staged = list((work / "stage").iterdir())
+            src = staged[0] if len(staged) == 1 and staged[0].is_dir() else work / "stage"
+            for p in src.iterdir():
+                shutil.move(str(p), str(tree / p.name))
+        elif exp.is_dir():
+            v1_src = "exploded"
+            for p in exp.iterdir():
+                dst = tree / p.name
+                if p.is_dir():
+                    shutil.copytree(p, dst, symlinks=True)
+                else:
+                    shutil.copy2(p, dst)
+            gp = tree / ".git" / "HEAD"
+            if gp.is_file():
+                try:
+                    head_chk = run(["git", "--git-dir", str(tree / ".git"),
+                                    "rev-parse", "HEAD"], tree, 30)[1].strip()
+                except Exception:
+                    head_chk = None
+        else:
+            raise FileNotFoundError(f"no tarball {snap} nor exploded {exp}")
     except Exception as e:  # noqa: BLE001 - recorded, not raised
         res.update({"verdict": "ENV_FAIL", "stage": "V1_unpack",
                     "detail": f"{type(e).__name__}: {e}"[:300]})
         return res
+    res["v1_source"] = v1_src
+    if head_chk:
+        res["git_head"] = head_chk
+        res["head_match"] = head_chk.startswith(task.get("base_commit", "")[:12])
 
     # V1: venv + install (offline-friendly flags; versions recorded).
     vpy = work / ".venv" / "bin" / "python"
