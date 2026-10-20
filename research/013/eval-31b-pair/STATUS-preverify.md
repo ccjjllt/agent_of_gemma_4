@@ -15,3 +15,9 @@
 - dataset `ccjjllt/p013-behavior-data-34` ready（3文件：manifest/marker/2MB jsonl，jsonl不透明通过）。
 - kernel `ccjjllt/p013-12b-behavior-sft-34` v1已推（--accelerator NvidiaL4，machine_shape NvidiaL4，推前配额7.22h）。
 - 完成判定：optimizer_steps==72且导出完成；否则只留checkpoint+日志。
+
+## 2026-10-20 v2-flat失败根因与v3自包含方案
+- v2-flat ERROR@0.8s：`/kaggle/input/p013-task-material` 整个未挂载（非文件缺失）。挂载失败，无GPU消耗。
+- 数据集混乱复盘：Kaggle对.tar.gz自动解包入库（13 tarball变数千文件，.git included）；小文件（json/py/txt）不透明通过；版本为合并语义。教训：二进制快照不走Kaggle dataset。
+- v3方案：kernel自包含（preverify.py+tasks-13+criteria+replay共224KB，同目录挂载）+ GPU实机`git clone --branch <iid> github mirror`（materialize已验base_commit）。`enable_internet=true`与`competition_sources`互斥（400 Bad Request），去比赛源后推送成功。
+- `qingyu1232/p013-preverify-v3-net` v1已推（--accelerator NvidiaL4，推前配额9.69h）。输出dev12-freeze.json+V2/V3 log。

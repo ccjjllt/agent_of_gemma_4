@@ -47,10 +47,16 @@ SLOT_TASKS = [t for t in TASK_ORDER if t != "s01"]  # 12 freeze slots; s01 float
 
 INSTALL_TIMEOUT = 1200
 PYTEST_TIMEOUT = 900
+CLONE_TIMEOUT = 600
 
 
 SNAP_DIR = CRIT_DIR = REPLAY_DIR = None
 INDEX_PATH = None
+
+
+SNAP_DIR = CRIT_DIR = REPLAY_DIR = None
+INDEX_PATH = None
+CLONE_MAP = {}
 
 
 def sha256_text(s: str) -> str:
@@ -136,40 +142,51 @@ def verify_task(task: dict, crit: dict, ds: Path, out_root: Path) -> dict:
     work.mkdir(parents=True)
 
     # V1: materialize work tree (offline; no git/network).
-    # Order: (a) opaque <snapshot>.tar.gz -> unpack; (b) pre-exploded dataset
-    # tree snapshots/<iid>/<iid>/ -> copy (Kaggle auto-extracts .tar.gz on
-    # ingestion, so the tree may already be present; .git included allows
-    # HEAD verification); (c) snapshots.zip fallback (see main()).
+    # Order: (a) --clone-snapshots: fresh git clone of mirror branch
+    # (needs internet; HEAD recorded and compared to base_commit);
+    # (b) opaque <snapshot>.tar.gz -> unpack; (c) pre-exploded dataset
+    # tree snapshots/<iid>/<iid>/ -> copy (.git allows HEAD verification);
+    # (d) snapshots.zip fallback (see main()).
     tree = work / "tree"
     tree.mkdir()
     v1_src, head_chk = "tarball", None
     try:
-        snap = SNAP_DIR / task["snapshot"]
-        exp = SNAP_DIR / iid / iid
-        if snap.is_file():
-            with tarfile.open(snap, "r:gz") as t:
-                t.extractall(work / "stage")
-            staged = list((work / "stage").iterdir())
-            src = staged[0] if len(staged) == 1 and staged[0].is_dir() else work / "stage"
-            for p in src.iterdir():
-                shutil.move(str(p), str(tree / p.name))
-        elif exp.is_dir():
-            v1_src = "exploded"
-            for p in exp.iterdir():
-                dst = tree / p.name
-                if p.is_dir():
-                    shutil.copytree(p, dst, symlinks=True)
-                else:
-                    shutil.copy2(p, dst)
-            gp = tree / ".git" / "HEAD"
-            if gp.is_file():
+        if iid in CLONE_MAP:
+            v1_src = "clone"
+            shutil.copytree(CLONE_MAP[iid], tree, symlinks=True,
+                            ignore=shutil.ignore_patterns(".git"))
+            try:
+                head_chk = run(["git", "--git-dir", str(CLONE_MAP[iid] / ".git"),
+                                "rev-parse", "HEAD"], work, 30)[1].strip()
+            except Exception:
+                head_chk = None
+        else:
+            snap = SNAP_DIR / task["snapshot"]
+            exp = SNAP_DIR / iid / iid
+            if snap.is_file():
+                with tarfile.open(snap, "r:gz") as t:
+                    t.extractall(work / "stage")
+                staged = list((work / "stage").iterdir())
+                src = staged[0] if len(staged) == 1 and staged[0].is_dir() else work / "stage"
+                for p in src.iterdir():
+                    shutil.move(str(p), str(tree / p.name))
+            elif exp.is_dir():
+                v1_src = "exploded"
+                for p in exp.iterdir():
+                    if p.name == ".git":
+                        continue
+                    dst = tree / p.name
+                    if p.is_dir():
+                        shutil.copytree(p, dst, symlinks=True)
+                    else:
+                        shutil.copy2(p, dst)
                 try:
-                    head_chk = run(["git", "--git-dir", str(tree / ".git"),
-                                    "rev-parse", "HEAD"], tree, 30)[1].strip()
+                    head_chk = run(["git", "--git-dir", str(exp / ".git"),
+                                    "rev-parse", "HEAD"], work, 30)[1].strip()
                 except Exception:
                     head_chk = None
-        else:
-            raise FileNotFoundError(f"no tarball {snap} nor exploded {exp}")
+            else:
+                raise FileNotFoundError(f"no tarball {snap} nor exploded {exp}")
     except Exception as e:  # noqa: BLE001 - recorded, not raised
         res.update({"verdict": "ENV_FAIL", "stage": "V1_unpack",
                     "detail": f"{type(e).__name__}: {e}"[:300]})
@@ -267,6 +284,14 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset", default=os.environ.get(
         "P013_TASK_MATERIAL", "/kaggle/input/p013-task-material"))
+    ap.add_argument("--material-dir", default=None,
+                    help="co-located small files (tasks-13.jsonl, criteria, replay); "
+                         "default: directory of this script. Overrides --dataset for "
+                         "small files (snapshots still via --clone-snapshots or dataset).")
+    ap.add_argument("--clone-snapshots", action=argparse.BooleanOptionalAction, default=True,
+                    help="git-clone each task mirror branch (needs internet); "
+                         "ignores dataset snapshot content entirely. "
+                         "Use --no-clone-snapshots for dataset-tarball mode.")
     ap.add_argument("--workdir", default="/kaggle/working/preverify")
     ap.add_argument("--tasks", default=",".join(TASK_ORDER),
                     help="comma-separated subset, run in given order")
@@ -276,6 +301,11 @@ def main() -> int:
     ds = Path(args.dataset)
     out = Path(args.workdir)
     out.mkdir(parents=True, exist_ok=True)
+    mat = Path(args.material_dir) if args.material_dir else Path(__file__).resolve().parent
+    # Small files prefer co-located material dir (kernel ships them; no
+    # dataset dependency). Dataset remains as fallback for snapshots only.
+    use_mat = (mat / "tasks-13.jsonl").is_file() and (mat / "criteria-index.json").is_file()
+    small = mat if use_mat else ds
     # --dir-mode zip datasets mount folders as <name>.zip; unpack-into-place
     # fallback (P012 precedent). Flat-file datasets need no action.
     import zipfile as _zf, tempfile as _tf, shutil as _sh
@@ -298,22 +328,48 @@ def main() -> int:
     # Layout detection: nested (snapshots/ + criteria/ dirs, incl. zip-fallback
     # output) vs flat (all 41 files at dataset root, v3+). Module-level dirs
     # are set once; verify_task resolves through them.
-    global SNAP_DIR, CRIT_DIR, REPLAY_DIR, INDEX_PATH
+    global SNAP_DIR, CRIT_DIR, REPLAY_DIR, INDEX_PATH, CLONE_MAP
+    CLONE_MAP = {}
     if (ds / "snapshots").is_dir() and (ds / "criteria").is_dir():
         SNAP_DIR, CRIT_DIR = ds / "snapshots", ds / "criteria"
         REPLAY_DIR = CRIT_DIR / "replay"
-        INDEX_PATH = CRIT_DIR / "criteria-index.json"
+    elif use_mat:
+        SNAP_DIR, CRIT_DIR, REPLAY_DIR = None, mat, mat / "replay"
     else:
         SNAP_DIR = CRIT_DIR = REPLAY_DIR = ds
-        INDEX_PATH = ds / "criteria-index.json"
-    assert INDEX_PATH.is_file(), f"missing criteria index under {ds}: " + \
-        ",".join(sorted(p.name for p in ds.iterdir())[:10])
+    INDEX_PATH = (CRIT_DIR / "criteria-index.json") if CRIT_DIR else ds / "criteria-index.json"
+    assert INDEX_PATH.is_file(), "missing criteria index under " + str(small) + "/" + str(ds)
     tasks = {json.loads(line)["task_id"]: json.loads(line)
-             for line in (ds / "tasks-13.jsonl").read_text().splitlines() if line.strip()}
+             for line in (small / "tasks-13.jsonl").read_text().splitlines() if line.strip()}
     index = {c["task_id"]: c for c in
              json.loads(INDEX_PATH.read_text())["items"]}
 
     ordered = [t for t in args.tasks.split(",") if t in tasks]
+    # --clone-snapshots: fresh per-task mirror-branch clone up front (needs
+    # internet). Records HEAD for base_commit comparison; trees are copied
+    # per task (no .git) in verify_task.
+    if args.clone_snapshots:
+        clone_root = out / "orig"
+        clone_root.mkdir(exist_ok=True)
+        for tid in ordered:
+            t = tasks[tid]
+            dest = clone_root / t["instance_id"]
+            if dest.exists():
+                shutil.rmtree(dest)
+            url = f"https://github.com/{t['mirror']}.git"
+            br = t["instance_id"]
+            c = run(["git", "clone", "--depth", "1", "--branch", br, url, str(dest)],
+                    out, CLONE_TIMEOUT)
+            head = ""
+            if c[0] == 0:
+                head = run(["git", "--git-dir", str(dest / ".git"),
+                            "rev-parse", "HEAD"], out, 30)[1].strip()
+            print(json.dumps({"task": tid, "clone_exit": c[0],
+                              "head": head[:12], "expect": t.get("base_commit", "")[:12],
+                              "match": head.startswith(t.get("base_commit", "##")[:12]) if head else False}),
+                  flush=True)
+            if c[0] == 0:
+                CLONE_MAP[t["instance_id"]] = dest
     # R3/R4 state.
     results, freeze_invalid, stop_reason = {}, False, ""
     for tid in ordered:
