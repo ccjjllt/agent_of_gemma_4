@@ -1,5 +1,7 @@
 # P014 真实提交 57438326
 
+**2026-10-21 更正：该提交因整体运行超时失败，没有分数。** 原始API为 `status=COMPLETE`、`public_score=""`，但 `error_description` 明确为 `Your submission notebook exceeded the allowed runtime`。COMPLETE在这里仅表示处理结束，不能当作评分成功。详见[失败原件](failure-20261021/submission-full.json)和[修复说明](failure-20261021/README.md)。下文PENDING为上传时历史快照。
+
 2026-10-20 **20:46:56.930 北京时间**，使用既有参赛身份 `ccjjllt` 成功提交；上传进程退出0，CLI返回 `Successfully submitted`，列表随后返回 **57438326 / PENDING**。分数尚未返回，不宣称超过当前0.15，也没有奖牌证据。官方状态见[比赛提交页](https://www.kaggle.com/competitions/gemma-4-developer-agent/submissions)。
 
 - 文件：`submission.zip`，3089 bytes；与新八题实际运行的 `p014_single_v1` 完全一致。
@@ -14,4 +16,4 @@
 
 最新只读查询：北京时间 **20:49:53**，仍为 **PENDING**，publicScore为空。原件见[最新提交列表](submissions-latest.json)。
 
-后续只读查询即可：在进程内校验为ccjjllt后，执行 `kaggle competitions submissions gemma-4-developer-agent --format json`。若状态COMPLETE，记录真实分数；ERROR则记录具体错误并先修根因。等待期间不展开无依据prompt矩阵、不重复原34条SFT；下一轮收益研究见[执行交接](../execution-20261020/README.md)。
+后续读取完整 `api.competition_submissions(...)` 对象，同时保存 `status`、`public_score`、`private_score`、`error_description`。CLI默认字段不含错误描述；COMPLETE且无分数不能认定成功，有error_description应按失败处理。修复版使用独立目录和新回执，保留本失败包。下一轮收益研究见[执行交接](../execution-20261020/README.md)。

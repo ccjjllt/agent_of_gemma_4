@@ -2,6 +2,8 @@
 
 2026-10-20，北京时间。用户已明确要求开始执行，并强调研究收益、避免门控/测试建设、提高GPU利用率。
 
+**10月21日后续：提交57438326已确认整体运行超时失败，无分数；runtime v2已重新提交57471497 / PENDING，原八题单臂已完成8/8通过、5分钟截止真实生效。** 详见[真实错误字段和修复记录](../submission/failure-20261021/README.md)。下文PENDING为当时查询快照，不能作为最新状态。
+
 - 首个31B候选已在新题模型输出前冻结：`p014_single_v1`，单Agent，8min/28calls/80turns，与正式public022基线相同采样；ZIP SHA256 `17435502e614518e29bd74077e1f1a05515c86708a269375b20b6d9f8c7ab3c9`。
 - 新面板冻结8题/3仓：t01,t02,t03,t04,t05,t06,t08,t09。Python3.12/macOS均观察修前1→参考修后0；题目不按模型输出选择。当前仅F2P，无独立P2P声明。
 - 20:04，两个账号分别推CPU材料作业。实际slug为`{owner}/p014-frozen-eight-material-cpu`。首版因Kaggle主Python无ensurepip失败，尚未跑到判据；已依据原始日志改用without-pip venv+host site-packages，CPU v2重推。没有GPU消耗。

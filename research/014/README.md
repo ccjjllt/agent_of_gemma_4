@@ -1,5 +1,7 @@
 # P014 研究状态与交接依据
 
+**2026-10-21：正式提交57438326因整体运行超时失败，无分数。** 完整API同时返回COMPLETE与error_description；旧CLI默认列表没有错误字段，不能据COMPLETE认定成功。已冻结runtime v2：每题5分钟、单命令60秒、40轮、28工具，模型采样保留；补充edit_file必填参数与拒绝循环切换。修复版已重新提交 **57471497 / PENDING**，单臂原八题 `zhuating/p014-31b-runtime-v2/1` 已完成8/8通过，5分钟截止真实生效；四卡4并发；不重跑基线、不新增测试。见[实际失败及修复](submission/failure-20261021/README.md)。下文10月20日PENDING均为历史状态。
+
 **20:47 执行更新：已真实提交 `57438326`，当前 PENDING，分数尚未返回。** 31B 新候选与正式基线各 **8/8 F2P 通过**，W=0、L=0，没有证明净提分；冻结候选按探索性提交上传，ZIP 未在实跑后改动。12B 行为 SFT 为 base **4/4**、adapter **3/4**，暂停原34条配方继续训练。两个 GPU 作业均 COMPLETE，共24次真实 attempt，没有新增测试。见[执行记录](execution-20261020/README.md)、[31B 结果](eval-31b/result-review.md)、[12B 结果](eval-12b/result-review.md)、[提交回执](submission/README.md)。下文为19:42交接快照，“新 GPU 作业 0/新正式提交 0”和“尚待评测”均仅指该历史时点。
 
 日期：2026-10-20，北京时间。代码起点 `59f562d`。执行方案见 [P014 提分与正式提交交接](../../docs/plan/014-score-first-submission-handoff.md)。
