@@ -155,8 +155,8 @@ def validate_encoded_record(record, max_length, require_real=True):
         if meta.get("synthetic") is not False or meta.get("training_eligible") is not True:
             raise TrainingError("real training rejects synthetic/unapproved encoder output")
         group = meta.get("group") or {}
-        if group.get("split") in ("select", "heldout", "heldout-excluded", "heldout_excluded"):
-            raise TrainingError("selection/heldout records must not enter training")
+        if group.get("split") != "train":
+            raise TrainingError("real parameter updates require explicit train split; dev/select/reserved/unknown records are excluded")
         for key in PROVENANCE_KEYS:
             value = meta.get(key)
             if not isinstance(value, str) or not value or "placeholder" in value.lower():

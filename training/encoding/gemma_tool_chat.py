@@ -23,7 +23,7 @@ import sys
 import tempfile
 
 LOSS_IGNORE = -100
-ENCODING_VERSION = "p005-full-transaction-v2"
+ENCODING_VERSION = "p015-full-transaction-v3"
 CALL_OPEN, CALL_CLOSE = "<|tool_call>", "<tool_call|>"
 
 
@@ -395,6 +395,24 @@ def encode_transaction(tx, tokenizer, tools, max_seq_len=4096, *,
             raise EncodingError("template transformed original reasoning_content")
         if supervise and end > begin:
             spans.append(dict(start=begin, end=end, assistant_ordinal=ordinal, field=field))
+    # A plain assistant response must learn the turn boundary emitted by the
+    # deployed template. Tool actions already supervise their <tool_call|>
+    # delimiter above; their next template text can be a tool observation or a
+    # continuation, so adding a common EOS there would teach premature stopping.
+    for mi, ordinal in ordinals.items():
+        if ordinal not in selected or messages[mi].get("tool_calls"):
+            continue
+        marker = "P015_TURN_SENTINEL_" + sha256_json([full, mi, ordinal])
+        if marker in full:
+            raise EncodingError("turn sentinel collision")
+        changed = copy.deepcopy(messages)
+        changed[mi]["content"] = marker
+        _, end = _span_from_probe(full, render(changed), marker)
+        terminator = "[END]" if isinstance(tokenizer, SyntheticTokenizer) else "<turn|>"
+        if not full.startswith(terminator, end):
+            raise EncodingError("plain assistant response has no recognized template turn boundary")
+        spans.append(dict(start=end, end=end + len(terminator),
+                          assistant_ordinal=ordinal, field="turn_end"))
     labels = [LOSS_IGNORE] * len(input_ids)
     for span in spans:
         count = 0
@@ -417,7 +435,7 @@ def encode_transaction(tx, tokenizer, tools, max_seq_len=4096, *,
     protocol = dict(encoding_version=ENCODING_VERSION, protocol_id=protocol_id,
                     tools_hash=tools_hash, thought_config=thought_config,
                     content_format=content_format,
-                    mask_policy="selected-content-and-tool-actions; no-role-prefix; no-tool-results")
+                    mask_policy="selected-content-tool-actions-and-plain-turn-end; no-role-prefix; no-tool-results; no-forced-tool-eos")
     return dict(input_ids=input_ids, attention_mask=[1] * len(input_ids), labels=labels,
                 meta=dict(transaction_id=tx.get("transaction_id", tx.get("sample_id")),
                     sample_id=tx.get("sample_id"), origin_kind=tx.get("origin_kind"),
