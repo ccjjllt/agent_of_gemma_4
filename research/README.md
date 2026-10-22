@@ -1,14 +1,14 @@
 # 研究索引
 
-截至 2026-10-22 的本地归档，当前主线是 **P015：31B 同协议 action RFT 与同一 Agent 的权重对照**。正式最好成绩仍为 **0.15**；最近正式提交 `57471497` 已 COMPLETE、无错误，与旧最好持平。[正式回执与判断](014/submission/runtime-v2/README.md)
+截至 2026-10-23，当前主线为 **P016：公开专家轨迹大规模后训练准备**，实际数据、续训和协议迁移判断见 [P016 执行记录](016/README.md)。已完成677题/69仓/约238万监督token的完整原生三工具语料v2，下一步由用户提供GPU服务器做容量、吞吐和续训实测，本轮未启动GPU。正式最好成绩仍为 **0.15**；最近正式提交 `57471497` 已 COMPLETE、无错误，与旧最好持平。[正式回执与判断](014/submission/runtime-v2/README.md)
 
-## 当前入口：P015
+## P015 运行基础
 
 先读 [执行记录](015/README.md)，再按需要进入 [研究计划](../docs/plan/015-31b-posttraining-and-score-handoff.md)、[数据准备](015/data-preparation/README.md)、[开发面板与实际基线](015/evaluation/README.md) 和 [权重 A/B 载体](015/inference/weight-ab/README.md)。
 
 - 已完成 31B FSDP 三次真实优化器更新、最长 6,846-token 容量实验、独立 adapter 导出与 CT 服务路由确认。这些是容量与运行证据，尚未证明任务修复收益。
 - 冻结的训练外开发面板，base 实际为 **5/12**；另行统计的 train 采样为首批 **1/3**、新增八题 **8/16 draws** resolved。draw 数不等于独立问题数，开发比例不换算为正式分数。
-- 首轮 action RFT 最终输入只有 **3 个独立问题、14 个动作、1,014 个监督 tokens**。`zhuating/p015-31b-task-rft/1` 已推送；现有记录尚未确认 8,165-token 样本实际更新和最终导出，权重 A/B 尚未启动。不能将已推送写成训练完成或提分。
+- 首轮 action RFT 输入只有 **3 个独立问题、14 个动作、1,014 个监督 tokens**。P016已回收 `zhuating/p015-31b-task-rft/1`，实际为取消，只确认第一步完成，未证实8,165-token第二步更新结束或最终导出；[回收证据](016/p015-recovery/actual-result.json)。权重 A/B 尚无结果。
 
 这里概述本地证据的最新状态，不代替远端状态查询；后续实际结果继续追加到对应轮次的执行记录。
 
@@ -30,7 +30,8 @@
 | 012 | 多角色 Agent、修复角色 adapter 路由与完整矩阵；保存负结果和候选打捞缺失说明 | [执行记录](012/README.md) |
 | 013 | 31B 修复诊断、行为 SFT 与后续评测准备；后续事实由 P014 更新 | [执行记录](013/README.md) |
 | 014 | 31B/12B 修复对照、真实提交与整体超时修复；runtime-v2 正式 0.15，无提分 | [执行记录](014/README.md)、[最终正式结果](014/submission/runtime-v2/README.md) |
-| 015 | 当前 31B 后训练、同协议采样与权重 A/B 主线 | [执行记录](015/README.md) |
+| 015 | 31B 容量、同协议采样与权重 A/B 准备；小RFT作业已取消，无提分证据 | [执行记录](015/README.md) |
+| 016 | 当前公开专家轨迹供给、可恢复训练和固定Agent迁移准备；CPU执行中 | [执行记录](016/README.md)、[交接方案](../docs/plan/016-large-scale-posttraining-handoff.md) |
 
 P004 只有 [针对失败行为的 LoRA 计划](../docs/plan/004-targeted-lora.md)，没有独立 `research/004/`；P001 的早期基线见 [基线进展](../docs/progress/001-baseline.md) 和根目录的 `results/`。
 

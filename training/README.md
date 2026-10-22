@@ -1,5 +1,7 @@
 # P005：从真实轨迹到独立LoRA
 
+2026-10-22 当前更新：P016 已实现 [FSDP 真续训](../research/016/training/resume-notes.md)，两rank CPU中断/重启与连续路径一致；GPU/NF4续训仍待用户服务器实测。编码器新增因果前缀约束与原始生成流入口，见 [编码说明](../research/016/encoding/notes.md)。公开专家轨迹主线与实际数据状态见 [P016](../research/016/README.md)；下文P005操作和结果保留历史，不代表当前训练规模。
+
 本页保留 P005 起的训练实现与历史操作说明。当前 31B 分片训练、action RFT 与推理对照状态见 [P015 执行记录](../research/015/README.md)；历史评测载体已按轮次整理，入口及重建命令见 [Notebook 目录导航](../notebooks/README.md)。下文 `/kaggle/input/notebooks/...` 是云端挂载路径，不受本地目录迁移影响。
 
 本目录包含实际数据转换、Gemma工具对话编码、BF16 LoRA/同源NF4 QLoRA训练、checkpoint恢复和独立PEFT导出。修复后已在Kaggle四张L4上完成真实31B NF4 LoRA的四个诊断更新（256、256、1024、2048长度），四rank参数一致，云端adapter已保存。该轮使用合成代码诊断数据，尚未做真实修复语料SFT或取得比赛增益。详见[四卡实测结果](../research/005/kaggle-training-probe-20261010/ddp-result-summary.json)；[首次FP32转换OOM](../research/005/kaggle-training-probe-20261010/result-summary.json)保留为历史。

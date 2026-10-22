@@ -54,7 +54,7 @@ def main():
                epochs=1)
     cfg = validate_config(cfg)
     paths = ['training/train_sft.py', 'training/train_ddp.py', 'training/train_fsdp.py',
-             'training/fsdp_qlora.py', 'training/common.py', 'training/export_peft.py',
+             'training/fsdp_qlora.py', 'training/fsdp_checkpoint.py', 'training/common.py', 'training/export_peft.py',
              'training/memory.py', 'training/encoding/gemma_tool_chat.py']
     sources = {path: (ROOT/path).read_text() for path in paths}
     # This bundle path deliberately contains the actual captured runtime schema;

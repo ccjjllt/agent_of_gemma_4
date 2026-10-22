@@ -40,7 +40,7 @@ def main():
     cfg.update(max_sequence_length=6846, gradient_accumulation_steps=1,
                checkpoint_every_n_steps=1, max_steps=3, warmup_ratio=0.0)
     paths = ['training/train_sft.py', 'training/train_ddp.py', 'training/train_fsdp.py',
-             'training/fsdp_qlora.py', 'training/common.py', 'training/export_peft.py',
+             'training/fsdp_qlora.py', 'training/fsdp_checkpoint.py', 'training/common.py', 'training/export_peft.py',
              'training/memory.py', 'training/encoding/gemma_tool_chat.py',
              'training/configs/harness_tools.json']
     sources = {path: (ROOT/path).read_text() for path in paths}

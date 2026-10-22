@@ -1,6 +1,6 @@
 # 项目文档
 
-先看 [项目首页](../README.md) 和 [研究索引](../research/README.md)。当前执行事实集中在 [P015 执行记录](../research/015/README.md)，当前计划是 [015：31B 后训练与同一套 Agent](plan/015-31b-posttraining-and-score-handoff.md)。
+先看 [项目首页](../README.md) 和 [研究索引](../research/README.md)。当前执行事实集中在 [P016 执行记录](../research/016/README.md)，当前计划是 [016：单位时间能力增益与规模化轨迹 SFT](plan/016-large-scale-posttraining-handoff.md)。P015的真实GPU容量和开发基线仍为运行起点。
 
 | 位置 | 内容 |
 | --- | --- |

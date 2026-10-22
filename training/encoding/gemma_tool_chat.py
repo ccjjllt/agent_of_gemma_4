@@ -23,7 +23,7 @@ import sys
 import tempfile
 
 LOSS_IGNORE = -100
-ENCODING_VERSION = "p015-full-transaction-v3"
+ENCODING_VERSION = "p016-causal-transaction-v4"
 CALL_OPEN, CALL_CLOSE = "<|tool_call>", "<tool_call|>"
 
 
@@ -122,7 +122,8 @@ def _arguments(value):
     return copy.deepcopy(value)
 
 
-def normalize_messages(raw, tools, content_format="preserve"):
+def normalize_messages(raw, tools, content_format="preserve", *,
+                       allow_terminal_tool_call=False):
     """Preserve tool semantics. Return messages and original assistant ordinals."""
     if not isinstance(raw, list) or not raw:
         raise EncodingError("messages must be a nonempty list")
@@ -203,7 +204,10 @@ def normalize_messages(raw, tools, content_format="preserve"):
         if content_format == "text-parts" and isinstance(msg.get("content"), str):
             msg["content"] = [{"type": "text", "text": msg["content"]}]
         messages.append(msg)
-    if pending:
+    terminal_pending = bool(allow_terminal_tool_call and messages
+        and messages[-1]["role"] == "assistant"
+        and set(pending) == {c["id"] for c in messages[-1].get("tool_calls", [])})
+    if pending and not terminal_pending:
         raise EncodingError("incomplete transaction: missing tool responses")
     if not any(m["role"] == "user" for m in messages):
         raise EncodingError("transaction needs user context, not an orphan fragment")
@@ -308,7 +312,11 @@ def _render_transaction(tx, tokenizer, tools, *, content_format="preserve",
                         enable_thinking=True, preserve_thinking=True,
                         chat_template=None, tool_protocol_id=None):
     """Normalize and render the full chat template. No clipping."""
-    messages, ordinals = normalize_messages(tx.get("messages"), tools, content_format)
+    terminal_call = tx.get("allow_terminal_tool_call", False)
+    if type(terminal_call) is not bool:
+        raise EncodingError("allow_terminal_tool_call must be an explicit boolean")
+    messages, ordinals = normalize_messages(tx.get("messages"), tools, content_format,
+                                            allow_terminal_tool_call=terminal_call)
     protocol_id = tx.get("protocol_id")
     if not isinstance(protocol_id, str) or not protocol_id:
         raise EncodingError("transaction protocol_id is required")
@@ -324,8 +332,9 @@ def _render_transaction(tx, tokenizer, tools, *, content_format="preserve",
                   enable_thinking=bool(enable_thinking),
                   preserve_thinking=bool(preserve_thinking), add_generation_prompt=False)
 
-    def render(ms, tokenize=False):
-        return tokenizer.apply_chat_template(ms, tokenize=tokenize, **kwargs)
+    def render(ms, tokenize=False, add_generation_prompt=False):
+        options = dict(kwargs, add_generation_prompt=add_generation_prompt)
+        return tokenizer.apply_chat_template(ms, tokenize=tokenize, **options)
 
     full = render(messages)
     if not isinstance(full, str):
@@ -366,6 +375,21 @@ def encode_transaction(tx, tokenizer, tools, max_seq_len=4096, *,
     render = rendered["render"]
     full = rendered["full"]
     template_ids = rendered["template_ids"]
+    # A later user turn can make this template remove earlier reasoning. Also,
+    # it forward-renders tool observations before content on the calling message.
+    # Neither transformation is safe for supervising the original earlier output.
+    for mi, ordinal in ordinals.items():
+        if ordinal not in selected:
+            continue
+        if not full.startswith(render(messages[:mi], add_generation_prompt=True)):
+            raise EncodingError("selected assistant %d has a noncausal template prefix; "
+                                "use its actual request/completion capture" % ordinal)
+        content = messages[mi].get("content", "")
+        has_content = bool(content.strip()) if isinstance(content, str) else any(
+            p["text"].strip() for p in content)
+        if messages[mi].get("tool_calls") and has_content:
+            raise EncodingError("tool-call assistant content is rendered after its future "
+                                "tool observations; use its actual request/completion capture")
     if len(template_ids) > max_seq_len:
         raise OversizeTransaction(len(template_ids), max_seq_len)
     tokenized = tokenizer(full, add_special_tokens=False, return_offsets_mapping=True)
@@ -435,6 +459,7 @@ def encode_transaction(tx, tokenizer, tools, max_seq_len=4096, *,
     protocol = dict(encoding_version=ENCODING_VERSION, protocol_id=protocol_id,
                     tools_hash=tools_hash, thought_config=thought_config,
                     content_format=content_format,
+                    allow_terminal_tool_call=tx.get("allow_terminal_tool_call", False),
                     mask_policy="selected-content-tool-actions-and-plain-turn-end; no-role-prefix; no-tool-results; no-forced-tool-eos")
     return dict(input_ids=input_ids, attention_mask=[1] * len(input_ids), labels=labels,
                 meta=dict(transaction_id=tx.get("transaction_id", tx.get("sample_id")),
@@ -454,9 +479,175 @@ def encode_transaction(tx, tokenizer, tools, max_seq_len=4096, *,
                     thought_config=thought_config, content_format=content_format,
                     max_seq_len=max_seq_len, sequence_length=len(input_ids),
                     raw_token_length=len(input_ids),
+                    terminal_tool_response_absent=bool(messages[-1].get("tool_calls")),
                     supervised_tokens=supervised, target_assistant_steps=sorted(selected),
                     truncated=False, alignment="whole-template-differential-spans-and-token-offsets",
                     supervised_spans=spans))
+
+
+def encode_captured_completion(tx, tokenizer, tools, max_seq_len=4096, *,
+                               enable_thinking=True, thought_loss="mask",
+                               content_format="preserve", tokenizer_revision=None,
+                               chat_template=None, tool_protocol_id=None,
+                               tokenizer_hash=None):
+    """Encode one actual request followed by one unparsed model completion.
+
+    ``tx.messages`` is only the complete request history, including any actual
+    compaction. ``tx.capture`` must contain request_id, source_sha256, complete,
+    finish_reason, and either both prompt_text/completion_text or both
+    prompt_token_ids/completion_token_ids. Text must be the captured raw stream,
+    not a reconstruction of parsed reasoning_content/content/tool_calls. Optional
+    simultaneous text and IDs must agree. The supplied tokenizer and template
+    must reproduce the captured prompt exactly, including generation suffix.
+
+    This API deliberately produces one target per actual request. Do not merge
+    records across rewritten or compacted request histories. A terminal response
+    needs its captured <turn|>; no EOS, channel marker or observation is invented.
+    It accepts ordinary final reasoning without passing it through the history
+    template, which intentionally strips that reasoning from stored messages.
+    """
+    if max_seq_len < 2 or thought_loss not in ("mask", "include"):
+        raise EncodingError("invalid sequence limit or thought-loss policy")
+    capture = tx.get("capture")
+    if not isinstance(capture, Mapping) or capture.get("format") != "raw-model-stream-v1":
+        raise EncodingError("capture.format must be raw-model-stream-v1, not parsed messages")
+    if capture.get("complete") is not True or capture.get("finish_reason") not in ("stop", "tool_calls"):
+        raise EncodingError("raw completion must be complete, not cancelled or length-limited")
+    if not isinstance(capture.get("request_id"), str) or not capture["request_id"]:
+        raise EncodingError("raw capture request_id is required")
+    source_hash = capture.get("source_sha256")
+    if not isinstance(source_hash, str) or len(source_hash) != 64 or any(
+            c not in "0123456789abcdef" for c in source_hash):
+        raise EncodingError("raw capture source_sha256 must identify its immutable source")
+    if "target_assistant_steps" in tx:
+        raise EncodingError("raw capture has only its current completion target; historical targets are invalid")
+    # Parse request history according to the deployed message protocol. Historical
+    # final reasoning is permitted here only because the raw prompt must match:
+    # the deployment template's intentional removal is then directly observed.
+    history = copy.deepcopy(tx.get("messages"))
+    historical_reasoning = []
+    if isinstance(history, list):
+        for index, message in enumerate(history):
+            if not isinstance(message, dict) or message.get("role") != "assistant":
+                continue
+            if message.get("tool_calls") or message.get("tool_name"):
+                continue
+            reasoning = message.get("reasoning_content", message.get("reasoning"))
+            if reasoning:
+                if not isinstance(reasoning, str) or (message.get("reasoning") is not None
+                        and message.get("reasoning_content") is not None
+                        and message["reasoning"] != message["reasoning_content"]):
+                    raise EncodingError("invalid historical reasoning fields")
+                historical_reasoning.append(dict(message_index=index,
+                    sha256=hashlib.sha256(reasoning.encode("utf-8")).hexdigest()))
+                message.pop("reasoning", None)
+                message.pop("reasoning_content", None)
+    request_tx = dict(tx, messages=history)
+    rendered = _render_transaction(request_tx, tokenizer, tools,
+        content_format=content_format, enable_thinking=enable_thinking,
+        chat_template=chat_template, tool_protocol_id=tool_protocol_id)
+    expected_prompt = rendered["render"](rendered["messages"], add_generation_prompt=True)
+    expected_ids = _ids(rendered["render"](rendered["messages"], True, add_generation_prompt=True))
+
+    def raw_part(part):
+        raw_text = capture.get(part + "_text")
+        raw_ids = capture.get(part + "_token_ids")
+        if raw_text is not None and not isinstance(raw_text, str):
+            raise EncodingError(part + "_text must be captured raw text")
+        if raw_ids is not None:
+            raw_ids = _ids(raw_ids)
+            if not raw_ids or any(n < 0 for n in raw_ids):
+                raise EncodingError(part + "_token_ids must be nonempty valid token IDs")
+            if raw_text is None:
+                raw_text = tokenizer.decode(raw_ids, skip_special_tokens=False,
+                                            clean_up_tokenization_spaces=False)
+        if raw_text is None:
+            raise EncodingError("raw " + part + " text or token IDs missing; parsed fields cannot substitute")
+        tokenized = tokenizer(raw_text, add_special_tokens=False, return_offsets_mapping=True)
+        token_ids = _ids(tokenized)
+        if raw_ids is not None and token_ids != raw_ids:
+            raise EncodingError(part + " raw IDs do not round-trip exactly; no retokenization substitution")
+        return raw_text, token_ids, tokenized.get("offset_mapping")
+
+    prompt, prompt_ids, _ = raw_part("prompt")
+    completion, completion_ids, offsets = raw_part("completion")
+    if prompt != expected_prompt or prompt_ids != expected_ids:
+        raise EncodingError("captured prompt differs from the exact deployed request template")
+    if not completion_ids or "<|tool_response>" in completion or "<|turn>" in completion:
+        raise EncodingError("completion is empty or includes a new role/tool observation")
+    if capture["finish_reason"] == "stop" and not completion.endswith("<turn|>"):
+        raise EncodingError("terminal capture must include its actual <turn|> stop token; none is synthesized")
+    if capture["finish_reason"] == "tool_calls" and not completion.endswith(CALL_CLOSE):
+        raise EncodingError("tool completion must include its actual closing action delimiter")
+    if offsets is None or len(offsets) != len(completion_ids) or any(
+            len(o) != 2 or not 0 <= o[0] <= o[1] <= len(completion) for o in offsets):
+        raise EncodingError("raw completion needs exact tokenizer offsets")
+    # Keep the request/completion boundary. When raw IDs are supplied, preserve
+    # their exact segmentation; text-only captures are explicitly retokenized.
+    input_ids = prompt_ids + completion_ids
+    if len(input_ids) > max_seq_len:
+        raise OversizeTransaction(len(input_ids), max_seq_len)
+    masked_spans = []
+    position = 0
+    while True:
+        start = completion.find("<|channel>", position)
+        if start < 0:
+            break
+        if "<channel|>" in completion[position:start]:
+            raise EncodingError("orphan raw thought-channel close")
+        opener = "<|channel>thought\n"
+        if not completion.startswith(opener, start):
+            raise EncodingError("unsupported raw completion channel")
+        end = completion.find("<channel|>", start + len(opener))
+        if end < 0 or "<|channel>" in completion[start + len(opener):end]:
+            raise EncodingError("unclosed or nested raw thought channel")
+        if thought_loss == "mask":
+            masked_spans.append((start + len(opener), end))
+        position = end + len("<channel|>")
+    if "<channel|>" in completion[position:]:
+        raise EncodingError("orphan raw thought-channel close")
+    labels = [LOSS_IGNORE] * len(prompt_ids)
+    for token_id, (start, end) in zip(completion_ids, offsets):
+        masked = end <= start or any(start < b and end > a for a, b in masked_spans)
+        labels.append(LOSS_IGNORE if masked else token_id)
+    supervised = sum(x != LOSS_IGNORE for x in labels[1:])
+    if not supervised:
+        raise EncodingError("raw completion has no supervised targets")
+    tools_hash = sha256_json(tools)
+    thought_config = dict(enable_thinking=bool(enable_thinking),
+                          preserve_thinking=True, thought_loss=thought_loss)
+    protocol = dict(encoding_version=ENCODING_VERSION, protocol_id=rendered["protocol_id"],
+                    tools_hash=tools_hash, thought_config=thought_config,
+                    content_format=content_format,
+                    mask_policy="raw-current-completion-only; prompt-masked; raw-control-tokens-preserved")
+    synthetic = bool(isinstance(tokenizer, SyntheticTokenizer) or tx.get("synthetic")
+                     or tx.get("origin_kind") == "synthetic"
+                     or str((tx.get("source") or {}).get("uri", "")).startswith("synthetic:"))
+    return dict(input_ids=input_ids, attention_mask=[1] * len(input_ids), labels=labels,
+        meta=dict(transaction_id=tx.get("transaction_id", tx.get("sample_id")),
+            sample_id=tx.get("sample_id"), origin_kind=tx.get("origin_kind"),
+            group=_provenance_fields(tx.get("group"), ("issue", "repo", "commit", "split")),
+            source=_provenance_fields(tx.get("source"), ("uri", "sha256", "license", "revision", "format")),
+            behavior=tx.get("behavior"), encoding_version=ENCODING_VERSION,
+            synthetic=synthetic, training_eligible=not synthetic,
+            tokenizer_name=getattr(tokenizer, "name_or_path", type(tokenizer).__name__),
+            tokenizer_revision=tokenizer_revision,
+            tokenizer_hash=tokenizer_hash or tokenizer_fingerprint(tokenizer),
+            chat_template_hash=hashlib.sha256(rendered["template"].encode("utf-8")).hexdigest(),
+            tools_hash=tools_hash, tool_schema_hash=tools_hash,
+            protocol_id=rendered["protocol_id"], protocol_hash=sha256_json(protocol),
+            thought_config=thought_config, content_format=content_format,
+            max_seq_len=max_seq_len, sequence_length=len(input_ids), raw_token_length=len(input_ids),
+            supervised_tokens=supervised, target_assistant_steps=[len(rendered["ordinals"])],
+            truncated=False, alignment="exact-captured-request-and-current-completion",
+            capture_request_id=capture["request_id"], capture_source_sha256=source_hash,
+            capture_representation=("raw-token-ids" if capture.get("prompt_token_ids") is not None
+                and capture.get("completion_token_ids") is not None else "raw-text-retokenized"),
+            capture_prompt_sha256=hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+            capture_completion_sha256=hashlib.sha256(completion.encode("utf-8")).hexdigest(),
+            prompt_tokens=len(prompt_ids), completion_tokens=len(completion_ids),
+            historical_final_reasoning_omitted_by_template=historical_reasoning,
+            masked_thought_character_spans=masked_spans))
 
 
 def load_tokenizer(name, revision=None, allow_download=False):

@@ -134,35 +134,46 @@ def gather_adapter_state(wrapped, torch, expected_shapes):
 
 def save_adapter(wrapped, peft_model, destination, torch, expected_shapes):
     state = gather_adapter_state(wrapped, torch, expected_shapes)
+    error = None
     if torch.distributed.get_rank() == 0:
-        # PEFT 0.21.2 structurally filters against named_modules(), but strips
-        # only a leading FSDP wrapper. Nested decoder wrappers then silently
-        # produce an EMPTY adapter even when supplied a complete clean state.
-        # This recipe only supports plain default LoRA, so serialize its normal
-        # PEFT key format explicitly and save the independent PEFT config.
-        from safetensors.torch import save_file
-        configs = peft_model.peft_config
-        if set(configs) != {'default'}:
-            raise TrainingError('FSDP export supports one default LoRA adapter')
-        config = copy.deepcopy(configs['default'])
-        kind = getattr(config.peft_type, 'value', config.peft_type)
-        if (kind != 'LORA' or config.bias != 'none' or config.use_dora
-                or config.modules_to_save or getattr(config, 'lora_bias', False)):
-            raise TrainingError('FSDP export requires plain bias-free LoRA')
-        adapter = {}
-        for name, tensor in state.items():
-            if not any(name.endswith(suffix) for suffix in
-                       ('.lora_A.default.weight', '.lora_B.default.weight')):
-                raise TrainingError('Unexpected LoRA export key: ' + name)
-            if not bool(torch.isfinite(tensor).all()):
-                raise TrainingError('Non-finite LoRA export tensor: ' + name)
-            key = name.replace('.default.weight', '.weight')
-            adapter[key] = tensor.contiguous()
-        if not adapter or len(adapter) != len(expected_shapes):
-            raise TrainingError('FSDP refuses empty/incomplete PEFT export')
-        destination = Path(destination)
-        destination.mkdir(parents=True, exist_ok=True)
-        save_file(adapter, str(destination/'adapter_model.safetensors'), metadata={'format': 'pt'})
-        config.inference_mode = True
-        config.save_pretrained(destination)
-    torch.distributed.barrier()
+        try:
+            _write_adapter_state(state, peft_model, destination, torch, expected_shapes)
+        except Exception as exc:
+            error = '%s: %s' % (type(exc).__name__, exc)
+    errors = [error]
+    torch.distributed.broadcast_object_list(errors, src=0)
+    if errors[0]:
+        raise TrainingError('FSDP adapter export failed: ' + errors[0])
+
+
+def _write_adapter_state(state, peft_model, destination, torch, expected_shapes):
+    # PEFT 0.21.2 structurally filters against named_modules(), but strips
+    # only a leading FSDP wrapper. Nested decoder wrappers then silently
+    # produce an EMPTY adapter even when supplied a complete clean state.
+    # This recipe only supports plain default LoRA, so serialize its normal
+    # PEFT key format explicitly and save the independent PEFT config.
+    from safetensors.torch import save_file
+    configs = peft_model.peft_config
+    if set(configs) != {'default'}:
+        raise TrainingError('FSDP export supports one default LoRA adapter')
+    config = copy.deepcopy(configs['default'])
+    kind = getattr(config.peft_type, 'value', config.peft_type)
+    if (kind != 'LORA' or config.bias != 'none' or config.use_dora
+            or config.modules_to_save or getattr(config, 'lora_bias', False)):
+        raise TrainingError('FSDP export requires plain bias-free LoRA')
+    adapter = {}
+    for name, tensor in state.items():
+        if not any(name.endswith(suffix) for suffix in
+                   ('.lora_A.default.weight', '.lora_B.default.weight')):
+            raise TrainingError('Unexpected LoRA export key: ' + name)
+        if not bool(torch.isfinite(tensor).all()):
+            raise TrainingError('Non-finite LoRA export tensor: ' + name)
+        key = name.replace('.default.weight', '.weight')
+        adapter[key] = tensor.contiguous()
+    if not adapter or len(adapter) != len(expected_shapes):
+        raise TrainingError('FSDP refuses empty/incomplete PEFT export')
+    destination = Path(destination)
+    destination.mkdir(parents=True, exist_ok=True)
+    save_file(adapter, str(destination/'adapter_model.safetensors'), metadata={'format': 'pt'})
+    config.inference_mode = True
+    config.save_pretrained(destination)
