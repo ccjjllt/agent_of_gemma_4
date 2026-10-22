@@ -1,5 +1,7 @@
 # 首批研究计划
 
+**2026-10-22最新：57471497正式评分0.15，COMPLETE且无错误，与旧最好持平。** runtime v2消除了本次整体超时，但没有取得分数提升；后续以有效5分钟方案为运行起点，重点找新增正确修复。见[官方回执与研究判断](../../research/014/submission/runtime-v2/README.md)。下文PENDING为历史。
+
 **2026-10-21当前状态：57438326整体运行超时失败，无分数；修复版5min/60s command/40turns已重新提交57471497 / PENDING，原八题单臂已完成8/8通过、5分钟截止真实生效。** 见[失败原因与修复](../../research/014/submission/failure-20261021/README.md)。下文10月20日PENDING保留历史。
 
 **当前入口（2026-10-20 20:47）：[014 提分与真实提交交接](014-score-first-submission-handoff.md)。已完成真实提交 `57438326`，PENDING，分数未返回。** 31B 新八题配对为候选8/8、基线8/8，无本地净增，按探索性提交记录；12B 行为 SFT 配对为base4/4、adapter3/4，暂停原34条继续训练。两路GPU均已COMPLETE，共24次真实attempt，采用单服务滚动四上下文。已有正式最好成绩仍为 **0.15**，不能把本地F2P或上传成功称为提分。后续先取官方结果，再决定更有区分力的训练外开发题与修复机制方向；不要重跑已经完成的评测或重复上传。详见[执行记录](../../research/014/execution-20261020/README.md)、[提交回执](../../research/014/submission/README.md)。[013 原方案](013-31b-repair-and-behavior-sft-handoff.md)作为历史保留；下文旧限制不能覆盖最新事实。
