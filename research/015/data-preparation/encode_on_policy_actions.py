@@ -50,7 +50,7 @@ def main():
     identity = next((x for x in frozen['selected'] if x['instance_id'] == task['instance_id']), None)
     require(result['split'] == 'train' and identity is not None, 'only frozen train identities allowed')
     require(identity['repo'] == task['repo'] and identity['base_commit'] == task['base_commit'], 'frozen source identity mismatch')
-    require(result['resolved'] and result['judge_valid'], 'requires actual resolved and valid host judge')
+    require(result['resolved'] and result['judge_valid'] and not result.get('agent_error'), 'requires actual resolved, valid host judge and no agent error')
     capture = read(p / 'trajectory-capture.json')
     audit = read(args.capture_audit) if args.capture_audit else None
     wire = jsonl(p / 'raw-wire.jsonl')
@@ -85,6 +85,8 @@ def main():
             response = responses[wid]['response']['choices'][0]
             current = response['message']
             require(rid in model_responses and rid in model_ends, 'missing corresponding model response/end')
+            require(model_ends[rid].get('termination_reason') in (None, 'consumer_close'), 'current model response cancelled or terminated abnormally')
+            require(not any(x['kind'] == 'wire_error' and x.get('wire_id') == wid for x in wire), 'current wire request has a recorded error')
             if not model_ends[rid]['completed']:
                 require(audit and audit['model_request_id'] == rid, 'unreviewed interrupted model response')
             calls = current.get('tool_calls') or []

@@ -44,18 +44,29 @@ field as `extra_body.thinking_token_budget`; captured runtime requests audit
 that actual value as well as the requested/response model. All other sampling,
 max output, prompts, tools and Agent budgets remain unchanged.
 
-Stage C cannot launch until all24 A/B attempts have ended and no A/B worker is
-active. It then runs the same12 dev issues on the warm service, requesting the
+Stage C cannot launch until all24 A/B attempts have ended with valid judge and
+routing observations and no A/B worker is active. A valid failed repair remains
+a valid observation. It then runs the same12 dev issues on the warm service, requesting the
 base model without an adapter while the one RFT adapter remains mounted. C is
 reported separately as mechanism exploration, with per-task times and actual
 thinking budgets. It contributes no weight-pair counts and uses neither the
 historical5/12 nor a staged A/B arm as a simultaneous causal control.
 
-The total experiment remains3600 seconds and the platform bound remains4200;
-there is no additional session or budget. Stage C admission requires enough
-remaining time for three four-worker waves estimated at the full Agent budget
-plus judge timeout and cleanup reserve. Otherwise summary records the actual
-reason for not executing C, without a retry. The root scheduler decides whether
-to enable the option after checking the real quota; the offline carrier never
-assumes a balance. The motivation is the v1 timing evidence's API waiting time
-and long completions, not a claim that thinking time was directly measured.
+The explicit `--wall-seconds` option accepts3600 (default) or4800. The manifest
+records `platform_seconds=wall_seconds+600`:4200 seconds by default, or5400
+seconds for the extended candidate. At the current2x quota multiplier these
+platform bounds represent at most about2.33 or3.0 quota hours. The experiment
+deadline includes service startup; the separate600 seconds reserve covers
+bootstrap and final artifacts. The root must apply the recorded platform bound
+when launching; the builder does not start or extend a job.
+
+The root may select4800 only after real SFT has completed and the actual balance
+has been checked, while retaining at least1.5 quota hours for deployment and
+staying within the session's14-hour plan. Otherwise the default3600 remains.
+This budget choice does not change A/B, per-attempt timeouts, Stage C admission
+or the stage barrier. C still uses the same warm service, with no separate C
+job or automatic retry. Its admission requires enough remaining time for three
+four-worker waves at the full Agent budget, both F2P and P2P timeouts, and
+cleanup reserve. Otherwise summary records the actual reason for not executing
+C. The offline builder never assumes a balance. The motivation is v1 evidence
+of API waiting and long completions; thinking time was not directly measured.

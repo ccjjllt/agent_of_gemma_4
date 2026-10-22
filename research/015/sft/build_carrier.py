@@ -10,6 +10,7 @@ import zlib
 
 from training.common import load_config, load_encoded_jsonl
 from training.train_sft import validate_config
+from training.encoding.gemma_tool_chat import normalize_tools, sha256_json
 
 ROOT = Path(__file__).resolve().parents[3]
 HERE = Path(__file__).resolve().parent
@@ -27,6 +28,8 @@ def main():
     parser.add_argument('--max-sequence-length', type=int, default=8192)
     parser.add_argument('--max-steps', type=int, default=16)
     args = parser.parse_args()
+    if args.max_steps < 1 or args.max_sequence_length < 2:
+        raise ValueError('SFT packaging requires a positive step cap and sequence length >=2')
     rows, info = load_encoded_jsonl(args.data, args.max_sequence_length)
     data = args.data.read_text()
     dataset = json.loads(args.dataset_manifest.read_text())
@@ -36,10 +39,20 @@ def main():
     if any(row['meta']['group']['split'] != 'train' for row in rows):
         raise ValueError('Only explicitly assigned train records may update parameters')
     tools = args.tools.read_text()
+    actual_tools, tool_protocol = normalize_tools(json.loads(tools))
+    if sha256_json(actual_tools) != info['provenance']['tools_hash']:
+        raise ValueError('Actual runtime tools differ from encoded training provenance')
+    if tool_protocol and tool_protocol != info['provenance']['protocol_id']:
+        raise ValueError('Actual tool manifest protocol differs from encoded training provenance')
+    if (dataset.get('actual_tools_file_sha256')
+            and sha(args.tools.read_bytes()) != dataset['actual_tools_file_sha256']):
+        raise ValueError('Actual tools file differs from the curated dataset manifest')
     cfg = validate_config(load_config(ROOT/'training/configs/sft_p015_31b_fsdp.yaml'))
-    cfg.update(max_sequence_length=args.max_sequence_length, gradient_accumulation_steps=2,
+    cfg.update(protocol_id=info['provenance']['protocol_id'],
+               max_sequence_length=args.max_sequence_length, gradient_accumulation_steps=2,
                checkpoint_every_n_steps=4, max_steps=args.max_steps, warmup_ratio=0.0,
                epochs=1)
+    cfg = validate_config(cfg)
     paths = ['training/train_sft.py', 'training/train_ddp.py', 'training/train_fsdp.py',
              'training/fsdp_qlora.py', 'training/common.py', 'training/export_peft.py',
              'training/memory.py', 'training/encoding/gemma_tool_chat.py']

@@ -33,6 +33,7 @@
 | `zhuating/p015-attention-capacity/1` | COMPLETE；两臂真实前后向成功 | 平台上限 840s；按 2× 为最多约 0.467 配额小时；日志可观察区间 71.13s，不等于账单 |
 | `zhuating/p015-fsdp-capacity/1` | COMPLETE；三次真实优化器更新，末步有效样本长 6,846 tokens；GPU 侧独立导出成功，600 张量/53,043,200 参数；本地完整载荷 SHA 与有限性核对通过 | 平台上限 2400s，按 2× 为最多约 1.333 配额小时 |
 | `zhuating/p015-natural-pr-panel-cpu/1` | v1 ERROR：平台递归展开内层快照，未执行判据；v2 COMPLETE；18 题实际前后执行，12 个有效 dev+3train，3个旧 Voluptuous 因收集失败按预序整仓替补为 Faker | 无 GPU |
+| `zhuating/p015-train-next-sampling/1` | COMPLETE；8仓各2draw，真实裁判8/16 resolved，覆盖5个独立问题；其中1次resolved仍有session timeout，不作为合格成功训练draw | 平台上限4200s；实际实验1674.53s，按2×估算0.930配额小时，非账单 |
 
 attention 单算子结果：[实际日志摘要](capacity/attention-summary.json)。HF 原路径反向峰值 allocated 为 2,087,360,512 bytes（约 1.944 GiB），grouped 为 1,391,103,488 bytes（约 1.296 GiB），降低约 0.648 GiB；均实际使用 Cutlass efficient attention。输出与 K/V 梯度完全相同，Q 梯度 relative L2 为 1.77e-5。该数字只属于独立算子，不是完整 31B 训练的峰值节省或容量承诺。
 
@@ -54,8 +55,10 @@ FSDP 工程已实现保持 NF4 字节的浮点容器、冻结/可训练参数分
 
 新增8题Linux CPU实际全部valid_prepost=True（8仓，24F2P/570P2P），包括tldextract离线editable及Dask原参数，见 `data-preparation/train-next-cpu/output/p015-train-next-prevalidation/summary.json`。按7.27h实时余额准备每题两次同基座采样（8独立问题、16draw，不当成16题），平台上限仍最多2.333配额小时，之后保留约4.94h。先按整题正确/完整响应过滤，每题优先更少工具调用的成功draw，不按dev表现选训练题。选择在其模型运行前冻结于 `data-preparation/train-next-selection.json`。
 
-13:38已推送 `zhuating/p015-train-next-sampling/1`，8题各2draw，仅train；最新余额7.17h，源码SHA `01f9e4ed…6127cf`，本次上限2.333配额小时，尚未得到结果。
+13:38推送的 `zhuating/p015-train-next-sampling/1` 已COMPLETE，8题各2draw、全部为train；推送前余额7.17h，源码SHA `01f9e4ed…6127cf`。16次真实裁判均有效，8次resolved，覆盖graphene1478、oauthlib771、dask9212、marshmallow2715、tldextract258五题。oauthlib第二draw虽判据通过，却有session timeout，且工具数23少于第一draw26；成功训练draw资格先排除该不完整终局，再选更少工具的合格成功draw，不能反过来因工具数少而选它。原始结果/错误保留，终局consumer-close也不改写原episode标志。见 [新采样真实摘要](inference/evidence-train-next/summary.json)。14:08账号共享余额5.72h，不能把7.17到5.72的全部差额归给本实验。
 
 实测成功boltons298原轨迹不能直接整段用于8K训练：完整模板约11.8K且会丢普通final reasoning，v3明确拒绝该final。按真实wire请求构造的完整因果状态，≤6846有10窗口但不含生产edit；≤8192有14窗口，唯一生产edit为8165 tokens，修后验证8286、submit11560均超8K。原件完整保留；这不是整任务SFT。首轮将按真实可见状态做on-policy action RFT，仅当前动作loss、保留全部历史和实执行观察；新repro脚本写/执行不作正向目标，超长窗口整条排除，且每issue须有可训成功生产edit。见 `data-preparation/boltons298-v1-action-rft-manifest.json`。
 
 计时机制证据：12dev原始元数据投影中，6个timeout的1800.10 Agent秒，LLM API区间union占99.7756%–99.7906%，run_command合计2.946秒、其它工具0.115秒；API包含排队/prefill/transport，非纯thinking时间。217个已返回响应观测到66,958 completion tokens，取消请求usage未知；未把字符当token或缺失当0。见 `inference/evidence-v1/timing-analysis.json`。因此保持A/B仅权重不同、4096 thinking预算，同时预备单独低thinking1024机制臂，在全部AB结束后独立执行，不混入权重收益。
+
+通用action筛选入口已用boltons298实际运行：6条（5次必要源码读、1次8165-token生产edit），thought-mask，共246监督tokens；源schema是实际ADK wire的`d1300338…`，与旧容量素材schema分开。当前这一个问题按1 epoch只对应一次优化器更新，不能将max_steps=16写成已完成16步。后续待新8题两draw真实结果返回，再按预定规则每题选更少工具的合格成功draw，最多6个动作且必须有8K内生产edit；agent_error、取消或不完整当前响应不进入正向目标。见 [筛选规则与入口](data-preparation/on-policy-action-curation.md)。主RFT及A/B载体仍只准备，尚未启动。

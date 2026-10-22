@@ -28,6 +28,8 @@ def main():
     parser.add_argument('--manifest-path', type=Path, default=HERE/'carrier-manifest.json')
     parser.add_argument('--kernel-id', default='zhuating/p015-31b-weight-ab')
     parser.add_argument('--title', default='P015 31B Weight AB')
+    parser.add_argument('--wall-seconds', type=int, choices=(3600,4800), default=3600,
+                        help='Root-selected total experiment deadline; platform allowance is this plus600 seconds')
     parser.add_argument('--fast-thinking-budget', type=int, choices=(1024,),
                         help='Optionally run Stage C base-only1024 after all24 A/B attempts end')
     args = parser.parse_args()
@@ -57,7 +59,9 @@ def main():
     ids = selection['dev_task_ids']
     frozen = json.loads((ROOT/'research/015/evaluation/final-selection.json').read_text())
     if (ids != frozen['dev_task_ids'] or len(ids) != 12 or len(set(ids)) != 12
-            or set(ids) & set(selection['train_task_ids'])):
+            or set(ids) & set(selection['train_task_ids'])
+            or selection['material_sha256'] != frozen['material_sha256']
+            or selection['material_bytes'] != frozen['material_bytes']):
         raise ValueError('Use the frozen twelve independent dev tasks only')
     protocol = json.loads((ROOT/'research/015/protocol.json').read_text())
     base_dir = INFERENCE/'base-agent'
@@ -84,7 +88,8 @@ def main():
         bundle['fast_base'] = fast
     settings = {'study': '31b-real-rft-weight-ab', 'task_ids': ids, 'task_count': 12,
         'model_alias': protocol['base_model'], 'model_path_pattern': 'gemma-4-31b-it-qat-w4a16-ct/2',
-        'budgets': protocol['budgets'], 'concurrency': 4, 'wall_seconds': 3600,
+        'budgets': protocol['budgets'], 'concurrency': 4, 'wall_seconds': args.wall_seconds,
+        'platform_seconds': args.wall_seconds+600,
         'attempt_seconds': 720, 'material_archive_name': selection.get('material_archive_name', 'prepared-panel-material.tar.gz'),
         'material_sha256': selection['material_sha256'], 'material_bytes': selection['material_bytes'],
         'purpose': 'simultaneous same-service weight A/B on twelve frozen dev issues only; old5/12 remains historical',
@@ -123,7 +128,7 @@ def main():
     result = {'settings':settings,'source_sha256':hashlib.sha256(source.encode()).hexdigest(),
         'worker_sha256':hashlib.sha256(worker.encode()).hexdigest(),
         'coordinator_sha256':hashlib.sha256(coordinator.encode()).hexdigest(),
-        'source_bytes':len(source.encode()), 'platform_seconds':4200,
+        'source_bytes':len(source.encode()), 'platform_seconds':args.wall_seconds+600,
         'planned_attempts':24,'independent_dev_issues':12,
         'optional_stage_c_attempts':12 if args.fast_thinking_budget is not None else 0,
         'expected_routes':{'base':'official CT base path','adapter':NAME,

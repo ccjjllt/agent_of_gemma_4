@@ -107,15 +107,18 @@ def route_evidence(attempt,expected,expected_budget):
     return result
 
 
+def valid_observation(row):
+    return bool(row and row.get('worker_exit_code')==0 and row.get('judge_valid') is True
+                and type(row.get('resolved')) is bool and not row.get('error')
+                and row.get('route_evidence',{}).get('verified'))
+
+
 def paired_summary(rows,tasks):
     lookup={(r['task_id'],r['variant']):r for r in rows}
     pairs=[]
     for task in tasks:
         iid=task['instance_id'];a=lookup.get((iid,'base'));b=lookup.get((iid,'adapter'))
-        def valid(row):
-            return bool(row and row.get('worker_exit_code')==0 and row.get('judge_valid') is True
-                        and type(row.get('resolved')) is bool and row.get('route_evidence',{}).get('verified'))
-        if not valid(a) or not valid(b):category='incomplete_or_invalid'
+        if not valid_observation(a) or not valid_observation(b):category='incomplete_or_invalid'
         elif b['resolved'] and not a['resolved']:category='win'
         elif a['resolved'] and not b['resolved']:category='regression'
         else:category='unchanged_success' if a['resolved'] else 'unchanged_failure'
@@ -128,8 +131,11 @@ def paired_summary(rows,tasks):
         'paired_counts':{label:sum(p['category']==label for p in pairs) for label in
             ('win','regression','unchanged_success','unchanged_failure','incomplete_or_invalid')},
         'by_arm':{arm:{'attempts':sum(r['variant']==arm for r in rows),
-            'resolved':sum(r['variant']==arm and r.get('resolved') is True and r.get('worker_exit_code')==0
-                and r.get('judge_valid') is True and r.get('route_evidence',{}).get('verified') for r in rows),
+            'planned_attempts':len(tasks),
+            'missing_attempts':len(tasks)-sum(r['variant']==arm for r in rows),
+            'invalid_attempts':sum(r['variant']==arm and not valid_observation(r) for r in rows),
+            'resolved':sum(r['variant']==arm and r.get('resolved') is True and valid_observation(r) for r in rows),
+            'valid_attempts':sum(r['variant']==arm and valid_observation(r) for r in rows),
             'raw_reported_resolved':sum(r['variant']==arm and r.get('resolved') is True for r in rows),
             'route_verified_attempts':sum(r['variant']==arm and r.get('route_evidence',{}).get('verified') for r in rows)}
             for arm in ('base','adapter')},
@@ -244,7 +250,8 @@ def main():
         print('WEIGHT_AB_SERVER '+json.dumps(manifest['serving_conditions']),flush=True)
         run_stage(schedule)
         ab_finished=sum(row.get('stage')=='AB' for row in rows)
-        manifest['AB_stage_barrier']={'finished_attempts':ab_finished,'required_attempts':24,
+        ab_valid=sum(row.get('stage')=='AB' and valid_observation(row) for row in rows)
+        manifest['AB_stage_barrier']={'finished_attempts':ab_finished,'valid_attempts':ab_valid,'required_attempts':24,
             'active_workers':len(active),'wall_seconds':time.monotonic()-started}
         save(out/'experiment-manifest.json',manifest)
         if c_schedule:
@@ -252,12 +259,15 @@ def main():
             # Admission estimate includes three four-worker waves at the full
             # Agent budget plus host-judge timeout and cleanup reserve. The
             # unchanged hard experiment deadline still bounds actual work.
-            judge_seconds=max(float(criteria[t['instance_id']].get('timeout_seconds',120)) for t in selected)
+            judge_seconds=max(float(criteria[t['instance_id']].get('timeout_seconds',
+                criteria[t['instance_id']].get('timeout',120))) *
+                (1 + bool(criteria[t['instance_id']].get('p2p_nodes') or
+                          criteria[t['instance_id']].get('p2p_command'))) for t in selected)
             minimum_remaining=math.ceil(len(c_schedule)/4)*(60*float(SETTINGS['budgets']['max_time_minutes'])+judge_seconds)+150
             c_state.update(remaining_seconds_at_barrier=remaining,
                            admission_estimate_seconds=minimum_remaining)
-            if ab_finished!=24 or active:
-                c_state.update(status='not_executed',reason='All24 A/B attempts did not finish inside the existing wall budget')
+            if ab_finished!=24 or ab_valid!=24 or active:
+                c_state.update(status='not_executed',reason='All24 A/B attempts did not finish with valid judge/routing observations inside the existing wall budget')
             elif remaining<minimum_remaining:
                 c_state.update(status='not_executed',reason='Insufficient remaining existing wall budget for Stage C; no added session or retry')
             else:
@@ -277,8 +287,8 @@ def main():
             c_state.update(status='partial' if c_rows else 'not_executed',
                 reason='Experiment ended before optional Stage C completed; no additional budget or retry')
         c_state.update(returned_attempts=len(c_rows),
-            resolved=sum(r.get('resolved') is True and r.get('judge_valid') is True
-                and r.get('worker_exit_code')==0 and r.get('route_evidence',{}).get('verified') for r in c_rows),
+            valid_attempts=sum(valid_observation(r) for r in c_rows),
+            resolved=sum(r.get('resolved') is True and valid_observation(r) for r in c_rows),
             agent_elapsed_seconds=[r.get('context_metrics',{}).get('agent_elapsed_seconds') for r in c_rows],
             outer_seconds=[r.get('outer_seconds') for r in c_rows],
             outcomes=[{'task_id':r['task_id'],'resolved':r.get('resolved'),

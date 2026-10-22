@@ -82,9 +82,9 @@ def main():
         insist(result['split'] == 'train' and identity is not None, 'refusing non-frozen-train attempt before trace access')
         insist(task['repo'] == identity['repo'] and task['base_commit'] == identity['base_commit'], 'frozen repo/base mismatch')
         metrics = read(path / 'context_metrics.json')
-        item = {'path': str(path), 'instance_id': task['instance_id'], 'tool_calls_used': metrics['tool_calls_used'], 'resolved': bool(result['resolved']), 'judge_valid': bool(result['judge_valid'])}
+        item = {'path': str(path), 'instance_id': task['instance_id'], 'tool_calls_used': metrics['tool_calls_used'], 'resolved': bool(result['resolved']), 'judge_valid': bool(result['judge_valid']), 'agent_error': result.get('agent_error')}
         draw_log.append(item)
-        if item['resolved'] and item['judge_valid']:
+        if item['resolved'] and item['judge_valid'] and not item['agent_error']:
             candidates.setdefault(task['instance_id'], []).append((item['tool_calls_used'], str(path)))
     audits = {read(p)['model_request_id']: p.resolve() for p in args.capture_audit}
     prepared = {read(p / 'manifest.json')['instance_id']: p.resolve() for p in args.prepared}
@@ -197,7 +197,7 @@ def main():
             elif decision.get('category') and decision.get('tokens', 8193) <= 8192 and has_edit:
                 decision['reason'] += '; per-issue target budget priority'
         all_actions.extend(actions)
-        issue_log.append({'instance_id': iid, 'chosen_attempt': chosen, 'draw_rule': 'minimum tool_calls_used among resolved+judge_valid draws; stable path tie break; no alternate draw chosen based on length', 'original_snapshot_sha256': sha(snapshot), 'selected_targets': len(chosen_ids), 'admitted': has_edit, 'source_manifest_sha256': sha(data / 'manifest.json')})
+        issue_log.append({'instance_id': iid, 'chosen_attempt': chosen, 'draw_rule': 'minimum tool_calls_used among resolved+judge_valid+no-agent-error draws; stable path tie break; no alternate draw chosen based on length', 'original_snapshot_sha256': sha(snapshot), 'selected_targets': len(chosen_ids), 'admitted': has_edit, 'source_manifest_sha256': sha(data / 'manifest.json')})
     def emit(name, records):
         dest = args.output / name
         dest.write_text(''.join(json.dumps(x, ensure_ascii=False) + '\n' for x in records))
