@@ -58,7 +58,7 @@ single_state/r1/
 ## 从实时candidate重新生成
 
 ```sh
-python3 notebooks/build_005_single_state.py
+python3 notebooks/builders/build_005_single_state.py
 ```
 
 生成器只用标准库，读取当前 `research/005/candidates/single_state/agent/`；已有P002冻结载体只作为服务/评测实现来源，不修改它。候选改动后重新生成，不能直接编辑生成文件里的大段BUNDLE。

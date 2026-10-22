@@ -18,7 +18,7 @@ This carrier implements the P007 12-task single-variable paired evaluation on `d
 
 ## Files & Usage
 
-- `notebooks/build_007_public12_pair.py`: Stdlib-only generator.
-- `notebooks/007-public12-pair-single-cell.py`, `notebooks/007-public12-pair.ipynb`: Standalone carrier.
+- `notebooks/builders/build_007_public12_pair.py`: Stdlib-only generator.
+- `notebooks/007/007-public12-pair-single-cell.py`, `notebooks/007/007-public12-pair.ipynb`: Standalone carrier.
 - `research/007/public12-pair-20261017/kernel/prepare.py` (`kernel-metadata-cpu.json`, `enable_gpu=false`): Free CPU preparation mode that verifies all 41 v31 wheels, extracts and verifies the 12 frozen `dev_future` tasks and snapshots from `tasks.jsonl`, and compiles both Agent arms (`model_requests=0`, `judge_runs=0`).
 - `research/007/public12-pair-20261017/kernel/pair.py` (`kernel-metadata.json`, `enable_gpu=true`): Bounded 24-attempt GPU evaluation.

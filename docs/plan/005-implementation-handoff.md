@@ -1,6 +1,8 @@
 # 005：推理机制与LoRA实现交接
 
-日期：2026-10-10。配套[研究决策](005-medal-and-prize-research.md)。本文保留原始实现规格。后续已完成single_state载体、技能接线、真实编码/SFT/导出，以及31B四卡LoRA诊断训练；实际命令以[载体说明](../../notebooks/005-single-state.README.md)和[训练说明](../../training/README.md)为准，验证边界见[最新进展](../progress/005-medal-and-prize-research.md)。已完成官方 CT 上诊断 adapter 的加载、路由与工具格式兼容验证；尚未完成真实修复语料 SFT、修复收益配对或比赛提交，DPO仍后置。后续已完成 v2 普查与容量探查；新 CPU offload 对照被审查发现漏设训练态，decoder checkpoint 未执行，现已修复但尚未重新运行 GPU。16K 与真实 SFT 未执行。最新研究顺序见[训练态对照后的研究计划](005-trainmode-save-on-cpu.md)。用户明确要求手动验证、不新增测试和门控文件，以根目录AGENTS.md为准。
+> 目录整理（2026-10-22）：本页历史载体路径保留当时记录；当前文件位置和重建入口见 [Notebook 目录导航](../../notebooks/README.md)。
+
+日期：2026-10-10。配套[研究决策](005-medal-and-prize-research.md)。本文保留原始实现规格。后续已完成single_state载体、技能接线、真实编码/SFT/导出，以及31B四卡LoRA诊断训练；实际命令以[载体说明](../../notebooks/005/005-single-state.README.md)和[训练说明](../../training/README.md)为准，验证边界见[最新进展](../progress/005-medal-and-prize-research.md)。已完成官方 CT 上诊断 adapter 的加载、路由与工具格式兼容验证；尚未完成真实修复语料 SFT、修复收益配对或比赛提交，DPO仍后置。后续已完成 v2 普查与容量探查；新 CPU offload 对照被审查发现漏设训练态，decoder checkpoint 未执行，现已修复但尚未重新运行 GPU。16K 与真实 SFT 未执行。最新研究顺序见[训练态对照后的研究计划](005-trainmode-save-on-cpu.md)。用户明确要求手动验证、不新增测试和门控文件，以根目录AGENTS.md为准。
 
 ## 1. 先实现什么
 

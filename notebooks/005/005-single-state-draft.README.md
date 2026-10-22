@@ -1,4 +1,4 @@
-# notebooks/005-single-state-draft — DRAFT 说明（未冻结，不可直接推送）
+# notebooks/005/005-single-state-draft — DRAFT 说明（未冻结，不可直接推送）
 
 状态：**DRAFT 草稿，未冻结**。本地评审用；不推送 Kaggle、不运行模型。
 主文件：`005-single-state-draft.py`（首行 DRAFT 水印 + `IS_DRAFT` 护栏，

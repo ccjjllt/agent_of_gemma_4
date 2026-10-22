@@ -1,5 +1,7 @@
 # 005进展：官方/公开方案/前沿研究与实现交接
 
+> 目录整理（2026-10-22）：本页历史载体路径保留当时记录；当前文件位置和重建入口见 [Notebook 目录导航](../../notebooks/README.md)。
+
 日期：2026-10-10，Asia/Shanghai。用户要求围绕金牌与奖金继续深度研究，优先机制研究；大量实现写成交接，不纠结门控和测试。
 
 ## 2026-10-13 正式公开分0.13，研究转入006（最新）
@@ -113,7 +115,7 @@ offload 完成了 baseline 未完成的前向，仍无 Adam；不能承诺 9841/
 
 用户随后授权补齐可执行路径。本节为当前实现状态，后文“本轮未做”为此前研究轮的历史记录。
 
-- 新建完整 [single_state载体](../../notebooks/005-single-state.ipynb)及[生成器/使用说明](../../notebooks/005-single-state.README.md)：15文件全文与SHA打包，默认已暴露单题smoke，真实服务启动、逐题Evaluator、补丁/轨迹/错误归档与清理；没有启动远程GPU。Python3.13不兼容v30 cp312依赖时在安装前停止。
+- 新建完整 [single_state载体](../../notebooks/005/005-single-state.ipynb)及[生成器/使用说明](../../notebooks/005/005-single-state.README.md)：15文件全文与SHA打包，默认已暴露单题smoke，真实服务启动、逐题Evaluator、补丁/轨迹/错误归档与清理；没有启动远程GPU。Python3.13不兼容v30 cp312依赖时在安装前停止。
 - 接通两个candidate的官方Docker/subprocess工作区解析、本题临时issue与handoff；修复patch_store恢复仅覆盖部分文件的问题，现可恢复快照后其他tracked变化及新文件。one_handoff真实ADK模型消息历史仍未实跑。
 - [训练入口与说明](../../training/README.md)已完成：实际Gemma4加载、BF16 LoRA/同源NF4 QLoRA、监督token训练、checkpoint恢复、独立PEFT导出。缺依赖/缺权重不再返回伪成功。默认不下载权重。
 - 修正真实数据链：保留官方工具语义和完整前文，参数错误及机械编辑错误只作上下文，坏动作不作正向监督；同issue/同快照不跨split。training/data源码已从.gitignore通用data规则中豁免。

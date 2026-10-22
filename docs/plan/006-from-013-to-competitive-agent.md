@@ -1,5 +1,7 @@
 # 006：从正式0.13出发的冲牌与奖金研究
 
+> 目录整理（2026-10-22）：本页历史载体路径保留当时记录；当前文件位置和重建入口见 [Notebook 目录导航](../../notebooks/README.md)。
+
 日期：2026-10-13，北京时间。承接用户要求：结合比赛数据、高分Notebook和前沿研究继续深入研究，目标为最终私榜金牌、主赛前三奖金及论文赛机会。以真实修复、可执行训练数据和机制证据为进展；不新增测试套件或门控工程。
 
 用户授权实施后，已恢复10月11日完成的执行收尾实验，完成E2的12次真实GPU对照，并完成三个外部仓库的CPU工具重放与12B Unified训练代码适配。E2 GPU V1为COMPLETE：exec_closure **4/6**、五分钟Budget-Fit参考 **5/6**，35.58分钟。没有真实12B权重训练、教师调用、正式新提交或heldout读取。随机微型模型的CPU数值/优化验证不计为真实12B训练收益。当前正式公开分仍0.13。
@@ -83,7 +85,7 @@ Sam现V4的0.18属于旧V1；Apex标题0.24没有对应评分；“Gold Submit�
 - 只嵌入既有四题归档中的指定三题，不读取、扫描或哈希官方完整tasks.jsonl；不触碰heldout和预留八题。参考字段及对应快照存在性核对用于避免缺失数据fallback。
 - GPU会话硬限2700秒，按4×L4两倍估算上限1.5额度小时，实际账户读数另记。安装/加载均计入内部期限：2400秒结束评测、2460秒强停coordinator、2535秒归档截止，目标2550秒内退出。worker外层900秒容纳Agent/裁判/准备，但全局期限优先；部分结果原样保留，不自动续开。
 
-[生成器](../../notebooks/build_006_reference_pair.py)、[载体与使用说明](../../notebooks/006-reference-pair.README.md)和[冻结manifest](../../research/006/reference-pair-20261013/kernel/experiment-manifest.json)已完成必要手动核对。v31的adk-eval-core归档hash确已变化，google-adk实取hash保持原值。CPU准备V1成功，随后唯一GPU会话`ccjjllt/p006-reference-pair` V1完成12/12次，35.58分钟，无重试。A4/6、B5/6，B有2次配对新增和1次回退，净增1；三个独立问题不支持排行榜分数预测。trace中skills/图工具仍零调用。取回Agent包逐文件与冻结来源一致；[完整执行原件、结果和额度](../../research/006/reference-pair-20261013/results.md)。
+[生成器](../../notebooks/builders/build_006_reference_pair.py)、[载体与使用说明](../../notebooks/006/006-reference-pair.README.md)和[冻结manifest](../../research/006/reference-pair-20261013/kernel/experiment-manifest.json)已完成必要手动核对。v31的adk-eval-core归档hash确已变化，google-adk实取hash保持原值。CPU准备V1成功，随后唯一GPU会话`ccjjllt/p006-reference-pair` V1完成12/12次，35.58分钟，无重试。A4/6、B5/6，B有2次配对新增和1次回退，净增1；三个独立问题不支持排行榜分数预测。trace中skills/图工具仍零调用。取回Agent包逐文件与冻结来源一致；[完整执行原件、结果和额度](../../research/006/reference-pair-20261013/results.md)。
 
 下一轮保留A、优先让冻结B进入跨仓库比较，不再在这三题挑提示。实际账户总耗额含同时运行的其他项目，完成后约剩1.688小时，之后会变化；不能把这个余额视为本项目独占或立即开新训练的预算。
 
@@ -138,7 +140,7 @@ E2已经把强参考纳入本轮。即使本地三题出现净增，也只用于
 - [10份公开Notebook及评分绑定](../../research/006/high-score-notebooks-20261013/report.md)
 - [五项新前沿研究](../../research/006/frontier-20261013/report.md)
 - [恢复的执行收尾实验](../../research/006/recovered-exec-closure-20261013/results.md)
-- [E2强参考载体](../../notebooks/006-reference-pair.README.md)
+- [E2强参考载体](../../notebooks/006/006-reference-pair.README.md)
 - [外部CPU重放与正式编码](../../research/006/data-replay-20261013/report.md)；[第三仓库MarkupSafe正负过程](../../research/006/data-replay-20261013/markupsafe-report.md)
 - [12B Unified CPU适配与实际边界](../../research/006/12b-cpu-adaptation-20261013/results.md)
 - [006实际进展](../progress/006-from-013-to-competitive-agent.md)

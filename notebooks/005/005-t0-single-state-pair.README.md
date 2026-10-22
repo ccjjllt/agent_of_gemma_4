@@ -3,7 +3,7 @@
 入口：`005-t0-single-state-pair.ipynb`，唯一代码 cell 与 `005-t0-single-state-pair-single-cell.py` 完全一致。执行会启动真实 GPU 推理；构建不会加载模型。本文件描述载体，不宣称已经取得修复收益。
 
 ```sh
-PYTHONDONTWRITEBYTECODE=1 python3 notebooks/build_005_t0_single_state_pair.py
+PYTHONDONTWRITEBYTECODE=1 python3 notebooks/builders/build_005_t0_single_state_pair.py
 ```
 
 构建读取冻结 `research/002/variants/t0/agent/`、当前 `research/005/candidates/single_state/agent/` 和已有 P002 v30 / P005 single_state 构建来源。旧文件不被覆盖；新载体完整嵌入 agent、技能、逐文件 SHA、官方版本和模型指纹，无需远程克隆本仓库。T0 与 P002 v30 嵌入内容必须逐字一致。
@@ -54,7 +54,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 notebooks/build_005_t0_single_state_pair.py
 
 ## 本轮接手位置
 
-实际私有运行是 `ccjjllt/p005-t0-single-state-pair` **v3**；官方CPU构造准备已完成，两次早期GPU失败及CPU命名修正保留在[研究记录](../research/005/t0-single-state-pair-20261011/results.md)。当前研究结果优先回写该页和`docs/progress/005-medal-and-prize-research.md`，不新开检查清单。
+实际私有运行是 `ccjjllt/p005-t0-single-state-pair` **v3**；官方CPU构造准备已完成，两次早期GPU失败及CPU命名修正保留在[研究记录](../../research/005/t0-single-state-pair-20261011/results.md)。当前研究结果优先回写该页和`docs/progress/005-medal-and-prize-research.md`，不新开检查清单。
 
 v3现已COMPLETE：T0 1/4、single_state 2/4；27.67分钟wall，评测阶段四卡采样利用率93.388%，全会话69.118%。完整原件归档为研究目录`output-v3/run-output.zip`；`analysis-v3.json`提供结果、实际工具调用与效率摘要。四题未调用新增技能，不能据此推广技能机制；后续决定见研究记录，不重复启动该版本。
 

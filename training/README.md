@@ -1,5 +1,7 @@
 # P005：从真实轨迹到独立LoRA
 
+本页保留 P005 起的训练实现与历史操作说明。当前 31B 分片训练、action RFT 与推理对照状态见 [P015 执行记录](../research/015/README.md)；历史评测载体已按轮次整理，入口及重建命令见 [Notebook 目录导航](../notebooks/README.md)。下文 `/kaggle/input/notebooks/...` 是云端挂载路径，不受本地目录迁移影响。
+
 本目录包含实际数据转换、Gemma工具对话编码、BF16 LoRA/同源NF4 QLoRA训练、checkpoint恢复和独立PEFT导出。修复后已在Kaggle四张L4上完成真实31B NF4 LoRA的四个诊断更新（256、256、1024、2048长度），四rank参数一致，云端adapter已保存。该轮使用合成代码诊断数据，尚未做真实修复语料SFT或取得比赛增益。详见[四卡实测结果](../research/005/kaggle-training-probe-20261010/ddp-result-summary.json)；[首次FP32转换OOM](../research/005/kaggle-training-probe-20261010/result-summary.json)保留为历史。
 
 NF4默认只将小norm参数提升FP32，保持大embedding/head为原dtype；`loss_backend: selected_chunked`保留完整上下文、只投影监督位置，以checkpoint分块CE降低中间显存。[四卡DDP入口](train_ddp.py)复制基座到每张卡，仅同步LoRA梯度；两进程CPU实测已与单进程全局批次对齐，并通过尾部不满批次和断点恢复。31B实测2048步骤15.89秒（含约0.70秒诊断），每卡峰allocated20.398 GiB；更长上下文和真实数据容量仍需另测，不能直接外推4K/16K。

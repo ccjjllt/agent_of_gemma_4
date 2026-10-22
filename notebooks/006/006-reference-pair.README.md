@@ -1,6 +1,6 @@
 # P006 E2：历史 exec_closure 与 Budget-Fit 五分钟参考
 
-运行载体已冻结，CPU准备V1成功，GPU对照V1已完成12/12次：A4/6、B5/6、wall35.58分钟，结果见[实际运行记录](../research/006/reference-pair-20261013/results.md)。它是整体方案比较，不是提示单变量：两臂均5分钟Agent预算，但工具集合、调用上限、命令时限、输出预留按各自来源保持。
+运行载体已冻结，CPU准备V1成功，GPU对照V1已完成12/12次：A4/6、B5/6、wall35.58分钟，结果见[实际运行记录](../../research/006/reference-pair-20261013/results.md)。它是整体方案比较，不是提示单变量：两臂均5分钟Agent预算，但工具集合、调用上限、命令时限、输出预留按各自来源保持。
 
 | 项目 | A：历史 exec_closure | B：Budget-Fit V5 matched-five-minute |
 |---|---|---|
@@ -21,12 +21,12 @@ v31的`EvalConfig.verification_timeout_seconds=300`对两臂显式一致，命�
 
 ## 文件与使用
 
-- `build_006_reference_pair.py`：仅stdlib生成；读取旧生成器源码与冻结材料，不运行其Notebook或模型。
+- `notebooks/builders/build_006_reference_pair.py`：仅stdlib生成；读取旧生成器源码与冻结材料，不运行其Notebook或模型。
 - `006-reference-pair-single-cell.py`、`006-reference-pair.ipynb`：完整独立载体。
 - `research/006/reference-pair-20261013/kernel/pair.py`：GPU实际运行入口。
 - 同目录`prepare.py`：同载体CPU准备模式；在CPU会话真实安装冻结wheel、创建EvalConfig/Context/隔离sandbox并compile_submission两臂。它不启动服务、不发送模型请求、不执行裁判、不解压任务快照；tokenizer指纹与部署CT v2固定。CPU构造成功不是修复或GPU推理成功。
 - `kernel-metadata.json`为GPU配置，`kernel-metadata-cpu.json`是CPU准备配置；实际保存/推送时选对元数据，CPU必须`enable_gpu=false`。本生成器不推送。
 
-重建命令：`PYTHONDONTWRITEBYTECODE=1 python3 notebooks/build_006_reference_pair.py`。运行输出在`/kaggle/working/results/006/<run_id>/`：冻结两臂与三题、v31实际wheel哈希、run manifest、逐attempt官方result/patch/trace/验证输出、GPU采样、summary及bounded ZIP。CPU模式单独标为prepared、模型请求和judge为0，不填resolved成绩。完整GPU结果始终以12次计划分母报告，部分结果不冒充完整。
+重建命令：`PYTHONDONTWRITEBYTECODE=1 python3 notebooks/builders/build_006_reference_pair.py`。运行输出在`/kaggle/working/results/006/<run_id>/`：冻结两臂与三题、v31实际wheel哈希、run manifest、逐attempt官方result/patch/trace/验证输出、GPU采样、summary及bounded ZIP。CPU模式单独标为prepared、模型请求和judge为0，不填resolved成绩。完整GPU结果始终以12次计划分母报告，部分结果不冒充完整。
 
 本次只做必要一次性手动语法、嵌入字节、调度和接口核对；CPU构造成功与GPU实际结果分别记录在上述运行报告。没有新增测试套件或检查脚本。
