@@ -61,4 +61,8 @@ FSDP 工程已实现保持 NF4 字节的浮点容器、冻结/可训练参数分
 
 计时机制证据：12dev原始元数据投影中，6个timeout的1800.10 Agent秒，LLM API区间union占99.7756%–99.7906%，run_command合计2.946秒、其它工具0.115秒；API包含排队/prefill/transport，非纯thinking时间。217个已返回响应观测到66,958 completion tokens，取消请求usage未知；未把字符当token或缺失当0。见 `inference/evidence-v1/timing-analysis.json`。因此保持A/B仅权重不同、4096 thinking预算，同时预备单独低thinking1024机制臂，在全部AB结束后独立执行，不混入权重收益。
 
-通用action筛选入口已用boltons298实际运行：6条（5次必要源码读、1次8165-token生产edit），thought-mask，共246监督tokens；源schema是实际ADK wire的`d1300338…`，与旧容量素材schema分开。当前这一个问题按1 epoch只对应一次优化器更新，不能将max_steps=16写成已完成16步。后续待新8题两draw真实结果返回，再按预定规则每题选更少工具的合格成功draw，最多6个动作且必须有8K内生产edit；agent_error、取消或不完整当前响应不进入正向目标。见 [筛选规则与入口](data-preparation/on-policy-action-curation.md)。主RFT及A/B载体仍只准备，尚未启动。
+通用action筛选入口已用boltons298实际运行：6条（5次必要源码读、1次8165-token生产edit），thought-mask，共246监督tokens；源schema是实际ADK wire的`d1300338…`，与旧容量素材schema分开。先按正确性、无agent_error和完整当前响应选更少工具的成功draw，再保留最多6个合规目标；每题必须有8K内生产edit。见 [筛选规则与入口](data-preparation/on-policy-action-curation.md)。
+
+17个输入draw（新16+旧成功boltons）最终形成3个独立问题、14条动作、1014监督tokens，最长8165；10次必要源码读取、3次生产edit、1次submit。tldextract258和marshmallow2715加入；后者使用原Agent实际compaction后的完整可见请求，不重建旧历史。其余成功题目因生产edit超长整题排除：graphene11029+、oauthlib8351、dask生产shell改13307/13859。没有因长度改选其它draw、截历史或混入dev。见 [最终筛选证据](data-preparation/on-policy-rft-first-v1-manifest.json)。这远小于原计划16–32问题，仅是小规模action RFT。
+
+14:13已推送 `zhuating/p015-31b-task-rft/1`，源码SHA `4081c196…6146564`，数据SHA `106ee30b…efee8d3`。真实31B CT tokenizer、模板与actual tools在CPU核对一致；r8/alpha16、lr2e-5、1epoch、每rank1条/四rank、累积2，预计仅2次更新（16是上限），不承诺中间阶段趋势。平台最多1800s（2×最多1配额小时），worker1500s，推送前余额5.62h，预留至少4h用于对照/部署。8165是否真正更新、导出是否完成仍待结果。A/B尚未启动。
