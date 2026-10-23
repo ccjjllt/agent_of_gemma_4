@@ -299,7 +299,17 @@ def main(argv=None):
     except Exception as exc:
         import traceback
         traceback.print_exc()
-        print('ERROR: '+repr(exc), file=sys.stderr, flush=True); return 2
+        print('ERROR: '+repr(exc), file=sys.stderr, flush=True)
+        if dist is not None and dist.is_initialized():
+            # A failed rank can leave peers in NCCL collectives. Bypass the
+            # communicator teardown below so torchrun can terminate them.
+            # Already committed checkpoints remain valid; partial writes do not.
+            try:
+                sys.stdout.flush()
+                sys.stderr.flush()
+            finally:
+                os._exit(2)
+        return 2
     finally:
         if dist is not None and dist.is_initialized():
             dist.destroy_process_group()

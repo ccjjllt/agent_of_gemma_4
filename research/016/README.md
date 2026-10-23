@@ -1,8 +1,8 @@
 # P016 大规模后训练准备与实际研究记录
 
-更新至2026-10-23，北京时间。用户已授权开始推进 [P016 方案](../../docs/plan/016-large-scale-posttraining-handoff.md)，现已确认提供 **Runpod 4×A40（每卡48GB）** 并授权通过Runpod官方Agent入口接入。下述产物截至CPU冻结时尚未启动GPU、教师调用或新提交；连接、模型传输与GPU结果需另据实际执行记录更新，正式最好仍为 **0.15**。
+更新至2026-10-23，北京时间。Runpod 4×A40 已完成环境准备、18.30GB既有NF4缓存传输以及真实GPU校准。**首轮正式主训练已于11:23:32启动：537个完整train问题、68仓、1 epoch、68次更新，上限8小时。** 原基座初始化全新LoRA，没有使用校准adapter续训；当前已确认第1/68次更新完成并进入第2步，尚未宣称整轮完成或提分，正式最好仍为 **0.15**。
 
-Runpod接入已完成本地16个技能安装、官方MCP直接注册和OAuth登录，重开后已能真实读取。2026-10-23 00:31–00:34北京时间：Pod列表为空；Chrome控制台显示A40×4自动部署预约`odd_black_reindeer`仍为`Waiting for availability`，四卡A40/CUDA≥12.8库存查询为NONE。尚未分配可连接服务器，未启动GPU或改动远端资源。恢复入口与准确包路径见 [Runpod交接记录](training/runpod-handoff.md)。
+用户已明确要求训练后保持Pod运行，且不使用定时任务；曾建回查已删除，待用户通知后读取和回传结果。训练启动器自身仍在约19:23:32到达上限时清理本次训练进程。实际命令、启动回执和授权边界见 [主训练执行记录](training/main-short-run-plan.md)，资源/SSH/环境见 [Runpod交接记录](training/runpod-handoff.md)。
 
 本轮执行改变了数据优先级：**先做好一套 SWE-smith 原生三工具轨迹 SFT，再用真实比赛六工具数据做必要适配；评估 Agent 保持原样。** 这允许复用来源真实执行语义，避免全量六工具重放成为新的瓶颈。它是根据数据产率和协议差异形成的研究选择，不是已经证明迁移有效。
 
@@ -15,7 +15,8 @@ Runpod接入已完成本地16个技能安装、官方MCP直接注册和OAuth登�
 | 缓存扩量 | 新增 SWE-smith 1,000 个问题、70 仓，111,784,674 bytes；约 3.08 秒本地抽取 | 与首批身份零重叠；未新增网络下载/GPU |
 | 最终原生SFT v2 | **677个独立问题、69仓、约1,332万输入/238万监督token**；224题≤16K、453题16K–32K，未截断 | 已修XML提示与标签冲突，排除具体参考实现污染；复用来源成功证据，尚未实测比赛迁移 |
 | 六工具适配种子 | 复用六个成功train题：70个动作、9段、6,230监督token，最长15,273；同目标输入从644,775降至110,996 | 16次生产编辑、5次提交、9个恢复动作；0上游验证/真实final，单题占监督68.84%，尚不足以证明适配完成 |
-| FSDP 续训 | 实现 step 边界完整恢复；两 rank CPU 真退出后重启，参数/优化器/RNG/进度与连续路径一致 | 尚未实测 GPU、NF4、NCCL 与目标机器的续训 |
+| FSDP 续训 | 四张A40完成16K校准4次更新，真实保存/退出/重载/继续并导出adapter；已修复非0 rank加载adapter错误 | 仅证明该运行链路；尚无正式比赛修复收益 |
+| 当前主训练 | 537个完整短轨迹问题、68仓，7,119,739输入/1,291,819监督token，全部≤16K；正式运行已启动 | 159 PR、375命名变异、3旧pilot数字身份；没有宣称分布代表全部比赛 |
 | 编码 | 补齐因果前缀核对、原始生成流入口、明确终局无回执的离线工具调用边界 | 不把 parsed reasoning/content 拼成虚构原始流；P015 非工具 final 的原始边界仍缺证据 |
 | Open-SWE 限量候选 | 只读 5,000 条元数据，冻结 44 个 train 身份 | 官方筛选接口超时、行号接口 HTTP500，0 条正文；本轮暂缓 |
 
@@ -33,12 +34,10 @@ Runpod接入已完成本地16个技能安装、官方MCP直接注册和OAuth登�
 
 复用已成功的 r8/alpha16、2e-5 起点。FSDP 的真 resume 绑定同一数据/配置/协议与拓扑；已实现`--init-run`从已完成adapter开始新阶段，重置优化器与进度，允许明确切换数据/工具协议，双rank CPU核对通过。现有 P015 两个 builder 已补入新功能模块 `fsdp_checkpoint.py`，未重建或改写历史冻结的 kernel 包。
 
-千题批次实际编码与筛选、主语料合并及16K/32K校准输入已完成；用户已确认Runpod四张A40，下一步是接入、核对缓存并进行真实校准。首次GPU各执行段合计最多2小时，含模型加载、前后向、吞吐测量、保存/退出/重载和导出；模型传输和环境准备另计。启动器仅约束单次wall时间，执行者须跨调用累计预算，不能每次重试都重新获得2小时。根据实测速度再确定正式主训练时长，不提前承诺整轮训练能在某个小时数内完成。
+GPU校准实际执行各段累计约46.81分钟，未超先前2小时校准预算。16K完成4步并实测真resume和导出；关闭NCCL P2P解决该机器首次通信停滞，将adapter先载入CPU解决多rank不一致。25K批次加入expandable_segments后完成更新，但32,382长度仍反向OOM，因此首轮主训练使用完整≤16K轨迹，暂停长上下文容量调试。
 
-最终运行包为 **`smith-pilot-calibration-v3`代码+`pilot-admitted-v2`数据**，每桶16个独立问题、4个optimizer steps；16K实际长度7,102–15,768，32K为16,575–32,382。[压缩包](data/gpu-bundles/smith-pilot-calibration-v3.tar.gz)为6,127,400 bytes，SHA256：`9cf66d95c05eaf4ba866d57d1caa7d4083aa0bdce88143d6336cae5a0ebbed91`；[回执](training/generated/smith-pilot-calibration-v3/build-manifest.json)记录逐trainer哈希。启动、真resume和32K命令见[GPU执行说明](training/gpu-run.md)。包已包含最终trainer、`fsdp_checkpoint.py`、实际tokenizer与工具schema，不含模型权重；恢复必须保持总步数4，跨阶段adapter初始化与真resume分开。
+当前主训练使用冻结的 `smith-pilot-calibration-v5` 代码和独立 `main-sft-short-v1` 语料，537题来自原224个短题与新准入313题。每10步保存完整checkpoint；异常快速退出避免NCCL清理挂起。实际代码/数据哈希、命令和8小时预算见 [主训练执行记录](training/main-short-run-plan.md)，GPU失败与成功原始证据见 [校准记录](training/runpod-calibration/README.md)。完整轮耗时6–7小时只是校准吞吐外推，需以主训练实际数据更新。
 
-v3已修复父进程退出后独立session的rank可能残留的清理缺口：Linux按`/proc`的PID+启动时间跟踪自有后代，先TERM父、到截止再KILL仍存活且身份匹配的已观察进程，父退出后和finally仍清理。CPU真实进程模拟覆盖两种父退出时序并清理成功；四张A40上的容量、NF4/NCCL与恢复仍待实测。该机制不是cgroup，不能承诺捕捉未被观察且立即脱离父链的任意daemon；未退出PID会如实报告。
-
-本地当前只有18.30GB官方QAT派生NF4缓存的manifest/config，没有完整权重。服务器需要复用此前私有Kaggle `ccjjllt/p005-cpu-nf4-cache` 的真实输出，或在用户指定已有缓存路径核对同一来源；不默认为权重已经传输。所有tokenizer和训练数据已在本地准备好，训练与推理CT基座路径分开。
+18.30GB NF4缓存已在服务器完整下载并核对所有payload SHA，来源为此前私有Kaggle `ccjjllt/p005-cpu-nf4-cache` 的官方QAT派生缓存。训练使用固定CT tokenizer/template；没有重新转换基座或更换数据协议。
 
 用户已有 heldout/select/dev/预留题用途保持不变。只使用预先冻结的 train 身份，原件与 SHA 留存；缺完整 Git SHA 的离线示范如实记录固定 dataset revision、instance/traj和原件哈希，不假填 SHA，也不把环境重放要求变成所有离线数据的新增门槛。没有新增测试文件或套件，必要核对均为一次性手动命令。

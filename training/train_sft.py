@@ -411,8 +411,11 @@ def load_model_and_tokenizer(cfg, stack, resume=None, expected_provenance=None):
     targets = resolve_target_modules(dict(model.named_modules()), cfg["target_text_modules"])
     if resume:
         inspect_adapter(Path(resume) / "adapter", cfg["rank"], cfg["target_text_modules"])
+        # PEFT's bare "cuda" default can deserialize onto GPU 0 in every rank.
+        # CPU loading copies into each rank's existing parameters without P2P.
         model = peft.PeftModel.from_pretrained(model, str(Path(resume) / "adapter"),
-                                             is_trainable=True, local_files_only=True)
+                                             is_trainable=True, local_files_only=True,
+                                             torch_device="cpu")
     else:
         adapter = peft.LoraConfig(r=cfg["rank"], lora_alpha=cfg["alpha"],
                                  lora_dropout=cfg["dropout"], bias="none",
