@@ -1,6 +1,6 @@
 # Runpod 4×A40 接入与下一次执行入口
 
-2026-10-23。用户确认现有服务器来自 Runpod，配置为四张 A40，并要求按 https://agents.runpod.io/ 接入。OAuth登录已成功；尚未连接服务器或开始训练。
+2026-10-23。用户选择 Runpod 四张 A40，并要求按 https://agents.runpod.io/ 接入。OAuth与MCP读取已成功；实际为等待库存的自动部署预约，尚未创建可连接的服务器或开始训练。
 
 ## 本地接入事实
 
@@ -8,8 +8,16 @@
 - 指南命令 `npx -y skills add runpod/runpod-plugins-official --skill '*' --agent codex --yes --global` 成功；随后 `skills list --global` 确认 router、lane、journey 共 16 个技能可见。
 - `codex plugin marketplace add https://github.com/runpod/runpod-plugins-official.git --json` 因 GitHub 443 连接超时失败。没有声明 marketplace 插件安装成功。
 - 按指南的直接连接备用路径，`codex mcp add runpod --url https://mcp.runpod.io/` 已注册全局服务；`codex mcp get runpod` 确认 enabled、streamable_http、同一官方地址。
-- OAuth 已完成，CLI 返回 `Successfully logged in.`。目前尚未以 Runpod API 读取任何 Pod。当前会话未出现 Runpod 工具；官方指南要求 Codex Desktop 完全退出再打开以加载。先前的临时授权链接不需重复使用。
+- OAuth 已完成，CLI 返回 `Successfully logged in.`。重开后本会话已加载Runpod工具，并成功执行真实API读取；先前的临时授权链接不需重复使用。
 - 没有创建新 Pod、修改现有 Pod、生成 API key、上传数据或启动 GPU。OAuth 链接、token 和私钥不保存在本项目。
+
+## 2026-10-23 00:31–00:34 北京时间：真实资源状态
+
+`list_pods`及包含集群成员的第二次查询均返回空列表、无后续分页。随后只读查看用户Chrome中已有的 `console.runpod.io/pods` 页面，见自动部署预约 `odd_black_reindeer`，配置 **A40 x 4**，状态 **Waiting for availability**，预约标识 `cmvjqieng003akdn6uvcgz6ml`，创建时间2026-10-23 00:07、到期2026-10-24 00:37。该标识是页面的预约标识，不能冒充Pod ID。没有可用SSH地址。
+
+MCP进一步读取 `NVIDIA A40`、`count=4`、`minCudaVersion=12.8`、`product=POD`，实际返回 `availability=NONE`，12.8/13.2均不可用。为缩短排队等待又只读比较Secure及Community同为48GB的四卡方案，返回A40、L40、L40S、RTX 6000 Ada、RTX A6000均为NONE；这只描述此次查询时和上述筛选条件下的库存，不是全平台或所有机器规格永久无货的结论。没有新建或改动任何付费资源，也未修改等位预约。
+
+当前阻碍是四卡资源尚未分配，不是OAuth未登录。实例分配后先重新读Pod列表，再按下列顺序连接。不在本记录中声称已后台持续监控库存。
 
 ## 接入后直接推进
 

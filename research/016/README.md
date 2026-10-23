@@ -2,7 +2,7 @@
 
 更新至2026-10-23，北京时间。用户已授权开始推进 [P016 方案](../../docs/plan/016-large-scale-posttraining-handoff.md)，现已确认提供 **Runpod 4×A40（每卡48GB）** 并授权通过Runpod官方Agent入口接入。下述产物截至CPU冻结时尚未启动GPU、教师调用或新提交；连接、模型传输与GPU结果需另据实际执行记录更新，正式最好仍为 **0.15**。
 
-Runpod接入已完成本地16个技能安装、官方MCP直接注册和OAuth登录；CLI确认enabled、`auth_status=o_auth`。本会话尚未加载Runpod工具，需完全退出并重开Codex后读取现有Pod；尚未查看或改动远端资源。恢复入口与准确包路径见 [Runpod交接记录](training/runpod-handoff.md)。
+Runpod接入已完成本地16个技能安装、官方MCP直接注册和OAuth登录，重开后已能真实读取。2026-10-23 00:31–00:34北京时间：Pod列表为空；Chrome控制台显示A40×4自动部署预约`odd_black_reindeer`仍为`Waiting for availability`，四卡A40/CUDA≥12.8库存查询为NONE。尚未分配可连接服务器，未启动GPU或改动远端资源。恢复入口与准确包路径见 [Runpod交接记录](training/runpod-handoff.md)。
 
 本轮执行改变了数据优先级：**先做好一套 SWE-smith 原生三工具轨迹 SFT，再用真实比赛六工具数据做必要适配；评估 Agent 保持原样。** 这允许复用来源真实执行语义，避免全量六工具重放成为新的瓶颈。它是根据数据产率和协议差异形成的研究选择，不是已经证明迁移有效。
 
