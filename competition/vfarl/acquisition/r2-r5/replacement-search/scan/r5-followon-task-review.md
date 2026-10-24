@@ -1,0 +1,11 @@
+# Follow-on R5 screening
+
+Preferred mechanism candidate is `pallets__jinja.ada0a9a6.func_pm_ctrl_invert_if__zwhpkn1s`: `PackageLoader.__init__` selects among importlib loaders. The mutation swaps the zipimporter and regular/custom-loader branch bodies, so a PEP 451 custom loader incorrectly accesses `loader.archive`, while a zip loader incorrectly searches archive paths with `os.path.isdir`. Both real implementations remain present, so this is an actual runtime loader classification defect, not deleted functionality. The native prompt describes zip-vs-regular loader handling and matches production symbols and the real mutation.
+
+Fresh public branch ref is `5c596110defcc262cd69bc3082837a297f401271`. Official original selectors are F2P 1 (`tests/test_loader.py::test_pep_451_import_hook`) and P2P 739 (151 parameterized IDs). P2P includes explicit `trio` and `asyncio` backends; their availability must be preserved and observed before claiming original official pass. No runtime validation was performed here. Image: `swebench/swesmith.x86_64.pallets_1776_jinja.ada0a9a6`.
+
+`pylint-dev__astroid.b114f6b5.pr_2410` is also genuine R5. Mutation removes the `NamespaceLoader` check in `is_namespace`, so preimported dynamic `six.moves` with a custom loader is treated as a namespace rather than populated through failed-import hooks. Fresh branch SHA is `61d3f02fb40f20013aae3c8168e536fb2df32c04`; original F2P 1 (`tests/brain/test_six.py::SixBrainTest::test_attribute_access_with_six_moves_imported`), P2P 1592, including 243 parameterized IDs. Its official mandatory surface is much larger. The original prompt contains a minor Boolean narrative inconsistency but the preimport trigger and loader condition are causally aligned.
+
+Pygments PR 2489 and 2532 both carry 5060 F2P / 0 P2P and hundreds of lines of mapping and implementation deletion. They are excluded as broad, impure replacements. Typeguard `8z7wnut4` is 2 F2P / 454 P2P, with a premature `return False` before package matching, and required mypy cases. It is a lower-quality R5 fit.
+
+See `r5-followon-task-review.json` for task paths, mirrors, images, branch identities, selector list hashes and counts. Full task row files retain every original required selector; none were selected away.

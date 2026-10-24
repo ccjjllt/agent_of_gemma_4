@@ -1,0 +1,65 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex agent manual source and command review 2026-10-24",
+  "review_notes": "R2 function recognition and wrapper selection. Mutant skips dunder __init__ and transforms coroutine functions into ordinary wrappers. The one-off command checks actual class execution, initialization code registration, coroutine identity and nonempty trace. Restore original _wrap_class function-selection logic, including inspect.isfunction and coroutine exclusion, rather than copying an incomplete publisher-labeled teacher attempt. Original 8 F2P+70 P2P are unchanged; frozen missing source tests only enter Phase B.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "pysnooper/tracer.py",
+        "start_line": 285,
+        "end_line": 333
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nimport inspect\nimport io\nfrom pysnooper.tracer import Tracer\nstream = io.StringIO()\ntracer = Tracer(output=stream, color=False)\nclass Payload:\n    def __init__(self):\n        self.x = 7\n    def value(self):\n        return self.x + 8\n    async def async_value(self):\n        return self.x\ninit_code = Payload.__init__.__code__\nPayload = tracer(Payload)\nresult = Payload().value()\nobserved = (init_code in tracer.target_codes, inspect.iscoroutinefunction(Payload.async_value))\nprint(\"result:\", result, \"init_registered_and_coroutine_preserved:\", observed)\nprint(\"trace_output_nonempty:\", bool(stream.getvalue()))\nassert result == 15\nassert observed == (True, True)\nPYREPLAY"
+      },
+      "reviewed_command_sha256": "fc0ab8bdd4a36521956cb03cbb8d16ffaa1889de4c843f5ca8075ee464b5b7e2",
+      "expected_status": "error"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pysnooper/tracer.py",
+        "old_string": "    def _wrap_class(self, cls):\n        \"\"\"Wrap all methods of a class with the tracer functionality.\"\"\"\n        for attr_name, attr_value in cls.__dict__.items():\n            # Skip special methods, class methods, static methods, and non-callables\n            if (attr_name.startswith('__') and attr_name.endswith('__') or\n                    not callable(attr_value) or\n                    isinstance(attr_value, (classmethod, staticmethod))):\n                continue\n            \n            # Add the code to the target codes set\n            if hasattr(attr_value, '__code__'):\n                self.target_codes.add(attr_value.__code__)\n            \n            # Replace the method with a wrapped version\n            wrapped_attr_value = self._wrap_function(attr_value)\n            setattr(cls, attr_name, wrapped_attr_value)\n            \n        return cls\n",
+        "new_string": "    def _wrap_class(self, cls):\n        for attr_name, attr in cls.__dict__.items():\n            # Coroutines are functions, but snooping them is not supported\n            # at the moment\n            if pycompat.iscoroutinefunction(attr):\n                continue\n\n            if inspect.isfunction(attr):\n                setattr(cls, attr_name, self._wrap_function(attr))\n        return cls\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "pysnooper/tracer.py",
+        "start_line": 298,
+        "end_line": 326
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nimport inspect\nimport io\nfrom pysnooper.tracer import Tracer\nstream = io.StringIO()\ntracer = Tracer(output=stream, color=False)\nclass Payload:\n    def __init__(self):\n        self.x = 7\n    def value(self):\n        return self.x + 8\n    async def async_value(self):\n        return self.x\ninit_code = Payload.__init__.__code__\nPayload = tracer(Payload)\nresult = Payload().value()\nobserved = (init_code in tracer.target_codes, inspect.iscoroutinefunction(Payload.async_value))\nprint(\"result:\", result, \"init_registered_and_coroutine_preserved:\", observed)\nprint(\"trace_output_nonempty:\", bool(stream.getvalue()))\nassert result == 15\nassert observed == (True, True)\nPYREPLAY"
+      },
+      "reviewed_command_sha256": "fc0ab8bdd4a36521956cb03cbb8d16ffaa1889de4c843f5ca8075ee464b5b7e2",
+      "expected_status": "ok"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ]
+}

@@ -1,0 +1,1680 @@
+{
+  "date": "2026-10-24",
+  "status": "Proposed training/routing design; no adapter trained or inference routing measured.",
+  "recommendation": "One generalist plus three overlapping capability specialists; four adapter directories in deployment.",
+  "source_catalog_sha256": "99f9e00ce69aafb1e977d9cee33d1353dc0fa1508ef07d2eba00ced463e8d1d3",
+  "scope": "129 tasks are a public capability profile and development reference, not an automatically authorized new training dataset. No official hidden or reserved evaluation items used.",
+  "mechanism_to_default_owner": {
+    "M1": "G",
+    "M2": "S",
+    "M3": "F",
+    "M4": "F",
+    "M5": "S",
+    "M6": "R",
+    "M7": "R",
+    "M8": "G"
+  },
+  "default_owner_counts": {
+    "F": 31,
+    "G": 31,
+    "R": 31,
+    "S": 36
+  },
+  "adapter_definitions": {
+    "G": {
+      "name": "通用仓库修复",
+      "role": "覆盖全部机制，负责规格恢复、定位、路由不确定任务及跨机制的新功能/重构。不是仅用M1/M8训练的剩余类别。",
+      "mechanism_coverage": [
+        "M1",
+        "M2",
+        "M3",
+        "M4",
+        "M5",
+        "M6",
+        "M7",
+        "M8"
+      ],
+      "default_mechanisms": [
+        "M1",
+        "M8"
+      ],
+      "covered_public_tasks": 129,
+      "default_owner_count": 31,
+      "rank": 128,
+      "adapter_export_dtype": "bfloat16",
+      "target_modules": [
+        "q_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj"
+      ]
+    },
+    "S": {
+      "name": "数据表示与结构算法",
+      "role": "转换前后语义、基数、字节/字符/cell坐标、文本样式跨度，以及扫描/遍历/切分不变量。",
+      "mechanism_coverage": [
+        "M2",
+        "M5"
+      ],
+      "default_mechanisms": [
+        "M2",
+        "M5"
+      ],
+      "covered_public_tasks": 36,
+      "default_owner_count": 36,
+      "rank": 32,
+      "adapter_export_dtype": "bfloat16",
+      "target_modules": [
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj"
+      ]
+    },
+    "F": {
+      "name": "跨层流转与状态生命周期",
+      "role": "生产者到消费者的参数/配置/元数据传播，覆盖优先级、共享对象、缓存、所有权、异步资源退出。",
+      "mechanism_coverage": [
+        "M3",
+        "M4"
+      ],
+      "default_mechanisms": [
+        "M3",
+        "M4"
+      ],
+      "covered_public_tasks": 31,
+      "default_owner_count": 31,
+      "rank": 32,
+      "adapter_export_dtype": "bfloat16",
+      "target_modules": [
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj"
+      ]
+    },
+    "R": {
+      "name": "Python动态语义与依赖兼容",
+      "role": "真实callable/类型/命名空间解析、代理对象协议、MRO和Python/第三方依赖版本语义。",
+      "mechanism_coverage": [
+        "M6",
+        "M7"
+      ],
+      "default_mechanisms": [
+        "M6",
+        "M7"
+      ],
+      "covered_public_tasks": 31,
+      "default_owner_count": 31,
+      "rank": 32,
+      "adapter_export_dtype": "bfloat16",
+      "target_modules": [
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj"
+      ]
+    }
+  },
+  "training_design": {
+    "shared_initialization": "Use the same official model family and common eligible repair-process curriculum. Initialize G directly as r128 on text q/o+MLP. Train a separate common r32 all-seven-text-projection starting adapter and copy its complete state into S/F/R before specialization. G and the specialists do not directly share LoRA weight shapes. Each final branch is one complete adapter.",
+    "specialist_mixture_start": "Provisional 70% specialty + 30% broad repair-process supervised tokens; not a measured optimum. Unique tasks/repositories and supervised-token counts reported separately.",
+    "common_data_for_all": "Navigation, input/output contract, evidence-based edits, necessary manual validation, patch delivery.",
+    "data_policy": "Use additional eligible tasks across repositories to provide specialty volume; do not infer training quantity from 129 public tasks or treat duplicate trajectories as independent tasks.",
+    "rank_transfer": "No implicit r32-to-r128 padding, r128-to-r32 truncation, or cross-target weight copying. Any later explicit transfer would need separate scaling and behavior verification."
+  },
+  "routing_design": {
+    "available_inputs": "Problem statement and observations from current base snapshot only.",
+    "controller": "G with the same official 31B base variant as S/F/R; separate declarative agent configurations bind each adapter.",
+    "default": "G continues when evidence is unclear; choose one main specialist when a concrete mechanism is established.",
+    "composition": "One adapter per agent request; sequential delegation does not add or merge multiple LoRA weights.",
+    "measure": "Compare G against the system using actual routing; gold mechanism selection is only an upper-bound diagnostic."
+  },
+  "pure_specialists_alternative": {
+    "status": "Alternative if four disjoint specialists are specifically desired; less robust for unknown tasks.",
+    "initial_counts": {
+      "A": 47,
+      "B": 31,
+      "C": 31,
+      "D": 20
+    },
+    "m8_reassignments": {
+      "fastapi_15030": "C",
+      "fastapi_15745": "C",
+      "fastapi_15785": "C",
+      "rich_4070": "B"
+    },
+    "revised_counts": {
+      "A": 47,
+      "B": 32,
+      "C": 34,
+      "D": 16
+    },
+    "limitation": "Remaining D is heterogeneous and has 16 public examples; this alone is not adequate evidence for its training volume or specialization benefit."
+  },
+  "tasks": [
+    {
+      "id": "fastapi_15661",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M8",
+      "offline_default_owner": "G",
+      "additional_expert_affinities": [
+        "S"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_15588",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M1",
+      "offline_default_owner": "G",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_15589",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M2",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_15030",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M8",
+      "offline_default_owner": "G",
+      "additional_expert_affinities": [
+        "F",
+        "S"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14962",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M2",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_15280",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M1",
+      "offline_default_owner": "G",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14964",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M7",
+      "offline_default_owner": "R",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_15023",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M4",
+      "offline_default_owner": "F",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14986",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M4",
+      "offline_default_owner": "F",
+      "additional_expert_affinities": [
+        "S"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14978",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M3",
+      "offline_default_owner": "F",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "requests_7505",
+      "repo": "psf/requests",
+      "primary_mechanism": "M7",
+      "offline_default_owner": "R",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "requests_7502",
+      "repo": "psf/requests",
+      "primary_mechanism": "M7",
+      "offline_default_owner": "R",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "requests_7433",
+      "repo": "psf/requests",
+      "primary_mechanism": "M7",
+      "offline_default_owner": "R",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "requests_7427",
+      "repo": "psf/requests",
+      "primary_mechanism": "M1",
+      "offline_default_owner": "G",
+      "additional_expert_affinities": [
+        "S"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "requests_7315",
+      "repo": "psf/requests",
+      "primary_mechanism": "M2",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "requests_7328",
+      "repo": "psf/requests",
+      "primary_mechanism": "M4",
+      "offline_default_owner": "F",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "requests_7309",
+      "repo": "psf/requests",
+      "primary_mechanism": "M2",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "requests_7205",
+      "repo": "psf/requests",
+      "primary_mechanism": "M1",
+      "offline_default_owner": "G",
+      "additional_expert_affinities": [
+        "R"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_4070",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M8",
+      "offline_default_owner": "G",
+      "additional_expert_affinities": [
+        "R"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_4077",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M7",
+      "offline_default_owner": "R",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_4079",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M2",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [
+        "F"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_4076",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M2",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_4075",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M1",
+      "offline_default_owner": "G",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_4006",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M5",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14258",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M1",
+      "offline_default_owner": "G",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14851",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M7",
+      "offline_default_owner": "R",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14873",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M4",
+      "offline_default_owner": "F",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_13920",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M6",
+      "offline_default_owner": "R",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14794",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M6",
+      "offline_default_owner": "R",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14786",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M2",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14492",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M1",
+      "offline_default_owner": "G",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14479",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M1",
+      "offline_default_owner": "G",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14463",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M4",
+      "offline_default_owner": "F",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_12942",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M6",
+      "offline_default_owner": "R",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14099",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M4",
+      "offline_default_owner": "F",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14609",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M7",
+      "offline_default_owner": "R",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14372",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M7",
+      "offline_default_owner": "R",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14349",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M2",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14512",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M6",
+      "offline_default_owner": "R",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14487",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M2",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_11355",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M6",
+      "offline_default_owner": "R",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14485",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M6",
+      "offline_default_owner": "R",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14482",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M3",
+      "offline_default_owner": "F",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14306",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M3",
+      "offline_default_owner": "F",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14458",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M6",
+      "offline_default_owner": "R",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14459",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M3",
+      "offline_default_owner": "F",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14448",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M6",
+      "offline_default_owner": "R",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14455",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M5",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_9753",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M6",
+      "offline_default_owner": "R",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14430",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M6",
+      "offline_default_owner": "R",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_5077",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M6",
+      "offline_default_owner": "R",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_9555",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M6",
+      "offline_default_owner": "R",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14361",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M1",
+      "offline_default_owner": "G",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_13207",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M2",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14360",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M2",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14356",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M2",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_5624",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M4",
+      "offline_default_owner": "F",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14419",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M4",
+      "offline_default_owner": "F",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14301",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M3",
+      "offline_default_owner": "F",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14262",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M4",
+      "offline_default_owner": "F",
+      "additional_expert_affinities": [
+        "R"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14266",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M5",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14246",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M3",
+      "offline_default_owner": "F",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14186",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M7",
+      "offline_default_owner": "R",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_9425",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M6",
+      "offline_default_owner": "R",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_13713",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M3",
+      "offline_default_owner": "F",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14077",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M7",
+      "offline_default_owner": "R",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3718",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M3",
+      "offline_default_owner": "F",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3934",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M4",
+      "offline_default_owner": "F",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3953",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M5",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3944",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M1",
+      "offline_default_owner": "G",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3942",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M1",
+      "offline_default_owner": "G",
+      "additional_expert_affinities": [
+        "F"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3938",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M2",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [
+        "F"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3882",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M3",
+      "offline_default_owner": "F",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3894",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M6",
+      "offline_default_owner": "R",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3935",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M5",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [
+        "F"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3905",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M4",
+      "offline_default_owner": "F",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3930",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M8",
+      "offline_default_owner": "G",
+      "additional_expert_affinities": [
+        "S"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "httpx_3672",
+      "repo": "encode/httpx",
+      "primary_mechanism": "M4",
+      "offline_default_owner": "F",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14791",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M2",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_15800",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M8",
+      "offline_default_owner": "G",
+      "additional_expert_affinities": [
+        "F",
+        "S"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_15785",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M8",
+      "offline_default_owner": "G",
+      "additional_expert_affinities": [
+        "F"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14371",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M2",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [
+        "R",
+        "F"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14605",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M7",
+      "offline_default_owner": "R",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_15763",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M5",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14583",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M7",
+      "offline_default_owner": "R",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_15745",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M8",
+      "offline_default_owner": "G",
+      "additional_expert_affinities": [
+        "F"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14297",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M6",
+      "offline_default_owner": "R",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14303",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M2",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_13537",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M1",
+      "offline_default_owner": "G",
+      "additional_expert_affinities": [
+        "S",
+        "F"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14953",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M2",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_13786",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M1",
+      "offline_default_owner": "G",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_14616",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M2",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "fastapi_11194",
+      "repo": "fastapi/fastapi",
+      "primary_mechanism": "M1",
+      "offline_default_owner": "G",
+      "additional_expert_affinities": [
+        "S",
+        "R"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "requests_6757",
+      "repo": "psf/requests",
+      "primary_mechanism": "M7",
+      "offline_default_owner": "R",
+      "additional_expert_affinities": [
+        "S"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "requests_6629",
+      "repo": "psf/requests",
+      "primary_mechanism": "M7",
+      "offline_default_owner": "R",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "requests_6644",
+      "repo": "psf/requests",
+      "primary_mechanism": "M2",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "requests_6589",
+      "repo": "psf/requests",
+      "primary_mechanism": "M2",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "requests_6592",
+      "repo": "psf/requests",
+      "primary_mechanism": "M1",
+      "offline_default_owner": "G",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3180",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M5",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3486",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M8",
+      "offline_default_owner": "G",
+      "additional_expert_affinities": [
+        "R",
+        "S",
+        "F"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3777",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M3",
+      "offline_default_owner": "F",
+      "additional_expert_affinities": [
+        "R"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3468",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M4",
+      "offline_default_owner": "F",
+      "additional_expert_affinities": [
+        "R"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3782",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M5",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [
+        "F"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3772",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M5",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [
+        "F"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3296",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M3",
+      "offline_default_owner": "F",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3675",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M3",
+      "offline_default_owner": "F",
+      "additional_expert_affinities": [
+        "R"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3676",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M3",
+      "offline_default_owner": "F",
+      "additional_expert_affinities": [
+        "R"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3518",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M3",
+      "offline_default_owner": "F",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3535",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M1",
+      "offline_default_owner": "G",
+      "additional_expert_affinities": [
+        "S"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3521",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M5",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3506",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M5",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3480",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M5",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [
+        "F"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3472",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M6",
+      "offline_default_owner": "R",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3454",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M1",
+      "offline_default_owner": "G",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3471",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M2",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [
+        "F"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3470",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M4",
+      "offline_default_owner": "F",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3469",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M1",
+      "offline_default_owner": "G",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3052",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M3",
+      "offline_default_owner": "F",
+      "additional_expert_affinities": [
+        "S"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3278",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M1",
+      "offline_default_owner": "G",
+      "additional_expert_affinities": [
+        "R"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_2943",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M4",
+      "offline_default_owner": "F",
+      "additional_expert_affinities": [
+        "S"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_2725",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M1",
+      "offline_default_owner": "G",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3105",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M3",
+      "offline_default_owner": "F",
+      "additional_expert_affinities": [
+        "R"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3130",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M2",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [
+        "F"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3043",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M1",
+      "offline_default_owner": "G",
+      "additional_expert_affinities": [
+        "R"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3067",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M1",
+      "offline_default_owner": "G",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3006",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M6",
+      "offline_default_owner": "R",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3064",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M1",
+      "offline_default_owner": "G",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3063",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M2",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    },
+    {
+      "id": "rich_3061",
+      "repo": "Textualize/rich",
+      "primary_mechanism": "M2",
+      "offline_default_owner": "S",
+      "additional_expert_affinities": [
+        "F"
+      ],
+      "generalist_training_family_coverage": true,
+      "training_assignment_executed": false,
+      "online_route_measured": false,
+      "label_basis": "Offline mechanism analysis uses public reference patches. Online router must not see these labels, gold patches or verification patches."
+    }
+  ],
+  "rank_by_adapter": {
+    "G": 128,
+    "S": 32,
+    "F": 32,
+    "R": 32
+  },
+  "training_compute_dtype": "bfloat16",
+  "adapter_export_dtype": "bfloat16",
+  "target_scope": "language-model text backbone only",
+  "selected_weight_budget": {
+    "tensor_bytes": 3166535680,
+    "GiB": 2.949066162109375,
+    "headroom_MiB_before_headers_and_other_files": 52.15625,
+    "size_details": "sources/four-adapter-size-calculation.json"
+  }
+}

@@ -6,6 +6,8 @@
 
 逐题依据：[task-catalog.md](task-catalog.md)；机器可读目录：[task-catalog.json](task-catalog.json)；评分实现复核：[scoring.md](scoring.md)。
 
+面向训练与部署的四个adapter分工见 [four-adapter-plan.md](four-adapter-plan.md)：保留八类分析标签，采用通用G + 表示算法S + 流转状态F + 动态兼容R，避免把机制分析类别直接当成互斥专家。 当前用户选定G=r128（q/o+MLP五投影）、S/F/R=r32（七投影），全部BF16；估计纯权重2.949GiB。
+
 ## 官方究竟如何评分
 
 正式分数是当前评测 split 中通过完整验收的任务比例：
@@ -21,6 +23,8 @@
 必须区分官方数据筛选说明和实际验证代码：公开验证器通常执行 **test_patch 涉及的整份测试文件**，同时核对必过节点，不保证每次都执行整个仓库测试。它要求 pytest 正常退出、JUnit 确有通过测试且无 failure/error。required 节点不能 skip；无关测试可 skip。公开 129 题全都没有 FAIL_TO_PASS/PASS_TO_PASS 字段，因此通常从 test_patch 抽取函数名作为 required fallback。完整分支及行号见 [评分复核](scoring.md)。
 
 [官方 Data](https://www.kaggle.com/competitions/gemma-4-developer-agent/data) 将这 129 题定义为公共开发/训练数据。排行榜是另一套隐藏任务，官方写约 120 题、公榜/私榜约各半，来自私有仓库。不能把开发集解决率当公榜成绩，也不能用下面的类别占比假定隐藏分布。
+
+训练数据的数量、来源与能力匹配方法见 [data-preparation-plan.md](data-preparation-plan.md)。Verified Focal Agent RL首批96题已完成逐题来源和机制审阅，G36/S20/F20/R20，S2/F2/R2/R5各4题；已推进本地官方六工具重放并保存完整验证通过的人工示范。实际成功数、未重放数与CPU环境边界见 [96题说明](vfarl/pilot96/README.md) 和 [真实重放结果](vfarl/replay/replay-summary.json)。没有模型on-policy数据、已验证动作对或GPU训练。
 
 ## 数据边界与审阅范围
 
