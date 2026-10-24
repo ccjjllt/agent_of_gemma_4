@@ -4,10 +4,11 @@
 
 ## 当前进展
 
-截至仓库最新记录（2026-10-23）：
+截至仓库最新记录（2026-10-24）：
 
 - **正式最好成绩为 0.15**。最新 runtime-v2 提交 `57471497` 已 COMPLETE，与旧最好持平；[官方回执](research/014/submission/runtime-v2/README.md)。
-- **当前主线为 P016**：公开专家轨迹的大规模后训练准备、可恢复训练与同一 Agent 的权重对照；[执行记录](research/016/README.md)、[研究计划](docs/plan/016-large-scale-posttraining-handoff.md)。已完成 **677题、69仓、约238万监督token** 的完整原生三工具SFT语料v2，续训/新阶段初始化已做CPU核对；等待用户GPU服务器做真实容量与吞吐实验，本轮未启动GPU。
+- **P016首轮主训练已完成**：4×A40上完成 **537个完整问题、68仓、68/68次更新、1 epoch**，共7,119,739输入/1,291,819监督tokens，全部≤16K；2026-10-23 17:40正常退出，最终adapter和七个完整checkpoint已备份至Drive。真实断点恢复已在A40验证；[执行记录](research/016/README.md)、[最终摘要](research/016/training/main-short-training/final-result-summary.json)。原677题版本是另一数据版本，不能当成本次实际训练量。
+- **下一阶段为P017，方案已形成、尚未执行**：[Kaggle权重迁移与提分交接](docs/plan/017-kaggle-weight-transfer-and-score-handoff.md)。固定runtime-v2做同期Base／Step-68修复比较，再用训练外新面板确认，按工具协议、NF4→CT、验证恢复及耗时证据决定后续改进。最终adapter尚未在官方运行时加载，无新增修复或正式提分证据。
 - P015 已完成 31B FSDP 三次真实容量更新、独立 adapter 导出和 CT 请求路由；开发面板 base 为 **5/12**。后续三题 action RFT 作业现已回收，状态为取消，只确认第一步更新，未见最终导出；[真实回收记录](research/016/p015-recovery/actual-result.json)。权重 A/B 尚无结果，不能据此宣称修复收益。
 
 这里汇总的是仓库已保存的事实；作业与配额的最新状态以对应轮次原始记录为准。

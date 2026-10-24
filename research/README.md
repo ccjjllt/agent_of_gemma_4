@@ -1,6 +1,8 @@
 # 研究索引
 
-截至 2026-10-23，当前主线为 **P016：公开专家轨迹大规模后训练准备**，实际数据、续训和协议迁移判断见 [P016 执行记录](016/README.md)。已完成677题/69仓/约238万监督token的完整原生三工具语料v2，下一步由用户提供GPU服务器做容量、吞吐和续训实测，本轮未启动GPU。正式最好成绩仍为 **0.15**；最近正式提交 `57471497` 已 COMPLETE、无错误，与旧最好持平。[正式回执与判断](014/submission/runtime-v2/README.md)
+截至 2026-10-24，**P016首轮正式主训练已完成**：537个完整问题、68仓、7,119,739输入/1,291,819监督tokens、68/68更新、1 epoch，10月23日17:40正常退出；最终adapter和全部七个checkpoint已完成Drive备份，真续训已在A40实测。见 [P016执行记录](016/README.md)。原677题语料不是此次实际训练版本。
+
+下一阶段 [P017：Kaggle权重迁移与提分交接](../docs/plan/017-kaggle-weight-transfer-and-score-handoff.md) 已形成方案，尚未执行。最终adapter尚未在官方运行时加载，没有同期权重修复结果。正式最好成绩仍为 **0.15**；最近已保存正式提交 `57471497` COMPLETE、无错误，与旧最好持平。[正式回执与判断](014/submission/runtime-v2/README.md)
 
 ## P015 运行基础
 
@@ -31,7 +33,8 @@
 | 013 | 31B 修复诊断、行为 SFT 与后续评测准备；后续事实由 P014 更新 | [执行记录](013/README.md) |
 | 014 | 31B/12B 修复对照、真实提交与整体超时修复；runtime-v2 正式 0.15，无提分 | [执行记录](014/README.md)、[最终正式结果](014/submission/runtime-v2/README.md) |
 | 015 | 31B 容量、同协议采样与权重 A/B 准备；小RFT作业已取消，无提分证据 | [执行记录](015/README.md) |
-| 016 | 当前公开专家轨迹供给、可恢复训练和固定Agent迁移准备；CPU执行中 | [执行记录](016/README.md)、[交接方案](../docs/plan/016-large-scale-posttraining-handoff.md) |
+| 016 | 537题/68仓/68步主训练及完整备份完成，官方CT迁移与修复收益待评估 | [执行记录](016/README.md)、[历史交接方案](../docs/plan/016-large-scale-posttraining-handoff.md) |
+| 017 | 固定Agent的权重对照、缺陷诊断与后续提分；方案完成，尚未执行 | [交接方案](../docs/plan/017-kaggle-weight-transfer-and-score-handoff.md) |
 
 P004 只有 [针对失败行为的 LoRA 计划](../docs/plan/004-targeted-lora.md)，没有独立 `research/004/`；P001 的早期基线见 [基线进展](../docs/progress/001-baseline.md) 和根目录的 `results/`。
 
