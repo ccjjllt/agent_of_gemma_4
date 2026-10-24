@@ -8,8 +8,8 @@
 
 - **正式最好成绩为 0.15**。最新 runtime-v2 提交 `57471497` 已 COMPLETE，与旧最好持平；[官方回执](research/014/submission/runtime-v2/README.md)。
 - **P016首轮主训练已完成**：4×A40上完成 **537个完整问题、68仓、68/68次更新、1 epoch**，共7,119,739输入/1,291,819监督tokens，全部≤16K；2026-10-23 17:40正常退出，最终adapter和七个完整checkpoint已备份至Drive。真实断点恢复已在A40验证；[执行记录](research/016/README.md)、[最终摘要](research/016/training/main-short-training/final-result-summary.json)。原677题版本是另一数据版本，不能当成本次实际训练量。
-- **下一阶段为P017，方案已形成、尚未执行**：[Kaggle权重迁移与提分交接](docs/plan/017-kaggle-weight-transfer-and-score-handoff.md)。固定runtime-v2做同期Base／Step-68修复比较，再用训练外新面板确认，按工具协议、NF4→CT、验证恢复及耗时证据决定后续改进。最终adapter尚未在官方运行时加载，无新增修复或正式提分证据。
-- P015 已完成 31B FSDP 三次真实容量更新、独立 adapter 导出和 CT 请求路由；开发面板 base 为 **5/12**。后续三题 action RFT 作业现已回收，状态为取消，只确认第一步更新，未见最终导出；[真实回收记录](research/016/p015-recovery/actual-result.json)。权重 A/B 尚无结果，不能据此宣称修复收益。
+- **P017权重对照已完成，当前保留Base**：[结果与下一步](research/017/inference/results-and-next-step.md)、[完整执行记录](research/017/README.md)、[交接方案](docs/plan/017-kaggle-weight-transfer-and-score-handoff.md)。最终Step-68已核对恢复并在jiyujia官方CT v2真实加载；旧12题Base6/12、Step-68 6/12（W1/L1、净0），新16题/7仓单活动Agent确认为Base14/16、Step-68 9/16（W0/L5、净−5）。全部配对有效；累计GPU配额差额6.53h，剩23.47h。没有新正式提交。
+- P015 已完成 31B FSDP 三次真实容量更新、独立 adapter 导出和 CT 请求路由；开发面板 base 为 **5/12**。后续三题 action RFT 作业现已回收，状态为取消，只确认第一步更新，未见最终导出；[真实回收记录](research/016/p015-recovery/actual-result.json)。该旧RFT权重未完成完整A/B；本轮P017评估的是另行完成的537题Step-68，不混用产物。
 
 这里汇总的是仓库已保存的事实；作业与配额的最新状态以对应轮次原始记录为准。
 
@@ -17,7 +17,7 @@
 
 | 目录 | 用途与入口 |
 | --- | --- |
-| [research/](research/README.md) | 按轮次保存研究实现、来源、冻结清单、实验结果与提交回执；当前看 `016/` |
+| [research/](research/README.md) | 按轮次保存研究实现、来源、冻结清单、实验结果与提交回执；当前看 `017/` |
 | [training/](training/README.md) | SFT、DDP/FSDP、编码与导出代码；`configs/` 为配方，`artifacts/` 为本地数据产物 |
 | [notebooks/](notebooks/README.md) | Kaggle 历史载体按轮次归类，`builders/` 集中存放生成器 |
 | [docs/](docs/README.md) | 研究计划、进展记录及本次目录整理说明 |

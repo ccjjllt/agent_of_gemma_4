@@ -1,0 +1,72 @@
+{
+  "instance_id": "reata__sqllineage-19",
+  "repo": "reata/sqllineage",
+  "base_commit": "2901dd193c45e4ae0aab792ac0aaa11a04a2de1b",
+  "license_name": "MIT License",
+  "image_name": "jierun/sweb.eval.x86_64.reata_1776_sqllineage-19:latest",
+  "problem_statement": "multi-line sql causes AssertionError\n```sql\r\nSELECT * FROM\r\ntab1\r\n```\r\ncauses following exception\r\n\r\nTraceback (most recent call last):\r\n  File \"/home/admin/.pyenv/versions/3.6.8/lib/python3.6/runpy.py\", line 193, in _run_module_as_main\r\n    \"__main__\", mod_spec)\r\n  File \"/home/admin/.pyenv/versions/3.6.8/lib/python3.6/runpy.py\", line 85, in _run_code\r\n    exec(code, run_globals)\r\n  File \"/home/admin/repos/sqllineage/sqllineage/core.py\", line 131, in <module>\r\n    main()\r\n  File \"/home/admin/repos/sqllineage/sqllineage/core.py\", line 119, in main\r\n    print(LineageParser(sql))\r\n  File \"/home/admin/repos/sqllineage/sqllineage/core.py\", line 23, in __init__\r\n    self._extract_from_token(stmt)\r\n  File \"/home/admin/repos/sqllineage/sqllineage/core.py\", line 75, in _extract_from_token\r\n    assert isinstance(sub_token, Identifier)\r\nAssertionError",
+  "patch": "diff --git a/sqllineage/core.py b/sqllineage/core.py\nindex 2f5e0b6..fbf17f2 100644\n--- a/sqllineage/core.py\n+++ b/sqllineage/core.py\n@@ -4,7 +4,7 @@ from typing import List, Set\n \n import sqlparse\n from sqlparse.sql import Function, Identifier, Parenthesis, Statement, TokenList\n-from sqlparse.tokens import Keyword, Token, Whitespace\n+from sqlparse.tokens import Keyword, Token\n \n SOURCE_TABLE_TOKENS = ('FROM', 'JOIN', 'INNER JOIN', 'LEFT JOIN', 'RIGHT JOIN', 'LEFT OUTER JOIN', 'RIGHT OUTER JOIN',\n                        'FULL OUTER JOIN', 'CROSS JOIN')\n@@ -69,7 +69,7 @@ Target Tables:\n                 self._target_tables.add(sub_token.get_alias())\n                 continue\n             if source_table_token_flag:\n-                if sub_token.ttype == Whitespace:\n+                if sub_token.is_whitespace:\n                     continue\n                 else:\n                     assert isinstance(sub_token, Identifier)\n@@ -82,7 +82,7 @@ Target Tables:\n                         self._source_tables.add(sub_token.get_real_name())\n                     source_table_token_flag = False\n             elif target_table_token_flag:\n-                if sub_token.ttype == Whitespace:\n+                if sub_token.is_whitespace:\n                     continue\n                 elif isinstance(sub_token, Function):\n                     # insert into tab (col1, col2), tab (col1, col2) will be parsed as Function\n@@ -95,7 +95,7 @@ Target Tables:\n                     self._target_tables.add(sub_token.get_real_name())\n                     target_table_token_flag = False\n             elif temp_table_token_flag:\n-                if sub_token.ttype == Whitespace:\n+                if sub_token.is_whitespace:\n                     continue\n                 else:\n                     assert isinstance(sub_token, Identifier)\n",
+  "test_patch": "diff --git a/tests/test_select.py b/tests/test_select.py\nindex 49fe323..8837091 100644\n--- a/tests/test_select.py\n+++ b/tests/test_select.py\n@@ -5,6 +5,11 @@ def test_select():\n     helper(\"SELECT col1 FROM tab1\", {\"tab1\"})\n \n \n+def test_select_multi_line():\n+    helper(\"\"\"SELECT col1 FROM\n+tab1\"\"\", {\"tab1\"})\n+\n+\n def test_select_asterisk():\n     helper(\"SELECT * FROM tab1\", {\"tab1\"})\n \n",
+  "FAIL_TO_PASS": [
+    "tests/test_select.py::test_select_multi_line"
+  ],
+  "PASS_TO_PASS": [
+    "tests/test_select.py::test_select",
+    "tests/test_select.py::test_select_asterisk",
+    "tests/test_select.py::test_select_value",
+    "tests/test_select.py::test_select_function",
+    "tests/test_select.py::test_select_with_where",
+    "tests/test_select.py::test_select_with_comment",
+    "tests/test_select.py::test_select_keyword_as_column_alias",
+    "tests/test_select.py::test_select_with_table_alias",
+    "tests/test_select.py::test_select_count",
+    "tests/test_select.py::test_select_subquery",
+    "tests/test_select.py::test_select_inner_join",
+    "tests/test_select.py::test_select_join",
+    "tests/test_select.py::test_select_left_join",
+    "tests/test_select.py::test_select_left_semi_join",
+    "tests/test_select.py::test_select_left_semi_join_with_on",
+    "tests/test_select.py::test_select_right_join",
+    "tests/test_select.py::test_select_full_outer_join",
+    "tests/test_select.py::test_select_full_outer_join_with_full_as_alias",
+    "tests/test_select.py::test_select_cross_join",
+    "tests/test_select.py::test_select_cross_join_with_on",
+    "tests/test_select.py::test_select_join_with_subquery",
+    "tests/test_select.py::test_with_select"
+  ],
+  "FAIL_TO_FAIL": [],
+  "PASS_TO_FAIL": [],
+  "test_cmd": "LANG=C.UTF-8 LC_ALL=C.UTF-8 pytest --no-header -rA --tb=line --color=no -p no:cacheprovider -W ignore::DeprecationWarning tests/test_select.py",
+  "eval_cmd": "#!/bin/bash\nset -uxo pipefail\nsource /opt/miniconda3/bin/activate\nconda activate testbed\ncd /testbed\ngit config --global --add safe.directory /testbed\ncd /testbed\ngit status\ngit show\ngit -c core.fileMode=false diff 2901dd193c45e4ae0aab792ac0aaa11a04a2de1b\nsource /opt/miniconda3/bin/activate\nconda activate testbed\nLANG=C.UTF-8 LC_ALL=C.UTF-8 pip install -e .\ngit checkout 2901dd193c45e4ae0aab792ac0aaa11a04a2de1b tests/test_select.py\ngit apply -v - <<'EOF_114329324912'\ndiff --git a/tests/test_select.py b/tests/test_select.py\nindex 49fe323..8837091 100644\n--- a/tests/test_select.py\n+++ b/tests/test_select.py\n@@ -5,6 +5,11 @@ def test_select():\n     helper(\"SELECT col1 FROM tab1\", {\"tab1\"})\n \n \n+def test_select_multi_line():\n+    helper(\"\"\"SELECT col1 FROM\n+tab1\"\"\", {\"tab1\"})\n+\n+\n def test_select_asterisk():\n     helper(\"SELECT * FROM tab1\", {\"tab1\"})\n \n\nEOF_114329324912\n: '>>>>> Start Test Output'\nLANG=C.UTF-8 LC_ALL=C.UTF-8 pytest --no-header -rA --tb=line --color=no -p no:cacheprovider -W ignore::DeprecationWarning tests/test_select.py\n: '>>>>> End Test Output'\ngit checkout 2901dd193c45e4ae0aab792ac0aaa11a04a2de1b tests/test_select.py\n",
+  "environment": "name: sqllineage\nchannels:\n  - defaults\n  - https://repo.anaconda.com/pkgs/main\n  - https://repo.anaconda.com/pkgs/r\n  - conda-forge\ndependencies:\n  - _libgcc_mutex=0.1=main\n  - _openmp_mutex=5.1=1_gnu\n  - attrs=22.1.0=py37h06a4308_0\n  - ca-certificates=2025.2.25=h06a4308_0\n  - certifi=2022.12.7=py37h06a4308_0\n  - flit-core=3.6.0=pyhd3eb1b0_0\n  - importlib_metadata=4.11.3=hd3eb1b0_0\n  - iniconfig=1.1.1=pyhd3eb1b0_0\n  - ld_impl_linux-64=2.40=h12ee557_0\n  - libffi=3.4.4=h6a678d5_1\n  - libgcc-ng=11.2.0=h1234567_1\n  - libgomp=11.2.0=h1234567_1\n  - libstdcxx-ng=11.2.0=h1234567_1\n  - ncurses=6.4=h6a678d5_0\n  - openssl=1.1.1w=h7f8727e_0\n  - packaging=22.0=py37h06a4308_0\n  - pip=22.3.1=py37h06a4308_0\n  - pluggy=1.0.0=py37h06a4308_1\n  - py=1.11.0=pyhd3eb1b0_0\n  - pytest=7.1.2=py37h06a4308_0\n  - python=3.7.16=h7a1cb2a_0\n  - readline=8.2=h5eee18b_0\n  - setuptools=65.6.3=py37h06a4308_0\n  - sqlite=3.45.3=h5eee18b_0\n  - tk=8.6.14=h39e8969_0\n  - tomli=2.0.1=py37h06a4308_0\n  - typing_extensions=4.4.0=py37h06a4308_0\n  - wheel=0.38.4=py37h06a4308_0\n  - xz=5.6.4=h5eee18b_1\n  - zipp=3.11.0=py37h06a4308_0\n  - zlib=1.2.13=h5eee18b_1\n  - pip:\n      - flake8==5.0.4\n      - importlib-metadata==4.2.0\n      - mccabe==0.7.0\n      - pycodestyle==2.9.1\n      - pyflakes==2.5.0\n      - sqlparse==0.3.1\nprefix: /opt/conda/envs/sqllineage\n",
+  "version": "0.1",
+  "environment_setup_commit": "27346e0d6488cd5b3f9205543da78b973ce5d274",
+  "install_config": {
+    "env_vars": null,
+    "env_yml_path": null,
+    "install": "pip install -e .",
+    "log_parser": "parse_log_pytest",
+    "no_use_env": null,
+    "packages": "pytest",
+    "pip_packages": [
+      "pytest",
+      "flake8"
+    ],
+    "pre_install": null,
+    "python": "3.7",
+    "reqs_path": null,
+    "test_cmd": "pytest --no-header -rA --tb=line --color=no -p no:cacheprovider -W ignore::DeprecationWarning"
+  },
+  "requirements": "attrs @ file:///croot/attrs_1668696182826/work\ncertifi @ file:///croot/certifi_1671487769961/work/certifi\nflake8==5.0.4\nflit_core @ file:///opt/conda/conda-bld/flit-core_1644941570762/work/source/flit_core\nimportlib-metadata==4.2.0\niniconfig @ file:///home/linux1/recipes/ci/iniconfig_1610983019677/work\nmccabe==0.7.0\npackaging @ file:///croot/packaging_1671697413597/work\npluggy @ file:///tmp/build/80754af9/pluggy_1648042572264/work\npy @ file:///opt/conda/conda-bld/py_1644396412707/work\npycodestyle==2.9.1\npyflakes==2.5.0\npytest==7.1.2\n-e git+https://github.com/reata/sqllineage.git@2901dd193c45e4ae0aab792ac0aaa11a04a2de1b#egg=sqllineage\nsqlparse==0.3.1\ntomli @ file:///opt/conda/conda-bld/tomli_1657175507142/work\ntyping_extensions @ file:///croot/typing_extensions_1669924550328/work\nzipp @ file:///croot/zipp_1672387121353/work\n",
+  "dataset_name": "swerebench_p6_691",
+  "created_at": "2019-08-11 08:31:46",
+  "p017_source": {
+    "dataset": "Lego-X/SWE-Lego-Real-Data",
+    "revision": "879c96b91dfa321b4d1c621d149a9200f8a1d118",
+    "split": "resolved",
+    "row_index": 2018,
+    "file_sha256": "d9719b0f4cde7a57233cced8de37408b5578e8c8826771a8c5b9303de27f139b",
+    "freeze_sha256": "6ecbc7265ee2ceb89db609e7ff0693f1b45156b29f034949cf0f88f22c7f0619",
+    "teacher_messages_acquired": false
+  }
+}
