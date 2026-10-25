@@ -1,0 +1,66 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex dynamic worker source and command review 2026-10-25",
+  "review_notes": "{'trigger': '缺失defaults选择且配置了platform@foo包名', 'base_wrong_behavior': '错误提示显示group_path，缺少用户真正需覆盖的package key', 'production_symbols': '_check_not_missing', 'causal_change': '从GroupDefault.get_override_key生成提示，不能只显示group路径', 'discriminating_observation': {'kind': 'static_expected_discriminator_not_locally_executed', 'description': 'missing-at-global和missing-at-foo的错误提示必须不同'}, 'authoritative_bug_patch_paths': ['hydra/_internal/defaults_list.py'], 'bug_patch_direction': 'introduces_defect_not_a_repair_target'} Exact source-introduced defect was independently read and candidate inverse reviewed; source teacher patch not used. Inline diagnostic checks actual workspace import and behavior. Original F2P/P2P all retained; baseline reproduction is expected diagnostic error, not a policy mistake. Decorator2789 deliberately preserves both legacy and new names.",
+  "final_response": "Implemented the repair and confirmed the reported behavior with a direct reproduction against the workspace source.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "hydra/_internal/defaults_list.py",
+        "start_line": 303,
+        "end_line": 403
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hydra\nprint('workspace import:', hydra.__file__)\nassert Path(hydra.__file__).resolve().is_relative_to(Path.cwd().resolve())\nfrom hydra._internal.defaults_list import _check_not_missing\nfrom hydra.core.default_element import GroupDefault\nfrom hydra.errors import ConfigCompositionException\nclass Repo:\n    def get_group_options(self,*a,**kw):return [\"linux\",\"mac\"]\nfor package in (\"foo\", \"_global_\"):\n    default=GroupDefault(group=\"platform\",value=\"???\",package=package)\n    default.update_parent(\"\", \"\")\n    expected=default.get_override_key()\n    try:_check_not_missing(Repo(),default,False)\n    except ConfigCompositionException as exc:\n        print(str(exc));assert f\"'{expected}'\" in str(exc)\n    else:raise AssertionError(\"missing choice accepted\")\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "59a4e40c501e1354482369c1ad2af2fd4ec644691e1dd3ac18f4ae3b5bf5a02c"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "hydra/_internal/defaults_list.py",
+        "old_string": "            return True\n        if isinstance(default, GroupDefault):\n            group_path = default.get_group_path()\n            options = repo.get_group_options(\n                group_path,\n                results_filter=ObjectType.CONFIG,\n",
+        "new_string": "            return True\n        if isinstance(default, GroupDefault):\n            group_path = default.get_group_path()\n            override_key = default.get_override_key()\n            options = repo.get_group_options(\n                group_path,\n                results_filter=ObjectType.CONFIG,\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "hydra/_internal/defaults_list.py",
+        "old_string": "            opt_list = \"\\n\".join(\"\\t\" + x for x in options)\n            msg = dedent(\n                f\"\"\"\\\n                You must specify '{group_path}', e.g, {group_path}=<OPTION>\n                Available options:\n                \"\"\"\n            )\n",
+        "new_string": "            opt_list = \"\\n\".join(\"\\t\" + x for x in options)\n            msg = dedent(\n                f\"\"\"\\\n                You must specify '{override_key}', e.g, {override_key}=<OPTION>\n                Available options:\n                \"\"\"\n            )\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hydra\nprint('workspace import:', hydra.__file__)\nassert Path(hydra.__file__).resolve().is_relative_to(Path.cwd().resolve())\nfrom hydra._internal.defaults_list import _check_not_missing\nfrom hydra.core.default_element import GroupDefault\nfrom hydra.errors import ConfigCompositionException\nclass Repo:\n    def get_group_options(self,*a,**kw):return [\"linux\",\"mac\"]\nfor package in (\"foo\", \"_global_\"):\n    default=GroupDefault(group=\"platform\",value=\"???\",package=package)\n    default.update_parent(\"\", \"\")\n    expected=default.get_override_key()\n    try:_check_not_missing(Repo(),default,False)\n    except ConfigCompositionException as exc:\n        print(str(exc));assert f\"'{expected}'\" in str(exc)\n    else:raise AssertionError(\"missing choice accepted\")\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "59a4e40c501e1354482369c1ad2af2fd4ec644691e1dd3ac18f4ae3b5bf5a02c"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ]
+}

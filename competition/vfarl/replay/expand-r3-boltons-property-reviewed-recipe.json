@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex source/diff/original requirement and bounded inline diagnostic review 2026-10-25",
+  "review_notes": "Class access returns the actual cachedproperty descriptor; instance access invokes its wrapped function with that instance, then caches the result on that instance. The primary contract is descriptor binding, not cache eviction. Adjacent duplicate cachedproperty implementations are one family, not extra examples. Source Smith patch introduces the defect. Original required lists/full-file scope preserved; baseline diagnostic error is expected reproduction, not a policy failure.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "boltons/cacheutils.py",
+        "start_line": 613,
+        "end_line": 646
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib, sys, pytest\nmodule=importlib.import_module('boltons.cacheutils')\nactual=Path(module.__file__).resolve()\nexpected=(Path.cwd()/'boltons/cacheutils.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest(),'Python',sys.version.split()[0],'pytest',pytest.__version__)\nfrom boltons.cacheutils import cachedproperty\nclass Probe:\n def __init__(self,value):\n  self.value=value; self.calls=0\n @cachedproperty\n def payload(self):\n  self.calls += 1\n  return self.value,self\np=Probe(7)\ndescriptor=vars(Probe)['payload']\nclass_access=Probe.payload\ntry:\n first=p.payload; second=p.payload\n observed=(first[0],first[1] is p,second is first,p.calls)\nexcept Exception as exc:\n observed=type(exc).__name__,str(exc)\nprint('descriptor_class_identity',class_access is descriptor,'instance_binding_and_cache',observed)\nassert class_access is descriptor\nassert observed==(7,True,True,1)\nq=Probe(11)\nassert q.payload==(11,q) and q.calls==1 and p.calls==1\nprint('class_instance_descriptor_contract',True)\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "2f216387bdea6548e2c8f2db49562971c9f5b660f3a55d66faaa2402f358e420"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "boltons/cacheutils.py",
+        "old_string": "        if obj is None:\n            return None\n        value = obj.__dict__[self.func.__name__] = self.func(objtype)\n",
+        "new_string": "        if obj is None:\n            return self\n        value = obj.__dict__[self.func.__name__] = self.func(obj)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib, sys, pytest\nmodule=importlib.import_module('boltons.cacheutils')\nactual=Path(module.__file__).resolve()\nexpected=(Path.cwd()/'boltons/cacheutils.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest(),'Python',sys.version.split()[0],'pytest',pytest.__version__)\nfrom boltons.cacheutils import cachedproperty\nclass Probe:\n def __init__(self,value):\n  self.value=value; self.calls=0\n @cachedproperty\n def payload(self):\n  self.calls += 1\n  return self.value,self\np=Probe(7)\ndescriptor=vars(Probe)['payload']\nclass_access=Probe.payload\ntry:\n first=p.payload; second=p.payload\n observed=(first[0],first[1] is p,second is first,p.calls)\nexcept Exception as exc:\n observed=type(exc).__name__,str(exc)\nprint('descriptor_class_identity',class_access is descriptor,'instance_binding_and_cache',observed)\nassert class_access is descriptor\nassert observed==(7,True,True,1)\nq=Probe(11)\nassert q.payload==(11,q) and q.calls==1 and p.calls==1\nprint('class_instance_descriptor_contract',True)\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "2f216387bdea6548e2c8f2db49562971c9f5b660f3a55d66faaa2402f358e420"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Class access returns the actual cachedproperty descriptor; instance access invokes its wrapped function with that instance, then caches the result on that instance. The primary contract is descriptor binding, not cache eviction. Adjacent duplicate cachedproperty implementations are one family, not extra examples. The inline source-bound reproduction now passes. Patch submitted; clean full task verification is performed by the harness."
+}

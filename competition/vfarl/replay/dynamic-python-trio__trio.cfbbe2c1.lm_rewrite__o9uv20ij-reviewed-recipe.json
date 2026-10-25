@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex dynamic worker source and command review 2026-10-25",
+  "review_notes": "{'agent_visible_trigger': 'Enter a CancelScope with a relative deadline while another cancellation scope is active.', 'base_wrong_behavior': 'The mutation changes activation and deadline-registration order, keeps relative state incorrectly and manually registers deadlines outside the original guarded transition.', 'production_symbols': 'trio._core._run.CancelScope.__enter__; _might_change_registered_deadline', 'causal_change': 'Restore the single-entry check, calculate/consume relative_deadline at entry, and activate the child CancelStatus under the guarded deadline update.', 'discriminating_observation': 'A relative timeout starts at scope entry, nests under the current cancellation status, and expires according to source test_timeout_deadline_on_entry.'} Exact source-introduced defect was independently read and candidate inverse reviewed; source teacher patch not used. Inline diagnostic checks actual workspace import and behavior. Original F2P/P2P all retained; baseline reproduction is expected diagnostic error, not a policy mistake. Decorator2789 deliberately preserves both legacy and new names.",
+  "final_response": "Implemented the repair and confirmed the reported behavior with a direct reproduction against the workspace source.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/trio/_core/_run.py",
+        "start_line": 561,
+        "end_line": 661
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport trio\nprint('workspace import:', trio.__file__)\nassert Path(trio.__file__).resolve().is_relative_to(Path.cwd().resolve())\nimport trio\nfrom trio.testing import MockClock\nasync def observe():\n    start=trio.current_time()\n    with trio.move_on_after(5) as scope:\n        print(scope.deadline,start)\n        assert scope.deadline==start+5\n        await trio.sleep(10)\n    assert scope.cancelled_caught\ntrio.run(observe,clock=MockClock(autojump_threshold=0))\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "d42a1ae66241d6e33b5f8a7891c4dae2b2c831b76137636586ba249e4206be03"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/trio/_core/_run.py",
+        "old_string": "\n    @enable_ki_protection\n    def __enter__(self) -> Self:\n        if self._has_been_entered:\n            raise RuntimeError(\"Each CancelScope may only be used for a single 'with' block\")\n        self._has_been_entered = True\n    \n        task = current_task()\n        self._cancel_status = CancelStatus(self)\n        self._cancel_status.parent = task._cancel_status\n        task._activate_cancel_status(self._cancel_status)\n    \n        if self._relative_deadline != inf:\n            self._deadline = current_time() + self._relative_deadline\n    \n        if current_time() >= self._deadline:\n            self.cancel()\n        elif self._deadline != inf:\n            with self._might_change_registered_deadline():\n                self._registered_deadline = self._deadline\n                GLOBAL_RUN_CONTEXT.runner.deadlines.add(self._deadline, self)\n    \n        return self\n    def _close(self, exc: BaseException | None) -> BaseException | None:\n        if self._cancel_status is None:\n            new_exc = RuntimeError(\n",
+        "new_string": "\n    @enable_ki_protection\n    def __enter__(self) -> Self:\n        task = _core.current_task()\n        if self._has_been_entered:\n            raise RuntimeError(\n                \"Each CancelScope may only be used for a single 'with' block\",\n            )\n        self._has_been_entered = True\n\n        if self._relative_deadline != inf:\n            assert self._deadline == inf\n            self._deadline = current_time() + self._relative_deadline\n            self._relative_deadline = inf\n\n        if current_time() >= self._deadline:\n            self.cancel()\n        with self._might_change_registered_deadline():\n            self._cancel_status = CancelStatus(scope=self, parent=task._cancel_status)\n            task._activate_cancel_status(self._cancel_status)\n        return self\n\n    def _close(self, exc: BaseException | None) -> BaseException | None:\n        if self._cancel_status is None:\n            new_exc = RuntimeError(\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport trio\nprint('workspace import:', trio.__file__)\nassert Path(trio.__file__).resolve().is_relative_to(Path.cwd().resolve())\nimport trio\nfrom trio.testing import MockClock\nasync def observe():\n    start=trio.current_time()\n    with trio.move_on_after(5) as scope:\n        print(scope.deadline,start)\n        assert scope.deadline==start+5\n        await trio.sleep(10)\n    assert scope.cancelled_caught\ntrio.run(observe,clock=MockClock(autojump_threshold=0))\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "d42a1ae66241d6e33b5f8a7891c4dae2b2c831b76137636586ba249e4206be03"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ]
+}

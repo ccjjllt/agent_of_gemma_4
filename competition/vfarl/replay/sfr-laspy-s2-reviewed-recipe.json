@@ -1,0 +1,75 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "For ScaleAwarePointRecord with different coordinates systems, temporarily convert to writer header scaling then restore original metadata and exact packed XYZ in finally. PackedPointRecord still requires matching caller scaling; no unsupported rescaling guess. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "laspy/laswriter.py",
+        "start_line": 80,
+        "end_line": 150
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'laspy/laswriter.py').resolve()\ntry:\n module = importlib.import_module('laspy.laswriter')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport io\nimport numpy as np\nimport laspy\nheader=laspy.LasHeader(point_format=3)\nheader.scales=np.array([1.,1.,1.])\nheader.offsets=np.array([10.,10.,10.])\npoints=laspy.ScaleAwarePointRecord.zeros(2,point_format=header.point_format,scales=[.1,.5,1.],offsets=[0.,0.,0.])\npoints.x=[10.,12.]\npoints.y=[20.,22.]\npoints.z=[30.,32.]\nold=(points.scales.copy(),points.offsets.copy(),points.X.copy(),points.Y.copy(),points.Z.copy())\nwith io.BytesIO() as stream:\n with laspy.LasWriter(stream,header,closefd=False) as writer:\n  writer.write_points(points)\n stream.seek(0)\n result=laspy.read(stream)\n print(\"written_xyz\",result.xyz.tolist())\n assert np.array_equal(result.xyz,[[10.,20.,30.],[12.,22.,32.]])\nfor before,after in zip(old,(points.scales,points.offsets,points.X,points.Y,points.Z)):\n assert np.array_equal(before,after)\nprint(\"input_scaling_and_packed_coordinates_preserved\",True)\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "a6f29c40b9f3bd5e881d33513db5c5d6559a26bb99e96d6513894577b8fb0081"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "laspy/laswriter.py",
+        "old_string": "from typing import BinaryIO, Iterable, Optional, Union\n",
+        "new_string": "from typing import BinaryIO, Iterable, Optional, Union\n\nimport numpy as np\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "laspy/laswriter.py",
+        "old_string": "from .point.record import PackedPointRecord\n",
+        "new_string": "from .point.record import PackedPointRecord, ScaleAwarePointRecord\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "laspy/laswriter.py",
+        "old_string": "        self.header.grow(points)\n        self.point_writer.write_points(points)\n",
+        "new_string": "        restore_scaling = isinstance(points, ScaleAwarePointRecord) and (\n            np.any(points.scales != self.header.scales)\n            or np.any(points.offsets != self.header.offsets)\n        )\n        if restore_scaling:\n            original_scales, original_offsets = points.scales, points.offsets\n            original_coordinates = points.X.copy(), points.Y.copy(), points.Z.copy()\n            points.change_scaling(scales=self.header.scales, offsets=self.header.offsets)\n        try:\n            self.header.grow(points)\n            self.point_writer.write_points(points)\n        finally:\n            if restore_scaling:\n                points.scales, points.offsets = original_scales, original_offsets\n                points.X, points.Y, points.Z = original_coordinates\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'laspy/laswriter.py').resolve()\ntry:\n module = importlib.import_module('laspy.laswriter')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport io\nimport numpy as np\nimport laspy\nheader=laspy.LasHeader(point_format=3)\nheader.scales=np.array([1.,1.,1.])\nheader.offsets=np.array([10.,10.,10.])\npoints=laspy.ScaleAwarePointRecord.zeros(2,point_format=header.point_format,scales=[.1,.5,1.],offsets=[0.,0.,0.])\npoints.x=[10.,12.]\npoints.y=[20.,22.]\npoints.z=[30.,32.]\nold=(points.scales.copy(),points.offsets.copy(),points.X.copy(),points.Y.copy(),points.Z.copy())\nwith io.BytesIO() as stream:\n with laspy.LasWriter(stream,header,closefd=False) as writer:\n  writer.write_points(points)\n stream.seek(0)\n result=laspy.read(stream)\n print(\"written_xyz\",result.xyz.tolist())\n assert np.array_equal(result.xyz,[[10.,20.,30.],[12.,22.,32.]])\nfor before,after in zip(old,(points.scales,points.offsets,points.X,points.Y,points.Z)):\n assert np.array_equal(before,after)\nprint(\"input_scaling_and_packed_coordinates_preserved\",True)\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "a6f29c40b9f3bd5e881d33513db5c5d6559a26bb99e96d6513894577b8fb0081"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Added automatic scale-aware point conversion when writing. Inline checks confirm physical output coordinates and exact restoration of input scaling and packed coordinates. Patch submitted."
+}

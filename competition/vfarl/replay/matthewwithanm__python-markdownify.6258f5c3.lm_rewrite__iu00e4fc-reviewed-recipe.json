@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex general worker manual causal source/command review 2026-10-25",
+  "review_notes": "Restore correct sibling/start arithmetic, nesting-depth traversal and multiline indentation while preserving text and empty items.; exact buggy source compared to fixed upstream immutable snapshot; original Smith defect-introducing patch and causal mechanism reviewed, quarantined teacher patch never used. Original F2P/P2P retained, baseline and clean repaired Phase B required. Import binding asserts current workspace source. Validation asset injection occurs only in Phase B. Human-authored actions are not model rollouts or verified Focal pairs.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nimport importlib, pathlib\nm = importlib.import_module('markdownify')\np = pathlib.Path(m.__file__).resolve()\nprint(m.__name__, p)\nassert p.is_relative_to(pathlib.Path.cwd().resolve())\nPYREPLAY"
+      },
+      "reviewed_command_sha256": "8578c35954f20185a22798e701bda1db70a52ee3c4b96c440a849f795d4af0fe",
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "markdownify/__init__.py",
+        "start_line": 367,
+        "end_line": 425
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "markdownify/__init__.py",
+        "old_string": "\n    convert_ul = convert_list\n    convert_ol = convert_list\n\n    def convert_li(self, el, text, convert_as_inline):\n        \"\"\"Convert a list item to markdown format.\"\"\"\n        if convert_as_inline:\n            return ' ' + text.strip() + ' '\n    \n        parent = el.parent\n        if parent is not None and parent.name == 'ol':\n            # Find the index of this list item in its parent\n            index = 0\n            for i, child in enumerate(parent.find_all('li', recursive=False)):\n                if child is el:\n                    index = i\n                    break\n        \n            # Get the start attribute or default to 1\n            start = parent.get('start')\n            if start and start.isdigit():\n                index = int(start) + index - 1\n            else:\n                index += 1\n            \n            bullet = '%d.' % index\n        else:\n            # Get the bullet from options, cycling through the options\n            bullets = self.options['bullets']\n            depth = -1\n            ancestor = el\n            while ancestor:\n                if ancestor.name == 'li':\n                    depth += 1\n                ancestor = ancestor.parent\n            bullet = bullets[depth % len(bullets)]\n    \n        # Strip the text and prepend the bullet\n        text = text.strip()\n        if not text:\n            return bullet + ' \\n'\n    \n        # Handle text that contains multiple lines\n        lines = text.split('\\n')\n        if len(lines) > 1:\n            # Indent subsequent lines\n            for i in range(1, len(lines)):\n                if lines[i]:\n                    lines[i] = self.indent(lines[i], len(bullet) + 1)\n            text = '\\n'.join(lines)\n    \n        return bullet + ' ' + text + '\\n'\n    def convert_p(self, el, text, convert_as_inline):\n        if convert_as_inline:\n            return ' ' + text.strip() + ' '\n        if self.options['wrap']:\n            # Preserve newlines (and preceding whitespace) resulting\n",
+        "new_string": "\n    convert_ul = convert_list\n    convert_ol = convert_list\n\n    def convert_li(self, el, text, convert_as_inline):\n        parent = el.parent\n        if parent is not None and parent.name == 'ol':\n            if parent.get(\"start\") and str(parent.get(\"start\")).isnumeric():\n                start = int(parent.get(\"start\"))\n            else:\n                start = 1\n            bullet = '%s.' % (start + parent.index(el))\n        else:\n            depth = -1\n            while el:\n                if el.name == 'ul':\n                    depth += 1\n                el = el.parent\n            bullets = self.options['bullets']\n            bullet = bullets[depth % len(bullets)]\n        bullet = bullet + ' '\n        text = (text or '').strip()\n        text = self.indent(text, len(bullet))\n        if text:\n            text = bullet + text[len(bullet):]\n        return '%s\\n' % text\n\n    def convert_p(self, el, text, convert_as_inline):\n        if convert_as_inline:\n            return ' ' + text.strip() + ' '\n        if self.options['wrap']:\n            # Preserve newlines (and preceding whitespace) resulting\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nimport importlib, pathlib\nm = importlib.import_module('markdownify')\np = pathlib.Path(m.__file__).resolve()\nprint(m.__name__, p)\nassert p.is_relative_to(pathlib.Path.cwd().resolve())\nfrom markdownify import markdownify\nresult = markdownify('<ol start=\"3\"><li>A</li><li>B</li></ol>')\nprint(repr(result))\nassert '3. A\\n4. B' in result\nPYREPLAY"
+      },
+      "reviewed_command_sha256": "54a4c568a53b90d64994dd80f27e431a37968d16547c9c40a10558b357650eda",
+      "expected_status": "ok"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Implemented the repair and submitted the patch."
+}

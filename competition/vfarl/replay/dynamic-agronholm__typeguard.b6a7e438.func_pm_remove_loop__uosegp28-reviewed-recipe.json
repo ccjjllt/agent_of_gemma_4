@@ -1,0 +1,66 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex dynamic worker source and command review 2026-10-25",
+  "review_notes": "{'production_symbols': ['src/typeguard/_checkers.py::check_tuple', 'check_type_internal', 'NamedTuple.__annotations__'], 'trigger': 'Explicitly check a NamedTuple instance with a value incompatible with a named field annotation.', 'base_wrong_behavior': 'The removed loop leaves the annotation-aware tuple branch returning without checking any field.', 'causal_change': 'Restore recursive checking of each annotated field and the existing field error path.', 'discriminating_observation': 'Native13 accepts invalid Employee during checking;17 rejects its name as not str after edit14.', 'native_message_indices_0_based': [9, 13, 14, 17, 21, 25, 35, 53, 69]} Exact source-introduced defect was independently read and candidate inverse reviewed; source teacher patch not used. Inline diagnostic checks actual workspace import and behavior. Original F2P/P2P all retained; baseline reproduction is expected diagnostic error, not a policy mistake. Decorator2789 deliberately preserves both legacy and new names.",
+  "final_response": "Implemented the repair and confirmed the reported behavior with a direct reproduction against the workspace source.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/typeguard/_checkers.py",
+        "start_line": 354,
+        "end_line": 454
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport typeguard\nprint('workspace import:', typeguard.__file__)\nassert Path(typeguard.__file__).resolve().is_relative_to(Path.cwd().resolve())\nfrom typing import NamedTuple\nfrom typeguard import check_type, TypeCheckError\nclass Point(NamedTuple):\n    x: int\nassert check_type(Point(3), Point) == Point(3)\ntry: check_type(Point(\"wrong\"), Point)\nexcept TypeCheckError as exc:\n    print(str(exc)); assert \"attribute 'x'\" in str(exc)\nelse: raise AssertionError(\"NamedTuple field annotation was ignored\")\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "6758ef5d9bd05f87d2fe4ee9ad5114f6b8f970c47d7210c4ff2969b8f65373c2"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/typeguard/_checkers.py",
+        "old_string": "                f\"is not a named tuple of type {qualified_name(origin_type)}\"\n            )\n\n        return\n    elif not isinstance(value, tuple):\n        raise TypeCheckError(\"is not a tuple\")\n",
+        "new_string": "                f\"is not a named tuple of type {qualified_name(origin_type)}\"\n            )\n\n        for name, field_type in field_types.items():\n            try:\n                check_type_internal(getattr(value, name), field_type, memo)\n            except TypeCheckError as exc:\n                exc.append_path_element(f\"attribute {name!r}\")\n                raise\n\n        return\n    elif not isinstance(value, tuple):\n        raise TypeCheckError(\"is not a tuple\")\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/typeguard/_checkers.py",
+        "old_string": "            except TypeCheckError as exc:\n                exc.append_path_element(f\"item {i}\")\n                raise\n\ndef check_union(\n    value: Any,\n",
+        "new_string": "            except TypeCheckError as exc:\n                exc.append_path_element(f\"item {i}\")\n                raise\n\n\ndef check_union(\n    value: Any,\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport typeguard\nprint('workspace import:', typeguard.__file__)\nassert Path(typeguard.__file__).resolve().is_relative_to(Path.cwd().resolve())\nfrom typing import NamedTuple\nfrom typeguard import check_type, TypeCheckError\nclass Point(NamedTuple):\n    x: int\nassert check_type(Point(3), Point) == Point(3)\ntry: check_type(Point(\"wrong\"), Point)\nexcept TypeCheckError as exc:\n    print(str(exc)); assert \"attribute 'x'\" in str(exc)\nelse: raise AssertionError(\"NamedTuple field annotation was ignored\")\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "6758ef5d9bd05f87d2fe4ee9ad5114f6b8f970c47d7210c4ff2969b8f65373c2"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ]
+}

@@ -1,0 +1,75 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex source ownership, original required-node and CPU diagnostic review 2026-10-25",
+  "review_notes": "QNode copies must share the external device, qfunc and immutable references but create independent execute_kwargs, gradient_kwargs and TransformProgram containers. TransformDispatcher must copy.copy QNode, invoking that custom ownership contract, rather than deepcopy a non-pickleable device. This repair is based on the source task solution and reviewed against actual production contracts; no tests or official verifier are changed. Original 3 F2P+283 P2P are retained, including original JAX/TF/Torch CPU interface cases. Real before/after commands bind actual workspace source and record framework CPU devices.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "pennylane/qnode.py",
+        "start_line": 462,
+        "end_line": 505
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "pennylane/transforms/core/transform_dispatcher.py",
+        "start_line": 185,
+        "end_line": 225
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib, sys\nimport pennylane as qml\nimport jax\nimport tensorflow as tf\nimport torch\nimport copy\nprint('task_python',sys.version)\nprint('CPU_execution', 'jax',[(d.platform,str(d)) for d in jax.devices()], 'tensorflow',[(d.device_type,d.name) for d in tf.config.list_physical_devices()], 'torch',str(torch.tensor(0).device))\nassert all(d.platform=='cpu' for d in jax.devices())\nassert not tf.config.list_physical_devices('GPU')\nassert str(torch.tensor(0).device)=='cpu'\nfor name,relative in [('pennylane.qnode','pennylane/qnode.py'),('pennylane.transforms.core.transform_dispatcher','pennylane/transforms/core/transform_dispatcher.py')]:\n module=importlib.import_module(name)\n actual=Path(module.__file__).resolve()\n expected=(Path.cwd()/relative).resolve()\n print('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\n assert actual==expected,(actual,expected)\ndev=qml.device('default.qubit',wires=2)\n@qml.qnode(dev)\ndef circuit(x):\n qml.RX(x,wires=0)\n return qml.expval(qml.PauliZ(0))\ncopied=copy.copy(circuit)\nprint('copy_identity',copied.device is circuit.device,'execute_kwargs_shared',copied.execute_kwargs is circuit.execute_kwargs,'gradient_kwargs_shared',copied.gradient_kwargs is circuit.gradient_kwargs,'transform_program_shared',copied.transform_program is circuit.transform_program)\nassert copied.device is circuit.device\nassert copied.execute_kwargs is not circuit.execute_kwargs\nassert copied.gradient_kwargs is not circuit.gradient_kwargs\nassert copied.transform_program is not circuit.transform_program\ncopied.execute_kwargs['cache']=False\nassert copied.execute_kwargs['cache'] is False\nassert circuit.execute_kwargs['cache'] is not False\ntransformed=qml.transforms.cancel_inverses(circuit)\nprint('transform_device_shared',transformed.device is circuit.device)\nassert transformed.device is circuit.device\nassert abs(transformed(0.3)-circuit(0.3))<1e-10\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "2503e5eeeac182c5aa541f2606db0ddb3aa2eba82d17934233199521ae719514"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pennylane/qnode.py",
+        "old_string": "        functools.update_wrapper(self, func)\n        self._transform_program = qml.transforms.core.TransformProgram()\n\n    def __repr__(self):\n",
+        "new_string": "        functools.update_wrapper(self, func)\n        self._transform_program = qml.transforms.core.TransformProgram()\n\n    def __copy__(self):\n        copied_qnode = QNode.__new__(QNode)\n        for attr, value in vars(self).items():\n            if attr not in {\"execute_kwargs\", \"_transform_program\", \"gradient_kwargs\"}:\n                setattr(copied_qnode, attr, value)\n\n        copied_qnode.execute_kwargs = dict(self.execute_kwargs)\n        copied_qnode._transform_program = qml.transforms.core.TransformProgram(\n            self.transform_program\n        )  # pylint: disable=protected-access\n        copied_qnode.gradient_kwargs = dict(self.gradient_kwargs)\n        return copied_qnode\n\n    def __repr__(self):\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pennylane/transforms/core/transform_dispatcher.py",
+        "old_string": "        # pylint: disable=protected-access\n        if (\n            isinstance(qnode._original_device, qml.Device)\n            and hasattr(qnode._original_device, \"_state\")\n            and qml.math.is_abstract(qnode._original_device._state)\n        ):\n            qnode._original_device.reset()\n            qnode.device.reset()\n\n        qnode = copy.deepcopy(qnode)\n",
+        "new_string": "        qnode = copy.copy(qnode)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib, sys\nimport pennylane as qml\nimport jax\nimport tensorflow as tf\nimport torch\nimport copy\nprint('task_python',sys.version)\nprint('CPU_execution', 'jax',[(d.platform,str(d)) for d in jax.devices()], 'tensorflow',[(d.device_type,d.name) for d in tf.config.list_physical_devices()], 'torch',str(torch.tensor(0).device))\nassert all(d.platform=='cpu' for d in jax.devices())\nassert not tf.config.list_physical_devices('GPU')\nassert str(torch.tensor(0).device)=='cpu'\nfor name,relative in [('pennylane.qnode','pennylane/qnode.py'),('pennylane.transforms.core.transform_dispatcher','pennylane/transforms/core/transform_dispatcher.py')]:\n module=importlib.import_module(name)\n actual=Path(module.__file__).resolve()\n expected=(Path.cwd()/relative).resolve()\n print('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\n assert actual==expected,(actual,expected)\ndev=qml.device('default.qubit',wires=2)\n@qml.qnode(dev)\ndef circuit(x):\n qml.RX(x,wires=0)\n return qml.expval(qml.PauliZ(0))\ncopied=copy.copy(circuit)\nprint('copy_identity',copied.device is circuit.device,'execute_kwargs_shared',copied.execute_kwargs is circuit.execute_kwargs,'gradient_kwargs_shared',copied.gradient_kwargs is circuit.gradient_kwargs,'transform_program_shared',copied.transform_program is circuit.transform_program)\nassert copied.device is circuit.device\nassert copied.execute_kwargs is not circuit.execute_kwargs\nassert copied.gradient_kwargs is not circuit.gradient_kwargs\nassert copied.transform_program is not circuit.transform_program\ncopied.execute_kwargs['cache']=False\nassert copied.execute_kwargs['cache'] is False\nassert circuit.execute_kwargs['cache'] is not False\ntransformed=qml.transforms.cancel_inverses(circuit)\nprint('transform_device_shared',transformed.device is circuit.device)\nassert transformed.device is circuit.device\nassert abs(transformed(0.3)-circuit(0.3))<1e-10\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "2503e5eeeac182c5aa541f2606db0ddb3aa2eba82d17934233199521ae719514"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored QNode shallow-copy ownership: devices remain shared while mutable execution and gradient options and transform programs are copied. Transform dispatch preserves device identity and the inline CPU circuit result. Patch submitted."
+}

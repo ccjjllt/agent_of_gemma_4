@@ -1,0 +1,75 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual source hunk and original task requirement review 2026-10-25",
+  "review_notes": "EC2 must reject a missing security group before creating or storing a reservation, with the service-specific not-found exception. Publisher solution is collector-only. Original F2P/P2P and test_patch are retained verbatim; no model inference. Baseline and repaired clean Phase B determine eligibility.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "moto/ec2/models/instances.py",
+        "start_line": 16,
+        "end_line": 35
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib, py_compile\nm=importlib.import_module('moto.ec2.models.instances')\nactual=Path(m.__file__).resolve()\nexpected=(Path.cwd()/'moto/ec2/models/instances.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\npy_compile.compile(str(actual),doraise=True)\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "251cbd0a7ebc7ee81c455d9736957c58710795a916f825793b4594149eb41d98"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "moto/ec2/models/instances.py",
+        "old_string": "    InvalidInstanceIdError,\n    InvalidInstanceTypeError,\n    InvalidParameterValueErrorUnknownAttribute,\n    OperationNotPermitted4,\n)\nfrom ..utils import (\n",
+        "new_string": "    InvalidInstanceIdError,\n    InvalidInstanceTypeError,\n    InvalidParameterValueErrorUnknownAttribute,\n    InvalidSecurityGroupNotFoundError,\n    OperationNotPermitted4,\n)\nfrom ..utils import (\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "moto/ec2/models/instances.py",
+        "old_string": "        ):\n            if settings.EC2_ENABLE_INSTANCE_TYPE_VALIDATION:\n                raise InvalidInstanceTypeError(kwargs[\"instance_type\"])\n        new_reservation = Reservation()\n        new_reservation.id = random_reservation_id()\n\n        security_groups = [\n            self.get_security_group_by_name_or_id(name) for name in security_group_names\n",
+        "new_string": "        ):\n            if settings.EC2_ENABLE_INSTANCE_TYPE_VALIDATION:\n                raise InvalidInstanceTypeError(kwargs[\"instance_type\"])\n\n        security_groups = [\n            self.get_security_group_by_name_or_id(name) for name in security_group_names\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "moto/ec2/models/instances.py",
+        "old_string": "\n        for sg_id in kwargs.pop(\"security_group_ids\", []):\n            if isinstance(sg_id, str):\n                security_groups.append(self.get_security_group_from_id(sg_id))\n            else:\n                security_groups.append(sg_id)\n\n        self.reservations[new_reservation.id] = new_reservation\n\n        tags = kwargs.pop(\"tags\", {})\n",
+        "new_string": "\n        for sg_id in kwargs.pop(\"security_group_ids\", []):\n            if isinstance(sg_id, str):\n                sg = self.get_security_group_from_id(sg_id)\n                if sg is None:\n                    raise InvalidSecurityGroupNotFoundError(sg_id)\n                security_groups.append(sg)\n            else:\n                security_groups.append(sg_id)\n\n        new_reservation = Reservation()\n        new_reservation.id = random_reservation_id()\n\n        self.reservations[new_reservation.id] = new_reservation\n\n        tags = kwargs.pop(\"tags\", {})\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib, py_compile\nm=importlib.import_module('moto.ec2.models.instances')\nactual=Path(m.__file__).resolve()\nexpected=(Path.cwd()/'moto/ec2/models/instances.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\npy_compile.compile(str(actual),doraise=True)\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "251cbd0a7ebc7ee81c455d9736957c58710795a916f825793b4594149eb41d98"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "EC2 must reject a missing security group before creating or storing a reservation, with the service-specific not-found exception. Patch submitted; source imports and compilation completed. Full task verification is performed separately by the harness."
+}

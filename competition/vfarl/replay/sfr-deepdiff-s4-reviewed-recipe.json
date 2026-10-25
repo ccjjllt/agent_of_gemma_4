@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Restore traversal of old values without consuming fixed_indexes_values; process deletions only when the current old value matches and retain unrelated old values. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "deepdiff/delta.py",
+        "start_line": 700,
+        "end_line": 745
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'deepdiff/delta.py').resolve()\ntry:\n module = importlib.import_module('deepdiff.delta')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom deepdiff import Delta\noriginal=[5,1,3,1,4,4,6]\nchange={\"iterable_items_added_at_indexes\":{\"root\":{0:7,6:8,1:4,2:4,5:4,3:1}},\"iterable_items_removed_at_indexes\":{\"root\":{0:5,6:6}}}\nobserved=original+Delta(change)\nprint(\"repetition_delta\",observed)\nassert observed==[7,4,4,1,3,4,8]\nassert original==[5,1,3,1,4,4,6]\nfixed=[4]\nremaining={0:5}\nprobe=Delta({})\nretained=list(probe._do_ignore_order_get_old([5,4,4,3],remaining,fixed,\"root\"))\nprint(\"retained\",retained,\"fixed_input\",fixed)\nassert retained==[3]\nassert fixed==[4]\nassert remaining=={}\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "55d9d9374051abe38261524ec71a8c8e7614096b8d449662b764e00540751ea0"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "deepdiff/delta.py",
+        "old_string": "    def _do_ignore_order_get_old(self, obj, remove_indexes_per_path,\n        fixed_indexes_values, path_for_err_reporting):\n        \"\"\"\n        A generator that gets the old values in an iterable when the order was supposed to be ignored.\n        \"\"\"\n        for index, item in enumerate(obj):\n            # Skip items that are in the remove_indexes_per_path dictionary\n            if index in remove_indexes_per_path:\n                expected_value = remove_indexes_per_path[index]\n                if item != expected_value:\n                    self._raise_or_log(FAIL_TO_REMOVE_ITEM_IGNORE_ORDER_MSG.format(\n                        index, path_for_err_reporting, expected_value, item))\n                # Remove the index from the dictionary since we've processed it\n                remove_indexes_per_path.pop(index)\n                continue\n        \n            # Skip items that match values in fixed_indexes_values\n            # (since those will be added separately)\n            if item in fixed_indexes_values:\n                fixed_indexes_values.remove(item)\n                continue\n        \n            # Yield items that should be kept\n            yield item\n",
+        "new_string": "    def _do_ignore_order_get_old(self, obj, remove_indexes_per_path, fixed_indexes_values, path_for_err_reporting):\n        \"\"\"\n        A generator that gets the old values in an iterable when the order was supposed to be ignored.\n        \"\"\"\n        old_obj_index = -1\n        max_len = len(obj) - 1\n        while old_obj_index < max_len:\n            old_obj_index += 1\n            current_old_obj = obj[old_obj_index]\n            if current_old_obj in fixed_indexes_values:\n                continue\n            if old_obj_index in remove_indexes_per_path:\n                expected_obj_to_delete = remove_indexes_per_path.pop(old_obj_index)\n                if current_old_obj == expected_obj_to_delete:\n                    continue\n                else:\n                    self._raise_or_log(FAIL_TO_REMOVE_ITEM_IGNORE_ORDER_MSG.format(\n                        old_obj_index, path_for_err_reporting, expected_obj_to_delete, current_old_obj))\n            yield current_old_obj\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'deepdiff/delta.py').resolve()\ntry:\n module = importlib.import_module('deepdiff.delta')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom deepdiff import Delta\noriginal=[5,1,3,1,4,4,6]\nchange={\"iterable_items_added_at_indexes\":{\"root\":{0:7,6:8,1:4,2:4,5:4,3:1}},\"iterable_items_removed_at_indexes\":{\"root\":{0:5,6:6}}}\nobserved=original+Delta(change)\nprint(\"repetition_delta\",observed)\nassert observed==[7,4,4,1,3,4,8]\nassert original==[5,1,3,1,4,4,6]\nfixed=[4]\nremaining={0:5}\nprobe=Delta({})\nretained=list(probe._do_ignore_order_get_old([5,4,4,3],remaining,fixed,\"root\"))\nprint(\"retained\",retained,\"fixed_input\",fixed)\nassert retained==[3]\nassert fixed==[4]\nassert remaining=={}\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "55d9d9374051abe38261524ec71a8c8e7614096b8d449662b764e00540751ea0"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored unordered delta traversal and repetition handling. Inline checks confirm the reconstructed list and preserved fixed-value input. Patch submitted."
+}

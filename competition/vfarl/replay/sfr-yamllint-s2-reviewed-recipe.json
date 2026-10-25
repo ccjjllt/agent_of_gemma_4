@@ -1,0 +1,66 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Restore zero-based to one-based line conversion in both rule branches. Column behavior and non-empty allowance remain unchanged. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "yamllint/rules/braces.py",
+        "start_line": 150,
+        "end_line": 175
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nmodule = importlib.import_module('yamllint.rules.braces')\nactual=Path(module.__file__).resolve()\nexpected=(Path.cwd() / 'yamllint/rules/braces.py').resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom yamllint import linter\nfrom yamllint.config import YamlLintConfig\nfor forbid in (\"true\",\"non-empty\"):\n config=YamlLintConfig(\"rules:\\n  braces:\\n    forbid: \"+forbid)\n problems=list(linter.run(\"---\\nitem: {a: 1}\\n\",config))\n print(\"forbid\",forbid,\"coordinates\",[(p.line,p.column,p.rule) for p in problems])\n assert [(p.line,p.column) for p in problems]==[(2,8)]\n if forbid==\"non-empty\":\n  assert list(linter.run(\"---\\nitem: {}\\n\",config))==[]\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "94a5ad465a4303748a437ce77a46199c801df1d1b56b755cfa7c45d12240f5b7"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "yamllint/rules/braces.py",
+        "old_string": "    if (conf['forbid'] is True and\n            isinstance(token, yaml.FlowMappingStartToken)):\n        yield LintProblem(token.start_mark.line + 2,",
+        "new_string": "    if (conf['forbid'] is True and\n            isinstance(token, yaml.FlowMappingStartToken)):\n        yield LintProblem(token.start_mark.line + 1,"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "yamllint/rules/braces.py",
+        "old_string": "            not isinstance(next, yaml.FlowMappingEndToken)):\n        yield LintProblem(token.start_mark.line + 2,",
+        "new_string": "            not isinstance(next, yaml.FlowMappingEndToken)):\n        yield LintProblem(token.start_mark.line + 1,"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nmodule = importlib.import_module('yamllint.rules.braces')\nactual=Path(module.__file__).resolve()\nexpected=(Path.cwd() / 'yamllint/rules/braces.py').resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom yamllint import linter\nfrom yamllint.config import YamlLintConfig\nfor forbid in (\"true\",\"non-empty\"):\n config=YamlLintConfig(\"rules:\\n  braces:\\n    forbid: \"+forbid)\n problems=list(linter.run(\"---\\nitem: {a: 1}\\n\",config))\n print(\"forbid\",forbid,\"coordinates\",[(p.line,p.column,p.rule) for p in problems])\n assert [(p.line,p.column) for p in problems]==[(2,8)]\n if forbid==\"non-empty\":\n  assert list(linter.run(\"---\\nitem: {}\\n\",config))==[]\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "94a5ad465a4303748a437ce77a46199c801df1d1b56b755cfa7c45d12240f5b7"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Corrected forbidden flow-mapping line reporting. The inline reproduction confirms line 2 and the non-empty allowance. Patch submitted."
+}

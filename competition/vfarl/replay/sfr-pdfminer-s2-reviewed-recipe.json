@@ -1,0 +1,75 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Restore positive vertical advance from rendered glyph width, character spacing, and word spacing, while numeric TJ displacement keeps y-=adjustment*dxscale. Observe actual positions through a minimal in-memory font/device, not filename-specific extraction answers. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "pdfminer/pdfdevice.py",
+        "start_line": 185,
+        "end_line": 240
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'pdfminer/pdfdevice.py').resolve()\ntry:\n module = importlib.import_module('pdfminer.pdfdevice')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom pdfminer.pdfdevice import PDFTextDevice\nclass Font:\n def decode(self,value): return value\nclass Device(PDFTextDevice):\n def __init__(self): self.positions=[]\n def render_char(self,matrix,*args):\n  self.positions.append((matrix[4],matrix[5]))\n  return 5\ndevice=Device()\nposition=device.render_string_vertical([[65,32],10,[66]],(1,0,0,1,0,0),(0,0),Font(),10,1,2,3,0,0.1,None,None)\nprint(\"vertical_positions\",device.positions,\"final_cursor\",position)\nassert device.positions==[(0,0),(0,7),(0,16)]\nassert position==(0,21)\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "a7000f9a8e420f13c92cbcf0f63cefee5d0481342b67443f81f8fd2b31178cf0"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pdfminer/pdfdevice.py",
+        "old_string": "                        y -= charspace",
+        "new_string": "                        y += charspace"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pdfminer/pdfdevice.py",
+        "old_string": "                    y -= char_width",
+        "new_string": "                    y += char_width"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pdfminer/pdfdevice.py",
+        "old_string": "                        y -= wordspace",
+        "new_string": "                        y += wordspace"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'pdfminer/pdfdevice.py').resolve()\ntry:\n module = importlib.import_module('pdfminer.pdfdevice')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom pdfminer.pdfdevice import PDFTextDevice\nclass Font:\n def decode(self,value): return value\nclass Device(PDFTextDevice):\n def __init__(self): self.positions=[]\n def render_char(self,matrix,*args):\n  self.positions.append((matrix[4],matrix[5]))\n  return 5\ndevice=Device()\nposition=device.render_string_vertical([[65,32],10,[66]],(1,0,0,1,0,0),(0,0),Font(),10,1,2,3,0,0.1,None,None)\nprint(\"vertical_positions\",device.positions,\"final_cursor\",position)\nassert device.positions==[(0,0),(0,7),(0,16)]\nassert position==(0,21)\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "a7000f9a8e420f13c92cbcf0f63cefee5d0481342b67443f81f8fd2b31178cf0"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored vertical text cursor advances. Inline checks confirm glyph, character-spacing, word-spacing, and numeric-adjustment positions. Patch submitted."
+}

@@ -15,6 +15,8 @@ import inspect
 import json
 import shutil
 import stat
+import subprocess
+import sys
 import tarfile
 import time
 from pathlib import Path
@@ -63,6 +65,34 @@ def sha256_bytes(value: bytes) -> str:
 
 def write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def parent_runtime_evidence() -> dict:
+    selected, distributions = {}, {}
+    for dist in importlib.metadata.distributions():
+        name = dist.metadata.get("Name")
+        if not name:
+            continue
+        # metadata.distributions follows the import search path. A later global
+        # distribution must not overwrite the package selected from the venv.
+        selected.setdefault(name, dist.version)
+        distributions.setdefault(name, []).append({"version": dist.version,
+                                                   "root": str(dist.locate_file(""))})
+    bindings = {}
+    for name in ("numpy", "pydantic"):
+        try:
+            module = importlib.import_module(name)
+            path = Path(module.__file__).resolve()
+            bindings[name] = {"version": module.__version__, "file": str(path),
+                              "file_sha256": sha256_bytes(path.read_bytes())}
+        except Exception as error:
+            bindings[name] = {"import_error": str(error)}
+    return {"runtime_packages": selected, "parent_runtime_import_bindings": bindings,
+            "parent_python": {"executable": sys.executable, "prefix": sys.prefix,
+                              "version": sys.version},
+            "runtime_distribution_collisions": {name: values for name, values in distributions.items()
+                                                  if len(values) > 1},
+            "runtime_package_selection": "first distribution by import search path; numpy/pydantic additionally imported and bound"}
 
 
 def source_inventory(root: Path) -> dict:
@@ -115,12 +145,33 @@ def validate_recipe(recipe: dict) -> None:
 
 
 async def replay(args: argparse.Namespace) -> None:
+    runtime_evidence = parent_runtime_evidence()
     for path_name in ("task", "workspace", "recipe", "output"):
         setattr(args, path_name, getattr(args, path_name).resolve())
     if args.source_layout and (Path(args.source_layout).is_absolute() or ".." in Path(args.source_layout).parts):
         raise ValueError("Source layout must be a relative directory inside each workspace")
     if args.source_preload_module and (not args.source_import_alias_root or not all(part.isidentifier() for part in args.source_preload_module.split("."))):
         raise ValueError("A preload module must be a declared package name used with the import-alias profile")
+    if args.task_site_packages:
+        args.task_site_packages = args.task_site_packages.resolve()
+        if not args.task_site_packages.is_dir():
+            raise ValueError("Task dependency profile must be an existing site-packages directory")
+    task_python_profile = None
+    if args.task_python:
+        args.task_python = args.task_python.resolve()
+        if not args.task_python.is_file() or not args.task_site_packages:
+            raise ValueError("A task interpreter requires an existing binary and explicit task-site-packages")
+        task_python_profile = {"path": str(args.task_python), "sha256": sha256_bytes(args.task_python.read_bytes()),
+            "version": subprocess.check_output([str(args.task_python), "--version"], text=True).strip()}
+    sandbox_executables = {}
+    for declaration in args.sandbox_executable:
+        name, separator, raw_path = declaration.partition("=")
+        binary = Path(raw_path).resolve()
+        if not separator or not name or Path(name).name != name or not binary.is_file():
+            raise ValueError("Sandbox executable must be NAME=existing_absolute_file")
+        if name in {"python", "python3", "pytest"}:
+            raise ValueError("Dependency executable mappings cannot replace the interpreter or verifier")
+        sandbox_executables[name] = {"path": str(binary), "sha256": sha256_bytes(binary.read_bytes())}
     task_payload = json.loads(args.task.read_text())
     recipe = json.loads(args.recipe.read_text())
     validate_recipe(recipe)
@@ -154,12 +205,48 @@ async def replay(args: argparse.Namespace) -> None:
     import_aliases = {}
     import_alias_metadata = {}
     source_layout_bindings = {}
+    task_dependency_bindings = {}
+    task_runtime_packages = ({dist.metadata["Name"]: dist.version
+                              for dist in importlib.metadata.distributions(path=[str(args.task_site_packages)])}
+                             if args.task_site_packages else None)
     if args.source_import_alias_root:
         args.source_import_alias_root = args.source_import_alias_root.resolve()
         args.source_import_alias_root.mkdir(parents=True, exist_ok=False)
 
     def start_with_source_layout() -> str:
         new_id = original_start()
+        if args.task_python:
+            # The official host stays on its supported interpreter. Repository
+            # commands get a clean task-specific interpreter and dependency path;
+            # do not carry compiled host-version packages into the new venv.
+            subprocess.run([str(args.task_python), "-m", "venv", "--clear", "--without-pip",
+                            str(manager.sandboxes[new_id]["venv"])], check=True, capture_output=True)
+        for name, binary in sandbox_executables.items():
+            destination = manager.sandboxes[new_id]["venv"] / "bin" / name
+            if destination.exists():
+                raise FileExistsError(f"Refusing to replace a sandbox executable: {destination}")
+            destination.symlink_to(binary["path"])
+        if args.task_site_packages:
+            dependency_paths = manager.sandboxes[new_id]
+            entries = []
+            for site_packages in dependency_paths["venv"].glob("lib/python*/site-packages"):
+                # The official ADK host and repository commands can legitimately
+                # require different dependency versions, as in the Docker backend.
+                # Only the sandbox's Python search path is affected by this profile.
+                if args.task_site_packages_mode == "copy":
+                    # Some repositories classify installed library code by the
+                    # interpreter's real sysconfig purelib. Use a normal private
+                    # package location instead of altering sysconfig or tests.
+                    shutil.copytree(args.task_site_packages, site_packages, dirs_exist_ok=True,
+                                    symlinks=True, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+                    entries.append({"mode": "copy", "source": str(args.task_site_packages),
+                                    "target": str(site_packages), "bytecode_cache_copied": False})
+                else:
+                    entry = f"import sys; sys.path.insert(0, {str(args.task_site_packages)!r})\n"
+                    profile = site_packages / "_vfarl_task_dependencies.pth"
+                    profile.write_text(entry)
+                    entries.append({"mode": "pth", "path": str(profile), "content": entry})
+            task_dependency_bindings[new_id] = entries
         if args.source_layout or args.source_import_alias_root:
             paths = manager.sandboxes[new_id]
             source_root = paths["workspace"]
@@ -187,7 +274,7 @@ async def replay(args: argparse.Namespace) -> None:
                         module_name = args.source_preload_module
                         binding_path = paths["root"] / "_vfarl_import_binding.json"
                         entry = entry.rstrip("\n") + f"; import {module_name}; import json; " + \
-                            f"json.dump({{'module': {module_name!r}, 'file': {module_name}.__file__, 'package_path': list({module_name}.__path__)}}, open({str(binding_path)!r}, 'w'))\n"
+                            f"json.dump({{'module': {module_name!r}, 'file': {module_name}.__file__, 'package_path': list(getattr({module_name}, '__path__', ())) }}, open({str(binding_path)!r}, 'w'))\n"
                 else:
                     # A plain .pth path is appended after system-site packages.
                     # The task's own src tree must take precedence over an
@@ -243,7 +330,7 @@ async def replay(args: argparse.Namespace) -> None:
     messages = [{"role": "user", "content": actual_prompt}]
     try:
         prepare_workspace(args.workspace, workspace)
-        setup = manager.exec(sandbox_id, "git init -q && git config user.name 'VFARL CPU replay' && git config user.email 'vfarl-local@example.invalid'")
+        setup = manager.exec(sandbox_id, "git init -q && git config user.name 'VFARL CPU replay' && git config user.email 'vfarl-local@example.invalid' && git config gc.auto 0 && git config gc.autoDetach false")
         if setup.exit_code:
             raise RuntimeError(setup.stderr or setup.stdout)
         setup_git_exclude(manager, sandbox_id)
@@ -339,6 +426,7 @@ async def replay(args: argparse.Namespace) -> None:
             "baseline_commit": baseline.stdout.strip(),
             "snapshot_sha256": sha256_bytes(snapshot.read_bytes()),
             "evidence_kind": recipe["evidence_kind"], "behavior_policy": None,
+            "demonstration_authorship": "Codex agents specified and reviewed the action recipe; not a sampled Gemma rollout or end-user manual annotation. The human_reviewed schema label is legacy terminology.",
             "initial_prompt_source": "swegemma.harness.agent_runner.build_agent_prompt",
             "initial_prompt_sha256": sha256_bytes(actual_prompt.encode()),
             "initial_prompt_declared_tools": sorted(SIX_TOOLS),
@@ -352,6 +440,12 @@ async def replay(args: argparse.Namespace) -> None:
             "sandbox_source_import_alias_root": str(args.source_import_alias_root) if args.source_import_alias_root else None,
             "sandbox_source_import_aliases": {key: str(value) for key, value in import_aliases.items()},
             "sandbox_source_preload_module": args.source_preload_module,
+            "task_site_packages_profile": str(args.task_site_packages) if args.task_site_packages else None,
+            "task_site_packages_mode": args.task_site_packages_mode if args.task_site_packages else None,
+            "task_runtime_packages": task_runtime_packages,
+            "task_python_profile": task_python_profile,
+            "task_dependency_bindings": task_dependency_bindings,
+            "sandbox_dependency_executables": sandbox_executables,
             "competition_Docker_environment_equivalent": False,
             "six_tools_only": True, "tool_events": len(observations),
             "evaluation_budget": dataclasses.asdict(budget),
@@ -370,7 +464,7 @@ async def replay(args: argparse.Namespace) -> None:
             "phase_b_verification_wall_seconds": verification_wall_seconds,
             "total_wall_seconds": time.perf_counter() - started,
             "tool_imports": imports,
-            "runtime_packages": {dist.metadata["Name"]: dist.version for dist in importlib.metadata.distributions()},
+            **runtime_evidence,
             "limitations": ["Human-authored actions, no model inference or policy logprobs",
                             "Local subprocess shares the host OS; not a security boundary",
                             "Source task test-node semantics must be audited separately",
@@ -399,6 +493,10 @@ def main() -> None:
     parser.add_argument("--source-layout", default="", help="Explicit relative package directory, e.g. src; added to each sandbox venv")
     parser.add_argument("--source-import-alias-root", type=Path, help="Explicit new short directory of workspace symlinks for a documented local path compatibility profile")
     parser.add_argument("--source-preload-module", default="", help="Execute the real package initializer through the explicit alias before pytest changes sys.path")
+    parser.add_argument("--task-site-packages", type=Path, help="Explicit preinstalled task-only dependency profile for sandbox Python; official ADK host dependencies remain separate")
+    parser.add_argument("--task-site-packages-mode", choices=("pth", "copy"), default="pth", help="Use external dependency search path or copy packages into each private sandbox's normal purelib, excluding old bytecode")
+    parser.add_argument("--task-python", type=Path, help="Task-only Python binary; rebuilds sandbox venv without host packages, requires --task-site-packages")
+    parser.add_argument("--sandbox-executable", action="append", default=[], help="Expose a reviewed installed dependency binary as NAME=ABS_PATH in the sandbox venv/bin; never replaces Python or pytest")
     parser.add_argument("--time-minutes", type=float, default=60)
     parser.add_argument("--tool-calls", type=int, default=100)
     parser.add_argument("--command-timeout", type=int, default=300)

@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex dynamic worker source and command review 2026-10-25",
+  "review_notes": "{'production_symbols': ['pydantic/_internal/_model_construction.py::ModelMetaclass.__new__', 'namespace', '__pydantic_fields_set__'], 'trigger': 'Create non-BaseModel classes using ModelMetaclass with/without synthetic slot keys, compared with a normal BaseModel.', 'base_wrong_behavior': 'The no-model-base branch deletes assumed synthetic keys from an arbitrary namespace and raises KeyError.', 'causal_change': 'Clean only present synthetic keys before class creation, retaining supported non-model and normal-model branches.', 'discriminating_observation': 'Native21 fails at del namespace;29 creates non-model classes;33 also creates BaseModel after unrelated dependencies are installed.', 'native_message_indices_0_based': [21, 22, 23, 29, 33]} Exact source-introduced defect was independently read and candidate inverse reviewed; source teacher patch not used. Inline diagnostic checks actual workspace import and behavior. Original F2P/P2P all retained; baseline reproduction is expected diagnostic error, not a policy mistake. Decorator2789 deliberately preserves both legacy and new names.",
+  "final_response": "Implemented the repair and confirmed the reported behavior with a direct reproduction against the workspace source.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "pydantic/_internal/_model_construction.py",
+        "start_line": 249,
+        "end_line": 349
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport pydantic\nprint('workspace import:', pydantic.__file__)\nassert Path(pydantic.__file__).resolve().is_relative_to(Path.cwd().resolve())\nfrom pydantic._internal._model_construction import ModelMetaclass\nfrom pydantic import BaseModel\nclass Ordinary(metaclass=ModelMetaclass):pass\nassert isinstance(Ordinary(),Ordinary)\nclass Regular(BaseModel):value:int\nassert Regular(value=\"3\").value==3\nprint(Ordinary,Regular(value=3))\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "70b9273e361a46f8083f536801da5b04d55484632e492f1156d8eee7d2dbcb67"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pydantic/_internal/_model_construction.py",
+        "old_string": "        else:\n            # These are instance variables, but have been assigned to `NoInitField` to trick the type checker.\n            for instance_slot in '__pydantic_fields_set__', '__pydantic_extra__', '__pydantic_private__':\n                del namespace[instance_slot]\n            namespace.get('__annotations__', {}).clear()\n            return super().__new__(mcs, cls_name, bases, namespace, **kwargs)\n\n",
+        "new_string": "        else:\n            # These are instance variables, but have been assigned to `NoInitField` to trick the type checker.\n            for instance_slot in '__pydantic_fields_set__', '__pydantic_extra__', '__pydantic_private__':\n                namespace.pop(\n                    instance_slot,\n                    None,  # In case the metaclass is used with a class other than `BaseModel`.\n                )\n            namespace.get('__annotations__', {}).clear()\n            return super().__new__(mcs, cls_name, bases, namespace, **kwargs)\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport pydantic\nprint('workspace import:', pydantic.__file__)\nassert Path(pydantic.__file__).resolve().is_relative_to(Path.cwd().resolve())\nfrom pydantic._internal._model_construction import ModelMetaclass\nfrom pydantic import BaseModel\nclass Ordinary(metaclass=ModelMetaclass):pass\nassert isinstance(Ordinary(),Ordinary)\nclass Regular(BaseModel):value:int\nassert Regular(value=\"3\").value==3\nprint(Ordinary,Regular(value=3))\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "70b9273e361a46f8083f536801da5b04d55484632e492f1156d8eee7d2dbcb67"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ]
+}

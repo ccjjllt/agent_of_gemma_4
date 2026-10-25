@@ -1,80 +1,83 @@
-# 首批96题：来源、机制与官方重放
+# 首批96题与明确补充课程
 
-2026-10-24。当前完成96个训练任务的逐题来源和机制审阅，G36、S20、F20、R20，来自43个canonical仓库。S/F/R各自五个子机制均为4题，优先缺口S2、F2、R2、R5各补到4个不同生产符号修补家族。精确数量与本地验证进度以 [manifest.json](manifest.json) 为准；静态审阅完成不等于96份环境已恢复或96条成功轨迹已采集。
+2026-10-25。原96个任务身份保持不变，现已全部真实执行官方六工具；90题保存基线/修复双轮结果及完整JUnit，61题完整通过。另有20个逐题审阅的补充train任务通过，合计81条可用示范。原96仍有35题未入池：29题双轮结果完整但未通过，6题验证超时或报告不完整。**尚未完成全部候选的数据准备，未启动GPU训练。**
 
-入口：[96题目录](catalog.md)、[完整审阅索引](catalog.json)、[重点16题独立复核](priority16-review.md)、[实际重放结果](../replay/replay-summary.json)。四个adapter的rank、投影和BF16配置保持不变。
+入口：[原96逐题目录](catalog.md)、[原始来源与机制索引](catalog.json)、[20题明确补充目录](../acquisition/supplemental/catalog.json)、[完整重放总览](../replay/replay-summary.json)、[逐题准入与原始证据](../replay/canonical-results-manifest.json)、[Gemma导出清单](../replay/gemma-sft-manifest.json)、[四份主责课程及共享课程](../replay/adapter-curricula-manifest.json)。补充任务由此前6题和本轮14题组成，没有静默替换原失败记录；81题的最终动作导出与课程清单已同步。
 
-当前实际重放10个独立任务，7题完整通过本地官方验收，3题保留为reserve审计。最终96题中7题已有通过示范，89题尚未重放。共有83个主要工具事件，另保留27个采集/环境尝试事件；这些都不是模型采样。7条正例导出59个助手决策（58个工具动作、1个实际人工终止回答），共6,466个loss tokens，最长逐动作上下文7,659 tokens。
+| 主责Adapter | 原96审阅数 | 原96已验收 | 补充已验收 | 当前可用合计 |
+| --- | ---: | ---: | ---: | ---: |
+| G | 36 | 28 | 0 | 28 |
+| S | 20 | 15 | 1 | 16 |
+| F | 20 | 11 | 7 | 18 |
+| R | 20 | 7 | 12 | 19 |
+| 合计 | 96 | 61 | 20 | 81 |
 
-| 已通过任务 | 主机制 | 完整保留并通过的原验证节点 |
-| --- | --- | --- |
-| Tenacity425 | G 局部参数契约 | 1 F2P + 122 P2P |
-| Apispec 53fevqi2 | S1 RFC表示顺序 | 2 F2P + 567 P2P |
-| Tomli238 | S2 结构化位置 | 2 F2P + 14 P2P |
-| h11 h6ghpwe2 | F5 协议切换 | 1 F2P + 75 P2P |
-| Boltons375 | F2 sentinel身份 | 1 F2P + 411 P2P |
-| PySnooper urhyaplv | R2 方法包装 | 8 F2P + 70 P2P |
-| Jinja zwhpkn1s | R5 PEP451/ZIP loader | 1 F2P + 739 P2P |
+主责标签是能力契约，不是训练混合比例。G的共同修复课程可覆盖全部机制，专家也需要通用回放保持；共享课程复用相同81题，不另算独立数据。G=r128，目标为q/o与MLP共五种投影；S/F/R=r32七投影，BF16计算与导出保持不变。
 
-## 逐题怎样确认能力匹配
+| 子机制 | 能力契约 | 原配额已通过 | 补充已通过 | 当前可用 |
+| --- | --- | ---: | ---: | ---: |
+| S1 | 编码、解析与序列化 | 3 / 4 | 1 | 4 |
+| S2 | 位置、坐标与跨度 | 4 / 4 | 0 | 4 |
+| S3 | 集合、多值与筛选 | 2 / 4 | 0 | 2 |
+| S4 | 遍历与不变量 | 3 / 4 | 0 | 3 |
+| S5 | 递归、语法与结构 | 3 / 4 | 0 | 3 |
+| F1 | 参数与上下文传播 | 2 / 4 | 2 | 4 |
+| F2 | 身份、引用与所有权 | 4 / 4 | 0 | 4 |
+| F3 | 缓存与失效 | 2 / 4 | 2 | 4 |
+| F4 | 资源与退出 | 1 / 4 | 3 | 4 |
+| F5 | 事件与协议时序 | 2 / 4 | 0 | 2 |
+| R1 | 注解与命名空间 | 0 / 4 | 4 | 4 |
+| R2 | 可调用对象与包装 | 3 / 4 | 1 | 4 |
+| R3 | 对象协议与描述符 | 1 / 4 | 3 | 4 |
+| R4 | 版本与兼容契约 | 1 / 4 | 2 | 3 |
+| R5 | 导入、加载与可用性 | 2 / 4 | 2 | 4 |
 
-每题保留Agent可见触发、故障行为、负责生产符号、因果改动、能区分错误与正确实现的观察，以及原始验证规格。分类依据是需要维护的程序契约；出现Unicode、async、type等字样不构成归类证据。观察若只来自静态推导或来源轨迹，明确保留该证据等级，不改写为本地执行结果。
+重点S2、F2、R2、R5各有4条可用示范；原16题仍只有13条通过，另外R2的1条和R5的2条来自明确补充。本轮补齐后F1/F3/F4/R1/R3也各有4条；S3、F5各2条，S4、S5、R4各3条，仍需补足。任务数量不证明泛化收益，不能称四个adapter已训练充分。
 
-| 主责 | 任务数 | 匹配能力与使用方式 |
-| --- | ---: | --- |
-| G | 36 | 通用定位、局部规则、API与集成修复；共同课程覆盖S/F/R机制，36是主责配额，不限制G只学这一组 |
-| S | 20 | 编码解析、坐标跨度、集合多值、遍历不变量、嵌套语法结构，各4题 |
-| F | 20 | 参数传播、引用所有权、缓存失效、资源退出、事件时序，各4题 |
-| R | 20 | 注解命名空间、callable包装、对象协议、版本契约、导入可用性，各4题 |
+## 已准备的训练文件
 
-错误定位、无效编辑恢复、利用工具反馈与预算控制由四个adapter共同学习。F2不能用普通列表/元组转换凑数，R5不能用pip安装失败凑数。同一修复家族的多条attempt不能增加独立任务数。跨组审阅按生产符号和因果契约检查家族重叠；96个不同family字符串本身不是独立性的证明。
+已导出81题、716条决策（641次工具调用＋75条实际终止回答），共89,774个助手监督tokens，最大动作上下文8,973。主文件位于本地`competition/vfarl/replay/artifacts/gemma-sft/sft-actions.jsonl`；四份主责和共享文件位于`replay/artifacts/adapter-curricula/`，hash与逐题数量见课程清单。采样比例尚未设置，没有执行训练。
 
-三份原始逐题审阅保存全部证据与取舍：[G36](../acquisition/general/general-36-review.json)、[S20/F20](../acquisition/s2-f2/reviewed-sf40.json)、[R20](../acquisition/r2-r5/mechanism-reviews.json)。G36已交叉复核，其中Result121补充了`.value`从property变成bound method的descriptor机制；Safety508保留整个headless能力恢复的G集成范围。相关补充没有覆盖原始来源题面。
+每条动作携带主责adapter、子机制、仓库、family、snapshot group和来源指纹metadata；这些不进入policy prompt。所有材料均train_only，同一上游snapshot或修复家族不能靠不同task ID伪装成跨评测独立样本。本池没有创建新的评测划分。
 
-## 来源与代码身份
+动作由Codex编排、审阅并实际执行，属于脚本指定的off-policy冷启动材料。legacy `human_reviewed_off_policy_demonstration`字段不表示用户人工标注，也不是Gemma当前策略轨迹。没有编造思考、logprob、on-policy rollout或同状态关键动作对。故意复现缺陷的error是正确诊断动作，不能当作rejected action。
 
-| 任务池 | 题数 | 固定revision | 原始patch含义 |
-| --- | ---: | --- | --- |
-| SWE-bench/SWE-smith-py，train | 81 | `77cab9055d42ab4a5c25c89a8f937096db13558e` | 引入缺陷；不能直接作为修复答案 |
-| SWE-Gym/SWE-Gym，train | 13 | `bb94ed9e39bbeb96a7fcbfb533b80f25a7fd59cb` | 参考修复，留在collector侧 |
-| nebius/SWE-rebench-V2，train | 2 | `10483de0f50fe5da545942705a76c6150171af7f` | 参考修复，留在collector侧 |
+## 机制匹配与来源
 
-96题均保存完整原始task、下载blob的SHA256、精确任务ID、完整40位执行commit及逐仓许可文本证据。上游代码许可与数据集/轨迹许可分别记录，不由其中一项替代另一项。Smith的bug branch执行SHA与upstream snapshot SHA分开保存；真实issue任务在原始base_commit执行。原生轨迹仅为审阅线索，不是目标协议的成功过程。
+分类按实际程序契约逐题核对，保留触发、负责生产符号、因果改动、真实区分观察、原验证要求与限制。新MonkeyType148只是stub注解字符串的AST表示契约，归S1；164生成stub确实因缺Optional导入而NameError，归R1。另一个R1维护类型反序列化的限定名解析与type identity，不夸成复杂泛型推断。新Tenacity R2恢复同步/native async/Tornado包装的控制器分派，独立于原PR406的wraps元数据契约。Flake8两题维护插件发现去重和提供方分派，属于R5可用性，明确记录同snapshot。
 
-这是为补机制缺口而配额采集的试批，81/96是合成故障，Moto占14题；不能把它的标签比例、成功率或短补丁分布当作比赛隐藏任务分布。后续须根据真实环境恢复率、有效轨迹产率与跨仓修复收益，调整合成/真实issue和仓库配比。
+本轮14题补充对应具体生产契约：Funcy两题维护参数捕获、尾部绑定与关键字优先级，归F1；Funcy过期缓存和TinyDB删除后的查询失效归F3。Ptyprocess阻塞等待、非阻塞子进程回收和Dataset事务退出归F4，其中两个Ptyprocess家族共享snapshot，不作为跨评测独立样本。Boltons描述符、集合相等分派与Addict属性赋值保护归R3；APISpec两题按OpenAPI版本维护引用/可空语义，归R4；MonkeyType237和151分别维护Callable注解导入闭包及`Tuple[()]`零元参数身份，归R1。
 
-当前所有题仅用于训练：排除了FastAPI、Rich、Requests、HTTPX及fork/别名，不摄入129个公共开发题或隐藏/预留评测题。先按允许train清单取正文，没有为查重读取heldout内容。旧来源材料只复用精确身份匹配的原始正文和缓存，不继承旧研究结论。
+原96中81题来自SWE-smith-py train（`77cab9055d42ab4a5c25c89a8f937096db13558e`）、13题SWE-Gym train（`bb94ed9e39bbeb96a7fcbfb533b80f25a7fd59cb`）、2题SWE-rebench-V2 train（`10483de0f50fe5da545942705a76c6150171af7f`）。补充20题均来自同固定Smith train。共116个经深入审阅候选、50个canonical仓库；宽页检索缓存不计作深入审阅任务。
 
-全部代码commit已固定，依赖与镜像digest尚未全部实例化。13个Gym任务另从官方README指向的SWE-Bench-Fork固定commit `242429c188fcfd06aad13fce9a54d450470bf0ac`取得Moto环境规格，原声明为Python3.12、`make init`、`pytest -n0 -rA`；这说明来源环境定义可追溯，不代表13份镜像已经在本地跑通。只用AST读取声明数据，没有执行下载的安装代码。见 [环境来源](../acquisition/general/sources/gym-environment-source.json)。
+全部保存原task blob SHA、40位执行commit、独立源码/数据集许可与机制审阅指纹。Smith patch引入缺陷，不能直接当修复答案。来源任务、参考修复和验证资产留collector侧；policy使用允许的原题面/提示，四题原描述为空时采用下述显式版本化的行为题面。排除比赛FastAPI/Rich/Requests/HTTPX四仓与别名，没有摄入129公共开发题或heldout正文。大文件留本地ignored artifacts，不随adapter submission提交。
 
-## 对齐比赛的工具、对白与验收
+来源审阅：[G36](../acquisition/general/general-36-review.json)、[S/F40](../acquisition/s2-f2/reviewed-sf40.json)、[R20](../acquisition/r2-r5/mechanism-reviews.json)、[重点16复核](priority16-review.md)、[Moto14复核](../replay/moto-source-cross-review.json)、[Flake8补充](../acquisition/recover-semantics/reviewed-candidates.json)、[MonkeyType补充](../acquisition/recover-r1/reviewed-candidates.json)。原96个候选中81个来自Smith合成任务、Moto占14题，这不代表比赛分布或模型成功率。
 
-重放正常导入原版`swegemma 0.2.11`、`adk-eval-core 0.1.0`、`adk-submission 0.2.13`，通过实际Context/Budget与六工具执行。真实Google ADK声明单独捕获，参数名及required与wrapper签名核对；没有把源工具改名后伪装成官方工具。
+本轮审阅：[参数与缓存](../acquisition/expand-cache/reviewed-candidates.json)、[资源与退出](../acquisition/expand-resource/reviewed-candidates.json)、[对象协议](../acquisition/expand-objects/reviewed-candidates.json)、[版本兼容](../acquisition/expand-compat/reviewed-candidates.json)、[注解身份](../acquisition/expand-annotation/reviewed-candidates.json)。
 
-当前使用官方`SubprocessManager`：本机Docker daemon未运行，所以它是官方代码支持的CPU本地后端，**尚不能证明比赛Docker环境等价**。Phase A与Phase B使用独立干净workspace，Phase B重建基线、应用经过官方路径保护过滤的生产补丁，再调用原版`verify_task`和JUnit核对。工具/命令/验证时间分别记录；人工脚本耗时不能当作Gemma推理时间或预算训练成绩。
+## 题面、来源标签与数据格式边界
 
-外部训练任务有明确F2P/P2P，而129个官方公共任务通常使用test_patch fallback。数据适配只从原始F2P/P2P取目标文件并集，保留全部节点，不修改官方验证器。若来源bug branch移除了测试，只恢复精确upstream commit中的原有验证文件，保存hash；不编写新的测试套件。必需节点必须通过；pytest exit 0、工具编辑成功或局部复现改善都不能替代整题resolved。
+TinyDB删除失效、Boltons IndexedSet相等、Ptyprocess `isalive`、Dataset `__exit__`四题的原`problem_statement`为空。已保留原blob、旧adapted task及run001，另建curator-authored最小行为题面和v2 task，并对v2实际执行基线/修复双轮重放。补写内容只定义可观察契约，不含参考修复或required节点名单；来源审阅记录原空文本hash、新文本hash、审阅者、来源依据及实际v2 run，不能称其为发布者原题面。准入时完整profile必须与已审阅catalog相等，并进入稳定来源指纹；未审阅的自报新题面不能入池。原test patch和全部F2P/P2P要求保持不变。
 
-成功示范进一步由固定官方31B tokenizer/chat template渲染成Gemma对白，使用实际六工具声明。原始`function.arguments`JSON字符串先解析成对象，避免模板重复加括号；原始事件不变。初版工具重放的首条user只有来源题面，canonical导出另调用原版`build_agent_prompt`，按相同题面/预算加入官方工具规则与提交指令；这项collector侧prompt增补明确版本化，原始消息不改，不声称模型在增补后prompt下实际采过样。没有加入参考修复、required列表或事后结果。
+80条示范使用原required ID并通过原官方matcher；Slugify另1条保守映射44项unittest要求到45个原pytest节点，歧义时两项都要求、全82项原文件通过，不标成原字面ID通过。[原映射](../replay/sfr-slugify-s1-node-mapping.json)保持可追溯。
 
-训练输入按每个真实动作导出推理prefix，实际调用`add_generation_prompt=True`，包括模板在关闭thinking时补的空thought控制块；这个强制prefix只作条件、不进loss，不是假造思考。loss覆盖经审阅的assistant工具动作及确实记录的人工终止回答，user/system/工具观察不进loss。原始题面、动作prefix与后续验证严格分开；没有编造thinking、策略logprob或模型回答。新Jinja示范已在实际submit后记录官方要求的text-only终止回答；旧6条没有这项监督，保持原样，不补写后冒充原始轨迹。详见 [官方任务prompt导出器](../replay/export_prompts.py)、[对白导出器](../format_replays.py) 和 [导出清单](../replay/gemma-sft-manifest.json)。
+MonkeyType限定名解析题来源把361项标作F2P，实际基线52失败、309已通过，全部ID均找到；原8项P2P通过。它只在固定task/blob/基线XML经过独立复核后按`audited_source_F2P_label_noise`单独入池，原361+8项修后全部通过。默认“全部F2P基线失败”的证据规则不整体放宽，也不声称361个失败被修复。该题原示例还误传模块对象，合法API需要模块名字符串；原题面未偷偷改写，真实诊断使用合法编码API。见[独立来源审阅](../acquisition/recover-r1/reviewed-namespace-candidate.json)与补充目录的显式baseline记录。
 
-这些是**人工审阅的off-policy冷启动示范**。首次命令故意复现缺陷而返回error，属于正确诊断动作，不能充作FocalRL的rejected action。当前没有模型on-policy rollout、同状态已验证关键动作对，也没有GPU训练。本版导出固定`thinking_budget=0`、`include_thoughts=False`、无新增system prompt，供直接工具调用冷启动；部署若使用其他system prompt或thinking预算，需一致地另行版本化导出，不能把本版称为已经对齐4096预算训练。
+MonkeyType151也使用固定task/blob/基线XML独立审阅的同类profile：原4项F2P实际3失败、1已通过，全部ID均找到；修复后原4项F2P和365项P2P全部通过，原标签及要求均未改。实际Python3.11源码兼容环境验证零元Tuple身份，不声称复现原Python3.7故障，也不把已通过的case当负动作。两项profile只解释各自实际基线，不能推广放宽其他题的准入。
 
-## 实际遇到的来源与验收问题
+PennyLane原嵌套`tests/pytest.ini`让实际JUnit地址相对tests目录。collector仅按真实快照中的原配置hash解释基线的精确类名/参数ID，不修改原required或验收器。h11早期缺目标字段则从hash一致的原task、原版Task.test_files恢复范围。
 
-- 旧Smith轨迹种子的18个非空`row.patch`跨仓错配，该列整列隔离；本批以精确匹配的任务表bug-introducing patch和代码身份为准，不复用错误答案列。
-- parse审计题原P2P把生产`parse.py`列为doctest目标，触发官方测试文件保护，实际生产补丁被过滤为0字节；保留真实失败，未放入96题。
-- Freezegun492的修复确实消除了staticmethod绑定错误，但原required Maya节点在当前本地Python3.12中skip，来源又将该依赖限定在Python<3.12，官方验证器正确判为未解决。492/493同家族和其他含相同必需依赖矛盾的候选转reserve；没有删required或把skip算pass。
-- Pinyin318的生产doctest适配尚无执行证据，移到reserve；它没有被描述为实际重放失败。G改用Moto7111，S3/F4的Freezegun候选分别改用Deepdiff403和Tornado3315。
-- Dask9573真实修复后pandas required用例通过、cudf可选用例skip，但官方matcher去参数后合并了同名函数节点，仍判整题未解决；原baseline两个用例均skip，也没有改写成测试failed。真实计算/导入改善只作R5机制证据，不能收为完整成功或因模型错误而失败。保留原要求和负结果，不修改官方matcher或安装GPU依赖来凑通过。最终R5配额改用Jinja PEP451/ZIP loader，原740 required全部通过。
-- Jinja第一次工具重放读到了先前安装的同名发行版，预期故障未出现，第3个事件即停止并保留。后续把sandbox的workspace/src绑定到路径最前，并在实际命令核对`__file__`和源码hash后重放成功。旧src示范Apispec/Tomli也已复核原freeze与真实前后观察；证据与边界见 [源码绑定复核](../replay/historical-source-binding-review.json)。没有将首次意外正常当成修复成功。
-- 部分Tornado任务仍有unittest式节点，需保留原ID并明确适配JUnit匹配规则后再重放。部分源题面复现不充分或与缺陷不吻合，collector审阅保留这些限制，policy导出不偷偷补入金补丁解释。
+## 官方协议与运行环境
 
-## 后续采集顺序
+真实调用原swegemma0.2.11的Context/Budget、六工具、路径保护、verify_task和JUnit matcher。Phase A/Phase B使用独立干净workspace，保存真实事件、输入树/快照/补丁/源码绑定与双轮JUnit。测试只恢复固定上游字节；不新写专用测试、修改断言或缩为required节点验收。
 
-先逐repo恢复剩余环境与原验证资产，优先补重点子机制的真实六工具成功过程；每题记录原始失败和修复后完整验收。环境不相容先解释/替换，不能以来源success标志补齐本地成功数。
+当前是官方SubprocessManager CPU后端，**不是比赛Docker环境等价证明**。现代官方父环境和旧任务依赖分开。Hydra任务Python3.10来自源码CI；原Phase B的PYTHONSAFEPATH=1命令保持，但3.10不实现该变量。Moto两题用source-compatible3.11.8恢复旧stdlib行为，明确区别原Gym3.12环境。MonkeyType依赖物理复制进每份sandbox实际purelib，不改sysconfig或源码过滤规则。PennyLane原三框架的实际设备均为CPU，原3F2P+283P2P完整通过；Linux/Kokkos未在本Mac复刻。原负结果都保留，不能算模型错误。
 
-在冷启动材料和部署对白一致后，再按授权采当前策略attempt，保存真实行为概率和预算消耗。从实际策略错误前的可恢复状态分叉，重放原动作与替代动作，双方继续至完整验收；短段改善和完整结果分别计数。恢复不能归零原prefix成本。当前96题是采集产率试批，192次基线attempt、最多128个checkpoint/512条continuation仍是后续计划，未执行。
+逐动作prompt由原build_agent_prompt、固定官方31B tokenizer/template和实际ADK声明生成，thinking_budget=0、无新增system prompt。强制空thought块与所有user/工具观察不进loss；真实assistant动作/终止回答才有监督。早期raw仅题面的官方包装增补明确版本化。其他部署prompt/预算需另行导出，人工CPU耗时不当作推理预算收益。
 
-原始大文件在本地`competition/vfarl/artifacts/pilot96/`，不随比赛submission提交。`tasks.privileged.jsonl`含金补丁/完整验证；`policy-tasks.jsonl`仅含原始题面、执行commit及工具契约，不含因果标签或验证日志。清单记录两份文件的hash。全部工作无GPU、无付费模型调用，没有新增专用测试文件。
+## 仍未准备完的部分
+
+原96还有35题未入池，主要涉及固定skip/xfail与原matcher跨参数/类误配、AnyIO禁用、YAML/Describe/doctest发现契约、旧外部服务及超时。Pydantic恢复锁版pytest/plugin后实际测试失败已消除，仍因原matcher拒收，不以局部改善冒充整题成功。原负结果的逐题原因在准入清单中。
+
+下一步应补弱机制的可完整验收数据，再按授权采当前策略attempt与可恢复checkpoint，实证关键动作替换、同状态续跑与结果/成本优势。当前模型rollout、已验证关键动作对及GPU训练均为0；81条脚本示范只是冷启动实物，不是整套Verified Focal Agent RL数据已经齐备。

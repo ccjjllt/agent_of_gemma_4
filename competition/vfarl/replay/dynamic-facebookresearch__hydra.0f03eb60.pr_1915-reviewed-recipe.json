@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex dynamic worker source and command review 2026-10-25",
+  "review_notes": "{'production_symbols': ['hydra/_internal/instantiate/_instantiate2.py::_convert_target_to_string', '_resolve_target', '_locate'], 'trigger': 'Use nested class A.B as instantiate _target_ rather than a string; compare top-level targets.', 'base_wrong_behavior': 'The type-specific __name__ branch loses the containing class path and produces module.B.', 'causal_change': 'Preserve the qualified callable path while distinguishing importable nested classes from function-local <locals> paths.', 'discriminating_observation': 'Task mutation changes __qualname__ to __name__ for types; native35 instantiates A.B after edit,39 fails on outer.<locals>.inner.', 'native_message_indices_0_based': [31, 32, 33, 35, 39]} Exact source-introduced defect was independently read and candidate inverse reviewed; source teacher patch not used. Inline diagnostic checks actual workspace import and behavior. Original F2P/P2P all retained; baseline reproduction is expected diagnostic error, not a policy mistake. Decorator2789 deliberately preserves both legacy and new names.",
+  "final_response": "Implemented the repair and confirmed the reported behavior with a direct reproduction against the workspace source.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "hydra/_internal/instantiate/_instantiate2.py",
+        "start_line": 94,
+        "end_line": 194
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hydra\nprint('workspace import:', hydra.__file__)\nassert Path(hydra.__file__).resolve().is_relative_to(Path.cwd().resolve())\nfrom hydra._internal.instantiate._instantiate2 import _convert_target_to_string\nfrom hydra.utils import instantiate\nclass Outer:\n    class Inner:\n        def __init__(self,value):self.value=value\nname=_convert_target_to_string(Outer.Inner)\nprint(name)\nassert name==Outer.Inner.__module__+\".\"+Outer.Inner.__qualname__\nassert instantiate({\"_target_\":Outer.Inner,\"value\":7}).value==7\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "5fb240b5389a0ad57489c23d1eabbef7274c0d230b02ef98cb52c2570917e045"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "hydra/_internal/instantiate/_instantiate2.py",
+        "old_string": "\n\ndef _convert_target_to_string(t: Any) -> Any:\n    if isinstance(t, type):\n        return f\"{t.__module__}.{t.__name__}\"\n    elif callable(t):\n        return f\"{t.__module__}.{t.__qualname__}\"\n    else:\n        return t\n",
+        "new_string": "\n\ndef _convert_target_to_string(t: Any) -> Any:\n    if callable(t):\n        return f\"{t.__module__}.{t.__qualname__}\"\n    else:\n        return t\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hydra\nprint('workspace import:', hydra.__file__)\nassert Path(hydra.__file__).resolve().is_relative_to(Path.cwd().resolve())\nfrom hydra._internal.instantiate._instantiate2 import _convert_target_to_string\nfrom hydra.utils import instantiate\nclass Outer:\n    class Inner:\n        def __init__(self,value):self.value=value\nname=_convert_target_to_string(Outer.Inner)\nprint(name)\nassert name==Outer.Inner.__module__+\".\"+Outer.Inner.__qualname__\nassert instantiate({\"_target_\":Outer.Inner,\"value\":7}).value==7\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "5fb240b5389a0ad57489c23d1eabbef7274c0d230b02ef98cb52c2570917e045"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ]
+}

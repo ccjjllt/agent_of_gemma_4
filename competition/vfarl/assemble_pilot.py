@@ -129,16 +129,25 @@ def main():
     if len({r["repair_family_id"] for r in records}) != 96:
         raise ValueError("A declared repair family appears twice")
     lookup = {r["instance_id"]: r for r in records}
-    for result_path in sorted((BASE / "replay").glob("*-replay-result.json")):
-        result = read(result_path)
+    canonical_manifest = BASE / "replay/canonical-results-manifest.json"
+    if not canonical_manifest.exists():
+        raise FileNotFoundError("Normalize actual replay evidence before assembling training admission")
+    normalized = read(canonical_manifest)
+    for result in normalized["tasks"]:
         record = lookup.get(result["instance_id"])
         if record is None:
             continue  # Audit/reserve tasks must not silently re-enter the 96.
-        record["target_tool_replayed"] = True
+        record["target_tool_replayed"] = result.get("tool_events", 0) > 0
+        record["local_official_phase_b_completed"] = result.get("complete_official_replay", False)
+        result_path = ROOT / result["original_result_path"]
         record["replay_result_path"] = relative(result_path)
         record["replay_result_sha256"] = digest(result_path)
-        record["task_resolved_verified_in_local_official_backend"] = result["resolved_by_local_official_verify_task"]
-        record["human_off_policy_sft_demonstration_available"] = bool(result["resolved_by_local_official_verify_task"])
+        record["canonical_replay_result_path"] = result.get("canonical_result_path")
+        record["task_resolved_verified_in_local_official_backend"] = result.get("resolved_by_local_official_verify_task")
+        record["human_off_policy_sft_demonstration_available"] = result.get("eligible", False)
+        record["replay_training_admission_reasons"] = result.get("ineligibility_reasons", [])
+        record["source_requirement_profile"] = result.get("source_requirement_profile", "verbatim_required_ids")
+        record["baseline_verified_original_F2P_failure"] = result.get("baseline_verified_original_F2P_failure", False)
     owners = Counter(r["primary_adapter"] for r in records)
     submechanisms = Counter(r["submechanism"] for r in records if r["primary_adapter"] != "G")
     if owners != {"G": 36, "S": 20, "F": 20, "R": 20}:
@@ -156,15 +165,20 @@ def main():
         "prompt_status": "Original publisher description; known spec/trigger limitations remain in collector-side review. Human clarification must be explicitly versioned before model sampling.",
     }, ensure_ascii=False)+"\n" for r, t in zip(records, original_tasks)))
     manifest = {
-        "date": "2026-10-24", "tasks": 96, "unique_instance_ids": 96,
+        "date": "2026-10-25", "tasks": 96, "unique_instance_ids": 96,
         "declared_repair_families": 96, "independence_basis": "Different production-symbol repair contracts and cross-review; not trajectory-row counts.",
         "primary_adapter_counts": dict(owners), "specialist_submechanism_counts": dict(submechanisms),
         "repository_count": len({r["canonical_repo"].lower() for r in records}),
         "repository_counts": dict(Counter(r["canonical_repo"].lower() for r in records)),
         "source_dataset_counts": dict(Counter(r["source_dataset"] for r in records)),
         "source_tasks_with_complete_execution_commit": 96,
-        "task_environment_instantiation_complete_count": sum(r["target_tool_replayed"] for r in records),
+        "tasks_with_actual_official_tool_events": sum(r["target_tool_replayed"] for r in records),
+        "tasks_with_completed_local_official_phase_b": sum(r.get("local_official_phase_b_completed", False) for r in records),
         "locally_official_verified_human_demonstrations": sum(r["human_off_policy_sft_demonstration_available"] for r in records),
+        "verified_demonstrations_by_adapter": dict(Counter(r["primary_adapter"] for r in records if r["human_off_policy_sft_demonstration_available"])),
+        "verified_demonstrations_by_submechanism": dict(Counter(r["submechanism"] for r in records if r["human_off_policy_sft_demonstration_available"])),
+        "source_requirement_profile_counts_among_admitted": dict(Counter(r.get("source_requirement_profile", "verbatim_required_ids") for r in records if r["human_off_policy_sft_demonstration_available"])),
+        "replay_admission_manifest": relative(canonical_manifest), "replay_admission_manifest_sha256": digest(canonical_manifest),
         "competition_Docker_equivalent_count": 0, "on_policy_rollouts": 0, "verified_critical_pairs": 0,
         "GPU_training_started": False, "privileged_tasks_path": relative(privileged),
         "privileged_tasks_sha256": digest(privileged), "policy_descriptions_path": relative(policy),
@@ -181,14 +195,14 @@ def main():
              "| Adapter | 机制 | 任务 | 仓库 | 当前本地官方验证 |", "| --- | --- | --- | --- | --- |"]
     for r in records:
         if r["human_off_policy_sft_demonstration_available"]:
-            status = "已通过（人工off-policy）"
+            status = ("已通过（保守原ID映射；脚本off-policy）" if r.get("source_requirement_profile") == "audited_unittest_to_pytest" else "已通过（原ID；脚本off-policy）")
         elif r["target_tool_replayed"]:
             status = "已重放，整题未通过"
         else:
             status = "未重放"
         lines.append("| {primary_adapter} | {submechanism} | `{instance_id}` | {canonical_repo} | ".format(**r)+status+" |")
     lines += ["", "原始任务、完整F2P/P2P与补丁在本地privileged JSONL保存；只给policy导出原始题面。所有因果标签/参考修复/验证输出留在collector侧。", "",
-              "已知环境、路径保护或required节点匹配不适配的审计题按reserve决定保留，不以删要求换成功。"]
+              "未通过的真实结果保留具体原因；局部机制改善不替代整题通过，不以删要求换成功。"]
     (out / "catalog.md").write_text("\n".join(lines)+"\n")
     print(json.dumps(manifest, ensure_ascii=False, indent=2))
 

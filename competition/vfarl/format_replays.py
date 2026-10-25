@@ -4,8 +4,10 @@ Raw tool events stay unchanged. This produces off-policy SFT material, never
 behavior logprobs, model reasoning, or counterfactual preference pairs.
 """
 import argparse
+from collections import Counter
 import copy
 import hashlib
+import importlib.metadata
 import json
 from pathlib import Path
 
@@ -31,6 +33,8 @@ def schema_for_template(value):
 
 def render_episode(result_path, tokenizer, tools, out, official_prompts):
     result = json.loads(result_path.read_text())
+    if result.get("schema_version") != "canonical-official-replay-v1" or result.get("eligible_for_human_off_policy_SFT") is not True:
+        raise ValueError("Render admitted canonical replay records with actual source and baseline evidence")
     if not result.get("resolved_by_local_official_verify_task"):
         raise ValueError("Only completed locally verified repairs enter this SFT export")
     if result.get("evidence_kind") != "human_reviewed_off_policy_demonstration":
@@ -124,7 +128,20 @@ def render_episode(result_path, tokenizer, tools, out, official_prompts):
     text_path.write_text(rendered)
     return {
         "schema_version": "gemma-human-replay-sft-v1", "instance_id": result["instance_id"],
+        "primary_adapter": result["primary_adapter"], "submechanism": result["submechanism"],
+        "canonical_repo": result["canonical_repo"], "repair_family_id": result["repair_family_id"],
+        "snapshot_group_id": result["snapshot_group_id"],
+        "source_dataset": result["source_dataset"], "source_revision": result["source_revision"],
+        "physical_split": result["physical_split"], "source_task_sha256": result["original_task_sha256"],
+        "mechanism_labels_are_metadata_not_in_policy_prefix": True,
         "evidence_kind": result["evidence_kind"], "official_verify_task_result": True,
+        "demonstration_authorship": result["demonstration_authorship"],
+        "source_requirement_profile": result["source_requirement_profile"],
+        "strict_verbatim_required_ids_passed": result["strict_verbatim_required_ids_passed"],
+        "audited_source_id_mapping": result.get("audited_source_id_mapping"),
+        "baseline_evidence_profile": result["baseline_evidence_profile"],
+        "baseline_label_review": result.get("baseline_label_review"),
+        "visible_prompt_profile": result["visible_prompt_profile"],
         "backend": result["backend"], "competition_Docker_environment_equivalent": False,
         "messages_source": str(messages_path), "messages_source_sha256": sha(messages_path),
         "canonical_initial_user_prompt": prompt,
@@ -175,8 +192,17 @@ def action_examples(record, tokenizer, tools):
         examples.append({
             "schema_version": "gemma-human-action-sft-v2",
             "instance_id": record["instance_id"], "action_index": index,
+            "primary_adapter": record["primary_adapter"], "submechanism": record["submechanism"],
+            "canonical_repo": record["canonical_repo"], "repair_family_id": record["repair_family_id"],
+            "snapshot_group_id": record["snapshot_group_id"],
+            "source_dataset": record["source_dataset"], "source_revision": record["source_revision"],
+            "physical_split": record["physical_split"], "source_task_sha256": record["source_task_sha256"],
             "tool_call_id": span["tool_call_id"], "tool": span["tool"],
             "purpose": span["purpose"], "evidence_kind": record["evidence_kind"],
+            "source_requirement_profile": record["source_requirement_profile"],
+            "baseline_evidence_profile": record["baseline_evidence_profile"],
+            "visible_prompt_profile": record["visible_prompt_profile"]["kind"],
+            "demonstration_authorship": record["demonstration_authorship"],
             "prompt": prefix, "completion": completion,
             "input_ids": tokenized["input_ids"], "assistant_loss_mask": mask,
             "context_tokens": len(mask), "assistant_loss_tokens": sum(mask),
@@ -221,12 +247,18 @@ if __name__ == "__main__":
     manifest = {
         "tokenizer_sha256": sha(args.tokenizer / "tokenizer.json"),
         "template_sha256": sha(args.tokenizer / "chat_template.jinja"),
+        "CPU_export_runtime_packages": {name: importlib.metadata.version(name) for name in ("transformers", "tokenizers", "jinja2")},
         "actual_adk_declarations": str(args.declarations), "declarations_sha256": sha(args.declarations),
         "official_initial_prompts": str(args.official_prompts), "official_initial_prompts_sha256": sha(args.official_prompts),
         "episodes": [{k: r[k] for k in ("instance_id", "context_tokens", "assistant_loss_tokens", "replay_result")} for r in records],
         "output_path": str(target), "output_sha256": sha(target),
         "recommended_training_input": str(action_target), "action_output_sha256": sha(action_target),
         "action_examples": len(actions), "unique_task_episodes": len(records),
+        "source_requirement_profile_episode_counts": dict(Counter(r["source_requirement_profile"] for r in records)),
+        "baseline_evidence_profile_episode_counts": dict(Counter(r["baseline_evidence_profile"] for r in records)),
+        "visible_prompt_profile_episode_counts": dict(Counter(r["visible_prompt_profile"]["kind"] for r in records)),
+        "episode_counts_by_primary_adapter": dict(Counter(r["primary_adapter"] for r in records)),
+        "episode_counts_by_submechanism": dict(Counter(r["submechanism"] for r in records)),
         "actual_tool_call_examples": sum(a["tool"] is not None for a in actions),
         "actual_text_only_completion_examples": sum(a["tool"] is None for a in actions),
         "action_loss_tokens": sum(a["assistant_loss_tokens"] for a in actions),

@@ -1,0 +1,66 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex dynamic worker source and command review 2026-10-25",
+  "review_notes": "{'production_symbols': ['pydantic/types.py::StringConstraints', 'annotated_types.GroupedMetadata', '_known_annotated_metadata'], 'trigger': 'Validate Annotated[str,StringConstraints(strip_whitespace=True,to_lower=True),AfterValidator(...)].', 'base_wrong_behavior': 'Removing GroupedMetadata ancestry prevents the existing iterator from being expanded into recognized constraints.', 'causal_change': 'Restore the metadata protocol marker consumed by Annotated collection and validation/schema generation.', 'discriminating_observation': 'Native51 returns unnormalized ABC/doubled text; after class-base edit52,55 reports abc/abcabc and comparisons true.', 'native_message_indices_0_based': [7, 35, 47, 51, 52, 55]} Exact source-introduced defect was independently read and candidate inverse reviewed; source teacher patch not used. Inline diagnostic checks actual workspace import and behavior. Original F2P/P2P all retained; baseline reproduction is expected diagnostic error, not a policy mistake. Decorator2789 deliberately preserves both legacy and new names.",
+  "final_response": "Implemented the repair and confirmed the reported behavior with a direct reproduction against the workspace source.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "pydantic/types.py",
+        "start_line": 686,
+        "end_line": 786
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport pydantic\nprint('workspace import:', pydantic.__file__)\nassert Path(pydantic.__file__).resolve().is_relative_to(Path.cwd().resolve())\nfrom typing import Annotated\nfrom pydantic import StringConstraints, TypeAdapter, ValidationError\nadapter=TypeAdapter(Annotated[str,StringConstraints(min_length=2,to_upper=True)])\nprint(adapter.validate_python(\"ab\"))\nassert adapter.validate_python(\"ab\")==\"AB\"\ntry:adapter.validate_python(\"a\")\nexcept ValidationError as exc:print(exc.errors());assert exc.errors()[0][\"type\"]==\"string_too_short\"\nelse:raise AssertionError(\"grouped constraints ignored\")\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "adb26c0f5ed5fe891dc0c4ddd4604c114bbf4e69e6cebeb409f6e0a92e89439c"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pydantic/types.py",
+        "old_string": "\n\n@_dataclasses.dataclass(frozen=True)\nclass StringConstraints():\n    \"\"\"!!! abstract \"Usage Documentation\"\n        [`StringConstraints`](../concepts/fields.md#string-constraints)\n\n",
+        "new_string": "\n\n@_dataclasses.dataclass(frozen=True)\nclass StringConstraints(annotated_types.GroupedMetadata):\n    \"\"\"!!! abstract \"Usage Documentation\"\n        [`StringConstraints`](../concepts/fields.md#string-constraints)\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pydantic/types.py",
+        "old_string": "                to_lower=self.to_lower,\n                pattern=self.pattern,\n            )\n\ndef constr(\n    *,\n",
+        "new_string": "                to_lower=self.to_lower,\n                pattern=self.pattern,\n            )\n\n\ndef constr(\n    *,\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport pydantic\nprint('workspace import:', pydantic.__file__)\nassert Path(pydantic.__file__).resolve().is_relative_to(Path.cwd().resolve())\nfrom typing import Annotated\nfrom pydantic import StringConstraints, TypeAdapter, ValidationError\nadapter=TypeAdapter(Annotated[str,StringConstraints(min_length=2,to_upper=True)])\nprint(adapter.validate_python(\"ab\"))\nassert adapter.validate_python(\"ab\")==\"AB\"\ntry:adapter.validate_python(\"a\")\nexcept ValidationError as exc:print(exc.errors());assert exc.errors()[0][\"type\"]==\"string_too_short\"\nelse:raise AssertionError(\"grouped constraints ignored\")\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "adb26c0f5ed5fe891dc0c4ddd4604c114bbf4e69e6cebeb409f6e0a92e89439c"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ]
+}

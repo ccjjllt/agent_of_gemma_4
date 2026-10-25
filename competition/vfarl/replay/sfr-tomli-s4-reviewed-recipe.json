@@ -1,0 +1,75 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Restore three missing scanner branches in precedence order: multiline literals, local times before numbers, and configured parse_float handling. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/tomli/_parser.py",
+        "start_line": 655,
+        "end_line": 724
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nmodule = importlib.import_module('tomli._parser')\nactual=Path(module.__file__).resolve()\nexpected=(Path.cwd() / 'src/tomli/_parser.py').resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport tomli\nfrom datetime import time\nfrom decimal import Decimal\ndoc=\"number = 42\\nlocal = 12:34:56\\ntext = '''\\nfirst\\nsecond\\n'''\\nratio = 0.25\\n\"\nobserved=tomli.loads(doc,parse_float=Decimal)\nprint(\"parsed_values\", observed)\nassert observed=={\"number\":42,\"local\":time(12,34,56),\"text\":\"first\\nsecond\\n\",\"ratio\":Decimal(\"0.25\")}\nassert tomli.loads(\"x = 'literal'\")=={\"x\":\"literal\"}\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "b8299dff74bde061e7e8f5d7029d7b39ac670f835e868ffdf20af4aa2ac6151d"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/tomli/_parser.py",
+        "old_string": "    # Literal strings\n    if char == \"'\":\n        return parse_literal_str(src, pos)\n",
+        "new_string": "    # Literal strings\n    if char == \"'\":\n        if src.startswith(\"'''\", pos):\n            return parse_multiline_str(src, pos, literal=True)\n        return parse_literal_str(src, pos)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/tomli/_parser.py",
+        "old_string": "    localtime_match = RE_LOCALTIME.match(src, pos)\n",
+        "new_string": "    localtime_match = RE_LOCALTIME.match(src, pos)\n    if localtime_match:\n        return localtime_match.end(), match_to_localtime(localtime_match)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/tomli/_parser.py",
+        "old_string": "    number_match = RE_NUMBER.match(src, pos)\n",
+        "new_string": "    number_match = RE_NUMBER.match(src, pos)\n    if number_match:\n        return number_match.end(), match_to_number(number_match, parse_float)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nmodule = importlib.import_module('tomli._parser')\nactual=Path(module.__file__).resolve()\nexpected=(Path.cwd() / 'src/tomli/_parser.py').resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport tomli\nfrom datetime import time\nfrom decimal import Decimal\ndoc=\"number = 42\\nlocal = 12:34:56\\ntext = '''\\nfirst\\nsecond\\n'''\\nratio = 0.25\\n\"\nobserved=tomli.loads(doc,parse_float=Decimal)\nprint(\"parsed_values\", observed)\nassert observed=={\"number\":42,\"local\":time(12,34,56),\"text\":\"first\\nsecond\\n\",\"ratio\":Decimal(\"0.25\")}\nassert tomli.loads(\"x = 'literal'\")=={\"x\":\"literal\"}\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "b8299dff74bde061e7e8f5d7029d7b39ac670f835e868ffdf20af4aa2ac6151d"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored value dispatch for multiline literal strings, local times, and numbers. The inline reproduction confirms these forms and the parse_float callback. Patch submitted."
+}

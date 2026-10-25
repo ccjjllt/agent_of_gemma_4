@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex dynamic worker source and command review 2026-10-25",
+  "review_notes": "{'agent_visible_trigger': 'Instantiate a nested config whose interpolation references a parent, including re-entrant instantiate calls and full keys that are integer 0.', 'base_wrong_behavior': 'The copied root/subnode selection uses truthiness of full_key and lacks consistent parent-chain/identity checks, losing or misselecting configuration context.', 'production_symbols': 'hydra._internal.instantiate._instantiate2._deep_copy_full_config', 'causal_change': 'Handle empty/None keys separately from integer 0, normalize the full key relative to root, validate selected node identity, and copy the correct whole ownership tree or the appropriate detached subconfig.', 'discriminating_observation': 'The four interpolate-accessing-parent cases resolve the same parent value for recursive/nonrecursive and related options, while the caller-owned config remains stable.'} Exact source-introduced defect was independently read and candidate inverse reviewed; source teacher patch not used. Inline diagnostic checks actual workspace import and behavior. Original F2P/P2P all retained; baseline reproduction is expected diagnostic error, not a policy mistake. Decorator2789 deliberately preserves both legacy and new names.",
+  "final_response": "Implemented the repair and confirmed the reported behavior with a direct reproduction against the workspace source.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "hydra/_internal/instantiate/_instantiate2.py",
+        "start_line": 147,
+        "end_line": 247
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hydra\nprint('workspace import:', hydra.__file__)\nassert Path(hydra.__file__).resolve().is_relative_to(Path.cwd().resolve())\nfrom hydra.utils import instantiate\nfrom omegaconf import OmegaConf\nclass User:\n    def __init__(self,name):self.name=name\nclass Parent:\n    def __init__(self,user_config):self.user=instantiate(user_config)\nfor as_list in (False,True):\n    cfg=OmegaConf.create({\"username\":\"alice\",\"foo\":{\"username\":\"${username}\"},\"node\":{\"_target_\":\"__main__.Parent\",\"_recursive_\":False,\"user_config\":{\"_target_\":\"__main__.User\",\"name\":\"${foo.username}\"}}})\n    if as_list:cfg.node=[cfg.node]\n    original=OmegaConf.to_container(cfg,resolve=False)\n    result=instantiate(cfg.node[0] if as_list else cfg.node)\n    print(as_list,result.user.name)\n    assert result.user.name==\"alice\"\n    assert OmegaConf.to_container(cfg,resolve=False)==original\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "970c61e0748aa9cb23012556b083d8025c6fef57eefaf27b3cff8054cc98d986"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "hydra/_internal/instantiate/_instantiate2.py",
+        "old_string": "        return copy.deepcopy(subconfig)\n\n    full_key = subconfig._get_full_key(None)\n    if full_key:\n        full_config_copy = copy.deepcopy(subconfig._get_root())\n        if OmegaConf.is_list(subconfig._get_parent()):\n            # OmegaConf has a bug where _get_full_key doesn't add [] if the parent\n            # is a list, eg. instead of foo[0], it'll return foo0\n            index = subconfig._key()\n            full_key = full_key[: -len(str(index))] + f\"[{index}]\"\n        return OmegaConf.select(full_config_copy, full_key)\n    else:\n        return copy.deepcopy(subconfig)\n\n\ndef instantiate(\n",
+        "new_string": "        return copy.deepcopy(subconfig)\n\n    full_key = subconfig._get_full_key(None)\n    if full_key == \"\" or full_key is None:  # Do not exit early if full_key is 0\n        return copy.deepcopy(subconfig)\n    full_key = str(full_key)\n\n    if OmegaConf.is_list(subconfig._get_parent()):\n        # OmegaConf has a bug where _get_full_key doesn't add [] if the parent\n        # is a list, eg. instead of foo[0], it'll return foo0\n        index = subconfig._key()\n        full_key = full_key[: -len(str(index))] + f\"[{index}]\"\n    root = subconfig._get_root()\n    full_key = full_key.replace(root._get_full_key(None) or \"\", \"\", 1)\n    if OmegaConf.select(root, full_key) is not subconfig:\n        # The parent chain and full key are not consistent so don't\n        # try to copy the full config\n        return copy.deepcopy(subconfig)\n\n    full_config_copy = copy.deepcopy(root)\n    return OmegaConf.select(full_config_copy, full_key)\n\n\ndef instantiate(\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hydra\nprint('workspace import:', hydra.__file__)\nassert Path(hydra.__file__).resolve().is_relative_to(Path.cwd().resolve())\nfrom hydra.utils import instantiate\nfrom omegaconf import OmegaConf\nclass User:\n    def __init__(self,name):self.name=name\nclass Parent:\n    def __init__(self,user_config):self.user=instantiate(user_config)\nfor as_list in (False,True):\n    cfg=OmegaConf.create({\"username\":\"alice\",\"foo\":{\"username\":\"${username}\"},\"node\":{\"_target_\":\"__main__.Parent\",\"_recursive_\":False,\"user_config\":{\"_target_\":\"__main__.User\",\"name\":\"${foo.username}\"}}})\n    if as_list:cfg.node=[cfg.node]\n    original=OmegaConf.to_container(cfg,resolve=False)\n    result=instantiate(cfg.node[0] if as_list else cfg.node)\n    print(as_list,result.user.name)\n    assert result.user.name==\"alice\"\n    assert OmegaConf.to_container(cfg,resolve=False)==original\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "970c61e0748aa9cb23012556b083d8025c6fef57eefaf27b3cff8054cc98d986"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ]
+}

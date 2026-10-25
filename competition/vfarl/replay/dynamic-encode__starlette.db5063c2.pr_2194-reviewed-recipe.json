@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex dynamic worker source and command review 2026-10-25",
+  "review_notes": "{'agent_visible_trigger': 'Stream a response through BaseHTTPMiddleware while a background task continues after the last body message.', 'base_wrong_behavior': 'The body consumer ignores more_body=False and waits for additional channel activity/background completion after the response is already terminal.', 'production_symbols': 'starlette.middleware.base.BaseHTTPMiddleware body_stream generator', 'causal_change': 'Stop response-body consumption at the explicit terminal body message instead of waiting for downstream background tasks.', 'discriminating_observation': 'The client receives the complete response promptly while the background task can still run; asyncio and trio source cases distinguish this ordering.'} Exact source-introduced defect was independently read and candidate inverse reviewed; source teacher patch not used. Inline diagnostic checks actual workspace import and behavior. Original F2P/P2P all retained; baseline reproduction is expected diagnostic error, not a policy mistake. Decorator2789 deliberately preserves both legacy and new names.",
+  "final_response": "Implemented the repair and confirmed the reported behavior with a direct reproduction against the workspace source.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "starlette/middleware/base.py",
+        "start_line": 168,
+        "end_line": 226
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport starlette\nprint('workspace import:', starlette.__file__)\nassert Path(starlette.__file__).resolve().is_relative_to(Path.cwd().resolve())\nimport asyncio\nfrom starlette.middleware.base import BaseHTTPMiddleware\nfrom starlette.background import BackgroundTask\nfrom starlette.responses import Response\nclass PassThrough(BaseHTTPMiddleware):\n    async def dispatch(self,request,call_next):return await call_next(request)\nasync def observe():\n    finished=asyncio.Event();never=asyncio.Event();events=[]\n    async def background():await finished.wait()\n    async def app(scope,receive,send):await Response(\"ok\",background=BackgroundTask(background))(scope,receive,send)\n    calls=0\n    async def receive():\n        nonlocal calls\n        calls+=1\n        if calls==1:return {\"type\":\"http.request\",\"body\":b\"\",\"more_body\":False}\n        await never.wait()\n    async def send(message):\n        events.append(message)\n        if message[\"type\"]==\"http.response.body\" and not message.get(\"more_body\",False):finished.set()\n    scope={\"type\":\"http\",\"method\":\"GET\",\"path\":\"/\",\"headers\":[],\"query_string\":b\"\",\"scheme\":\"http\",\"http_version\":\"1.1\"}\n    await asyncio.wait_for(PassThrough(app)(scope,receive,send),2)\n    print(events)\n    assert finished.is_set()\nasyncio.run(observe())\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "8e03f8469df4ab5b332ee9dfb5f2fa026e1e92e948129a0de17f1d765afd0e25"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "starlette/middleware/base.py",
+        "old_string": "                        body = message.get(\"body\", b\"\")\n                        if body:\n                            yield body\n\n                if app_exc is not None:\n                    raise app_exc\n",
+        "new_string": "                        body = message.get(\"body\", b\"\")\n                        if body:\n                            yield body\n                        if not message.get(\"more_body\", False):\n                            break\n\n                if app_exc is not None:\n                    raise app_exc\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport starlette\nprint('workspace import:', starlette.__file__)\nassert Path(starlette.__file__).resolve().is_relative_to(Path.cwd().resolve())\nimport asyncio\nfrom starlette.middleware.base import BaseHTTPMiddleware\nfrom starlette.background import BackgroundTask\nfrom starlette.responses import Response\nclass PassThrough(BaseHTTPMiddleware):\n    async def dispatch(self,request,call_next):return await call_next(request)\nasync def observe():\n    finished=asyncio.Event();never=asyncio.Event();events=[]\n    async def background():await finished.wait()\n    async def app(scope,receive,send):await Response(\"ok\",background=BackgroundTask(background))(scope,receive,send)\n    calls=0\n    async def receive():\n        nonlocal calls\n        calls+=1\n        if calls==1:return {\"type\":\"http.request\",\"body\":b\"\",\"more_body\":False}\n        await never.wait()\n    async def send(message):\n        events.append(message)\n        if message[\"type\"]==\"http.response.body\" and not message.get(\"more_body\",False):finished.set()\n    scope={\"type\":\"http\",\"method\":\"GET\",\"path\":\"/\",\"headers\":[],\"query_string\":b\"\",\"scheme\":\"http\",\"http_version\":\"1.1\"}\n    await asyncio.wait_for(PassThrough(app)(scope,receive,send),2)\n    print(events)\n    assert finished.is_set()\nasyncio.run(observe())\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "8e03f8469df4ab5b332ee9dfb5f2fa026e1e92e948129a0de17f1d765afd0e25"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ]
+}

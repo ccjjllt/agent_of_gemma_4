@@ -1,0 +1,102 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex dynamic worker source and command review 2026-10-25",
+  "review_notes": "{'agent_visible_trigger': 'Call model_dump(context=...) or model_dump_json(context=...) with a context-aware field serializer.', 'base_wrong_behavior': 'Both public methods lost the context argument and stopped forwarding it to the core serializer.', 'production_symbols': 'pydantic.main.BaseModel.model_dump; model_dump_json', 'causal_change': 'Restore the public context parameter and forward it through both Python and JSON serialization calls.', 'discriminating_observation': 'The field serializer receives the same context object for both output modes; default context=None retains existing behavior.'} Exact source-introduced defect was independently read and candidate inverse reviewed; source teacher patch not used. Inline diagnostic checks actual workspace import and behavior. Original F2P/P2P all retained; baseline reproduction is expected diagnostic error, not a policy mistake. Decorator2789 deliberately preserves both legacy and new names.",
+  "final_response": "Implemented the repair and confirmed the reported behavior with a direct reproduction against the workspace source.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "pydantic/main.py",
+        "start_line": 410,
+        "end_line": 510
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport pydantic\nprint('workspace import:', pydantic.__file__)\nassert Path(pydantic.__file__).resolve().is_relative_to(Path.cwd().resolve())\nimport json\nfrom pydantic import BaseModel, field_serializer\nclass Model(BaseModel):\n    value:int\n    @field_serializer(\"value\")\n    def serialize(self,value,info):return value+(info.context or {}).get(\"delta\",0)\nm=Model(value=3)\nassert m.model_dump()=={\"value\":3}\nprint(m.model_dump(context={\"delta\":4}),m.model_dump_json(context={\"delta\":5}))\nassert m.model_dump(context={\"delta\":4})=={\"value\":7}\nassert json.loads(m.model_dump_json(context={\"delta\":5}))=={\"value\":8}\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "e417d5290d1b9bba8151e73b7322b73f3593d31661e7b128a2745a3e330ec1cd"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pydantic/main.py",
+        "old_string": "        mode: Literal['json', 'python'] | str = 'python',\n        include: IncEx | None = None,\n        exclude: IncEx | None = None,\n        by_alias: bool | None = None,\n        exclude_unset: bool = False,\n        exclude_defaults: bool = False,\n",
+        "new_string": "        mode: Literal['json', 'python'] | str = 'python',\n        include: IncEx | None = None,\n        exclude: IncEx | None = None,\n        context: Any | None = None,\n        by_alias: bool | None = None,\n        exclude_unset: bool = False,\n        exclude_defaults: bool = False,\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pydantic/main.py",
+        "old_string": "                If mode is 'python', the output may contain non-JSON-serializable Python objects.\n            include: A set of fields to include in the output.\n            exclude: A set of fields to exclude from the output.\n            by_alias: Whether to use the field's alias in the dictionary key if defined.\n            exclude_unset: Whether to exclude fields that have not been explicitly set.\n            exclude_defaults: Whether to exclude fields that are set to their default value.\n",
+        "new_string": "                If mode is 'python', the output may contain non-JSON-serializable Python objects.\n            include: A set of fields to include in the output.\n            exclude: A set of fields to exclude from the output.\n            context: Additional context to pass to the serializer.\n            by_alias: Whether to use the field's alias in the dictionary key if defined.\n            exclude_unset: Whether to exclude fields that have not been explicitly set.\n            exclude_defaults: Whether to exclude fields that are set to their default value.\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pydantic/main.py",
+        "old_string": "            by_alias=by_alias,\n            include=include,\n            exclude=exclude,\n            exclude_unset=exclude_unset,\n            exclude_defaults=exclude_defaults,\n            exclude_none=exclude_none,\n",
+        "new_string": "            by_alias=by_alias,\n            include=include,\n            exclude=exclude,\n            context=context,\n            exclude_unset=exclude_unset,\n            exclude_defaults=exclude_defaults,\n            exclude_none=exclude_none,\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pydantic/main.py",
+        "old_string": "        indent: int | None = None,\n        include: IncEx | None = None,\n        exclude: IncEx | None = None,\n        by_alias: bool | None = None,\n        exclude_unset: bool = False,\n        exclude_defaults: bool = False,\n",
+        "new_string": "        indent: int | None = None,\n        include: IncEx | None = None,\n        exclude: IncEx | None = None,\n        context: Any | None = None,\n        by_alias: bool | None = None,\n        exclude_unset: bool = False,\n        exclude_defaults: bool = False,\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pydantic/main.py",
+        "old_string": "            indent: Indentation to use in the JSON output. If None is passed, the output will be compact.\n            include: Field(s) to include in the JSON output.\n            exclude: Field(s) to exclude from the JSON output.\n            by_alias: Whether to serialize using field aliases.\n            exclude_unset: Whether to exclude fields that have not been explicitly set.\n            exclude_defaults: Whether to exclude fields that are set to their default value.\n",
+        "new_string": "            indent: Indentation to use in the JSON output. If None is passed, the output will be compact.\n            include: Field(s) to include in the JSON output.\n            exclude: Field(s) to exclude from the JSON output.\n            context: Additional context to pass to the serializer.\n            by_alias: Whether to serialize using field aliases.\n            exclude_unset: Whether to exclude fields that have not been explicitly set.\n            exclude_defaults: Whether to exclude fields that are set to their default value.\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pydantic/main.py",
+        "old_string": "            indent=indent,\n            include=include,\n            exclude=exclude,\n            by_alias=by_alias,\n            exclude_unset=exclude_unset,\n            exclude_defaults=exclude_defaults,\n",
+        "new_string": "            indent=indent,\n            include=include,\n            exclude=exclude,\n            context=context,\n            by_alias=by_alias,\n            exclude_unset=exclude_unset,\n            exclude_defaults=exclude_defaults,\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport pydantic\nprint('workspace import:', pydantic.__file__)\nassert Path(pydantic.__file__).resolve().is_relative_to(Path.cwd().resolve())\nimport json\nfrom pydantic import BaseModel, field_serializer\nclass Model(BaseModel):\n    value:int\n    @field_serializer(\"value\")\n    def serialize(self,value,info):return value+(info.context or {}).get(\"delta\",0)\nm=Model(value=3)\nassert m.model_dump()=={\"value\":3}\nprint(m.model_dump(context={\"delta\":4}),m.model_dump_json(context={\"delta\":5}))\nassert m.model_dump(context={\"delta\":4})=={\"value\":7}\nassert json.loads(m.model_dump_json(context={\"delta\":5}))=={\"value\":8}\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "e417d5290d1b9bba8151e73b7322b73f3593d31661e7b128a2745a3e330ec1cd"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ]
+}

@@ -1,0 +1,66 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex dynamic worker source and command review 2026-10-25",
+  "review_notes": "{'agent_visible_trigger': 'Instrument a function whose generated helper name collides with a local, nonlocal or global name.', 'base_wrong_behavior': 'An early return skips namespace checks and fails to reserve a generated unique name.', 'production_symbols': 'typeguard._transformer.TransformMemo.get_unused_name', 'causal_change': 'Scan local/ancestor memo namespaces, append suffixes until free, reserve the chosen name, then return it.', 'discriminating_observation': 'Each generated identifier is absent from every relevant existing namespace; repeated allocation cannot return the same free name twice.'} Exact source-introduced defect was independently read and candidate inverse reviewed; source teacher patch not used. Inline diagnostic checks actual workspace import and behavior. Original F2P/P2P all retained; baseline reproduction is expected diagnostic error, not a policy mistake. Decorator2789 deliberately preserves both legacy and new names.",
+  "final_response": "Implemented the repair and confirmed the reported behavior with a direct reproduction against the workspace source.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/typeguard/_transformer.py",
+        "start_line": 162,
+        "end_line": 262
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport typeguard\nprint('workspace import:', typeguard.__file__)\nassert Path(typeguard.__file__).resolve().is_relative_to(Path.cwd().resolve())\nfrom typeguard._transformer import TransformMemo\nparent=TransformMemo(None, None, ())\nchild=TransformMemo(None, parent, ())\nparent.local_names.update({\"memo\", \"memo__\"})\nchild.local_names.add(\"memo_\")\nname=child.get_unused_name(\"memo\")\nprint(name)\nassert name == \"memo___\"\nassert name in child.local_names\nassert child.get_unused_name(\"memo\") == \"memo____\"\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "57ef72c28e45d49e5fab892fc8ed7456ff3aa3dc87b1182d3c846d0779029375"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/typeguard/_transformer.py",
+        "old_string": "                break\n\n    def get_unused_name(self, name: str) -> str:\n        return name\n\n        self.local_names.add(name)\n        memo: TransformMemo | None = self\n        while memo is not None:\n            if name in memo.local_names:\n",
+        "new_string": "                break\n\n    def get_unused_name(self, name: str) -> str:\n        memo: TransformMemo | None = self\n        while memo is not None:\n            if name in memo.local_names:\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/typeguard/_transformer.py",
+        "old_string": "                name += \"_\"\n            else:\n                memo = memo.parent\n    def is_ignored_name(self, expression: expr | Expr | None) -> bool:\n        top_expression = (\n            expression.value if isinstance(expression, Expr) else expression\n",
+        "new_string": "                name += \"_\"\n            else:\n                memo = memo.parent\n\n        self.local_names.add(name)\n        return name\n\n    def is_ignored_name(self, expression: expr | Expr | None) -> bool:\n        top_expression = (\n            expression.value if isinstance(expression, Expr) else expression\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport typeguard\nprint('workspace import:', typeguard.__file__)\nassert Path(typeguard.__file__).resolve().is_relative_to(Path.cwd().resolve())\nfrom typeguard._transformer import TransformMemo\nparent=TransformMemo(None, None, ())\nchild=TransformMemo(None, parent, ())\nparent.local_names.update({\"memo\", \"memo__\"})\nchild.local_names.add(\"memo_\")\nname=child.get_unused_name(\"memo\")\nprint(name)\nassert name == \"memo___\"\nassert name in child.local_names\nassert child.get_unused_name(\"memo\") == \"memo____\"\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "57ef72c28e45d49e5fab892fc8ed7456ff3aa3dc87b1182d3c846d0779029375"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ]
+}

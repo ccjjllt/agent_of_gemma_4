@@ -1,4 +1,27 @@
-# 首批96：S2/F2/R2/R5的16题独立复核
+# S2/F2/R2/R5：独立复核与当前进度
+
+2026-10-25：原16题当前13条通过，分别4/4/3/2；另外明确补充R2一条、R5两条后，每种重点机制各4条可用。原审阅日期的4条是历史计数，未改写为当时已执行更多。
+
+| 机制 | 原任务 | 当前实际结果 |
+| --- | --- | --- |
+| S2 | `adrienverge__yamllint.8513d9b9.func_pm_op_change_const__l4zuvyrl` | 完整通过且已导出 |
+| S2 | `hukkin__tomli.443a0c1b.pr_238` | 完整通过且已导出 |
+| S2 | `pdfminer__pdfminer.six.1a8bd2f7.lm_rewrite__63n4v0qf` | 完整通过且已导出 |
+| S2 | `laspy__laspy-327` | 完整通过且已导出 |
+| F2 | `mahmoud__boltons.3bfcfdd0.pr_375` | 完整通过且已导出 |
+| F2 | `facebookresearch__hydra.0f03eb60.pr_3009` | 完整通过且已导出 |
+| F2 | `tox-dev__pipdeptree.c31b6418.lm_rewrite__wjebghtt` | 完整通过且已导出 |
+| F2 | `pennylaneai__pennylane-4736` | 完整通过且已导出 |
+| R2 | `encode__starlette.db5063c2.lm_rewrite__12xv5ppk` | 已实跑，未入池 |
+| R2 | `facebookresearch__hydra.0f03eb60.pr_1915` | 完整通过且已导出 |
+| R2 | `jd__tenacity.0d40e76f.pr_406` | 完整通过且已导出 |
+| R2 | `cool-RR__PySnooper.57472b46.lm_rewrite__urhyaplv` | 完整通过且已导出 |
+| R5 | `pallets__jinja.ada0a9a6.func_pm_ctrl_invert_if__zwhpkn1s` | 完整通过且已导出 |
+| R5 | `iterative__dvc.1d6ea681.pr_7628` | 完整通过且已导出 |
+| R5 | `encode__starlette.db5063c2.pr_2733` | 已实跑，未入池 |
+| R5 | `python-trio__trio.cfbbe2c1.pr_2932` | 已实跑，未入池 |
+
+## 2026-10-24历史独立审阅
 
 16题来源task字节、任务ID、原F2P/P2P计数及authoritative review引用一致；14题Smith为缺陷引入diff，2题V2为解题diff。16题分类均有静态支持，未发现同函数家族重复。当前已读到4题的本地官方成功报告；本复核没有新增执行。
 

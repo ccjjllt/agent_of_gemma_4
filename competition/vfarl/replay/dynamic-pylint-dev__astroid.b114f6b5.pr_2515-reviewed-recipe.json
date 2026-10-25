@@ -1,0 +1,75 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex dynamic worker source and command review 2026-10-25",
+  "review_notes": "{'production_symbols': ['astroid/brain/brain_attrs.py::attr_attributes_transform', 'is_decorated_with_attrs', 'AnnAssign'], 'trigger': 'Infer fields declared by bare annotations under attrs.define/mutable/frozen, compared with legacy explicit attr.ib fields.', 'base_wrong_behavior': 'Removing NEW_ATTRS_NAMES/use_bare_annotations makes the transform skip every non-Call annotation node.', 'causal_change': 'Distinguish decorator contracts before deciding whether a bare annotation creates an inferred instance field.', 'discriminating_observation': 'Native17 cannot access name/age;21 can;25 still finds inherited-field edge cases, so early local success is incomplete.', 'native_message_indices_0_based': [17, 18, 21, 25, 26, 27]} Exact source-introduced defect was independently read and candidate inverse reviewed; source teacher patch not used. Inline diagnostic checks actual workspace import and behavior. Original F2P/P2P all retained; baseline reproduction is expected diagnostic error, not a policy mistake. Decorator2789 deliberately preserves both legacy and new names.",
+  "final_response": "Implemented the repair and confirmed the reported behavior with a direct reproduction against the workspace source.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "astroid/brain/brain_attrs.py",
+        "start_line": 20,
+        "end_line": 97
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport astroid\nprint('workspace import:', astroid.__file__)\nassert Path(astroid.__file__).resolve().is_relative_to(Path.cwd().resolve())\nimport astroid\nnode=astroid.parse(\"import attrs\\n@attrs.define\\nclass A:\\n    x: int\\n\")\ncls=node[\"A\"]\nprint(sorted(cls.instance_attrs))\nassert \"x\" in cls.instance_attrs\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "46b328f0627235941a9a1696d57be4ae006c7b862ca90740cb90129761d22f89"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "astroid/brain/brain_attrs.py",
+        "old_string": "        \"field\",\n    )\n)\nATTRS_NAMES = frozenset(\n    (\n        \"attr.s\",\n",
+        "new_string": "        \"field\",\n    )\n)\nNEW_ATTRS_NAMES = frozenset(\n    (\n        \"attrs.define\",\n        \"attrs.mutable\",\n        \"attrs.frozen\",\n    )\n)\nATTRS_NAMES = frozenset(\n    (\n        \"attr.s\",\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "astroid/brain/brain_attrs.py",
+        "old_string": "        \"attr.define\",\n        \"attr.mutable\",\n        \"attr.frozen\",\n        \"attrs.define\",\n        \"attrs.mutable\",\n        \"attrs.frozen\",\n    )\n)\n\n",
+        "new_string": "        \"attr.define\",\n        \"attr.mutable\",\n        \"attr.frozen\",\n        *NEW_ATTRS_NAMES,\n    )\n)\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "astroid/brain/brain_attrs.py",
+        "old_string": "    # Prevents https://github.com/pylint-dev/pylint/issues/1884\n    node.locals[\"__attrs_attrs__\"] = [Unknown(parent=node)]\n\n    for cdef_body_node in node.body:\n        if not isinstance(cdef_body_node, (Assign, AnnAssign)):\n            continue\n        if isinstance(cdef_body_node.value, Call):\n            if cdef_body_node.value.func.as_string() not in ATTRIB_NAMES:\n                continue\n        else:\n            continue\n        targets = (\n            cdef_body_node.targets\n",
+        "new_string": "    # Prevents https://github.com/pylint-dev/pylint/issues/1884\n    node.locals[\"__attrs_attrs__\"] = [Unknown(parent=node)]\n\n    use_bare_annotations = is_decorated_with_attrs(node, NEW_ATTRS_NAMES)\n    for cdef_body_node in node.body:\n        if not isinstance(cdef_body_node, (Assign, AnnAssign)):\n            continue\n        if isinstance(cdef_body_node.value, Call):\n            if cdef_body_node.value.func.as_string() not in ATTRIB_NAMES:\n                continue\n        elif not use_bare_annotations:\n            continue\n        targets = (\n            cdef_body_node.targets\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport astroid\nprint('workspace import:', astroid.__file__)\nassert Path(astroid.__file__).resolve().is_relative_to(Path.cwd().resolve())\nimport astroid\nnode=astroid.parse(\"import attrs\\n@attrs.define\\nclass A:\\n    x: int\\n\")\ncls=node[\"A\"]\nprint(sorted(cls.instance_attrs))\nassert \"x\" in cls.instance_attrs\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "46b328f0627235941a9a1696d57be4ae006c7b862ca90740cb90129761d22f89"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ]
+}

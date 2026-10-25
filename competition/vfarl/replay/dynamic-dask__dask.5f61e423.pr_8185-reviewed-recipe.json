@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex dynamic worker source and command review 2026-10-25",
+  "review_notes": "{'production_symbols': ['dask/utils.py::Dispatch.dispatch', 'Dispatch._lazy', 'Dispatch._lookup', 'cls.__mro__'], 'trigger': 'Dispatch for an external subclass of a lazily registered base-module type before/after another base object registers it.', 'base_wrong_behavior': 'The mutation checks lazy hooks only for concrete cls.__module__, then searches base handlers; a generic fallback can be cached before a base hook runs.', 'causal_change': 'Check lazy registration along MRO before caching fallback and preserve concrete-class identity during redispatch.', 'discriminating_observation': 'Task diff moves lazy lookup out of MRO loop; native15/27 both have internally stable tokenization hashes, so that source reproduction is non-discriminating.', 'native_message_indices_0_based': [15, 24, 27]} Exact source-introduced defect was independently read and candidate inverse reviewed; source teacher patch not used. Inline diagnostic checks actual workspace import and behavior. Original F2P/P2P all retained; baseline reproduction is expected diagnostic error, not a policy mistake. Decorator2789 deliberately preserves both legacy and new names.",
+  "final_response": "Implemented the repair and confirmed the reported behavior with a direct reproduction against the workspace source.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "dask/utils.py",
+        "start_line": 737,
+        "end_line": 837
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport dask\nprint('workspace import:', dask.__file__)\nassert Path(dask.__file__).resolve().is_relative_to(Path.cwd().resolve())\nfrom dask.utils import Dispatch\nimport decimal\nclass Lazy(decimal.Decimal):pass\nclass Eager(Lazy):pass\nfoo=Dispatch()\n@foo.register(Eager)\ndef eager(value):return \"eager\"\ndef lazy(value):return \"lazy\"\n@foo.register_lazy(\"decimal\")\ndef register_decimal():foo.register(decimal.Decimal,lazy)\nprint(foo.dispatch(Lazy),foo(Lazy(1)))\nassert foo.dispatch(Lazy) is lazy and foo(Lazy(1))==\"lazy\"\nassert foo(Eager(1))==\"eager\"\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "b7c74f05d39555a27f5ab2949910fd7555a37a25f241e32f66d6ee7c6f4d0000"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "dask/utils.py",
+        "old_string": "\n    def dispatch(self, cls):\n        \"\"\"Return the function implementation for the given ``cls``\"\"\"\n        # Fast path with direct lookup on cls\n        lk = self._lookup\n        try:\n            impl = lk[cls]\n        except KeyError:\n            pass\n        else:\n            return impl\n        # Is a lazy registration function present?\n        toplevel, _, _ = cls.__module__.partition(\".\")\n        try:\n            register = self._lazy.pop(toplevel)\n        except KeyError:\n            pass\n        else:\n            register()\n            return self.dispatch(cls)  # recurse\n        # Walk the MRO and cache the lookup result\n        for cls2 in inspect.getmro(cls)[1:]:\n            if cls2 in lk:\n                lk[cls] = lk[cls2]\n                return lk[cls2]\n        raise TypeError(f\"No dispatch for {cls}\")\n\n    def __call__(self, arg, *args, **kwargs):\n",
+        "new_string": "\n    def dispatch(self, cls):\n        \"\"\"Return the function implementation for the given ``cls``\"\"\"\n        lk = self._lookup\n        for cls2 in cls.__mro__:\n            # Is a lazy registration function present?\n            toplevel, _, _ = cls2.__module__.partition(\".\")\n            try:\n                register = self._lazy[toplevel]\n            except KeyError:\n                pass\n            else:\n                register()\n                self._lazy.pop(toplevel, None)\n                return self.dispatch(cls)  # recurse\n            try:\n                impl = lk[cls2]\n            except KeyError:\n                pass\n            else:\n                if cls is not cls2:\n                    # Cache lookup\n                    lk[cls] = impl\n                return impl\n        raise TypeError(f\"No dispatch for {cls}\")\n\n    def __call__(self, arg, *args, **kwargs):\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport dask\nprint('workspace import:', dask.__file__)\nassert Path(dask.__file__).resolve().is_relative_to(Path.cwd().resolve())\nfrom dask.utils import Dispatch\nimport decimal\nclass Lazy(decimal.Decimal):pass\nclass Eager(Lazy):pass\nfoo=Dispatch()\n@foo.register(Eager)\ndef eager(value):return \"eager\"\ndef lazy(value):return \"lazy\"\n@foo.register_lazy(\"decimal\")\ndef register_decimal():foo.register(decimal.Decimal,lazy)\nprint(foo.dispatch(Lazy),foo(Lazy(1)))\nassert foo.dispatch(Lazy) is lazy and foo(Lazy(1))==\"lazy\"\nassert foo(Eager(1))==\"eager\"\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "b7c74f05d39555a27f5ab2949910fd7555a37a25f241e32f66d6ee7c6f4d0000"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ]
+}

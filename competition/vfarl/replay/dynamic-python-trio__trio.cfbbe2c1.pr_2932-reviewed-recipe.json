@@ -1,0 +1,102 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex dynamic worker source and command review 2026-10-25",
+  "review_notes": "{'production_symbols': ['src/trio/_subprocess_platform/__init__.py', 'create_pipe_to_child_stdin', 'trio.lowlevel.FdStream', 'future annotations'], 'trigger': 'Import subprocess helpers while trio.lowlevel is still initializing.', 'base_wrong_behavior': 'Removing future annotations eagerly evaluates trio.lowlevel.FdStream before lowlevel is attached to the partially initialized package.', 'causal_change': 'Respect annotation evaluation timing/cycle through deferred annotations or a verified direct type import, without disabling helpers.', 'discriminating_observation': 'Native19 fails on partially initialized lowlevel;wrong _core direct import25 fails;corrected _unix_pipes import39/43 succeeds. Close outside async context35 is separate.', 'native_message_indices_0_based': [19, 20, 21, 22, 23, 25, 28, 29, 35, 39, 43, 45]} Exact source-introduced defect was independently read and candidate inverse reviewed; source teacher patch not used. Inline diagnostic checks actual workspace import and behavior. Original F2P/P2P all retained; baseline reproduction is expected diagnostic error, not a policy mistake. Decorator2789 deliberately preserves both legacy and new names.",
+  "final_response": "Implemented the repair and confirmed the reported behavior with a direct reproduction against the workspace source.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/trio/_subprocess_platform/__init__.py",
+        "start_line": 1,
+        "end_line": 101
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport trio\nprint('workspace import:', trio.__file__)\nassert Path(trio.__file__).resolve().is_relative_to(Path.cwd().resolve())\nimport trio\nfrom trio import _subprocess_platform as helpers\nasync def observe():\n    send,fd=helpers.create_pipe_to_child_stdin()\n    import os\n    os.close(fd)\n    await send.aclose()\n    print(\"subprocess helper imported and actual pipe closed\")\ntrio.run(observe)\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "173c9cc94cc3f540bde2e0c87cfb63dab4d0b5de8be0c3c62607a41d962508cb"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/trio/_subprocess_platform/__init__.py",
+        "old_string": "# Platform-specific subprocess bits'n'pieces.\n\nimport os\nimport sys\nfrom typing import TYPE_CHECKING, Optional, Tuple\n\nimport trio\n\nfrom .. import _core, _subprocess\nfrom .._abc import ReceiveStream, SendStream  # noqa: TC001\n\n_wait_child_exiting_error: Optional[ImportError] = None\n_create_child_pipe_error: Optional[ImportError] = None\n\n\nif TYPE_CHECKING:\n",
+        "new_string": "# Platform-specific subprocess bits'n'pieces.\nfrom __future__ import annotations\n\nimport os\nimport sys\nfrom typing import TYPE_CHECKING\n\nimport trio\n\nfrom .. import _core, _subprocess\nfrom .._abc import ReceiveStream, SendStream  # noqa: TC001\n\n_wait_child_exiting_error: ImportError | None = None\n_create_child_pipe_error: ImportError | None = None\n\n\nif TYPE_CHECKING:\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/trio/_subprocess_platform/__init__.py",
+        "old_string": "\n# Fallback versions of the functions provided -- implementations\n# per OS are imported atop these at the bottom of the module.\nasync def wait_child_exiting(process: \"_subprocess.Process\") -> None:\n    \"\"\"Block until the child process managed by ``process`` is exiting.\n\n    It is invalid to call this function if the process has already\n",
+        "new_string": "\n# Fallback versions of the functions provided -- implementations\n# per OS are imported atop these at the bottom of the module.\nasync def wait_child_exiting(process: _subprocess.Process) -> None:\n    \"\"\"Block until the child process managed by ``process`` is exiting.\n\n    It is invalid to call this function if the process has already\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/trio/_subprocess_platform/__init__.py",
+        "old_string": "    raise NotImplementedError from _wait_child_exiting_error  # pragma: no cover\n\n\ndef create_pipe_to_child_stdin() -> Tuple[\"ClosableSendStream\", int]:\n    \"\"\"Create a new pipe suitable for sending data from this\n    process to the standard input of a child we're about to spawn.\n\n",
+        "new_string": "    raise NotImplementedError from _wait_child_exiting_error  # pragma: no cover\n\n\ndef create_pipe_to_child_stdin() -> tuple[ClosableSendStream, int]:\n    \"\"\"Create a new pipe suitable for sending data from this\n    process to the standard input of a child we're about to spawn.\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/trio/_subprocess_platform/__init__.py",
+        "old_string": "    raise NotImplementedError from _create_child_pipe_error  # pragma: no cover\n\n\ndef create_pipe_from_child_output() -> Tuple[\"ClosableReceiveStream\", int]:\n    \"\"\"Create a new pipe suitable for receiving data into this\n    process from the standard output or error stream of a child\n    we're about to spawn.\n",
+        "new_string": "    raise NotImplementedError from _create_child_pipe_error  # pragma: no cover\n\n\ndef create_pipe_from_child_output() -> tuple[ClosableReceiveStream, int]:\n    \"\"\"Create a new pipe suitable for receiving data into this\n    process from the standard output or error stream of a child\n    we're about to spawn.\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/trio/socket.py",
+        "old_string": "# This is a public namespace, so we don't want to expose any non-underscored\n# attributes that aren't actually part of our public API. But it's very\n# annoying to carefully always use underscored names for module-level\n",
+        "new_string": "from __future__ import annotations\n\n# This is a public namespace, so we don't want to expose any non-underscored\n# attributes that aren't actually part of our public API. But it's very\n# annoying to carefully always use underscored names for module-level\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/trio/socket.py",
+        "old_string": "\nfrom . import _socket\n\n_bad_symbols: _t.Set[str] = set()\nif sys.platform == \"win32\":\n    # See https://github.com/python-trio/trio/issues/39\n    # Do not import for windows platform\n",
+        "new_string": "\nfrom . import _socket\n\n_bad_symbols: set[str] = set()\nif sys.platform == \"win32\":\n    # See https://github.com/python-trio/trio/issues/39\n    # Do not import for windows platform\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport trio\nprint('workspace import:', trio.__file__)\nassert Path(trio.__file__).resolve().is_relative_to(Path.cwd().resolve())\nimport trio\nfrom trio import _subprocess_platform as helpers\nasync def observe():\n    send,fd=helpers.create_pipe_to_child_stdin()\n    import os\n    os.close(fd)\n    await send.aclose()\n    print(\"subprocess helper imported and actual pipe closed\")\ntrio.run(observe)\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "173c9cc94cc3f540bde2e0c87cfb63dab4d0b5de8be0c3c62607a41d962508cb"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ]
+}

@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Restore the mapping result, get_field_as filter, and creation-counter field ordering. Alphabetical sorting or returning a list changes schema ordering and protocol. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "graphene/types/utils.py",
+        "start_line": 1,
+        "end_line": 57
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nmodule = importlib.import_module('graphene.types.utils')\nactual=Path(module.__file__).resolve()\nexpected=(Path.cwd() / 'graphene/types/utils.py').resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom graphene import ObjectType, Field, String\nfrom graphene.types.utils import yank_fields_from_attrs\nfirst=Field(String)\nsecond=Field(String)\nobserved=yank_fields_from_attrs({\"z\":first,\"ignored\":7,\"a\":second})\nprint(\"field_mapping\",type(observed).__name__,list(observed))\nassert isinstance(observed,dict)\nassert list(observed)==[\"z\",\"a\"]\nclass Query(ObjectType):\n z=String()\n a=String()\nassert list(Query._meta.fields)==[\"z\",\"a\"]\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "47b47d186fa7725d882418410268ace8e5066e209f1b01a992f797fb765894c0"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "graphene/types/utils.py",
+        "old_string": "def yank_fields_from_attrs(attrs, _as=None, sort=True):\n    \"\"\"\n    Extract all the fields in given attributes (dict)\n    and return them ordered\n    \"\"\"\n    fields = []\n    for key, value in attrs.items():\n        if isinstance(value, (UnmountedType, MountedType)):\n            fields.append((key, get_field_as(value, _as)))\n    \n    if sort:\n        fields = sorted(fields, key=lambda f: f[0])\n    \n    return fields\n",
+        "new_string": "def yank_fields_from_attrs(attrs, _as=None, sort=True):\n    \"\"\"\n    Extract all the fields in given attributes (dict)\n    and return them ordered\n    \"\"\"\n    fields_with_names = []\n    for attname, value in list(attrs.items()):\n        field = get_field_as(value, _as)\n        if not field:\n            continue\n        fields_with_names.append((attname, field))\n\n    if sort:\n        fields_with_names = sorted(fields_with_names, key=lambda f: f[1])\n    return dict(fields_with_names)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nmodule = importlib.import_module('graphene.types.utils')\nactual=Path(module.__file__).resolve()\nexpected=(Path.cwd() / 'graphene/types/utils.py').resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom graphene import ObjectType, Field, String\nfrom graphene.types.utils import yank_fields_from_attrs\nfirst=Field(String)\nsecond=Field(String)\nobserved=yank_fields_from_attrs({\"z\":first,\"ignored\":7,\"a\":second})\nprint(\"field_mapping\",type(observed).__name__,list(observed))\nassert isinstance(observed,dict)\nassert list(observed)==[\"z\",\"a\"]\nclass Query(ObjectType):\n z=String()\n a=String()\nassert list(Query._meta.fields)==[\"z\",\"a\"]\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "47b47d186fa7725d882418410268ace8e5066e209f1b01a992f797fb765894c0"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored field extraction as an ordered mapping using field creation order. Inline checks confirm order and ignored attributes. Patch submitted."
+}

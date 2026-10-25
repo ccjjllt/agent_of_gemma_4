@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex source/diff/original requirement and bounded inline diagnostic review 2026-10-25",
+  "review_notes": "Ordinary attribute assignment maps to dictionary keys, while names already defined on the class or inherited dictionary methods remain read-only. The mutation inverts this object-protocol boundary; preserve the library existing AttributeError contract and nested mapping ownership. Source Smith patch introduces the defect. Original required lists/full-file scope preserved; baseline diagnostic error is expected reproduction, not a policy failure.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "addict/addict.py",
+        "start_line": 1,
+        "end_line": 46
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib, sys, pytest\nmodule=importlib.import_module('addict.addict')\nactual=Path(module.__file__).resolve()\nexpected=(Path.cwd()/'addict/addict.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest(),'Python',sys.version.split()[0],'pytest',pytest.__version__)\nfrom addict import Dict\nd=Dict()\ntry:\n d.color=7\n normal=('color' in d and d['color']==7 and d.color==7)\nexcept Exception as exc:\n normal=type(exc).__name__,str(exc)\ntry:\n d.keys='blocked'\n protected=False\nexcept AttributeError:\n protected=True\nprint('ordinary_attribute_to_key',normal,'class_method_protected',protected,'mapping',dict(d))\nassert normal is True and protected is True and 'keys' not in d\nclass Child(Dict):\n @property\n def marker(self):return 'class-property'\nc=Child()\nc.answer=11\nassert c['answer']==11 and c.answer==11\ntry:\n c.marker=12\n raise AssertionError('class property was overwritten')\nexcept AttributeError:\n pass\nc.nested.value=13\nassert c['nested']['value']==13\nprint('attribute_mapping_and_class_namespace_contract',True)\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "edb5e49a485478cf2657c3f8994ef2a9536eceaa01722d9181e08b150cfd8935"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "addict/addict.py",
+        "old_string": "        if hasattr(self.__class__, name):\n            self[name] = value\n        else:\n            raise AttributeError(\"'Dict' object attribute \"\n                                 \"'{0}' is read-only\".format(name))\n",
+        "new_string": "        if hasattr(self.__class__, name):\n            raise AttributeError(\"'Dict' object attribute \"\n                                 \"'{0}' is read-only\".format(name))\n        else:\n            self[name] = value\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib, sys, pytest\nmodule=importlib.import_module('addict.addict')\nactual=Path(module.__file__).resolve()\nexpected=(Path.cwd()/'addict/addict.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest(),'Python',sys.version.split()[0],'pytest',pytest.__version__)\nfrom addict import Dict\nd=Dict()\ntry:\n d.color=7\n normal=('color' in d and d['color']==7 and d.color==7)\nexcept Exception as exc:\n normal=type(exc).__name__,str(exc)\ntry:\n d.keys='blocked'\n protected=False\nexcept AttributeError:\n protected=True\nprint('ordinary_attribute_to_key',normal,'class_method_protected',protected,'mapping',dict(d))\nassert normal is True and protected is True and 'keys' not in d\nclass Child(Dict):\n @property\n def marker(self):return 'class-property'\nc=Child()\nc.answer=11\nassert c['answer']==11 and c.answer==11\ntry:\n c.marker=12\n raise AssertionError('class property was overwritten')\nexcept AttributeError:\n pass\nc.nested.value=13\nassert c['nested']['value']==13\nprint('attribute_mapping_and_class_namespace_contract',True)\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "edb5e49a485478cf2657c3f8994ef2a9536eceaa01722d9181e08b150cfd8935"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Ordinary attribute assignment maps to dictionary keys, while names already defined on the class or inherited dictionary methods remain read-only. The mutation inverts this object-protocol boundary; preserve the library existing AttributeError contract and nested mapping ownership. The inline source-bound reproduction now passes. Patch submitted; clean full task verification is performed by the harness."
+}

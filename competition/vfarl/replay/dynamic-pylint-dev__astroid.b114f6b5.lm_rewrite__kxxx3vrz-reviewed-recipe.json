@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex dynamic worker source and command review 2026-10-25",
+  "review_notes": "{'production_symbols': ['astroid/bases.py::Proxy.__getattr__', 'astroid/nodes/node_classes.py::Const.__getattr__', 'Const._proxied', 'copy.copy'], 'trigger': 'Copy/inspect a Const proxy before reconstructed value/proxied state is initialized.', 'base_wrong_behavior': 'Dynamic probing of self._proxied indirectly probes self.value and re-enters __getattr__, causing recursion.', 'causal_change': 'Break missing-state proxy lookup recursion while preserving object/copy protocol behavior across supported proxy classes.', 'discriminating_observation': 'Native37 recurses;apparent fixes43/49 still recurse;65 copies a distinct equal-valued Const and93 observes shallow/deep examples.', 'native_message_indices_0_based': [37, 39, 40, 43, 44, 49, 57, 61, 65, 93]} Exact source-introduced defect was independently read and candidate inverse reviewed; source teacher patch not used. Inline diagnostic checks actual workspace import and behavior. Original F2P/P2P all retained; baseline reproduction is expected diagnostic error, not a policy mistake. Decorator2789 deliberately preserves both legacy and new names.",
+  "final_response": "Implemented the repair and confirmed the reported behavior with a direct reproduction against the workspace source.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "astroid/bases.py",
+        "start_line": 127,
+        "end_line": 227
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport astroid\nprint('workspace import:', astroid.__file__)\nassert Path(astroid.__file__).resolve().is_relative_to(Path.cwd().resolve())\nimport astroid, copy\nvalue=astroid.extract_node(\"42\")\nshallow=copy.copy(value)\ndeep=copy.deepcopy(value)\nprint(shallow.value,deep.value)\nassert shallow is not value and deep is not value\nassert shallow.value == deep.value == 42\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "58adb68f05b8e6ee9250f5875346e61d4cd8103ac10a86ca2cc50c97981b2bf6"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "astroid/bases.py",
+        "old_string": "            self._proxied = proxied\n\n    def __getattr__(self, name: str) -> Any:\n        \"\"\"Get an attribute from the proxied object.\"\"\"\n        if hasattr(self._proxied, name):\n            return getattr(self._proxied, name)\n        raise AttributeError(f\"{self.__class__.__name__!r} object has no attribute {name!r}\")\n    def infer(  # type: ignore[return]\n        self, context: InferenceContext | None = None, **kwargs: Any\n    ) -> collections.abc.Generator[InferenceResult, None, InferenceErrorInfo | None]:\n",
+        "new_string": "            self._proxied = proxied\n\n    def __getattr__(self, name: str) -> Any:\n        if name == \"_proxied\":\n            return self.__class__._proxied\n        if name in self.__dict__:\n            return self.__dict__[name]\n        return getattr(self._proxied, name)\n\n    def infer(  # type: ignore[return]\n        self, context: InferenceContext | None = None, **kwargs: Any\n    ) -> collections.abc.Generator[InferenceResult, None, InferenceErrorInfo | None]:\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport astroid\nprint('workspace import:', astroid.__file__)\nassert Path(astroid.__file__).resolve().is_relative_to(Path.cwd().resolve())\nimport astroid, copy\nvalue=astroid.extract_node(\"42\")\nshallow=copy.copy(value)\ndeep=copy.deepcopy(value)\nprint(shallow.value,deep.value)\nassert shallow is not value and deep is not value\nassert shallow.value == deep.value == 42\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "58adb68f05b8e6ee9250f5875346e61d4cd8103ac10a86ca2cc50c97981b2bf6"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ]
+}

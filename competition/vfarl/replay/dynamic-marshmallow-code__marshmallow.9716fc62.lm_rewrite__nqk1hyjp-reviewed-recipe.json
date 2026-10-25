@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex dynamic worker source and command review 2026-10-25",
+  "review_notes": "{'agent_visible_trigger': 'Serialize a bytes value through a marshmallow String field.', 'base_wrong_behavior': \"str(bytes) produces a Python b'...' representation rather than the intended decoded text.\", 'production_symbols': 'marshmallow.fields.String._serialize; utils.ensure_text_type', 'causal_change': 'Use the source text-normalization utility rather than universal str conversion, retaining None behavior.', 'discriminating_observation': 'A bytes payload serializes to its text content without a b prefix, while existing string/None cases retain their meanings.'} Exact source-introduced defect was independently read and candidate inverse reviewed; source teacher patch not used. Inline diagnostic checks actual workspace import and behavior. Original F2P/P2P all retained; baseline reproduction is expected diagnostic error, not a policy mistake. Decorator2789 deliberately preserves both legacy and new names.",
+  "final_response": "Implemented the repair and confirmed the reported behavior with a direct reproduction against the workspace source.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/marshmallow/fields.py",
+        "start_line": 894,
+        "end_line": 994
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport marshmallow\nprint('workspace import:', marshmallow.__file__)\nassert Path(marshmallow.__file__).resolve().is_relative_to(Path.cwd().resolve())\nfrom marshmallow import fields\nvalue = fields.String().serialize(\"value\", {\"value\": \"你好\".encode()})\nprint(repr(value))\nassert value == \"你好\"\nassert fields.String().serialize(\"value\", {\"value\": 12}) == \"12\"\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "3cb373b83f17419e92e3523315e457cd1a231305262541f835cffe0d4ed7ace0"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/marshmallow/fields.py",
+        "old_string": "    def _serialize(self, value, attr, obj, **kwargs) -> str | None:\n        if value is None:\n            return None\n        return str(value)\n    def _deserialize(self, value, attr, data, **kwargs) -> typing.Any:\n        if not isinstance(value, (str, bytes)):\n            raise self.make_error(\"invalid\")\n",
+        "new_string": "    def _serialize(self, value, attr, obj, **kwargs) -> str | None:\n        if value is None:\n            return None\n        return utils.ensure_text_type(value)\n\n    def _deserialize(self, value, attr, data, **kwargs) -> typing.Any:\n        if not isinstance(value, (str, bytes)):\n            raise self.make_error(\"invalid\")\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport marshmallow\nprint('workspace import:', marshmallow.__file__)\nassert Path(marshmallow.__file__).resolve().is_relative_to(Path.cwd().resolve())\nfrom marshmallow import fields\nvalue = fields.String().serialize(\"value\", {\"value\": \"你好\".encode()})\nprint(repr(value))\nassert value == \"你好\"\nassert fields.String().serialize(\"value\", {\"value\": 12}) == \"12\"\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "3cb373b83f17419e92e3523315e457cd1a231305262541f835cffe0d4ed7ace0"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ]
+}

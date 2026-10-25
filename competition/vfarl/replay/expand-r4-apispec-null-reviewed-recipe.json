@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex compatibility source/diff and original requirements review,2026-10-25",
+  "review_notes": "Nullable referenced schemas require x-nullable in OpenAPI2, a nullable-object alternative in3.0, and an explicit null alternative in3.1. Restore version-specific union handling for both direct refs and allOf refs while retaining metadata. Original test/required files and identifiers retained. Commands exercise production APIs, not authored test files. No model/policy or counterfactual-pair claim.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/apispec/ext/marshmallow/field_converter.py",
+        "start_line": 289,
+        "end_line": 312
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,sys\nimport importlib\nm=importlib.import_module('apispec.ext.marshmallow.field_converter')\nactual=Path(m.__file__).resolve()\nexpected=(Path.cwd()/'src/apispec/ext/marshmallow/field_converter.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest(),'Python',sys.version)\nfrom apispec import APISpec\nfrom apispec.ext.marshmallow import MarshmallowPlugin\nfrom marshmallow import Schema,fields\nclass Child(Schema):\n name=fields.Str()\nresults=[]\nfor version in ('2.0','3.0.3','3.1.0'):\n for description in (False,True):\n  plugin=MarshmallowPlugin()\n  spec=APISpec(title='nullable contract',version='1',openapi_version=version,plugins=[plugin])\n  spec.components.schema('Child',schema=Child)\n  metadata={'description':'child note'} if description else {}\n  result=plugin.converter.field2property(fields.Nested(Child,allow_none=True,metadata=metadata))\n  print('nullable_ref_version',version,'with_metadata',description,result)\n  results.append((version,result))\nfor version,result in results:\n if version=='2.0':\n  assert result['x-nullable'] is True,result\n elif version=='3.0.3':\n  assert 'anyOf' in result and {'type':'object','nullable':True} in result['anyOf'],result\n  assert any('$ref' in x for x in result['anyOf']),result\n else:\n  assert 'anyOf' in result and {'type':'null'} in result['anyOf'],result\n  assert any('$ref' in x for x in result['anyOf']),result\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "b5384357087d643174574656f032d2819367f121772180cd909e2137810e5a7d"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/apispec/ext/marshmallow/field_converter.py",
+        "old_string": "    def field2nullable(self, field: marshmallow.fields.Field, ret) -> dict:\n        \"\"\"Return the dictionary of OpenAPI field attributes for a nullable field.\n\n        :param Field field: A marshmallow field.\n        :rtype: dict\n        \"\"\"\n        attributes: dict = {}\n        if field.allow_none:\n            if self.openapi_version.major < 3:\n                attributes[\"x-nullable\"] = True\n            elif self.openapi_version.minor < 1:\n                attributes[\"nullable\"] = True\n            else:\n                attributes[\"type\"] = [*make_type_list(ret.get(\"type\")), \"null\"]\n        return attributes\n",
+        "new_string": "    def field2nullable(self, field: marshmallow.fields.Field, ret) -> dict:\n        \"\"\"Return the dictionary of OpenAPI field attributes for a nullable field.\n\n        :param Field field: A marshmallow field.\n        :rtype: dict\n        \"\"\"\n        attributes: dict = {}\n        if field.allow_none:\n            if self.openapi_version.major < 3:\n                attributes[\"x-nullable\"] = True\n            elif self.openapi_version.minor < 1:\n                if \"$ref\" in ret:\n                    attributes[\"anyOf\"] = [\n                        {\"type\": \"object\", \"nullable\": True},\n                        {\"$ref\": ret.pop(\"$ref\")},\n                    ]\n                elif \"allOf\" in ret:\n                    attributes[\"anyOf\"] = [\n                        *ret.pop(\"allOf\"),\n                        {\"type\": \"object\", \"nullable\": True},\n                    ]\n                else:\n                    attributes[\"nullable\"] = True\n            else:\n                if \"$ref\" in ret:\n                    attributes[\"anyOf\"] = [{\"$ref\": ret.pop(\"$ref\")}, {\"type\": \"null\"}]\n                elif \"allOf\" in ret:\n                    attributes[\"anyOf\"] = [*ret.pop(\"allOf\"), {\"type\": \"null\"}]\n                elif \"type\" in ret:\n                    attributes[\"type\"] = [*make_type_list(ret.get(\"type\")), \"null\"]\n        return attributes\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,sys\nimport importlib\nm=importlib.import_module('apispec.ext.marshmallow.field_converter')\nactual=Path(m.__file__).resolve()\nexpected=(Path.cwd()/'src/apispec/ext/marshmallow/field_converter.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest(),'Python',sys.version)\nfrom apispec import APISpec\nfrom apispec.ext.marshmallow import MarshmallowPlugin\nfrom marshmallow import Schema,fields\nclass Child(Schema):\n name=fields.Str()\nresults=[]\nfor version in ('2.0','3.0.3','3.1.0'):\n for description in (False,True):\n  plugin=MarshmallowPlugin()\n  spec=APISpec(title='nullable contract',version='1',openapi_version=version,plugins=[plugin])\n  spec.components.schema('Child',schema=Child)\n  metadata={'description':'child note'} if description else {}\n  result=plugin.converter.field2property(fields.Nested(Child,allow_none=True,metadata=metadata))\n  print('nullable_ref_version',version,'with_metadata',description,result)\n  results.append((version,result))\nfor version,result in results:\n if version=='2.0':\n  assert result['x-nullable'] is True,result\n elif version=='3.0.3':\n  assert 'anyOf' in result and {'type':'object','nullable':True} in result['anyOf'],result\n  assert any('$ref' in x for x in result['anyOf']),result\n else:\n  assert 'anyOf' in result and {'type':'null'} in result['anyOf'],result\n  assert any('$ref' in x for x in result['anyOf']),result\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "b5384357087d643174574656f032d2819367f121772180cd909e2137810e5a7d"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Nullable referenced schemas require x-nullable in OpenAPI2, a nullable-object alternative in3.0, and an explicit null alternative in3.1. Restore version-specific union handling for both direct refs and allOf refs while retaining metadata. The actual source-bound reproduction passes after the production repair. Patch submitted for independent full task verification."
+}

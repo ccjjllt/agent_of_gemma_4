@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Preserve positional and keyword-only default metadata on retry wrappers in addition to functools standard assignments; preserve wrapping identity and calls. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "tenacity/__init__.py",
+        "start_line": 315,
+        "end_line": 345
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nmodule = importlib.import_module('tenacity')\nactual=Path(module.__file__).resolve()\nexpected=(Path.cwd() / 'tenacity/__init__.py').resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom tenacity import retry, stop_after_attempt\ndef original(value=7, *, label=\"saved\"):\n return value,label\nwrapped=retry(stop=stop_after_attempt(1))(original)\nprint(\"wrapper_defaults\",wrapped.__defaults__,wrapped.__kwdefaults__)\nassert wrapped.__defaults__==original.__defaults__\nassert wrapped.__kwdefaults__==original.__kwdefaults__\nassert wrapped.__wrapped__ is original\nassert wrapped()==(7,\"saved\")\nassert wrapped(2,label=\"new\")== (2,\"new\")\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "d0e1af87d98449cca58cf416ff8ab8a2ca6e1abc003bd0ca9cab625b3d73ad6f"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "tenacity/__init__.py",
+        "old_string": "        @functools.wraps(f)\n        def wrapped_f(*args: t.Any, **kw: t.Any) -> t.Any:",
+        "new_string": "        @functools.wraps(\n            f, functools.WRAPPER_ASSIGNMENTS + (\"__defaults__\", \"__kwdefaults__\")\n        )\n        def wrapped_f(*args: t.Any, **kw: t.Any) -> t.Any:"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nmodule = importlib.import_module('tenacity')\nactual=Path(module.__file__).resolve()\nexpected=(Path.cwd() / 'tenacity/__init__.py').resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom tenacity import retry, stop_after_attempt\ndef original(value=7, *, label=\"saved\"):\n return value,label\nwrapped=retry(stop=stop_after_attempt(1))(original)\nprint(\"wrapper_defaults\",wrapped.__defaults__,wrapped.__kwdefaults__)\nassert wrapped.__defaults__==original.__defaults__\nassert wrapped.__kwdefaults__==original.__kwdefaults__\nassert wrapped.__wrapped__ is original\nassert wrapped()==(7,\"saved\")\nassert wrapped(2,label=\"new\")== (2,\"new\")\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "d0e1af87d98449cca58cf416ff8ab8a2ca6e1abc003bd0ca9cab625b3d73ad6f"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored positional and keyword-only default metadata on retry wrappers. Inline checks confirm metadata, wrapping identity, and calls. Patch submitted."
+}

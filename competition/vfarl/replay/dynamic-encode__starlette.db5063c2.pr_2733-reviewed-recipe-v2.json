@@ -1,0 +1,66 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex dynamic worker source and command review 2026-10-25",
+  "review_notes": "{'production_symbols': ['starlette/formparsers.py', 'starlette/requests.py', 'python_multipart.multipart.parse_options_header'], 'trigger': 'Import optional parsing modules with new python_multipart namespace, project warning policy, and legacy/no-dependency fallbacks.', 'base_wrong_behavior': 'Primary and fallback both use deprecated multipart namespace. Ordinary import succeeds with a warning; strict warning treatment fails.', 'causal_change': 'Prefer python_multipart, use old namespace only when absent, preserve unavailable-dependency behavior.', 'discriminating_observation': 'Native11 ordinary import succeeds;13 emits PendingDeprecationWarning;21 no longer emits it after both edits;25 observes examples.', 'native_message_indices_0_based': [11, 13, 16, 17, 18, 19, 21, 25]} Exact source-introduced defect was independently read and candidate inverse reviewed; source teacher patch not used. Inline diagnostic checks actual workspace import and behavior. Original F2P/P2P all retained; baseline reproduction is expected diagnostic error, not a policy mistake. Decorator2789 deliberately preserves both legacy and new names. The original attempted legacy-only import block incorrectly blocked the compatibility facade dependency too. This corrected visible probe covers real current namespace, new-only and no-dependency modes. Genuine old multipart distribution gets an independent dependency-profile observation, without claiming a facade blocked upstream is a regression.",
+  "final_response": "Implemented the repair and confirmed the reported behavior with a direct reproduction against the workspace source.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "starlette/formparsers.py",
+        "start_line": 10,
+        "end_line": 110
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport starlette\nprint('workspace import:', starlette.__file__)\nassert Path(starlette.__file__).resolve().is_relative_to(Path.cwd().resolve())\nimport subprocess,sys\nscript = \"\"\"import importlib.abc,sys,warnings\nblocked=sys.argv[1].split(',') if sys.argv[1] else []\nclass Block(importlib.abc.MetaPathFinder):\n def find_spec(self,fullname,path=None,target=None):\n  if any(fullname==name or fullname.startswith(name+'.') for name in blocked):raise ModuleNotFoundError(fullname)\nsys.meta_path.insert(0,Block())\nif sys.argv[2]=='strict':warnings.simplefilter('error',PendingDeprecationWarning)\nfrom starlette import formparsers,requests\nprint(blocked,formparsers.multipart,requests.parse_options_header)\nif len(blocked)==2:\n assert formparsers.multipart is None and requests.parse_options_header is None\nelse:\n assert formparsers.multipart is not None and callable(requests.parse_options_header)\n\"\"\"\nfor blocked,mode in ((\"\", \"strict\"),(\"multipart\", \"normal\"),(\"multipart,python_multipart\", \"normal\")):\n    result=subprocess.run([sys.executable,\"-c\",script,blocked,mode],capture_output=True,text=True)\n    print(result.stdout,result.stderr)\n    assert result.returncode==0,(blocked,result.stderr)\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "c2a2288e66a2bdf972eef93f318c80af0dabeca964bd270dc6f5a32825e7bb5c"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "starlette/formparsers.py",
+        "old_string": "else:\n    try:\n        try:\n            import multipart\n            from multipart.multipart import parse_options_header\n        except ModuleNotFoundError:  # pragma: no cover\n            import multipart\n            from multipart.multipart import parse_options_header\n",
+        "new_string": "else:\n    try:\n        try:\n            import python_multipart as multipart\n            from python_multipart.multipart import parse_options_header\n        except ModuleNotFoundError:  # pragma: no cover\n            import multipart\n            from multipart.multipart import parse_options_header\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "starlette/requests.py",
+        "old_string": "else:\n    try:\n        try:\n            from multipart.multipart import parse_options_header\n        except ModuleNotFoundError:  # pragma: no cover\n            from multipart.multipart import parse_options_header\n    except ModuleNotFoundError:  # pragma: no cover\n",
+        "new_string": "else:\n    try:\n        try:\n            from python_multipart.multipart import parse_options_header\n        except ModuleNotFoundError:  # pragma: no cover\n            from multipart.multipart import parse_options_header\n    except ModuleNotFoundError:  # pragma: no cover\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport starlette\nprint('workspace import:', starlette.__file__)\nassert Path(starlette.__file__).resolve().is_relative_to(Path.cwd().resolve())\nimport subprocess,sys\nscript = \"\"\"import importlib.abc,sys,warnings\nblocked=sys.argv[1].split(',') if sys.argv[1] else []\nclass Block(importlib.abc.MetaPathFinder):\n def find_spec(self,fullname,path=None,target=None):\n  if any(fullname==name or fullname.startswith(name+'.') for name in blocked):raise ModuleNotFoundError(fullname)\nsys.meta_path.insert(0,Block())\nif sys.argv[2]=='strict':warnings.simplefilter('error',PendingDeprecationWarning)\nfrom starlette import formparsers,requests\nprint(blocked,formparsers.multipart,requests.parse_options_header)\nif len(blocked)==2:\n assert formparsers.multipart is None and requests.parse_options_header is None\nelse:\n assert formparsers.multipart is not None and callable(requests.parse_options_header)\n\"\"\"\nfor blocked,mode in ((\"\", \"strict\"),(\"multipart\", \"normal\"),(\"multipart,python_multipart\", \"normal\")):\n    result=subprocess.run([sys.executable,\"-c\",script,blocked,mode],capture_output=True,text=True)\n    print(result.stdout,result.stderr)\n    assert result.returncode==0,(blocked,result.stderr)\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "c2a2288e66a2bdf972eef93f318c80af0dabeca964bd270dc6f5a32825e7bb5c"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ]
+}

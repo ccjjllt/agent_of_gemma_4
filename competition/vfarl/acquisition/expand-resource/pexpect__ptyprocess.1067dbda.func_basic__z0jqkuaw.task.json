@@ -1,0 +1,25 @@
+{
+  "row": {
+    "instance_id": "pexpect__ptyprocess.1067dbda.func_basic__z0jqkuaw",
+    "patch": "diff --git a/ptyprocess/ptyprocess.py b/ptyprocess/ptyprocess.py\nindex 0f05803..6c3881d 100644\n--- a/ptyprocess/ptyprocess.py\n+++ b/ptyprocess/ptyprocess.py\n@@ -708,22 +708,17 @@ class PtyProcess(object):\n         process appears to be running or False if not. It can take literally\n         SECONDS for Solaris to return the right status. '''\n \n-        if self.terminated:\n+        if not self.terminated:  # Logical bug introduced by negating the condition\n             return False\n \n         if self.flag_eof:\n-            # This is for Linux, which requires the blocking form\n-            # of waitpid to get the status of a defunct process.\n-            # This is super-lame. The flag_eof would have been set\n-            # in read_nonblocking(), so this should be safe.\n-            waitpid_options = 0\n+            waitpid_options = os.WNOHANG  # Swapped option when flag_eof is true\n         else:\n-            waitpid_options = os.WNOHANG\n+            waitpid_options = 0\n \n         try:\n             pid, status = os.waitpid(self.pid, waitpid_options)\n         except OSError as e:\n-            # No child processes\n             if e.errno == errno.ECHILD:\n                 raise PtyProcessError('isalive() encountered condition ' +\n                         'where \"terminated\" is 0, but there was no child ' +\n@@ -732,16 +727,10 @@ class PtyProcess(object):\n             else:\n                 raise\n \n-        # I have to do this twice for Solaris.\n-        # I can't even believe that I figured this out...\n-        # If waitpid() returns 0 it means that no child process\n-        # wishes to report, and the value of status is undefined.\n         if pid == 0:\n             try:\n-                ### os.WNOHANG) # Solaris!\n-                pid, status = os.waitpid(self.pid, waitpid_options)\n-            except OSError as e:  # pragma: no cover\n-                # This should never happen...\n+                pid, status = os.waitpid(self.pid, 0)  # Removed waitpid_options\n+            except OSError as e:  \n                 if e.errno == errno.ECHILD:\n                     raise PtyProcessError('isalive() encountered condition ' +\n                             'that should never happen. There was no child ' +\n@@ -750,15 +739,10 @@ class PtyProcess(object):\n                 else:\n                     raise\n \n-            # If pid is still 0 after two calls to waitpid() then the process\n-            # really is alive. This seems to work on all platforms, except for\n-            # Irix which seems to require a blocking call on waitpid or select,\n-            # so I let read_nonblocking take care of this situation\n-            # (unfortunately, this requires waiting through the timeout).\n             if pid == 0:\n-                return True\n+                return False  # Changed from True to False\n \n-        if pid == 0:\n+        if pid != 0:  # Changed condition to require inequality\n             return True\n \n         if os.WIFEXITED(status):\n@@ -776,7 +760,7 @@ class PtyProcess(object):\n                     'where child process is stopped. This is not ' +\n                     'supported. Is some other process attempting ' +\n                     'job control with our child pid?')\n-        return False\n+        return True  # Changed from False to True\n \n     def kill(self, sig):\n         \"\"\"Send the given signal to the child application.\n",
+    "FAIL_TO_PASS": [
+      "tests/test_echo.py::PtyEchoTestCase::test_waitnoecho_forever",
+      "tests/test_echo.py::PtyEchoTestCase::test_waitnoecho_timeout",
+      "tests/test_spawn.py::PtyTestCase::test_pass_fds",
+      "tests/test_spawn.py::PtyTestCase::test_spawn_sh",
+      "tests/test_spawn.py::PtyTestCase::test_spawn_sh_unicode",
+      "tests/test_wait.py::TestWaitAfterTermination::test_wait_true_shortproc",
+      "tests/test_wait.py::TestWaitAfterTermination::test_wait_twice_longproc"
+    ],
+    "PASS_TO_PASS": [
+      "tests/test_invalid_binary.py::InvalidBinaryChars::test_invalid_binary",
+      "tests/test_preexec_fn.py::PreexecFns::test_preexec",
+      "tests/test_preexec_fn.py::PreexecFns::test_preexec_error",
+      "tests/test_spawn.py::PtyTestCase::test_quick_spawn",
+      "tests/test_wait.py::TestWaitAfterTermination::test_wait_false_shortproc"
+    ],
+    "image_name": "swebench/swesmith.x86_64.pexpect_1776_ptyprocess.1067dbda",
+    "repo": "swesmith/pexpect__ptyprocess.1067dbda",
+    "problem_statement": ""
+  }
+}

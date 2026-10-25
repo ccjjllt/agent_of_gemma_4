@@ -1,0 +1,93 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex generic annotation object and exact original source/validation review,2026-10-25",
+  "review_notes": "R1 generic type parameter identity: distinguish bare Tuple from zero-arity Tuple[()]. Preserve explicit empty elem_types in encoded annotations, decode exact tuple annotation identity, and keep inferred/rewritten empty tuple types. Original issue cites Python3.7; this explicit source-supported3.11 CPU profile verifies the same zero-arity contract and original required tests, not the historic3.7 traceback. Original source task text is nonempty and unchanged. Reviewed inverse changes production only. Original complete test files and F2P/P2P unchanged; no model inference or causal preference pair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "monkeytype/encoding.py",
+        "start_line": 69,
+        "end_line": 90
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "monkeytype/typing.py",
+        "start_line": 234,
+        "end_line": 256
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport sys,hashlib,importlib,sysconfig,pytest\npurelib=Path(sysconfig.get_path('purelib')).resolve()\npytest_code=Path(pytest.skip.__code__.co_filename).resolve()\nprint('dependency_binding',pytest.__version__,pytest_code,'sandbox_purelib',purelib)\nassert pytest_code.is_relative_to(purelib)\nmodule=importlib.import_module('monkeytype.encoding')\nactual=Path(module.__file__).resolve()\nexpected=(Path.cwd()/'monkeytype/encoding.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest(),'Python',sys.version)\nmodule=importlib.import_module('monkeytype.typing')\nactual=Path(module.__file__).resolve()\nexpected=(Path.cwd()/'monkeytype/typing.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest(),'Python',sys.version)\nfrom typing import Tuple,get_args\nfrom monkeytype.encoding import type_to_dict,type_from_dict\nfrom monkeytype.typing import get_type,NoOpRewriter\nobservations=[]\nfor annotation in (Tuple,Tuple[()],Tuple[int,str]):\n encoded=type_to_dict(annotation)\n decoded=type_from_dict(encoded)\n print('generic_tuple_roundtrip',annotation,'encoded',encoded,'decoded',decoded,'same_identity',decoded is annotation,'args',get_args(decoded))\n observations.append((annotation,encoded,decoded))\nfor original,encoded,decoded in observations:\n assert decoded==original,(original,encoded,decoded)\n if original is Tuple[()]:\n  assert encoded.get('elem_types')==[],encoded\nassert type_from_dict(type_to_dict(Tuple)) is Tuple\nassert type_from_dict(type_to_dict(Tuple[()])) is Tuple[()]\ninferred=get_type((),max_typed_dict_size=0)\nprint('inferred_empty_tuple',inferred,'args',get_args(inferred))\nassert inferred is Tuple[()],inferred\nrewritten=NoOpRewriter().rewrite(Tuple[()])\nprint('rewritten_empty_tuple',rewritten)\nassert rewritten is Tuple[()],rewritten\nprint('zero_arity_generic_tuple_identity_preserved')\nPYREPLAY"
+      },
+      "reviewed_command_sha256": "71443c88ecbaec86e6ffd4ecef624cb9d306ec6b8d54d6ed48b6e8141229063b",
+      "expected_status": "error"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "monkeytype/encoding.py",
+        "old_string": "        \"qualname\": qualname,\n    }\n    elem_types = getattr(typ, \"__args__\", None)\n    if elem_types and is_generic(typ):\n        d[\"elem_types\"] = [type_to_dict(t) for t in elem_types]\n    return d\n\n",
+        "new_string": "        \"qualname\": qualname,\n    }\n    elem_types = getattr(typ, \"__args__\", None)\n    # In Python < 3.9, bare generics still have args\n    is_bare_generic = typ in {Dict, List, Tuple}\n    if not is_bare_generic and elem_types is not None and is_generic(typ):\n        # empty typing.Tuple is weird; the spec says it should be Tuple[()],\n        # which results in __args__ of `((),)` pre-Python 3.11\n        if elem_types == ((),):\n            elem_types = ()\n        d[\"elem_types\"] = [type_to_dict(t) for t in elem_types]\n    return d\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "monkeytype/encoding.py",
+        "old_string": "            f\"is of type {type(typ)}, not type.\"\n        )\n    elem_type_dicts = d.get(\"elem_types\")\n    if elem_type_dicts and is_generic(typ):\n        elem_types = tuple(type_from_dict(e) for e in elem_type_dicts)\n        # mypy complains that a value of type `type` isn't indexable. That's\n        # true, but we know typ is a subtype that is indexable. Even checking\n",
+        "new_string": "            f\"is of type {type(typ)}, not type.\"\n        )\n    elem_type_dicts = d.get(\"elem_types\")\n    if elem_type_dicts is not None and is_generic(typ):\n        elem_types = tuple(type_from_dict(e) for e in elem_type_dicts)\n        # mypy complains that a value of type `type` isn't indexable. That's\n        # true, but we know typ is a subtype that is indexable. Even checking\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "monkeytype/typing.py",
+        "old_string": "        )\n        return DefaultDict[key_type, val_type]\n    elif typ is tuple:\n        if not obj:\n            return Tuple\n        return Tuple[tuple(get_type(e, max_typed_dict_size) for e in obj)]\n    return typ\n\n",
+        "new_string": "        )\n        return DefaultDict[key_type, val_type]\n    elif typ is tuple:\n        return Tuple[tuple(get_type(e, max_typed_dict_size) for e in obj)]\n    return typ\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "monkeytype/typing.py",
+        "old_string": "class TypeRewriter(GenericTypeRewriter[type]):\n    \"\"\"TypeRewriter provides a visitor for rewriting parts of types\"\"\"\n\n    def _rewrite_container(self, cls, container):\n        if container.__module__ != \"typing\":\n            return container\n        if getattr(container, '__args__', None) is None:\n            return container\n        elems = tuple(self.rewrite(elem) for elem in container.__args__)\n        return cls[elems]\n\n    def make_anonymous_typed_dict(self, required_fields, optional_fields):\n        return make_typed_dict(\n            required_fields=required_fields, optional_fields=optional_fields\n",
+        "new_string": "class TypeRewriter(GenericTypeRewriter[type]):\n    \"\"\"TypeRewriter provides a visitor for rewriting parts of types\"\"\"\n\n    def make_anonymous_typed_dict(self, required_fields, optional_fields):\n        return make_typed_dict(\n            required_fields=required_fields, optional_fields=optional_fields\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport sys,hashlib,importlib,sysconfig,pytest\npurelib=Path(sysconfig.get_path('purelib')).resolve()\npytest_code=Path(pytest.skip.__code__.co_filename).resolve()\nprint('dependency_binding',pytest.__version__,pytest_code,'sandbox_purelib',purelib)\nassert pytest_code.is_relative_to(purelib)\nmodule=importlib.import_module('monkeytype.encoding')\nactual=Path(module.__file__).resolve()\nexpected=(Path.cwd()/'monkeytype/encoding.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest(),'Python',sys.version)\nmodule=importlib.import_module('monkeytype.typing')\nactual=Path(module.__file__).resolve()\nexpected=(Path.cwd()/'monkeytype/typing.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest(),'Python',sys.version)\nfrom typing import Tuple,get_args\nfrom monkeytype.encoding import type_to_dict,type_from_dict\nfrom monkeytype.typing import get_type,NoOpRewriter\nobservations=[]\nfor annotation in (Tuple,Tuple[()],Tuple[int,str]):\n encoded=type_to_dict(annotation)\n decoded=type_from_dict(encoded)\n print('generic_tuple_roundtrip',annotation,'encoded',encoded,'decoded',decoded,'same_identity',decoded is annotation,'args',get_args(decoded))\n observations.append((annotation,encoded,decoded))\nfor original,encoded,decoded in observations:\n assert decoded==original,(original,encoded,decoded)\n if original is Tuple[()]:\n  assert encoded.get('elem_types')==[],encoded\nassert type_from_dict(type_to_dict(Tuple)) is Tuple\nassert type_from_dict(type_to_dict(Tuple[()])) is Tuple[()]\ninferred=get_type((),max_typed_dict_size=0)\nprint('inferred_empty_tuple',inferred,'args',get_args(inferred))\nassert inferred is Tuple[()],inferred\nrewritten=NoOpRewriter().rewrite(Tuple[()])\nprint('rewritten_empty_tuple',rewritten)\nassert rewritten is Tuple[()],rewritten\nprint('zero_arity_generic_tuple_identity_preserved')\nPYREPLAY"
+      },
+      "reviewed_command_sha256": "71443c88ecbaec86e6ffd4ecef624cb9d306ec6b8d54d6ed48b6e8141229063b",
+      "expected_status": "ok"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "R1 generic type parameter identity: distinguish bare Tuple from zero-arity Tuple[()]. Preserve explicit empty elem_types in encoded annotations, decode exact tuple annotation identity, and keep inferred/rewritten empty tuple types. Original issue cites Python3.7; this explicit source-supported3.11 CPU profile verifies the same zero-arity contract and original required tests, not the historic3.7 traceback. Source-bound diagnostic passes after repair. Patch submitted for independent full task verification."
+}

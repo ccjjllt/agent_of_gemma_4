@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Restore info-based path existence, distinguish an existing empty directory from a missing path, and discard cached DVC entries when current workspace object type differs. Inline cases use a real local DVC repository, cached object, and filesystem changes. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "dvc/fs/dvc.py",
+        "start_line": 355,
+        "end_line": 432
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'dvc/fs/dvc.py').resolve()\ntry:\n module = importlib.import_module('dvc.fs.dvc')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport os,tempfile\nos.environ[\"DVC_TEST\"]=\"true\"\nfrom pathlib import Path\nfrom dvc.repo import Repo\nfrom dvc.fs.dvc import DVCFileSystem\nprevious=Path.cwd()\nwith tempfile.TemporaryDirectory() as folder:\n try:\n  os.chdir(folder)\n  repo=Repo.init(\".\",no_scm=True)\n  try:\n   Path(\"data\").write_text(\"cached\")\n   repo.add(\"data\")\n   Path(\"empty\").mkdir()\n   fs=DVCFileSystem(repo=repo)\n   print(\"empty_directory_listing\",fs.ls(\"empty\"))\n   assert fs.ls(\"empty\")==[]\n   try: fs.ls(\"missing\")\n   except FileNotFoundError: pass\n   else: raise AssertionError(\"Missing entry should raise FileNotFoundError\")\n   Path(\"data\").unlink()\n   Path(\"data\").mkdir()\n   Path(\"data/new\").write_text(\"workspace\")\n   fresh=DVCFileSystem(repo=repo)\n   listing=fresh.ls(\"data\")\n   print(\"workspace_type_overrides_cached_file\",listing)\n   assert listing==[\"data/new\"]\n  finally:\n   repo.close()\n finally:\n  os.chdir(previous)\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "37c06b71ae9b79619bd9edc753cd75b07e44de4b4418ac2921df631986588596"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "dvc/fs/dvc.py",
+        "old_string": "    def ls(self, path, detail=True, dvc_only=False, **kwargs):  # noqa: C901, PLR0912\n        key = self._get_key_from_relative(path)\n        repo, dvc_fs, subkey = self._get_subrepo_info(key)\n\n        dvc_infos = {}\n        dvc_info = {}\n        if dvc_fs:\n            dvc_path = _get_dvc_path(dvc_fs, subkey)\n            with suppress(FileNotFoundError):\n                dvc_info = dvc_fs.info(dvc_path)\n                if dvc_info[\"type\"] == \"file\":\n                    dvc_infos[\"\"] = dvc_info\n                else:\n                    for info in dvc_fs.ls(dvc_path, detail=True):\n                        dvc_infos[dvc_fs.name(info[\"name\"])] = info\n            dvc_exists = bool(dvc_infos) or dvc_fs.exists(dvc_path)\n        else:\n            dvc_exists = False\n\n        fs_exists = False\n        fs_infos = {}\n        ignore_subrepos = kwargs.get(\"ignore_subrepos\", True)\n        if not dvc_only:\n            fs = self.repo.fs\n            fs_path = self._from_key(key)\n            try:\n                fs_info = fs.info(fs_path)\n                if fs_info[\"type\"] == \"file\":\n                    fs_infos[\"\"] = fs_info\n                else:\n                    for info in repo.dvcignore.ls(\n                        fs, fs_path, detail=True, ignore_subrepos=ignore_subrepos\n                    ):\n                        fs_infos[fs.name(info[\"name\"])] = info\n                fs_exists = bool(fs_infos) or fs.exists(fs_path)\n            except (FileNotFoundError, NotADirectoryError):\n                pass\n\n        dvcfiles = kwargs.get(\"dvcfiles\", False)\n\n        infos = []\n        paths = []\n        names = set(dvc_infos.keys()) | set(fs_infos.keys())\n\n        if not names and (dvc_exists or fs_exists):\n            # broken symlink or TreeError\n            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), path)\n\n        for name in names:\n            if not dvcfiles and _is_dvc_file(name):\n                continue\n            entry_path = self.join(path, name) if name else path\n            info = _merge_info(\n                repo, (*subkey, name), fs_infos.get(name), dvc_infos.get(name)\n            )\n            info[\"name\"] = entry_path\n            infos.append(info)\n            paths.append(entry_path)\n\n        if not detail:\n            return paths\n\n        return infos\n",
+        "new_string": "    def ls(self, path, detail=True, dvc_only=False, **kwargs):  # noqa: C901, PLR0912\n        key = self._get_key_from_relative(path)\n        repo, dvc_fs, subkey = self._get_subrepo_info(key)\n\n        dvc_infos = {}\n        dvc_info = {}\n        if dvc_fs:\n            dvc_path = _get_dvc_path(dvc_fs, subkey)\n            with suppress(FileNotFoundError):\n                dvc_info = dvc_fs.info(dvc_path)\n                if dvc_info[\"type\"] == \"file\":\n                    dvc_infos[\"\"] = dvc_info\n                else:\n                    for info in dvc_fs.ls(dvc_path, detail=True):\n                        dvc_infos[dvc_fs.name(info[\"name\"])] = info\n\n        fs_infos = {}\n        fs_info = {}\n        ignore_subrepos = kwargs.get(\"ignore_subrepos\", True)\n        if not dvc_only:\n            fs = self.repo.fs\n            fs_path = self._from_key(key)\n            try:\n                fs_info = fs.info(fs_path)\n                if fs_info[\"type\"] == \"file\":\n                    fs_infos[\"\"] = fs_info\n                else:\n                    for info in repo.dvcignore.ls(\n                        fs, fs_path, detail=True, ignore_subrepos=ignore_subrepos\n                    ):\n                        fs_infos[fs.name(info[\"name\"])] = info\n            except (FileNotFoundError, NotADirectoryError):\n                pass\n\n        if not (fs_info or dvc_info):\n            # broken symlink or TreeError\n            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), path)\n\n        if fs_info and dvc_info and dvc_info[\"type\"] != fs_info[\"type\"]:\n            dvc_infos.clear()  # invalidate dvc_info if file type differs\n\n        dvcfiles = kwargs.get(\"dvcfiles\", False)\n\n        infos = []\n        paths = []\n        names = set(dvc_infos.keys()) | set(fs_infos.keys())\n\n        for name in names:\n            if not dvcfiles and _is_dvc_file(name):\n                continue\n\n            entry_path = self.join(path, name) if name else path\n            info = _merge_info(\n                repo, (*subkey, name), fs_infos.get(name), dvc_infos.get(name)\n            )\n            info[\"name\"] = entry_path\n            infos.append(info)\n            paths.append(entry_path)\n\n        if not detail:\n            return paths\n\n        return infos\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'dvc/fs/dvc.py').resolve()\ntry:\n module = importlib.import_module('dvc.fs.dvc')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport os,tempfile\nos.environ[\"DVC_TEST\"]=\"true\"\nfrom pathlib import Path\nfrom dvc.repo import Repo\nfrom dvc.fs.dvc import DVCFileSystem\nprevious=Path.cwd()\nwith tempfile.TemporaryDirectory() as folder:\n try:\n  os.chdir(folder)\n  repo=Repo.init(\".\",no_scm=True)\n  try:\n   Path(\"data\").write_text(\"cached\")\n   repo.add(\"data\")\n   Path(\"empty\").mkdir()\n   fs=DVCFileSystem(repo=repo)\n   print(\"empty_directory_listing\",fs.ls(\"empty\"))\n   assert fs.ls(\"empty\")==[]\n   try: fs.ls(\"missing\")\n   except FileNotFoundError: pass\n   else: raise AssertionError(\"Missing entry should raise FileNotFoundError\")\n   Path(\"data\").unlink()\n   Path(\"data\").mkdir()\n   Path(\"data/new\").write_text(\"workspace\")\n   fresh=DVCFileSystem(repo=repo)\n   listing=fresh.ls(\"data\")\n   print(\"workspace_type_overrides_cached_file\",listing)\n   assert listing==[\"data/new\"]\n  finally:\n   repo.close()\n finally:\n  os.chdir(previous)\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "37c06b71ae9b79619bd9edc753cd75b07e44de4b4418ac2921df631986588596"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored filesystem listing boundaries. Inline checks distinguish empty directories from missing paths and respect workspace type changes. Patch submitted."
+}

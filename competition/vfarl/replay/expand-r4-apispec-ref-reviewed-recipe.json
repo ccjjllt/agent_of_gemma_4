@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex compatibility source/diff and original requirements review,2026-10-25",
+  "review_notes": "OpenAPI2/3.0 reference objects need allOf wrapping to retain sibling metadata; OpenAPI3.1 supports a direct $ref sibling. Restore the explicit version guard without changing the field metadata or schema identity. Original test/required files and identifiers retained. Commands exercise production APIs, not authored test files. No model/policy or counterfactual-pair claim.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/apispec/ext/marshmallow/field_converter.py",
+        "start_line": 447,
+        "end_line": 477
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,sys\nimport importlib\nm=importlib.import_module('apispec.ext.marshmallow.field_converter')\nactual=Path(m.__file__).resolve()\nexpected=(Path.cwd()/'src/apispec/ext/marshmallow/field_converter.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest(),'Python',sys.version)\nfrom apispec import APISpec\nfrom apispec.ext.marshmallow import MarshmallowPlugin\nfrom marshmallow import Schema,fields\nclass Child(Schema):\n name=fields.Str()\nresults=[]\nfor version in ('2.0','3.0.3','3.1.0'):\n plugin=MarshmallowPlugin()\n spec=APISpec(title='version contract',version='1',openapi_version=version,plugins=[plugin])\n spec.components.schema('Child',schema=Child)\n result=plugin.converter.field2property(fields.Nested(Child,metadata={'description':'child note'}))\n print('nested_ref_version',version,result)\n results.append((version,result))\nfor version,result in results:\n assert result['description']=='child note'\n if version=='3.1.0':\n  assert '$ref' in result and 'allOf' not in result,result\n else:\n  assert 'allOf' in result and '$ref' not in result,result\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "b637d017d8069878e48f091926a953e9cba732bf865b0c4f0f99ac9bda80c0b8"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/apispec/ext/marshmallow/field_converter.py",
+        "old_string": "    def nested2properties(self, field: marshmallow.fields.Field, ret) -> dict:\n        \"\"\"Return a dictionary of properties from :class:`Nested <marshmallow.fields.Nested` fields.\n\n        Typically provides a reference object and will add the schema to the spec\n        if it is not already present\n        If a custom `schema_name_resolver` function returns `None` for the nested\n        schema a JSON schema object will be returned\n\n        :param Field field: A marshmallow field.\n        :rtype: dict\n        \"\"\"\n        # Pluck is a subclass of Nested but is in essence a single field; it\n        # is treated separately by pluck2properties.\n        if isinstance(field, marshmallow.fields.Nested) and not isinstance(\n            field, marshmallow.fields.Pluck\n        ):\n            schema_dict = self.resolve_nested_schema(field.schema)  # type:ignore\n            if ret and \"$ref\" in schema_dict:\n                ret.update({\"allOf\": [schema_dict]})\n            else:\n                ret.update(schema_dict)\n        return ret\n",
+        "new_string": "    def nested2properties(self, field: marshmallow.fields.Field, ret) -> dict:\n        \"\"\"Return a dictionary of properties from :class:`Nested <marshmallow.fields.Nested` fields.\n\n        Typically provides a reference object and will add the schema to the spec\n        if it is not already present\n        If a custom `schema_name_resolver` function returns `None` for the nested\n        schema a JSON schema object will be returned\n\n        :param Field field: A marshmallow field.\n        :rtype: dict\n        \"\"\"\n        # Pluck is a subclass of Nested but is in essence a single field; it\n        # is treated separately by pluck2properties.\n        if isinstance(field, marshmallow.fields.Nested) and not isinstance(\n            field, marshmallow.fields.Pluck\n        ):\n            schema_dict = self.resolve_nested_schema(field.schema)  # type:ignore\n            if (\n                ret\n                and \"$ref\" in schema_dict\n                and (\n                    self.openapi_version.major < 3\n                    or (\n                        self.openapi_version.major == 3\n                        and self.openapi_version.minor == 0\n                    )\n                )\n            ):\n                ret.update({\"allOf\": [schema_dict]})\n            else:\n                ret.update(schema_dict)\n        return ret\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,sys\nimport importlib\nm=importlib.import_module('apispec.ext.marshmallow.field_converter')\nactual=Path(m.__file__).resolve()\nexpected=(Path.cwd()/'src/apispec/ext/marshmallow/field_converter.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest(),'Python',sys.version)\nfrom apispec import APISpec\nfrom apispec.ext.marshmallow import MarshmallowPlugin\nfrom marshmallow import Schema,fields\nclass Child(Schema):\n name=fields.Str()\nresults=[]\nfor version in ('2.0','3.0.3','3.1.0'):\n plugin=MarshmallowPlugin()\n spec=APISpec(title='version contract',version='1',openapi_version=version,plugins=[plugin])\n spec.components.schema('Child',schema=Child)\n result=plugin.converter.field2property(fields.Nested(Child,metadata={'description':'child note'}))\n print('nested_ref_version',version,result)\n results.append((version,result))\nfor version,result in results:\n assert result['description']=='child note'\n if version=='3.1.0':\n  assert '$ref' in result and 'allOf' not in result,result\n else:\n  assert 'allOf' in result and '$ref' not in result,result\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "b637d017d8069878e48f091926a953e9cba732bf865b0c4f0f99ac9bda80c0b8"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "OpenAPI2/3.0 reference objects need allOf wrapping to retain sibling metadata; OpenAPI3.1 supports a direct $ref sibling. Restore the explicit version guard without changing the field metadata or schema identity. The actual source-bound reproduction passes after the production repair. Patch submitted for independent full task verification."
+}

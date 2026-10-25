@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Restore OpenAPI3 deprecated metadata to the parameter, removing it from the nested schema; OpenAPI2 remains flat. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/apispec/ext/marshmallow/openapi.py",
+        "start_line": 180,
+        "end_line": 214
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nmodule = importlib.import_module('apispec.ext.marshmallow.openapi')\nactual=Path(module.__file__).resolve()\nexpected=(Path.cwd() / 'src/apispec/ext/marshmallow/openapi.py').resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom marshmallow import fields\nfrom apispec import APISpec\nfrom apispec.ext.marshmallow import MarshmallowPlugin\nfor version in (\"2.0\",\"3.0.0\"):\n plugin=MarshmallowPlugin()\n APISpec(title=\"metadata\", version=\"1\", openapi_version=version, plugins=[plugin])\n field=fields.Str(metadata={\"deprecated\":True,\"description\":\"old query\"})\n observed=plugin.converter._field2parameter(field,name=\"query\",location=\"query\")\n print(\"version\",version,\"parameter\",observed)\n assert observed[\"deprecated\"] is True\n assert observed[\"description\"]==\"old query\"\n if version.startswith(\"3\"):\n  assert \"deprecated\" not in observed[\"schema\"]\n  assert \"description\" not in observed[\"schema\"]\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "6fa760466d7310f4d181bd7bdbe9b659baa822f7e0586a1dad95f75816250757"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/apispec/ext/marshmallow/openapi.py",
+        "old_string": "            if \"description\" in prop:\n                ret[\"description\"] = prop.pop(\"description\")\n            ret[\"schema\"] = prop\n",
+        "new_string": "            if \"description\" in prop:\n                ret[\"description\"] = prop.pop(\"description\")\n            if \"deprecated\" in prop:\n                ret[\"deprecated\"] = prop.pop(\"deprecated\")\n            ret[\"schema\"] = prop\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nmodule = importlib.import_module('apispec.ext.marshmallow.openapi')\nactual=Path(module.__file__).resolve()\nexpected=(Path.cwd() / 'src/apispec/ext/marshmallow/openapi.py').resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom marshmallow import fields\nfrom apispec import APISpec\nfrom apispec.ext.marshmallow import MarshmallowPlugin\nfor version in (\"2.0\",\"3.0.0\"):\n plugin=MarshmallowPlugin()\n APISpec(title=\"metadata\", version=\"1\", openapi_version=version, plugins=[plugin])\n field=fields.Str(metadata={\"deprecated\":True,\"description\":\"old query\"})\n observed=plugin.converter._field2parameter(field,name=\"query\",location=\"query\")\n print(\"version\",version,\"parameter\",observed)\n assert observed[\"deprecated\"] is True\n assert observed[\"description\"]==\"old query\"\n if version.startswith(\"3\"):\n  assert \"deprecated\" not in observed[\"schema\"]\n  assert \"description\" not in observed[\"schema\"]\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "6fa760466d7310f4d181bd7bdbe9b659baa822f7e0586a1dad95f75816250757"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored deprecated parameter metadata for OpenAPI 3. The inline reproduction checks OpenAPI 2 and 3 placement. Patch submitted."
+}

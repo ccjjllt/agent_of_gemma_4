@@ -1,0 +1,66 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex dynamic worker source and command review 2026-10-25",
+  "review_notes": "{'agent_visible_trigger': 'Put objects into an UnboundedQueue with existing data and one or more parked consumers.', 'base_wrong_behavior': 'put_nowait always grants _can_get and unparks waiters, bypassing empty-to-nonempty transition ownership and causing spurious wakeups/fairness violations.', 'production_symbols': 'trio._core._unbounded_queue.UnboundedQueue.put_nowait', 'causal_change': 'Only transfer the right to consume when the queue transitions from empty: wake one parked consumer or mark direct acquisition available, then append data.', 'discriminating_observation': 'Parked consumers are awakened only when appropriate; new callers cannot steal a reserved item and already nonempty puts do not create extra wakeups.'} Exact source-introduced defect was independently read and candidate inverse reviewed; source teacher patch not used. Inline diagnostic checks actual workspace import and behavior. Original F2P/P2P all retained; baseline reproduction is expected diagnostic error, not a policy mistake. Decorator2789 deliberately preserves both legacy and new names.",
+  "final_response": "Implemented the repair and confirmed the reported behavior with a direct reproduction against the workspace source.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/trio/_core/_unbounded_queue.py",
+        "start_line": 87,
+        "end_line": 158
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport trio\nprint('workspace import:', trio.__file__)\nassert Path(trio.__file__).resolve().is_relative_to(Path.cwd().resolve())\nimport trio\nfrom trio._core import UnboundedQueue\nfrom trio.testing import wait_all_tasks_blocked\nasync def observe():\n    q=UnboundedQueue();record=[]\n    async def receive():record.append(await q.get_batch())\n    async with trio.open_nursery() as nursery:\n        nursery.start_soon(receive)\n        await wait_all_tasks_blocked()\n        q.put_nowait(3);q.put_nowait(4)\n        try:q.get_batch_nowait()\n        except trio.WouldBlock:pass\n        else:raise AssertionError(\"producer stole the queued reader's batch\")\n    print(record);assert record==[[3,4]]\ntrio.run(observe)\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "269175b2dab486a3592876ec826d989ca06e5bb23d71ef19fa7faba5c53e231b"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/trio/_core/_unbounded_queue.py",
+        "old_string": "        return not self._data\n\n    @_core.enable_ki_protection\n    def put_nowait(self, obj: T) ->None:\n        \"\"\"Put an object into the queue, without blocking.\n\n        This always succeeds, because the queue is unbounded. We don't provide\n",
+        "new_string": "        return not self._data\n\n    @_core.enable_ki_protection\n    def put_nowait(self, obj: T) -> None:\n        \"\"\"Put an object into the queue, without blocking.\n\n        This always succeeds, because the queue is unbounded. We don't provide\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/trio/_core/_unbounded_queue.py",
+        "old_string": "          obj (object): The object to enqueue.\n\n        \"\"\"\n        self._data.append(obj)\n        self._can_get = True\n        self._lot.unpark()\n    def _get_batch_protected(self) -> list[T]:\n        data = self._data.copy()\n        self._data.clear()\n",
+        "new_string": "          obj (object): The object to enqueue.\n\n        \"\"\"\n        if not self._data:\n            assert not self._can_get\n            if self._lot:\n                self._lot.unpark(count=1)\n            else:\n                self._can_get = True\n        self._data.append(obj)\n\n    def _get_batch_protected(self) -> list[T]:\n        data = self._data.copy()\n        self._data.clear()\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport trio\nprint('workspace import:', trio.__file__)\nassert Path(trio.__file__).resolve().is_relative_to(Path.cwd().resolve())\nimport trio\nfrom trio._core import UnboundedQueue\nfrom trio.testing import wait_all_tasks_blocked\nasync def observe():\n    q=UnboundedQueue();record=[]\n    async def receive():record.append(await q.get_batch())\n    async with trio.open_nursery() as nursery:\n        nursery.start_soon(receive)\n        await wait_all_tasks_blocked()\n        q.put_nowait(3);q.put_nowait(4)\n        try:q.get_batch_nowait()\n        except trio.WouldBlock:pass\n        else:raise AssertionError(\"producer stole the queued reader's batch\")\n    print(record);assert record==[[3,4]]\ntrio.run(observe)\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "269175b2dab486a3592876ec826d989ca06e5bb23d71ef19fa7faba5c53e231b"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ]
+}
