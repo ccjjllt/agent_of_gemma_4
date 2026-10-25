@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex fixed source nested TOML namespace tree review2026-10-25",
+  "review_notes": "key_value_rule: inline_nested_namespace_remains_recursively_immutable. Do not adopt the publisher erroneous repeated-table example. All original whole three files, sixteen required outer cases and complete original valid/invalid data loops/fixtures remain unchanged. Exact method delta explains the entire production-file diff. These three distinct tree layers do not duplicate C common parser functions or seed PR238/parse_value families.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/tomli/_parser.py",
+        "start_line": 391,
+        "end_line": 420
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('tomli._parser')\na=Path(m.__file__).resolve();e=(Path.cwd()/'src/tomli/_parser.py').resolve()\nassert a==e,(a,e)\nprint('source_binding',a,'sha256',hashlib.sha256(a.read_bytes()).hexdigest())\nimport tomli\ntext=chr(10).join(['a = {b = {c = 1}}','a.b.d = 2',''])\ntry:\n tomli.loads(text)\nexcept tomli.TOMLDecodeError:\n print('nested_inline_mutation_rejected')\nelse:\n raise AssertionError('nested inline table was mutable')\nassert tomli.loads('a.b.c = 1')=={'a':{'b':{'c':1}}}\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "48ef0a1e898b5026e01ca2a70aa8ee6f47bbacc02a96d333814c9a0f2cb1dae0"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/tomli/_parser.py",
+        "old_string": "def key_value_rule(\n    src: str, pos: Pos, out: Output, header: Key, parse_float: ParseFloat\n) -> Pos:\n    pos, key, value = parse_key_value_pair(src, pos, parse_float)\n    key_parent, key_stem = key[:-1], key[-1]\n    abs_key_parent = header + key_parent\n    \n    relative_path_cont_keys = (header + key[:i] for i in range(1, len(key)))\n    for cont_key in relative_path_cont_keys:\n        if out.flags.is_(cont_key, Flags.EXPLICIT_NEST):\n            continue\n        out.flags.add_pending(cont_key, Flags.EXPLICIT_NEST)\n\n    if out.flags.is_(abs_key_parent, Flags.FROZEN):\n        pass\n\n    try:\n        nest = out.data.get_or_create_nest(abs_key_parent)\n    except KeyError:\n        nest = None\n    if key_stem in nest:\n        pass\n    if isinstance(value, (dict, list)) and not isinstance(value, set):\n        out.flags.set(header + key, Flags.FROZEN, recursive=False)\n    nest[key_stem] = value\n    return pos\n",
+        "new_string": "def key_value_rule(\n    src: str, pos: Pos, out: Output, header: Key, parse_float: ParseFloat\n) -> Pos:\n    pos, key, value = parse_key_value_pair(src, pos, parse_float)\n    key_parent, key_stem = key[:-1], key[-1]\n    abs_key_parent = header + key_parent\n\n    relative_path_cont_keys = (header + key[:i] for i in range(1, len(key)))\n    for cont_key in relative_path_cont_keys:\n        # Check that dotted key syntax does not redefine an existing table\n        if out.flags.is_(cont_key, Flags.EXPLICIT_NEST):\n            raise TOMLDecodeError(f\"Cannot redefine namespace {cont_key}\", src, pos)\n        # Containers in the relative path can't be opened with the table syntax or\n        # dotted key/value syntax in following table sections.\n        out.flags.add_pending(cont_key, Flags.EXPLICIT_NEST)\n\n    if out.flags.is_(abs_key_parent, Flags.FROZEN):\n        raise TOMLDecodeError(\n            f\"Cannot mutate immutable namespace {abs_key_parent}\", src, pos\n        )\n\n    try:\n        nest = out.data.get_or_create_nest(abs_key_parent)\n    except KeyError:\n        raise TOMLDecodeError(\"Cannot overwrite a value\", src, pos) from None\n    if key_stem in nest:\n        raise TOMLDecodeError(\"Cannot overwrite a value\", src, pos)\n    # Mark inline table and array namespaces recursively immutable\n    if isinstance(value, (dict, list)):\n        out.flags.set(header + key, Flags.FROZEN, recursive=True)\n    nest[key_stem] = value\n    return pos\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('tomli._parser')\na=Path(m.__file__).resolve();e=(Path.cwd()/'src/tomli/_parser.py').resolve()\nassert a==e,(a,e)\nprint('source_binding',a,'sha256',hashlib.sha256(a.read_bytes()).hexdigest())\nimport tomli\ntext=chr(10).join(['a = {b = {c = 1}}','a.b.d = 2',''])\ntry:\n tomli.loads(text)\nexcept tomli.TOMLDecodeError:\n print('nested_inline_mutation_rejected')\nelse:\n raise AssertionError('nested inline table was mutable')\nassert tomli.loads('a.b.c = 1')=={'a':{'b':{'c':1}}}\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "48ef0a1e898b5026e01ca2a70aa8ee6f47bbacc02a96d333814c9a0f2cb1dae0"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "inline nested namespace remains recursively immutable. The source-bound nested namespace observation completed and the patch was submitted."
+}

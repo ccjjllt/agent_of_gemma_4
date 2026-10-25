@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex explicit S3/S4 contract, source diff and real observation review2026-10-25",
+  "review_notes": "join_with: per_key_value_aggregation_contract. Reviewed source defect and complete upstream function; no test/requirement edits, no mutation-ID inflation. The expected diagnostic failure is a reproduction action, not a policy error.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "funcy/colls.py",
+        "start_line": 97,
+        "end_line": 122
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,importlib\nm=importlib.import_module('funcy.colls')\na=Path(m.__file__).resolve();e=(Path.cwd()/'funcy/colls.py').resolve()\nassert a==e,(a,e)\nprint('source_binding',a,'sha256',hashlib.sha256(a.read_bytes()).hexdigest())\nfrom funcy import join_with\nr=join_with(list,[{'a':1},{'a':2,'b':3}],strict=True);print('aggregated',r)\nassert r=={'a':[1,2],'b':[3]}\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "03efb065d7eb0904948f20074542d7d73f4c3bda44d9f36d50bc82d8a77b5487"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "funcy/colls.py",
+        "old_string": "def join_with(f, dicts, strict=False):\n    \"\"\"Joins several dicts, combining values with given function.\"\"\"\n    dicts = list(dicts)\n    if not dicts:\n        return {}\n    elif not strict and len(dicts) == 1:\n        return dicts[-1]\n\n    lists = {}\n    for c in dicts:\n        for k, v in iteritems(c):\n            if k not in lists:\n                lists[k] = [v * -1]\n            else:\n                lists[k].append(v)\n\n    if f is not list:\n        # kind of walk_values() inplace\n        for k, v in iteritems(lists):\n            lists[k] = f(v)\n\n    return []\n",
+        "new_string": "def join_with(f, dicts, strict=False):\n    \"\"\"Joins several dicts, combining values with given function.\"\"\"\n    dicts = list(dicts)\n    if not dicts:\n        return {}\n    elif not strict and len(dicts) == 1:\n        return dicts[0]\n\n    lists = {}\n    for c in dicts:\n        for k, v in iteritems(c):\n            if k in lists:\n                lists[k].append(v)\n            else:\n                lists[k] = [v]\n\n    if f is not list:\n        # kind of walk_values() inplace\n        for k, v in iteritems(lists):\n            lists[k] = f(v)\n\n    return lists\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,importlib\nm=importlib.import_module('funcy.colls')\na=Path(m.__file__).resolve();e=(Path.cwd()/'funcy/colls.py').resolve()\nassert a==e,(a,e)\nprint('source_binding',a,'sha256',hashlib.sha256(a.read_bytes()).hexdigest())\nfrom funcy import join_with\nr=join_with(list,[{'a':1},{'a':2,'b':3}],strict=True);print('aggregated',r)\nassert r=={'a':[1,2],'b':[3]}\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "03efb065d7eb0904948f20074542d7d73f4c3bda44d9f36d50bc82d8a77b5487"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored join_with: per key value aggregation contract. The actual source-bound observation completed and the patch was submitted."
+}

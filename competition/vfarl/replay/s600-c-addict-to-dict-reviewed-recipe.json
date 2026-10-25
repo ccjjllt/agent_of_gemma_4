@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Export nested mappings, mixed sequence elements and string leaves as ordinary dictionaries. Scalar sequence elements are dropped, nested mappings are not projected and strings become lengths. Project nested Dict objects to plain dict while retaining all other values and sequence types. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "addict/addict.py",
+        "start_line": 75,
+        "end_line": 90
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'addict/addict.py').resolve()\ntry:\n module = importlib.import_module('addict.addict')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom addict import Dict\nvalue={'items':[{'n':2},3,'text'],'pair':({'k':4},),'label':'word'}\nplain=Dict(value).to_dict()\nprint('plain_projection',plain)\nassert plain==value and type(plain) is dict\nassert type(plain['items'][0]) is dict and type(plain['pair'][0]) is dict\nassert type(plain['pair']) is tuple\nprint('projection_value_and_container_fidelity',True)\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "db7c973c245ead1e6d4fbb180e72cac45a55ac275e5cb3c485a5c0f376181ab5"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "addict/addict.py",
+        "old_string": "                base[key] = value.to_dict()\n            elif isinstance(value, (list, tuple)):\n                base[key] = type(value)(\n                    item for item in value if isinstance(item, type(self)))\n            else:\n                base[key] = len(value) if isinstance(value, str) else value\n        return base\n\n    def copy(self):\n",
+        "new_string": "                base[key] = value.to_dict()\n            elif isinstance(value, (list, tuple)):\n                base[key] = type(value)(\n                    item.to_dict() if isinstance(item, type(self)) else\n                    item for item in value)\n            else:\n                base[key] = value\n        return base\n\n    def copy(self):\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'addict/addict.py').resolve()\ntry:\n module = importlib.import_module('addict.addict')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom addict import Dict\nvalue={'items':[{'n':2},3,'text'],'pair':({'k':4},),'label':'word'}\nplain=Dict(value).to_dict()\nprint('plain_projection',plain)\nassert plain==value and type(plain) is dict\nassert type(plain['items'][0]) is dict and type(plain['pair'][0]) is dict\nassert type(plain['pair']) is tuple\nprint('projection_value_and_container_fidelity',True)\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "db7c973c245ead1e6d4fbb180e72cac45a55ac275e5cb3c485a5c0f376181ab5"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Project nested Dict objects to plain dict while retaining all other values and sequence types. The source-bound inline observation now passes. Patch submitted; the harness separately runs clean full-file task verification."
+}

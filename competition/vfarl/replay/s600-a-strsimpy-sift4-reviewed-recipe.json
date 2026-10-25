@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex source algorithm, original public tests and explicit numerical command review2026-10-25",
+  "review_notes": "SIFT4.distance: offset_matching_and_transposition_accounting. Original publisher tests under strsimpy/*_test.py are restored byte-identically and remain unedited. Other source rows that mutate tests are excluded. The exact reviewed method/class replacement explains the entire production-file diff; deleted methods are restored from fixed public upstream, not invented test stubs.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "strsimpy/sift4.py",
+        "start_line": 126,
+        "end_line": 188
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('strsimpy.sift4')\na=Path(m.__file__).resolve();e=(Path.cwd()/'strsimpy/sift4.py').resolve()\nassert a==e,(a,e)\nprint('source_binding',a,'sha256',hashlib.sha256(a.read_bytes()).hexdigest())\nfrom strsimpy.sift4 import SIFT4\nr=SIFT4().distance('MARTHA','MARHTA');print('SIFT4_distance',r)\nassert r==1\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "4eb57aa8d3395587086b5fec926e86a7d8116a9becf53c22e4fade099b7cab16"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "strsimpy/sift4.py",
+        "old_string": "    def distance(self, s1, s2, maxoffset=5, options=None):\n        options = SIFT4Options(options)\n        t1, t2 = options.tokenizer(s1), options.tokenizer(s2)\n        l1, l2 = len(t1), len(t2)\n        if l1 == 0:\n            return l2\n        if l2 == 0:\n            return l1\n\n        c1, c2, lcss, local_cs, trans, offset_arr = 0, 0, 0, 0, 0, []\n        while (c1 < l1) and (c2 < l2):\n            if options.tokenmatcher(t1[c1], t2[c2]):\n                local_cs += options.matchingevaluator(t1[c1], t2[c2])\n                isTrans = False\n                i = 0\n                while i < len(offset_arr):\n                    ofs = offset_arr[i]\n                    if (c1 <= ofs['c1']) or (c2 <= ofs['c2']):\n                        isTrans = abs(c2 - c1) <= abs(ofs['c2'] - ofs['c1'])\n                        if not isTrans:\n                            trans += options.transpositioncostevaluator(ofs['c2'], ofs['c1'])\n                        else:\n                            if not ofs['trans']:\n                                ofs['trans'] = False\n                                trans += options.transpositioncostevaluator(c1, c2)\n                        break\n                    else:\n                        if (c1 > ofs['c2']) or (c2 > ofs['c1']):\n                            offset_arr.pop(i)\n                        else:\n                            i += 1\n                offset_arr.append({'c1': c1, 'c2': c2, 'trans': not isTrans})\n            else:\n                lcss += options.locallengthevaluator(local_cs)\n                local_cs = 0\n                if c1 != c2:\n                    c1 = c2 = min(c1, c2)\n                for i in range(maxoffset):\n                    if (c1 + i < l1) and (c2 + i < l2):\n                        if (c1 + i < l1) and options.tokenmatcher(t1[c2 + i], t2[c1]):\n                            c1 += i - 1\n                            c2 -= 1\n                            break\n                    if (c2 + i < l2) and options.tokenmatcher(t1[c2 + i], t2[c1]):\n                        c1 -= 1\n                        c2 += i - 1\n                        break\n            c1 += 1\n            c2 += 1\n            if options.maxdistance:\n                temporarydistance = options.locallengthevaluator(min(c1, c2)) + options.transpositionsevaluator(lcss, trans)\n                if temporarydistance >= options.maxdistance:\n                    return round(temporarydistance)\n            if (c1 >= l1) or (c2 >= l2):\n                lcss += options.locallengthevaluator(local_cs)\n                local_cs = 0\n                c1 = c2 = max(c1, c2)\n        lcss += options.locallengthevaluator(local_cs)\n        return round(options.locallengthevaluator(max(l2, l1)) + options.transpositionsevaluator(lcss, trans))\n",
+        "new_string": "    def distance(self, s1, s2, maxoffset=5, options=None):\n        options = SIFT4Options(options)\n        t1, t2 = options.tokenizer(s1), options.tokenizer(s2)\n        l1, l2 = len(t1), len(t2)\n        if l1 == 0:\n            return l2\n        if l2 == 0:\n            return l1\n\n        c1, c2, lcss, local_cs, trans, offset_arr = 0, 0, 0, 0, 0, []\n        while (c1 < l1) and (c2 < l2):\n            if options.tokenmatcher(t1[c1], t2[c2]):\n                local_cs += options.matchingevaluator(t1[c1], t2[c2])\n                isTrans = False\n                i = 0\n                while i < len(offset_arr):\n                    ofs = offset_arr[i]\n                    if (c1 <= ofs['c1']) or (c2 <= ofs['c2']):\n                        isTrans = abs(c2 - c1) >= abs(ofs['c2'] - ofs['c1'])\n                        if isTrans:\n                            trans += options.transpositioncostevaluator(c1, c2)\n                        else:\n                            if not ofs['trans']:\n                                ofs['trans'] = True\n                                trans += options.transpositioncostevaluator(ofs['c1'], ofs['c2'])\n                        break\n                    else:\n                        if (c1 > ofs['c2']) and (c2 > ofs['c1']):\n                            offset_arr.pop(i)\n                        else:\n                            i += 1\n                offset_arr.append({'c1': c1, 'c2': c2, 'trans': isTrans})\n            else:\n                lcss += options.locallengthevaluator(local_cs)\n                local_cs = 0\n                if c1 != c2:\n                    c1 = c2 = min(c1, c2)\n                for i in range(maxoffset):\n                    if (c1 + i < l1) or (c2 + i < l2):\n                        if (c1 + i < l1) and options.tokenmatcher(t1[c1 + i], t2[c2]):\n                            c1 += i - 1\n                            c2 -= 1\n                            break\n                    if (c2 + i < l2) and options.tokenmatcher(t1[c1], t2[c2 + i]):\n                        c1 -= 1\n                        c2 += i - 1\n                        break\n            c1 += 1\n            c2 += 1\n            if options.maxdistance:\n                temporarydistance = options.locallengthevaluator(max(c1, c2)) - options.transpositionsevaluator(lcss, trans)\n                if temporarydistance >= options.maxdistance:\n                    return round(temporarydistance)\n            if (c1 >= l1) or (c2 >= l2):\n                lcss += options.locallengthevaluator(local_cs)\n                local_cs = 0\n                c1 = c2 = min(c1, c2)\n        lcss += options.locallengthevaluator(local_cs)\n        return round(options.locallengthevaluator(max(l1, l2)) - options.transpositionsevaluator(lcss, trans))\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('strsimpy.sift4')\na=Path(m.__file__).resolve();e=(Path.cwd()/'strsimpy/sift4.py').resolve()\nassert a==e,(a,e)\nprint('source_binding',a,'sha256',hashlib.sha256(a.read_bytes()).hexdigest())\nfrom strsimpy.sift4 import SIFT4\nr=SIFT4().distance('MARTHA','MARHTA');print('SIFT4_distance',r)\nassert r==1\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "4eb57aa8d3395587086b5fec926e86a7d8116a9becf53c22e4fade099b7cab16"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored SIFT4.distance offset matching and transposition accounting. The real source-bound numerical observation completed and the patch was submitted."
+}

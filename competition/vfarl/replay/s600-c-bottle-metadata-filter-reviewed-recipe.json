@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Set a filter through shared metadata and update the actual configuration value. Key and metadata-field coordinates are transposed, so the consumer misses its filter. Store the metadata value under the requested configuration key and field. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "bottle.py",
+        "start_line": 2515,
+        "end_line": 2536
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'bottle.py').resolve()\ntry:\n module = importlib.import_module('bottle')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom bottle import ConfigDict\nc=ConfigDict();c.meta_set('port','filter',int);c['port']='5432';child=c._make_overlay()\nprint('filtered_config',c['port'],child.meta_get('port','filter'))\nassert c['port']==5432 and child.meta_get('port','filter') is int\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "c443947ee71ca993bf712523c44b64801086c83f702d07513c8403a77b94f1c4"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "bottle.py",
+        "old_string": "\n    def meta_set(self, key, metafield, value):\n        \"\"\" Set the meta field for a key to a new value.\n    \n            Meta-fields are shared between all members of an overlay tree.\n        \"\"\"\n        self._meta.setdefault(metafield, {})[key] = value\n\n    def meta_list(self, key):\n        \"\"\" Return an iterable of meta field names defined for a key. \"\"\"\n",
+        "new_string": "\n    def meta_set(self, key, metafield, value):\n        \"\"\" Set the meta field for a key to a new value.\n        \n            Meta-fields are shared between all members of an overlay tree.\n        \"\"\"\n        self._meta.setdefault(key, {})[metafield] = value\n\n    def meta_list(self, key):\n        \"\"\" Return an iterable of meta field names defined for a key. \"\"\"\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'bottle.py').resolve()\ntry:\n module = importlib.import_module('bottle')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom bottle import ConfigDict\nc=ConfigDict();c.meta_set('port','filter',int);c['port']='5432';child=c._make_overlay()\nprint('filtered_config',c['port'],child.meta_get('port','filter'))\nassert c['port']==5432 and child.meta_get('port','filter') is int\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "c443947ee71ca993bf712523c44b64801086c83f702d07513c8403a77b94f1c4"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Store the metadata value under the requested configuration key and field. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

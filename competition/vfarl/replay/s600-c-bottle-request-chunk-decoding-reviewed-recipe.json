@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Decode a real chunked request body using a hexadecimal size. The rewrite decodes sizes as decimal, consumes the wrong CRLF width and continues after the terminal chunk. Retain hexadecimal chunk framing, exact CRLF consumption and terminal-chunk completion. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "bottle.py",
+        "start_line": 1300,
+        "end_line": 1330
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'bottle.py').resolve()\ntry:\n module = importlib.import_module('bottle')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport io\nfrom bottle import BaseRequest\nraw=b'A\\r\\n0123456789\\r\\n0\\r\\n\\r\\n';r=BaseRequest({'wsgi.input':io.BytesIO(raw),'HTTP_TRANSFER_ENCODING':'chunked'});value=r.body.read();print('decoded_chunked_request',value)\nassert value==b'0123456789'\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "e61696a306979cdbedac182983233364d545a6317c45af40beff57ff95f514e1"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "bottle.py",
+        "old_string": "                if len(header) > bufsize: raise err\n            size, _, _ = header.partition(sem)\n            try:\n                maxread = int(tonat(size.strip()), 10)  # Changed from 16 to 10\n            except ValueError:\n                raise err\n            if maxread == 0: continue  # Changed from break to continue\n            buff = bs\n            while maxread > 0:\n                if not buff:\n                    buff = read(maxread)  # Changed from min(maxread, bufsize) to maxread\n                part, buff = buff[:maxread], buff[maxread:]\n                if not part: raise err\n                yield part\n                maxread -= len(part)\n            if read(1) != rn:  # Changed from read(2) to read(1)\n                raise err\n\n    @DictProperty('environ', 'bottle.request.body', read_only=True)\n",
+        "new_string": "                if len(header) > bufsize: raise err\n            size, _, _ = header.partition(sem)\n            try:\n                maxread = int(tonat(size.strip()), 16)\n            except ValueError:\n                raise err\n            if maxread == 0: break\n            buff = bs\n            while maxread > 0:\n                if not buff:\n                    buff = read(min(maxread, bufsize))\n                part, buff = buff[:maxread], buff[maxread:]\n                if not part: raise err\n                yield part\n                maxread -= len(part)\n            if read(2) != rn:\n                raise err\n\n    @DictProperty('environ', 'bottle.request.body', read_only=True)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'bottle.py').resolve()\ntry:\n module = importlib.import_module('bottle')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport io\nfrom bottle import BaseRequest\nraw=b'A\\r\\n0123456789\\r\\n0\\r\\n\\r\\n';r=BaseRequest({'wsgi.input':io.BytesIO(raw),'HTTP_TRANSFER_ENCODING':'chunked'});value=r.body.read();print('decoded_chunked_request',value)\nassert value==b'0123456789'\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "e61696a306979cdbedac182983233364d545a6317c45af40beff57ff95f514e1"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Retain hexadecimal chunk framing, exact CRLF consumption and terminal-chunk completion. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

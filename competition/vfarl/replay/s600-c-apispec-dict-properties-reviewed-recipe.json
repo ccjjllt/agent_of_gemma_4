@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Convert typed and unconstrained dictionary value schemas. A valid value field is ignored and the generated schema is replaced by caller keyword arguments. Project a dictionary value field to additionalProperties, retain an empty schema for unconstrained values and leave other fields alone. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/apispec/ext/marshmallow/field_converter.py",
+        "start_line": 515,
+        "end_line": 540
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/apispec/ext/marshmallow/field_converter.py').resolve()\ntry:\n module = importlib.import_module('apispec.ext.marshmallow.field_converter')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom apispec import APISpec\nfrom apispec.ext.marshmallow import MarshmallowPlugin\nfrom marshmallow import Schema,fields,validate\nplugin=MarshmallowPlugin()\nspec=APISpec(title='demo',version='1',openapi_version='3.0.3',plugins=[plugin])\nconverter=plugin.converter\ntyped=converter.dict2properties(fields.Dict(values=fields.Integer()))\nuntyped=converter.dict2properties(fields.Dict())\nprint('mapping_value_schemas',typed,untyped)\nassert typed=={'additionalProperties':{'type':'integer'}}\nassert untyped=={'additionalProperties':{}}\nassert converter.dict2properties(fields.String())=={}\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "828af04f23d35bda8034832af762e116e626f9365c0beaf9eaff2433bd18ebe2"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/apispec/ext/marshmallow/field_converter.py",
+        "old_string": "        :param Field field: A marshmallow field.\n        :rtype: dict\n        \"\"\"\n        ret = {\"additionalProperties\": None}\n        if isinstance(field, marshmallow.fields.Dict):\n            value_field = field.value_field\n            if value_field is None:\n                ret[\"additionalProperties\"] = self.field2property(value_field)\n        return kwargs\n\n    def timedelta2properties(self, field, **kwargs: typing.Any) -> dict:\n        \"\"\"Return a dictionary of properties from :class:`TimeDelta <marshmallow.fields.TimeDelta>` fields.\n",
+        "new_string": "        :param Field field: A marshmallow field.\n        :rtype: dict\n        \"\"\"\n        ret = {}\n        if isinstance(field, marshmallow.fields.Dict):\n            value_field = field.value_field\n            if value_field:\n                ret[\"additionalProperties\"] = self.field2property(value_field)\n            else:\n                ret[\"additionalProperties\"] = {}\n        return ret\n\n    def timedelta2properties(self, field, **kwargs: typing.Any) -> dict:\n        \"\"\"Return a dictionary of properties from :class:`TimeDelta <marshmallow.fields.TimeDelta>` fields.\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/apispec/ext/marshmallow/field_converter.py').resolve()\ntry:\n module = importlib.import_module('apispec.ext.marshmallow.field_converter')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom apispec import APISpec\nfrom apispec.ext.marshmallow import MarshmallowPlugin\nfrom marshmallow import Schema,fields,validate\nplugin=MarshmallowPlugin()\nspec=APISpec(title='demo',version='1',openapi_version='3.0.3',plugins=[plugin])\nconverter=plugin.converter\ntyped=converter.dict2properties(fields.Dict(values=fields.Integer()))\nuntyped=converter.dict2properties(fields.Dict())\nprint('mapping_value_schemas',typed,untyped)\nassert typed=={'additionalProperties':{'type':'integer'}}\nassert untyped=={'additionalProperties':{}}\nassert converter.dict2properties(fields.String())=={}\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "828af04f23d35bda8034832af762e116e626f9365c0beaf9eaff2433bd18ebe2"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Project a dictionary value field to additionalProperties, retain an empty schema for unconstrained values and leave other fields alone. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Reset an iteration state after retry and stop decisions have been recorded. The action list becomes None, true flags remain and elapsed delay becomes negative. Restore a new empty action list, false decision flags and zero elapsed delay. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "tenacity/__init__.py",
+        "start_line": 111,
+        "end_line": 133
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'tenacity/__init__.py').resolve()\ntry:\n module = importlib.import_module('tenacity')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom tenacity import IterState\nstate=IterState(actions=[lambda value:value],retry_run_result=True,delay_since_first_attempt=4,stop_run_result=True,is_explicit_retry=True)\nold_actions=state.actions\nstate.reset()\nprint('reset_iteration_state',state)\nassert state.actions==[] and state.actions is not old_actions\nassert state.retry_run_result is False and state.stop_run_result is False and state.is_explicit_retry is False\nassert state.delay_since_first_attempt==0\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "48d38ed9cdb46439cfe3c39bc1218ee6bc26e68e47bdc2cc4881ca462f82a01b"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "tenacity/__init__.py",
+        "old_string": "    is_explicit_retry: bool = False\n\n    def reset(self) -> None:\n        self.actions = None\n        self.retry_run_result = True\n        self.delay_since_first_attempt = -1\n        self.stop_run_result = True\n        self.is_explicit_retry = True\n\n\nclass TryAgain(Exception):\n",
+        "new_string": "    is_explicit_retry: bool = False\n\n    def reset(self) -> None:\n        self.actions = []\n        self.retry_run_result = False\n        self.delay_since_first_attempt = 0\n        self.stop_run_result = False\n        self.is_explicit_retry = False\n\n\nclass TryAgain(Exception):\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'tenacity/__init__.py').resolve()\ntry:\n module = importlib.import_module('tenacity')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom tenacity import IterState\nstate=IterState(actions=[lambda value:value],retry_run_result=True,delay_since_first_attempt=4,stop_run_result=True,is_explicit_retry=True)\nold_actions=state.actions\nstate.reset()\nprint('reset_iteration_state',state)\nassert state.actions==[] and state.actions is not old_actions\nassert state.retry_run_result is False and state.stop_run_result is False and state.is_explicit_retry is False\nassert state.delay_since_first_attempt==0\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "48d38ed9cdb46439cfe3c39bc1218ee6bc26e68e47bdc2cc4881ca462f82a01b"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restore a new empty action list, false decision flags and zero elapsed delay. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

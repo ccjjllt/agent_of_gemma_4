@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex explicit collection/iteration contract and source-command review2026-10-25",
+  "review_notes": "canonical_contiguous_range_serialization; original upstream function and complete source diff reviewed; original requirements and full target files intact. Short alias preloads the real package to preserve original __file__-based source lookup, no fake module.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "boltons/strutils.py",
+        "start_line": 910,
+        "end_line": 971
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,importlib\nm=importlib.import_module('boltons.strutils')\na=Path(m.__file__).resolve();e=(Path.cwd()/'boltons/strutils.py').resolve()\nassert a==e,(a,e)\nprint('source_binding',a,'sha256',hashlib.sha256(a.read_bytes()).hexdigest())\nfrom boltons.strutils import format_int_list\nr=format_int_list([1,2,4,5,6,8]);print('encoded_ranges',r)\nassert r=='1-2,4-6,8'\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "45cadc61ed22ea1e5558ab967acb8cbb6c64ab65e9165f13cf95e59d404e4180"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "boltons/strutils.py",
+        "old_string": "def format_int_list(int_list, delim=',', range_delim='-', delim_space=False):\n    output = []\n    contig_range = collections.deque()\n\n    for x in sorted(int_list):\n\n        if len(contig_range) < 1:\n            contig_range.append(x)\n\n        elif len(contig_range) > 1:\n            delta = x - contig_range[-1]\n\n            if delta == 1:\n                contig_range.append(x)\n\n            elif delta > 2:  # Introduced bug: Changed from delta > 1 to delta > 2\n                range_substr = '{:d}{}{:d}'.format(min(contig_range),\n                                                      range_delim,\n                                                      max(contig_range))\n                output.append(range_substr)\n                contig_range.clear()\n                contig_range.append(x)\n\n            else:\n                continue\n\n        else:\n            delta = x - contig_range[0]\n\n            if delta == 0:  # Introduced bug: Changed from delta == 1 to delta == 0\n                contig_range.append(x)\n\n            elif delta > 1:\n                output.append(f'{contig_range.pop():d}')  # Introduced bug: Changed from popleft to pop\n                contig_range.append(x)\n\n            else:\n                continue\n\n    else:\n\n        if len(contig_range) == 1:\n            output.append(f'{contig_range.popleft():d}')\n            contig_range.clear()\n\n        elif len(contig_range) > 1:\n            range_substr = '{:d}{}{:d}'.format(max(contig_range),  # Introduced bug: Changed from min to max\n                                                  range_delim,\n                                                  min(contig_range))  # Swapped min and max\n            output.append(range_substr)\n            contig_range.clear()\n\n    if delim_space:\n        output_str = (delim+' ').join(output)\n    else:\n        output_str = delim.join(output)\n\n    return output_str\n",
+        "new_string": "def format_int_list(int_list, delim=',', range_delim='-', delim_space=False):\n    \"\"\"Returns a sorted range string from a list of positive integers\n    (*int_list*). Contiguous ranges of integers are collapsed to min\n    and max values. Reverse of :func:`parse_int_list`.\n\n    Args:\n        int_list (list): List of positive integers to be converted\n           into a range string (e.g. [1,2,4,5,6,8]).\n        delim (char): Defaults to ','. Separates integers and\n           contiguous ranges of integers.\n        range_delim (char): Defaults to '-'. Indicates a contiguous\n           range of integers.\n        delim_space (bool): Defaults to ``False``. If ``True``, adds a\n           space after all *delim* characters.\n\n    >>> format_int_list([1,3,5,6,7,8,10,11,15])\n    '1,3,5-8,10-11,15'\n\n    \"\"\"\n    output = []\n    contig_range = collections.deque()\n\n    for x in sorted(int_list):\n\n        # Handle current (and first) value.\n        if len(contig_range) < 1:\n            contig_range.append(x)\n\n        # Handle current value, given multiple previous values are contiguous.\n        elif len(contig_range) > 1:\n            delta = x - contig_range[-1]\n\n            # Current value is contiguous.\n            if delta == 1:\n                contig_range.append(x)\n\n            # Current value is non-contiguous.\n            elif delta > 1:\n                range_substr = '{:d}{}{:d}'.format(min(contig_range),\n                                                      range_delim,\n                                                      max(contig_range))\n                output.append(range_substr)\n                contig_range.clear()\n                contig_range.append(x)\n\n            # Current value repeated.\n            else:\n                continue\n\n        # Handle current value, given no previous contiguous integers\n        else:\n            delta = x - contig_range[0]\n\n            # Current value is contiguous.\n            if delta == 1:\n                contig_range.append(x)\n\n            # Current value is non-contiguous.\n            elif delta > 1:\n                output.append(f'{contig_range.popleft():d}')\n                contig_range.append(x)\n\n            # Current value repeated.\n            else:\n                continue\n\n    # Handle the last value.\n    else:\n\n        # Last value is non-contiguous.\n        if len(contig_range) == 1:\n            output.append(f'{contig_range.popleft():d}')\n            contig_range.clear()\n\n        # Last value is part of contiguous range.\n        elif len(contig_range) > 1:\n            range_substr = '{:d}{}{:d}'.format(min(contig_range),\n                                                  range_delim,\n                                                  max(contig_range))\n            output.append(range_substr)\n            contig_range.clear()\n\n    if delim_space:\n        output_str = (delim+' ').join(output)\n    else:\n        output_str = delim.join(output)\n\n    return output_str\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,importlib\nm=importlib.import_module('boltons.strutils')\na=Path(m.__file__).resolve();e=(Path.cwd()/'boltons/strutils.py').resolve()\nassert a==e,(a,e)\nprint('source_binding',a,'sha256',hashlib.sha256(a.read_bytes()).hexdigest())\nfrom boltons.strutils import format_int_list\nr=format_int_list([1,2,4,5,6,8]);print('encoded_ranges',r)\nassert r=='1-2,4-6,8'\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "45cadc61ed22ea1e5558ab967acb8cbb6c64ab65e9165f13cf95e59d404e4180"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored format_int_list: canonical contiguous range serialization. The actual public API observation completed and the patch was submitted."
+}

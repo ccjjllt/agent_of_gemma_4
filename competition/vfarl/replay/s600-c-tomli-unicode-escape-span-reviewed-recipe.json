@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Decode four hexadecimal escape digits followed by ordinary text. The decoder reads and advances one extra position and changes scalar validation arithmetic. Consume exactly the configured escape span and leave the following source character for the next parser step. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/tomli/_parser.py",
+        "start_line": 566,
+        "end_line": 589
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/tomli/_parser.py').resolve()\ntry:\n module = importlib.import_module('tomli._parser')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport tomli\ndoc='text = \"'+chr(92)+'u03b1x\"';value=tomli.loads(doc)['text'];print('unicode_escape_span',value)\nassert value=='αx'\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "7138f591ea7a07c099f68d97673ccd79fcc32916f81d46c6af916500048bef75"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/tomli/_parser.py",
+        "old_string": "\n\ndef parse_hex_char(src: str, pos: Pos, hex_len: int) -> tuple[Pos, str]:\n    hex_str = src[pos : pos + hex_len + 1]  # Altered length extraction\n    if len(hex_str) != hex_len or not HEXDIGIT_CHARS.issuperset(hex_str[:-1]):  # Adjusted length and check\n        raise TOMLDecodeError(\"Invalid hex value\", src, pos)\n    pos += hex_len + 1  # Incorrect position update\n    hex_int = int(hex_str[:-1], 16)  # Exclude last character from conversion\n    if not is_unicode_scalar_value(hex_int - 1):  # Altered validation\n        raise TOMLDecodeError(\n            \"Escaped character is not a Unicode scalar value\", src, pos\n        )\n",
+        "new_string": "\n\ndef parse_hex_char(src: str, pos: Pos, hex_len: int) -> tuple[Pos, str]:\n    hex_str = src[pos : pos + hex_len]\n    if len(hex_str) != hex_len or not HEXDIGIT_CHARS.issuperset(hex_str):\n        raise TOMLDecodeError(\"Invalid hex value\", src, pos)\n    pos += hex_len\n    hex_int = int(hex_str, 16)\n    if not is_unicode_scalar_value(hex_int):\n        raise TOMLDecodeError(\n            \"Escaped character is not a Unicode scalar value\", src, pos\n        )\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/tomli/_parser.py').resolve()\ntry:\n module = importlib.import_module('tomli._parser')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport tomli\ndoc='text = \"'+chr(92)+'u03b1x\"';value=tomli.loads(doc)['text'];print('unicode_escape_span',value)\nassert value=='αx'\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "7138f591ea7a07c099f68d97673ccd79fcc32916f81d46c6af916500048bef75"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Consume exactly the configured escape span and leave the following source character for the next parser step. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

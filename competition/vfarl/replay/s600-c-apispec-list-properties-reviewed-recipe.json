@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Project the inner field of a Marshmallow list to an item schema. List-type dispatch is negated so the list schema loses items. Convert the inner field only for List instances. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/apispec/ext/marshmallow/field_converter.py",
+        "start_line": 502,
+        "end_line": 520
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/apispec/ext/marshmallow/field_converter.py').resolve()\ntry:\n module = importlib.import_module('apispec.ext.marshmallow.field_converter')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom apispec import APISpec\nfrom apispec.ext.marshmallow import MarshmallowPlugin\nfrom marshmallow import Schema,fields,validate\nplugin=MarshmallowPlugin()\nspec=APISpec(title='demo',version='1',openapi_version='3.0.3',plugins=[plugin])\nconverter=plugin.converter\nvalue=converter.list2properties(fields.List(fields.Integer()))\nprint('list_item_schema',value)\nassert value=={'items':{'type':'integer'}}\nassert converter.list2properties(fields.String())=={}\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "58e17e8229e1ad37d32f9ba27e3400aa68160cd38e1e86dc7cd5ef63e5c3ebc4"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/apispec/ext/marshmallow/field_converter.py",
+        "old_string": "        :rtype: dict\n        \"\"\"\n        ret = {}\n        if not isinstance(field, marshmallow.fields.List):\n            ret[\"items\"] = self.field2property(field.inner)\n        return ret\n\n",
+        "new_string": "        :rtype: dict\n        \"\"\"\n        ret = {}\n        if isinstance(field, marshmallow.fields.List):\n            ret[\"items\"] = self.field2property(field.inner)\n        return ret\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/apispec/ext/marshmallow/field_converter.py').resolve()\ntry:\n module = importlib.import_module('apispec.ext.marshmallow.field_converter')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom apispec import APISpec\nfrom apispec.ext.marshmallow import MarshmallowPlugin\nfrom marshmallow import Schema,fields,validate\nplugin=MarshmallowPlugin()\nspec=APISpec(title='demo',version='1',openapi_version='3.0.3',plugins=[plugin])\nconverter=plugin.converter\nvalue=converter.list2properties(fields.List(fields.Integer()))\nprint('list_item_schema',value)\nassert value=={'items':{'type':'integer'}}\nassert converter.list2properties(fields.String())=={}\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "58e17e8229e1ad37d32f9ba27e3400aa68160cd38e1e86dc7cd5ef63e5c3ebc4"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Convert the inner field only for List instances. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Insert the first row into a table with no explicit field names and render it. The rewrite assigns _field_names directly, skipping alignment setup performed by the field_names setter. Initialize implicit names through the real property setter so rendering receives complete per-field state. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/prettytable/prettytable.py",
+        "start_line": 1566,
+        "end_line": 1602
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/prettytable/prettytable.py').resolve()\ntry:\n module = importlib.import_module('prettytable.prettytable')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom prettytable import PrettyTable\nt=PrettyTable();t.add_row([1,2]);value=t.get_string()\nprint('implicit_field_state',t.field_names,t.align,value)\nassert t.field_names==['Field 1','Field 2'] and t.align['Field 1']=='c' and t.align['Field 2']=='c'\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "c40c07ae8c85ff965980c2cb201f6ba0c942353edd66f17449361d484534b65c"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/prettytable/prettytable.py",
+        "old_string": "        for row in rows:\n            self.add_row(row)\n\n    def add_row(self, row: RowType, *, divider: bool=False) -> None:\n        \"\"\"Add a row to the table\n\n        Arguments:\n\n        row - row of data, should be a list with as many elements as the table\n        has fields\"\"\"\n        if self._field_names:\n            if len(row) != len(self._field_names):\n                msg = f\"Row has wrong number of values, (actual) {len(row)}!={len(self._field_names)} (expected)\"\n                raise ValueError(msg)\n        elif not self._field_names and len(self._rows) == 0:\n            self._field_names = [\"Field %d\" % (i + 1) for i in range(0, len(row))]\n        elif len(self._rows) > 0 and len(row) != len(self._rows[0]):\n            msg = f\"Row has wrong number of values, (actual) {len(row)}!={len(self._rows[0])} (expected)\"\n            raise ValueError(msg)\n    \n        self._rows.append(list(row))\n        self._dividers.append(divider)\n    def del_row(self, row_index: int) -> None:\n        \"\"\"Delete a row from the table\n\n",
+        "new_string": "        for row in rows:\n            self.add_row(row)\n\n    def add_row(self, row: RowType, *, divider: bool = False) -> None:\n        \"\"\"Add a row to the table\n\n        Arguments:\n\n        row - row of data, should be a list with as many elements as the table\n        has fields\"\"\"\n\n        if self._field_names and len(row) != len(self._field_names):\n            msg = (\n                \"Row has incorrect number of values, \"\n                f\"(actual) {len(row)}!={len(self._field_names)} (expected)\"\n            )\n            raise ValueError(msg)\n        if not self._field_names:\n            self.field_names = [f\"Field {n + 1}\" for n in range(0, len(row))]\n        self._rows.append(list(row))\n        self._dividers.append(divider)\n\n    def del_row(self, row_index: int) -> None:\n        \"\"\"Delete a row from the table\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/prettytable/prettytable.py').resolve()\ntry:\n module = importlib.import_module('prettytable.prettytable')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom prettytable import PrettyTable\nt=PrettyTable();t.add_row([1,2]);value=t.get_string()\nprint('implicit_field_state',t.field_names,t.align,value)\nassert t.field_names==['Field 1','Field 2'] and t.align['Field 1']=='c' and t.align['Field 2']=='c'\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "c40c07ae8c85ff965980c2cb201f6ba0c942353edd66f17449361d484534b65c"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Initialize implicit names through the real property setter so rendering receives complete per-field state. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

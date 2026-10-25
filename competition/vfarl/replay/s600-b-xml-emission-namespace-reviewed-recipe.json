@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex S600 source contract and explicit command review 2026-10-25",
+  "review_notes": "XML emission namespace-qualified names. Split the final separator from the namespace URI, map the namespace alias, preserve the separator and attribute marker in the emitted qualified name. Individually reviewed source/defect change and reproduction. Original full-file verification and requirements retained; not sampled Gemma, not a same-state preference pair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "xmltodict.py",
+        "start_line": 359,
+        "end_line": 379
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('xmltodict')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'xmltodict.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nnamespaces={'http://example.org/ns':'ns'}\nvalues=(m._process_namespace('http://example.org/ns:item',namespaces),m._process_namespace('@http://example.org/ns:id',namespaces))\nprint('emission_names',values)\nassert values==('ns:item','@ns:id')\nimport xmltodict\nxml=xmltodict.unparse({'http://example.org/ns:root':{'@xmlns:ns':'http://example.org/ns','http://example.org/ns:item':'value'}},namespaces=namespaces)\nprint('emitted_xml',xml)\nassert '<ns:root' in xml and '<ns:item>value</ns:item>' in xml\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "b43df698bed4d956898b2d414c1ca9399fe74bdaad60d8024bd8ce3c96d49aaf"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "xmltodict.py",
+        "old_string": "def _process_namespace(name, namespaces, ns_sep=':', attr_prefix='@'):\n    if not namespaces:\n        return name\n    try:\n        ns, name = name.split(ns_sep, 1)  # Changed rsplit to split\n    except ValueError:\n        pass\n    else:\n        ns_res = namespaces.get(ns.strip(attr_prefix))\n        name = '{}{}{}'.format(  # Removed ns_sep in the format string\n            attr_prefix if ns.startswith(attr_prefix) else '',\n            ns_res, name) if ns_res else name\n    return name\n",
+        "new_string": "def _process_namespace(name, namespaces, ns_sep=':', attr_prefix='@'):\n    if not namespaces:\n        return name\n    try:\n        ns, name = name.rsplit(ns_sep, 1)\n    except ValueError:\n        pass\n    else:\n        ns_res = namespaces.get(ns.strip(attr_prefix))\n        name = '{}{}{}{}'.format(\n            attr_prefix if ns.startswith(attr_prefix) else '',\n            ns_res, ns_sep, name) if ns_res else name\n    return name\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('xmltodict')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'xmltodict.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nnamespaces={'http://example.org/ns':'ns'}\nvalues=(m._process_namespace('http://example.org/ns:item',namespaces),m._process_namespace('@http://example.org/ns:id',namespaces))\nprint('emission_names',values)\nassert values==('ns:item','@ns:id')\nimport xmltodict\nxml=xmltodict.unparse({'http://example.org/ns:root':{'@xmlns:ns':'http://example.org/ns','http://example.org/ns:item':'value'}},namespaces=namespaces)\nprint('emitted_xml',xml)\nassert '<ns:root' in xml and '<ns:item>value</ns:item>' in xml\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "b43df698bed4d956898b2d414c1ca9399fe74bdaad60d8024bd8ce3c96d49aaf"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "XML emission namespace-qualified names. Split the final separator from the namespace URI, map the namespace alias, preserve the separator and attribute marker in the emitted qualified name. The actual source-bound reproduction passes after the production repair. Patch submitted."
+}

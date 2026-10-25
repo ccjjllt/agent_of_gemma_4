@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex S600 source contract and explicit command review 2026-10-25",
+  "review_notes": "Sequential URL joins must resolve each relative operand against the current URL and load that result before processing the next operand. Individually reviewed source/defect change and reproduction. Original full-file verification and requirements retained; not sampled Gemma, not a same-state preference pair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "furl/furl.py",
+        "start_line": 1842,
+        "end_line": 1856
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('furl.furl')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'furl/furl.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nf=m.furl('http://example.com/base/');r=f.join('a/','b')\nprint('sequential_join',f.url)\nassert r is f and f.url=='http://example.com/base/a/b'\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "e1e2ce0737fad2ff3fb0d1d70d7925e2dbe70df1ee686098954555147262b961"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "furl/furl.py",
+        "old_string": "    def join(self, *urls):\n        for url in urls:\n            if not isinstance(url, six.string_types):\n                url = str(url)\n            self.load(url)\n            newurl = urljoin(url, self.url)\n        return None\n",
+        "new_string": "    def join(self, *urls):\n        for url in urls:\n            if not isinstance(url, six.string_types):\n                url = str(url)\n            newurl = urljoin(self.url, url)\n            self.load(newurl)\n        return self\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('furl.furl')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'furl/furl.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nf=m.furl('http://example.com/base/');r=f.join('a/','b')\nprint('sequential_join',f.url)\nassert r is f and f.url=='http://example.com/base/a/b'\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "e1e2ce0737fad2ff3fb0d1d70d7925e2dbe70df1ee686098954555147262b961"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Sequential URL joins must resolve each relative operand against the current URL and load that result before processing the next operand. The actual source-bound reproduction passes after the production repair. Patch submitted."
+}

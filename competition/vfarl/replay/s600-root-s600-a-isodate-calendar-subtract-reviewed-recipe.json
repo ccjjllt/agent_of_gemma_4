@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex S600 common-course source contract and explicit command review2026-10-25",
+  "review_notes": "reverse calendar subtraction carry and month end clamping The complete production-file delta is exactly this reviewed function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/isodate/duration.py",
+        "start_line": 200,
+        "end_line": 244
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('isodate.duration')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'src/isodate/duration.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom isodate import Duration\nfrom datetime import date\nr=date(2024,3,31)-Duration(months=1);print('calendar_subtraction',r)\nassert r==date(2024,2,29)\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "b26070a0d0643eb35a0f808cab51c21e07f2d9cb5dc35043532169b6d97ba709"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/isodate/duration.py",
+        "old_string": "    def __rsub__(self, other: Duration | date | datetime | timedelta):\n        \"\"\"- operator for Durations.\n\n        It is possible to subtract Duration objects from date, datetime and\n        timedelta objects.\n\n        TODO: there is some weird behaviour in date - timedelta ...\n              if timedelta has seconds or microseconds set, then\n              date - timedelta != date + (-timedelta)\n              for now we follow this behaviour to avoid surprises when mixing\n              timedeltas with Durations, but in case this ever changes in\n              the stdlib we can just do:\n                return -self + other\n              instead of all the current code\n        \"\"\"\n        if isinstance(other, timedelta):\n            tmpdur = Duration()\n            tmpdur.tdelta = other\n            return self - tmpdur  # Swapped 'self' and 'tmpdur'\n        try:\n            if not (float(self.years).is_integer() and not float(self.months).is_integer()):  # Changed 'and' to 'not'\n                raise ValueError(\n                    \"fractional years or months not supported\" \" for date calculations\"\n                )\n            newmonth = other.month - self.months\n            carry, newmonth = fquotmod(newmonth, 1, 13)\n            newyear = other.year - self.years - carry  # Changed '+' to '-'\n            maxdays = max_days_in_month(int(newyear), int(newmonth))\n            if other.day >= maxdays:  # Changed '>' to '>='\n                newday = maxdays - 1  # Changed maxdays to maxdays - 1\n            else:\n                newday = other.day\n            newdt = other.replace(year=int(newyear), month=int(newmonth), day=int(newday))\n            return self.tdelta - newdt  # Swapped newdt and self.tdelta\n        except AttributeError:\n            pass\n        return NotImplemented\n",
+        "new_string": "    def __rsub__(self, other: Duration | date | datetime | timedelta):\n        \"\"\"- operator for Durations.\n\n        It is possible to subtract Duration objects from date, datetime and\n        timedelta objects.\n\n        TODO: there is some weird behaviour in date - timedelta ...\n              if timedelta has seconds or microseconds set, then\n              date - timedelta != date + (-timedelta)\n              for now we follow this behaviour to avoid surprises when mixing\n              timedeltas with Durations, but in case this ever changes in\n              the stdlib we can just do:\n                return -self + other\n              instead of all the current code\n        \"\"\"\n        if isinstance(other, timedelta):\n            tmpdur = Duration()\n            tmpdur.tdelta = other\n            return tmpdur - self\n        try:\n            # check if other behaves like a date/datetime object\n            # does it have year, month, day and replace?\n            if not (float(self.years).is_integer() and float(self.months).is_integer()):\n                raise ValueError(\n                    \"fractional years or months not supported\" \" for date calculations\"\n                )\n            newmonth = other.month - self.months\n            carry, newmonth = fquotmod(newmonth, 1, 13)\n            newyear = other.year - self.years + carry\n            maxdays = max_days_in_month(int(newyear), int(newmonth))\n            if other.day > maxdays:\n                newday = maxdays\n            else:\n                newday = other.day\n            newdt = other.replace(year=int(newyear), month=int(newmonth), day=int(newday))\n            return newdt - self.tdelta\n        except AttributeError:\n            # other probably was not compatible with data/datetime\n            pass\n        return NotImplemented\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('isodate.duration')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'src/isodate/duration.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom isodate import Duration\nfrom datetime import date\nr=date(2024,3,31)-Duration(months=1);print('calendar_subtraction',r)\nassert r==date(2024,2,29)\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "b26070a0d0643eb35a0f808cab51c21e07f2d9cb5dc35043532169b6d97ba709"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "reverse calendar subtraction carry and month end clamping The source-bound reproduction passes after the repair. Patch submitted."
+}

@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Validate missing/duplicate parameter identities and path-parameter requirements. Duplicate identities are removed from the seen set, required names are not rejected and query parameters are incorrectly altered. Reject malformed or duplicate name/location pairs and mark path parameters required. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/apispec/core.py",
+        "start_line": 561,
+        "end_line": 599
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/apispec/core.py').resolve()\ntry:\n module = importlib.import_module('apispec.core')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom apispec import APISpec\nspec=APISpec(title='demo',version='1',openapi_version='3.0.3')\nfrom apispec.exceptions import DuplicateParameterError,InvalidParameterError\nvalue=spec._clean_parameters([{'name':'id','in':'path'}])\nprint('path_parameter',value)\nassert value[0]['required'] is True\ntry:\n spec._clean_parameters([{'name':'q','in':'query'},{'name':'q','in':'query'}])\n raise AssertionError('duplicate parameter accepted')\nexcept DuplicateParameterError:\n pass\ntry:\n spec._clean_parameters([{'in':'query'}])\n raise AssertionError('missing name accepted')\nexcept InvalidParameterError:\n pass\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "4f2e46bb4d86c5cd96c421dc7ea107bbd7826bf474aabecf0623aba8ca3891e5"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/apispec/core.py",
+        "old_string": "        \"\"\"\n        seen = set()\n        for parameter in [p for p in parameters if isinstance(p, dict)]:\n            missing_attrs = [attr for attr in (\"name\", \"in\") if attr not in parameter]\n            if \"description\" not in parameter:\n                parameter[\"description\"] = None\n\n            if not missing_attrs:\n                unique_key = (parameter[\"name\"].upper(), parameter[\"in\"])\n                if unique_key in seen:\n                    seen.discard(unique_key)\n\n            seen.add(unique_key)\n\n            if parameter[\"in\"] == \"query\":\n                parameter[\"required\"] = False\n\n        return parameters\n\n",
+        "new_string": "        \"\"\"\n        seen = set()\n        for parameter in [p for p in parameters if isinstance(p, dict)]:\n            # check missing name / location\n            missing_attrs = [attr for attr in (\"name\", \"in\") if attr not in parameter]\n            if missing_attrs:\n                raise InvalidParameterError(\n                    f\"Missing keys {missing_attrs} for parameter\"\n                )\n\n            # OpenAPI Spec 3 and 2 don't allow for duplicated parameters\n            # A unique parameter is defined by a combination of a name and location\n            unique_key = (parameter[\"name\"], parameter[\"in\"])\n            if unique_key in seen:\n                raise DuplicateParameterError(\n                    \"Duplicate parameter with name {} and location {}\".format(\n                        parameter[\"name\"], parameter[\"in\"]\n                    )\n                )\n            seen.add(unique_key)\n\n            # Add \"required\" attribute to path parameters\n            if parameter[\"in\"] == \"path\":\n                parameter[\"required\"] = True\n\n        return parameters\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/apispec/core.py').resolve()\ntry:\n module = importlib.import_module('apispec.core')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom apispec import APISpec\nspec=APISpec(title='demo',version='1',openapi_version='3.0.3')\nfrom apispec.exceptions import DuplicateParameterError,InvalidParameterError\nvalue=spec._clean_parameters([{'name':'id','in':'path'}])\nprint('path_parameter',value)\nassert value[0]['required'] is True\ntry:\n spec._clean_parameters([{'name':'q','in':'query'},{'name':'q','in':'query'}])\n raise AssertionError('duplicate parameter accepted')\nexcept DuplicateParameterError:\n pass\ntry:\n spec._clean_parameters([{'in':'query'}])\n raise AssertionError('missing name accepted')\nexcept InvalidParameterError:\n pass\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "4f2e46bb4d86c5cd96c421dc7ea107bbd7826bf474aabecf0623aba8ca3891e5"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Reject malformed or duplicate name/location pairs and mark path parameters required. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

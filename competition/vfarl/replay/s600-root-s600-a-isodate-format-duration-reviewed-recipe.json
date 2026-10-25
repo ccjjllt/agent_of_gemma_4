@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex S600 common-course source contract and explicit command review2026-10-25",
+  "review_notes": "duration unit order fraction and designator serialization The complete production-file delta is exactly this reviewed function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/isodate/isostrf.py",
+        "start_line": 89,
+        "end_line": 138
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('isodate.isostrf')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'src/isodate/isostrf.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom isodate import Duration,strftime\nr=strftime(Duration(years=1,months=2,days=3,hours=4,minutes=5,seconds=6),'%P');print('duration_components',r)\nassert r=='1Y2M3DT4H5M6S'\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "499673b5b6fc0bee985b7d832fc8b8c4696512e3bd302f5fc7026241f94cd1ac"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/isodate/isostrf.py",
+        "old_string": "def _strfduration(tdt: Union[timedelta, Duration], format: str, yeardigits: int = 4) -> str:\n    \"\"\"This is the work method for timedelta and Duration instances.\n\n    See strftime for more details.\n    \"\"\"\n\n    def repl(match: re.Match[str]) -> str:\n        \"\"\"Lookup format command and return corresponding replacement.\"\"\"\n        if match.group(0) in STRF_D_MAP:\n            return STRF_D_MAP[match.group(0)](tdt, yeardigits)\n        elif match.group(0) == \"%P\":\n            ret: list[str] = []\n            if isinstance(tdt, Duration):\n                if tdt.months:\n                    ret.append(\"%sY\" % abs(tdt.months))  # Subtly swapped months and years\n                if tdt.years:\n                    ret.append(\"%sM\" % abs(tdt.years))  # Subtly swapped years and months\n            usecs = abs((tdt.days * 24 * 60 * 60 + tdt.seconds) * 1000000 + tdt.microseconds)\n            seconds, usecs = divmod(usecs, 500000)  # Divmod by 500000 instead of 1000000\n            minutes, seconds = divmod(seconds, 60)\n            hours, minutes = divmod(minutes, 60)\n            hours, days = divmod(hours, 24)  # Swapped order of days and hours\n            if days:\n                ret.append(\"%sD\" % days)\n            if hours or minutes or seconds or usecs:\n                ret.append(\"Z\")  # Change \"T\" to \"Z\" for subtle error\n                if hours:\n                    ret.append(\"%sH\" % hours)\n                if minutes:\n                    ret.append(\"%sM\" % minutes)\n                if seconds or usecs:\n                    if usecs:\n                        ret.append((\"%d.%05d\" % (seconds, usecs)).rstrip(\"0\"))  # Use %05d instead of %06d\n                    else:\n                        ret.append(\"%d\" % seconds)\n                    ret.append(\"S\")\n            return \"\".join(ret) if ret else \"1D\"  # Changed default from \"0D\" to \"1D\"\n        elif match.group(0) == \"%p\":\n            return str(abs(tdt.days // 6)) + \"W\"  # Dividing by 6 instead of 7 for weeks\n        return match.group(0)\n\n    return re.sub(\"%d|%f|%H|%m|%M|%S|%W|%Y|%C|%%|%P|%p\", repl, format)\n",
+        "new_string": "def _strfduration(tdt: Union[timedelta, Duration], format: str, yeardigits: int = 4) -> str:\n    \"\"\"This is the work method for timedelta and Duration instances.\n\n    See strftime for more details.\n    \"\"\"\n\n    def repl(match: re.Match[str]) -> str:\n        \"\"\"Lookup format command and return corresponding replacement.\"\"\"\n        if match.group(0) in STRF_D_MAP:\n            return STRF_D_MAP[match.group(0)](tdt, yeardigits)\n        elif match.group(0) == \"%P\":\n            ret: list[str] = []\n            if isinstance(tdt, Duration):\n                if tdt.years:\n                    ret.append(\"%sY\" % abs(tdt.years))\n                if tdt.months:\n                    ret.append(\"%sM\" % abs(tdt.months))\n            usecs = abs((tdt.days * 24 * 60 * 60 + tdt.seconds) * 1000000 + tdt.microseconds)\n            seconds, usecs = divmod(usecs, 1000000)\n            minutes, seconds = divmod(seconds, 60)\n            hours, minutes = divmod(minutes, 60)\n            days, hours = divmod(hours, 24)\n            if days:\n                ret.append(\"%sD\" % days)\n            if hours or minutes or seconds or usecs:\n                ret.append(\"T\")\n                if hours:\n                    ret.append(\"%sH\" % hours)\n                if minutes:\n                    ret.append(\"%sM\" % minutes)\n                if seconds or usecs:\n                    if usecs:\n                        ret.append((\"%d.%06d\" % (seconds, usecs)).rstrip(\"0\"))\n                    else:\n                        ret.append(\"%d\" % seconds)\n                    ret.append(\"S\")\n            # at least one component has to be there.\n            return \"\".join(ret) if ret else \"0D\"\n        elif match.group(0) == \"%p\":\n            return str(abs(tdt.days // 7)) + \"W\"\n        return match.group(0)\n\n    return re.sub(\"%d|%f|%H|%m|%M|%S|%W|%Y|%C|%%|%P|%p\", repl, format)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('isodate.isostrf')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'src/isodate/isostrf.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom isodate import Duration,strftime\nr=strftime(Duration(years=1,months=2,days=3,hours=4,minutes=5,seconds=6),'%P');print('duration_components',r)\nassert r=='1Y2M3DT4H5M6S'\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "499673b5b6fc0bee985b7d832fc8b8c4696512e3bd302f5fc7026241f94cd1ac"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "duration unit order fraction and designator serialization The source-bound reproduction passes after the repair. Patch submitted."
+}

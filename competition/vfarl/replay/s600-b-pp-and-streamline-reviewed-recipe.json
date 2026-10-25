@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex S600 source contract and explicit command review 2026-10-25",
+  "review_notes": "Fluent grammar-configuration return contract. And.streamline must return the same parser object so the caller can immediately parse through the configured object; the diagnostic does not separately attribute background skip or indentation mutations. Individually reviewed source/defect change and reproduction. Original full-file verification and requirements retained; not sampled Gemma, not a same-state preference pair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "pyparsing/core.py",
+        "start_line": 4068,
+        "end_line": 4120
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pyparsing.core')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pyparsing/core.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport pyparsing as pp\nexpression=pp.And([pp.Word(pp.alphas),pp.Word(pp.alphas)])\nconfigured=expression.streamline()\nprint('fluent_parser_identity',configured is expression,configured)\nassert configured is expression\nr=configured.parse_string('alpha beta',parse_all=True).as_list()\nprint('chained_parser_result',r)\nassert r==['alpha','beta']\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "4fb1d676cff97884a92143a8f1ae887052d997cade2f13221b58b7e1f2325777"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pyparsing/core.py",
+        "old_string": "    def streamline(self) -> ParserElement:\n        if self.exprs and any(\n            isinstance(e, ParseExpression)\n            and e.exprs\n            and isinstance(e.exprs[0], _PendingSkip)\n            for e in self.exprs[:-1]\n        ):\n            deleted_expr_marker = NoMatch()\n            for i, e in enumerate(self.exprs[:-1]):\n                if e is deleted_expr_marker:\n                    continue\n                if (\n                    isinstance(e, ParseExpression)\n                    and e.exprs\n                    and isinstance(e.exprs[0], _PendingSkip)\n                ):\n                    e.exprs[0] = e.exprs[0] + self.exprs[i + 1]\n                    self.exprs[i + 1] = deleted_expr_marker\n            self.exprs = [e for e in self.exprs if e is not deleted_expr_marker]\n\n        super().streamline()\n\n        prev: ParserElement\n        cur: ParserElement\n        for prev, cur in zip(self.exprs, self.exprs[1:]):\n            seen = set()\n            while True:\n                if id(cur) in seen:\n                    break\n                seen.add(id(cur))\n                if isinstance(cur, IndentedBlock):\n                    prev.add_parse_action(\n                        lambda s, l, t, cur_=cur: setattr(\n                            cur_, \"parent_anchor\", col(l, s) + 1\n                        )\n                    )\n                    break\n                subs = cur.recurse()\n                next_last = next(reversed(subs), None)\n                if next_last is None:\n                    break\n                cur = typing.cast(ParserElement, next_last)\n\n        self.mayReturnEmpty = any(e.mayReturnEmpty for e in self.exprs)\n        return None\n",
+        "new_string": "    def streamline(self) -> ParserElement:\n        # collapse any _PendingSkip's\n        if self.exprs and any(\n            isinstance(e, ParseExpression)\n            and e.exprs\n            and isinstance(e.exprs[-1], _PendingSkip)\n            for e in self.exprs[:-1]\n        ):\n            deleted_expr_marker = NoMatch()\n            for i, e in enumerate(self.exprs[:-1]):\n                if e is deleted_expr_marker:\n                    continue\n                if (\n                    isinstance(e, ParseExpression)\n                    and e.exprs\n                    and isinstance(e.exprs[-1], _PendingSkip)\n                ):\n                    e.exprs[-1] = e.exprs[-1] + self.exprs[i + 1]\n                    self.exprs[i + 1] = deleted_expr_marker\n            self.exprs = [e for e in self.exprs if e is not deleted_expr_marker]\n\n        super().streamline()\n\n        # link any IndentedBlocks to the prior expression\n        prev: ParserElement\n        cur: ParserElement\n        for prev, cur in zip(self.exprs, self.exprs[1:]):\n            # traverse cur or any first embedded expr of cur looking for an IndentedBlock\n            # (but watch out for recursive grammar)\n            seen = set()\n            while True:\n                if id(cur) in seen:\n                    break\n                seen.add(id(cur))\n                if isinstance(cur, IndentedBlock):\n                    prev.add_parse_action(\n                        lambda s, l, t, cur_=cur: setattr(\n                            cur_, \"parent_anchor\", col(l, s)\n                        )\n                    )\n                    break\n                subs = cur.recurse()\n                next_first = next(iter(subs), None)\n                if next_first is None:\n                    break\n                cur = typing.cast(ParserElement, next_first)\n\n        self.mayReturnEmpty = all(e.mayReturnEmpty for e in self.exprs)\n        return self\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pyparsing.core')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pyparsing/core.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport pyparsing as pp\nexpression=pp.And([pp.Word(pp.alphas),pp.Word(pp.alphas)])\nconfigured=expression.streamline()\nprint('fluent_parser_identity',configured is expression,configured)\nassert configured is expression\nr=configured.parse_string('alpha beta',parse_all=True).as_list()\nprint('chained_parser_result',r)\nassert r==['alpha','beta']\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "4fb1d676cff97884a92143a8f1ae887052d997cade2f13221b58b7e1f2325777"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Fluent grammar-configuration return contract. And.streamline must return the same parser object so the caller can immediately parse through the configured object; the diagnostic does not separately attribute background skip or indentation mutations. The actual source-bound reproduction passes after the production repair. Patch submitted."
+}

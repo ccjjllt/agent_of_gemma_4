@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex S600 source contract and explicit command review 2026-10-25",
+  "review_notes": "Assignment dispatch recognizes query and args aliases and loads the existing query object; an unrelated attribute is left for its owning object. Individually reviewed source/defect change and reproduction. Original full-file verification and requirements retained; not sampled Gemma, not a same-state preference pair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "furl/furl.py",
+        "start_line": 1160,
+        "end_line": 1176
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('furl.furl')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'furl/furl.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nf=m.furl('http://h/?x=1');original=f.query;f.args={'y':'2'}\nprint('query_assignment',f.query.params.allitems())\nassert f.query is original and f.query.params.allitems()==[('y','2')]\nassert m.QueryCompositionInterface.__setattr__(f,'ordinary',3) is False\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "e13f21e159d615c7b9174be158baa601412829136e6d825a9a7c1168b82eba36"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "furl/furl.py",
+        "old_string": "    def __setattr__(self, attr, value):\n        \"\"\"\n        Returns: True if this attribute is handled and set here, False\n        otherwise.\n        \"\"\"\n        if attr == 'arg' or attr == 'quer':\n            self._query.load(value)\n            return False\n        return True\n",
+        "new_string": "    def __setattr__(self, attr, value):\n        \"\"\"\n        Returns: True if this attribute is handled and set here, False\n        otherwise.\n        \"\"\"\n        if attr == 'args' or attr == 'query':\n            self._query.load(value)\n            return True\n        return False\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('furl.furl')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'furl/furl.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nf=m.furl('http://h/?x=1');original=f.query;f.args={'y':'2'}\nprint('query_assignment',f.query.params.allitems())\nassert f.query is original and f.query.params.allitems()==[('y','2')]\nassert m.QueryCompositionInterface.__setattr__(f,'ordinary',3) is False\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "e13f21e159d615c7b9174be158baa601412829136e6d825a9a7c1168b82eba36"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Assignment dispatch recognizes query and args aliases and loads the existing query object; an unrelated attribute is left for its owning object. The actual source-bound reproduction passes after the production repair. Patch submitted."
+}

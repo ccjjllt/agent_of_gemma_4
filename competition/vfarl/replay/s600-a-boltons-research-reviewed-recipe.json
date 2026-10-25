@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex explicit collection/iteration contract and source-command review2026-10-25",
+  "review_notes": "recursive_structural_query_reports_complete_paths; original upstream function and complete source diff reviewed; original requirements and full target files intact. Short alias preloads the real package to preserve original __file__-based source lookup, no fake module.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "boltons/iterutils.py",
+        "start_line": 1333,
+        "end_line": 1351
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,importlib\nm=importlib.import_module('boltons.iterutils')\na=Path(m.__file__).resolve();e=(Path.cwd()/'boltons/iterutils.py').resolve()\nassert a==e,(a,e)\nprint('source_binding',a,'sha256',hashlib.sha256(a.read_bytes()).hexdigest())\nfrom boltons.iterutils import research\nroot={'a':{'b':1},'c':[2,'z']};r=research(root,query=lambda p,k,v:isinstance(v,int));print('nested_matches',r)\nassert sorted(r)==[(('a','b'),1),(('c',0),2)]\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "58303102f16539217be3386bbfd8a4390c7b26197d21ba46bf4ad1e411c0252e"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "boltons/iterutils.py",
+        "old_string": "def research(root, query=lambda p, k, v: True, reraise=True, enter=default_enter):\n    ret = []\n\n    if not callable(query):\n        raise TypeError('query expected callable, not: %r' % query)\n\n    def _enter(path, key, value):\n        try:\n            if not query(path, key, value):\n                ret.append((path, value))\n        except Exception:\n            return enter(path, key, value)\n\n    remap(root, enter=_enter)\n    return ret\n",
+        "new_string": "def research(root, query=lambda p, k, v: True, reraise=False, enter=default_enter):\n    \"\"\"The :func:`research` function uses :func:`remap` to recurse over\n    any data nested in *root*, and find values which match a given\n    criterion, specified by the *query* callable.\n\n    Results are returned as a list of ``(path, value)`` pairs. The\n    paths are tuples in the same format accepted by\n    :func:`get_path`. This can be useful for comparing values nested\n    in two or more different structures.\n\n    Here's a simple example that finds all integers:\n\n    >>> root = {'a': {'b': 1, 'c': (2, 'd', 3)}, 'e': None}\n    >>> res = research(root, query=lambda p, k, v: isinstance(v, int))\n    >>> print(sorted(res))\n    [(('a', 'b'), 1), (('a', 'c', 0), 2), (('a', 'c', 2), 3)]\n\n    Note how *query* follows the same, familiar ``path, key, value``\n    signature as the ``visit`` and ``enter`` functions on\n    :func:`remap`, and returns a :class:`bool`.\n\n    Args:\n       root: The target object to search. Supports the same types of\n          objects as :func:`remap`, including :class:`list`,\n          :class:`tuple`, :class:`dict`, and :class:`set`.\n       query (callable): The function called on every object to\n          determine whether to include it in the search results. The\n          callable must accept three arguments, *path*, *key*, and\n          *value*, commonly abbreviated *p*, *k*, and *v*, same as\n          *enter* and *visit* from :func:`remap`.\n       reraise (bool): Whether to reraise exceptions raised by *query*\n          or to simply drop the result that caused the error.\n\n\n    With :func:`research` it's easy to inspect the details of a data\n    structure, like finding values that are at a certain depth (using\n    ``len(p)``) and much more. If more advanced functionality is\n    needed, check out the code and make your own :func:`remap`\n    wrapper, and consider `submitting a patch`_!\n\n    .. _submitting a patch: https://github.com/mahmoud/boltons/pulls\n    \"\"\"\n    ret = []\n\n    if not callable(query):\n        raise TypeError('query expected callable, not: %r' % query)\n\n    def _enter(path, key, value):\n        try:\n            if query(path, key, value):\n                ret.append((path + (key,), value))\n        except Exception:\n            if reraise:\n                raise\n        return enter(path, key, value)\n\n    remap(root, enter=_enter)\n    return ret\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,importlib\nm=importlib.import_module('boltons.iterutils')\na=Path(m.__file__).resolve();e=(Path.cwd()/'boltons/iterutils.py').resolve()\nassert a==e,(a,e)\nprint('source_binding',a,'sha256',hashlib.sha256(a.read_bytes()).hexdigest())\nfrom boltons.iterutils import research\nroot={'a':{'b':1},'c':[2,'z']};r=research(root,query=lambda p,k,v:isinstance(v,int));print('nested_matches',r)\nassert sorted(r)==[(('a','b'),1),(('c',0),2)]\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "58303102f16539217be3386bbfd8a4390c7b26197d21ba46bf4ad1e411c0252e"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored research: recursive structural query reports complete paths. The actual public API observation completed and the patch was submitted."
+}

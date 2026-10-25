@@ -1,0 +1,66 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Decode a multiline literal string containing backslash-n text. The literal/basic delimiter branches are inverted and closing-quote span handling is changed. Select the correct literal grammar without interpreting escape text. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/tomli/_parser.py",
+        "start_line": 592,
+        "end_line": 633
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/tomli/_parser.py').resolve()\ntry:\n module = importlib.import_module('tomli._parser')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport tomli\ndoc=\"text = '''left\"+chr(92)+\"nright'''\";value=tomli.loads(doc)['text'];print('literal_backslash_text',repr(value))\nassert value=='left'+chr(92)+'nright'\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "9b85b63e968fb2526326ccd39defa14f98216a85330ee4beee1714c4b539d62d"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/tomli/_parser.py",
+        "old_string": "    if src.startswith(\"\\n\", pos):\n        pos += 1\n\n    if not literal:\n        delim = \"'\"\n        end_pos = skip_until(\n            src,\n",
+        "new_string": "    if src.startswith(\"\\n\", pos):\n        pos += 1\n\n    if literal:\n        delim = \"'\"\n        end_pos = skip_until(\n            src,\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/tomli/_parser.py",
+        "old_string": "        delim = '\"'\n        pos, result = parse_basic_str(src, pos, multiline=True)\n\n    if not src.startswith(delim, pos):\n        return pos, result\n    pos += 1\n    if src.startswith(delim * 2, pos):\n        pos += 2\n        return pos, result + (delim * 2)\n    return pos, result + delim\n\n\ndef parse_basic_str(src: str, pos: Pos, *, multiline: bool) -> tuple[Pos, str]:\n",
+        "new_string": "        delim = '\"'\n        pos, result = parse_basic_str(src, pos, multiline=True)\n\n    # Add at maximum two extra apostrophes/quotes if the end sequence\n    # is 4 or 5 chars long instead of just 3.\n    if not src.startswith(delim, pos):\n        return pos, result\n    pos += 1\n    if not src.startswith(delim, pos):\n        return pos, result + delim\n    pos += 1\n    return pos, result + (delim * 2)\n\n\ndef parse_basic_str(src: str, pos: Pos, *, multiline: bool) -> tuple[Pos, str]:\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/tomli/_parser.py').resolve()\ntry:\n module = importlib.import_module('tomli._parser')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport tomli\ndoc=\"text = '''left\"+chr(92)+\"nright'''\";value=tomli.loads(doc)['text'];print('literal_backslash_text',repr(value))\nassert value=='left'+chr(92)+'nright'\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "9b85b63e968fb2526326ccd39defa14f98216a85330ee4beee1714c4b539d62d"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Select the correct literal grammar without interpreting escape text. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

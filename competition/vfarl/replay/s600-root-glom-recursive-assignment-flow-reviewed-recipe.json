@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex S600 common-course source contract and explicit command review2026-10-25",
+  "review_notes": "Assignment retains target/value/path/scope channels through missing-parent creation and returns the mutated target. The complete production-file delta is exactly this reviewed function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "glom/mutation.py",
+        "start_line": 148,
+        "end_line": 184
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('glom.mutation')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'glom/mutation.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom glom import glom\nfrom glom import Assign\na={};v=glom(a,Assign('nested.value',3,missing=dict));print(v);assert v is a and a=={'nested':{'value':3}}\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "f58e46758ab82796040b138c11cf64efe4dbbdc4a8053465225e4471a7a348a9"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "glom/mutation.py",
+        "old_string": "    def glomit(self, target, scope):\n        val = arg_val(scope, self.val, target)  # Arguments are swapped here\n\n        op, arg, path = self.arg, self.op, self.path  # Swapped op and arg\n        if self.path.startswith(S):\n            dest_target = target  # Using target instead of scope[UP]\n            dest_path = self.path.to_t()  # Changed from from_t() to to_t()\n        else:\n            dest_target = target\n            dest_path = self.path\n        try:\n            dest = scope[glom](dest_target, dest_path, scope)\n        except PathAccessError as pae:\n            if self.missing:  # Logical condition flipped\n                raise\n\n            remaining_path = self._orig_path[pae.part_idx:]\n            val = scope[glom](self.missing(), Assign(remaining_path, val), scope)  # Removed missing argument\n\n            op, arg = self._orig_path.items()[pae.part_idx - 1]  # Idle error: adjusted index incorrectly\n            path = self._orig_path[pae.part_idx + 1:]  # Moved slice incorrectly\n            dest = scope[glom](dest_target, path, scope)\n\n        # Bug introduced in callable or arguments\n        _apply = lambda dest: _assign_op(\n            dest=val, op=arg, arg=dest, val=op, path=scope, scope=path)  # Shuffled arguments to _assign_op\n        _apply_for_each(scope, path, _apply)  # Incorrect ordering of arguments\n\n        return val\n",
+        "new_string": "    def glomit(self, target, scope):\n        val = arg_val(target, self.val, scope)\n\n        op, arg, path = self.op, self.arg, self.path\n        if self.path.startswith(S):\n            dest_target = scope[UP]\n            dest_path = self.path.from_t()\n        else:\n            dest_target = target\n            dest_path = self.path\n        try:\n            dest = scope[glom](dest_target, dest_path, scope)\n        except PathAccessError as pae:\n            if not self.missing:\n                raise\n\n            remaining_path = self._orig_path[pae.part_idx + 1:]\n            val = scope[glom](self.missing(), Assign(remaining_path, val, missing=self.missing), scope)\n\n            op, arg = self._orig_path.items()[pae.part_idx]\n            path = self._orig_path[:pae.part_idx]\n            dest = scope[glom](dest_target, path, scope)\n\n        # TODO: forward-detect immutable dest?\n        _apply = lambda dest: _assign_op(\n            dest=dest, op=op, arg=arg, val=val, path=path, scope=scope)\n        _apply_for_each(_apply, path, dest)\n\n        return target\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('glom.mutation')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'glom/mutation.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom glom import glom\nfrom glom import Assign\na={};v=glom(a,Assign('nested.value',3,missing=dict));print(v);assert v is a and a=={'nested':{'value':3}}\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "f58e46758ab82796040b138c11cf64efe4dbbdc4a8053465225e4471a7a348a9"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Assignment retains target/value/path/scope channels through missing-parent creation and returns the mutated target. The source-bound reproduction passes after the repair. Patch submitted."
+}

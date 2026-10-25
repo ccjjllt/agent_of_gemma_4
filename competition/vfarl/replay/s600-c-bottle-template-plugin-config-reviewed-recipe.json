@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Apply a string template configuration to a callback returning view data. The string branch returns the raw callback and bypasses the view renderer. Route template configuration through the actual view wrapper and template consumer. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "bottle.py",
+        "start_line": 2034,
+        "end_line": 2056
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'bottle.py').resolve()\ntry:\n module = importlib.import_module('bottle')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom bottle import Bottle,Route,TemplatePlugin\nr=Route(Bottle(),'/','GET',lambda:{'name':'Ada'},template='Hello {{name}}');wrapped=TemplatePlugin().apply(r.callback,r);value=wrapped()\nprint('template_config_consumed',value)\nassert value=='Hello Ada'\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "bcde0a8355a34466e61824c215e5c4033f5d8d6aedc03c6bc85dfe55c4f01819"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "bottle.py",
+        "old_string": "    def apply(self, callback, route):\n        conf = route.config.get('template')\n        if isinstance(conf, (tuple, list)) and len(conf) == 2:\n            return view(conf[1], **conf[0])(callback)\n        elif isinstance(conf, str):\n            return callback\n        else:\n            return view(conf)(callback)\n\n\n#: Not a plugin, but part of the plugin API. TODO: Find a better place.\n",
+        "new_string": "    def apply(self, callback, route):\n        conf = route.config.get('template')\n        if isinstance(conf, (tuple, list)) and len(conf) == 2:\n            return view(conf[0], **conf[1])(callback)\n        elif isinstance(conf, str):\n            return view(conf)(callback)\n        else:\n            return callback\n\n\n#: Not a plugin, but part of the plugin API. TODO: Find a better place.\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'bottle.py').resolve()\ntry:\n module = importlib.import_module('bottle')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom bottle import Bottle,Route,TemplatePlugin\nr=Route(Bottle(),'/','GET',lambda:{'name':'Ada'},template='Hello {{name}}');wrapped=TemplatePlugin().apply(r.callback,r);value=wrapped()\nprint('template_config_consumed',value)\nassert value=='Hello Ada'\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "bcde0a8355a34466e61824c215e5c4033f5d8d6aedc03c6bc85dfe55c4f01819"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Route template configuration through the actual view wrapper and template consumer. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

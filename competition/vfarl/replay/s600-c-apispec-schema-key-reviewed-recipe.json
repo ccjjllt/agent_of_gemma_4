@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Build equivalent schema cache keys from reordered list-valued only modifiers. List/set modifiers stay unhashable lists. Convert unhashable modifier collections to frozensets while preserving modifier order and schema type. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/apispec/ext/marshmallow/common.py",
+        "start_line": 116,
+        "end_line": 136
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/apispec/ext/marshmallow/common.py').resolve()\ntry:\n module = importlib.import_module('apispec.ext.marshmallow.common')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom marshmallow import Schema,fields\nfrom apispec.ext.marshmallow.common import make_schema_key\nclass Item(Schema):\n a=fields.Integer()\n b=fields.Integer()\nleft=make_schema_key(Item(only=['a','b']))\nright=make_schema_key(Item(only=['b','a']))\nprint('cache_key_hash',hash(left),hash(right))\nassert left==right and left[0] is Item\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "dadf2daf12967a10c9ce0d62259a7594d845294fafeac26fa619642a3d876806"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/apispec/ext/marshmallow/common.py",
+        "old_string": "            hash(attribute)\n        except TypeError:\n            # Unhashable iterable (list, set)\n            attribute = list(attribute)  # Change from frozenset to list\n        modifiers.insert(0, attribute)  # Change from append to insert at position 0\n    return tuple([schema.__class__, *reversed(modifiers)])  # Reverse the modifiers to their original order\n\n\ndef get_unique_schema_name(components: Components, name: str, counter: int = 0) -> str:\n",
+        "new_string": "            hash(attribute)\n        except TypeError:\n            # Unhashable iterable (list, set)\n            attribute = frozenset(attribute)\n        modifiers.append(attribute)\n    return tuple([schema.__class__, *modifiers])\n\n\ndef get_unique_schema_name(components: Components, name: str, counter: int = 0) -> str:\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/apispec/ext/marshmallow/common.py').resolve()\ntry:\n module = importlib.import_module('apispec.ext.marshmallow.common')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom marshmallow import Schema,fields\nfrom apispec.ext.marshmallow.common import make_schema_key\nclass Item(Schema):\n a=fields.Integer()\n b=fields.Integer()\nleft=make_schema_key(Item(only=['a','b']))\nright=make_schema_key(Item(only=['b','a']))\nprint('cache_key_hash',hash(left),hash(right))\nassert left==right and left[0] is Item\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "dadf2daf12967a10c9ce0d62259a7594d845294fafeac26fa619642a3d876806"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Convert unhashable modifier collections to frozensets while preserving modifier order and schema type. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Copy a Dict holding a mutable list. copy() deep-copies and silently detaches the nested value. Use the shallow copy protocol for copy() while keeping deepcopy() separate. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "addict/addict.py",
+        "start_line": 87,
+        "end_line": 101
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'addict/addict.py').resolve()\ntry:\n module = importlib.import_module('addict.addict')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom addict import Dict\nshared=[]\nd=Dict()\nd['payload']=shared\ncopied=d.copy()\nprint('copy_identity',copied is d,'nested_shared',copied['payload'] is shared)\nassert copied is not d and isinstance(copied,Dict)\nassert copied['payload'] is shared\ncopied['payload'].append(7)\nassert d['payload']==[7]\ncopied['only_copy']=8\nassert 'only_copy' not in d\nprint('shallow_ownership_boundary',True)\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "f161d2cb3388b630db8a249826a5e33393b9e2fed6305e53e28f73844ed7f7b9"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "addict/addict.py",
+        "old_string": "        return base\n\n    def copy(self):\n        return copy.deepcopy(self)\n\n    def deepcopy(self):\n        return copy.deepcopy(self)\n",
+        "new_string": "        return base\n\n    def copy(self):\n        return copy.copy(self)\n\n    def deepcopy(self):\n        return copy.deepcopy(self)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'addict/addict.py').resolve()\ntry:\n module = importlib.import_module('addict.addict')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom addict import Dict\nshared=[]\nd=Dict()\nd['payload']=shared\ncopied=d.copy()\nprint('copy_identity',copied is d,'nested_shared',copied['payload'] is shared)\nassert copied is not d and isinstance(copied,Dict)\nassert copied['payload'] is shared\ncopied['payload'].append(7)\nassert d['payload']==[7]\ncopied['only_copy']=8\nassert 'only_copy' not in d\nprint('shallow_ownership_boundary',True)\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "f161d2cb3388b630db8a249826a5e33393b9e2fed6305e53e28f73844ed7f7b9"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Use the shallow copy protocol for copy() while keeping deepcopy() separate. The source-bound inline observation now passes. Patch submitted; the harness separately runs clean full-file task verification."
+}

@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Write real Unicode JSON with indentation and user encoder settings. The writer drops user json.dumps kwargs and adds an incorrect manual truncation offset. Forward the configured JSON encoder options and truncate at the actual post-write stream position. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "tinydb/storages.py",
+        "start_line": 133,
+        "end_line": 168
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'tinydb/storages.py').resolve()\ntry:\n module = importlib.import_module('tinydb.storages')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport json,tempfile\nfrom pathlib import Path\nfrom tinydb.storages import JSONStorage\nwith tempfile.TemporaryDirectory() as folder:\n p=Path(folder)/'db.json';storage=JSONStorage(str(p),encoding='utf-8',indent=2,sort_keys=True,ensure_ascii=False);data={'table':{'1':{'name':'é'}}};storage.write(data);storage.close();text=p.read_text(encoding='utf-8');print('configured_json_bytes',repr(text))\n assert json.loads(text)==data and chr(10) in text and 'é' in text\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "06310f46e9053064bfcec2e77c7ce32bac03cc2f75f8f00cfe596c88972358d0"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "tinydb/storages.py",
+        "old_string": "            return json.load(self._handle)\n\n    def write(self, data: Dict[str, Dict[str, Any]]):\n        self._handle.seek(0)\n\n        try:\n            serialized = json.dumps(data)\n        except TypeError:\n            raise ValueError('Data is not serializable.')\n\n        try:\n            self._handle.write(serialized)\n        except io.UnsupportedOperation:\n            raise IOError('Cannot write to the database. Access mode is \"{0}\"'.format(self._mode))\n\n        self._handle.flush()\n        os.fsync(self._handle.fileno())\n\n        new_offset = len(serialized)\n        self._handle.seek(new_offset)\n        self._handle.truncate()\n\n\n",
+        "new_string": "            return json.load(self._handle)\n\n    def write(self, data: Dict[str, Dict[str, Any]]):\n        # Move the cursor to the beginning of the file just in case\n        self._handle.seek(0)\n\n        # Serialize the database state using the user-provided arguments\n        serialized = json.dumps(data, **self.kwargs)\n\n        # Write the serialized data to the file\n        try:\n            self._handle.write(serialized)\n        except io.UnsupportedOperation:\n            raise IOError('Cannot write to the database. Access mode is \"{0}\"'.format(self._mode))\n\n        # Ensure the file has been written\n        self._handle.flush()\n        os.fsync(self._handle.fileno())\n\n        # Remove data that is behind the new cursor in case the file has\n        # gotten shorter\n        self._handle.truncate()\n\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'tinydb/storages.py').resolve()\ntry:\n module = importlib.import_module('tinydb.storages')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport json,tempfile\nfrom pathlib import Path\nfrom tinydb.storages import JSONStorage\nwith tempfile.TemporaryDirectory() as folder:\n p=Path(folder)/'db.json';storage=JSONStorage(str(p),encoding='utf-8',indent=2,sort_keys=True,ensure_ascii=False);data={'table':{'1':{'name':'é'}}};storage.write(data);storage.close();text=p.read_text(encoding='utf-8');print('configured_json_bytes',repr(text))\n assert json.loads(text)==data and chr(10) in text and 'é' in text\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "06310f46e9053064bfcec2e77c7ce32bac03cc2f75f8f00cfe596c88972358d0"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Forward the configured JSON encoder options and truncate at the actual post-write stream position. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

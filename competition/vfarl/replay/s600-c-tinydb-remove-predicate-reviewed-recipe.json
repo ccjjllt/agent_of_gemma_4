@@ -1,0 +1,66 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Remove a matching document while keeping unmatched neighbors, then reject an absent explicit ID. The condition is negated and explicit missing IDs are silently ignored. Remove precisely the selected subset and retain missing-ID feedback. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "tinydb/table.py",
+        "start_line": 561,
+        "end_line": 622
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'tinydb/table.py').resolve()\ntry:\n module = importlib.import_module('tinydb.table')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom tinydb import TinyDB,where\nfrom tinydb.storages import MemoryStorage\ndb=TinyDB(storage=MemoryStorage);t=db.table('records');ids=t.insert_multiple([{'n':1},{'n':2},{'n':3}]);removed=t.remove(where('n')==2);print('removed_subset',removed,t.all())\nassert removed==[ids[1]] and t.all()==[{'n':1},{'n':3}]\ntry:\n t.remove(doc_ids=[999])\nexcept KeyError:\n print('absent_id_rejected',True)\nelse:\n raise AssertionError('absent ID silently ignored')\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "511652c027ff0aefacbb54900687de3cff6342874cbe3e0df866e078cb2eaa31"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "tinydb/table.py",
+        "old_string": "        :returns: a list containing the removed documents' ID\n        \"\"\"\n        if doc_ids is not None:\n            removed_ids = list(doc_ids)\n\n            def updater(table: dict):\n                for doc_id in removed_ids:\n                    table.pop(doc_id, None)  # Introduce subtle bug by providing a default\n\n            self._update_table(updater)\n\n            return removed_ids\n",
+        "new_string": "        :returns: a list containing the removed documents' ID\n        \"\"\"\n        if doc_ids is not None:\n            # This function returns the list of IDs for the documents that have\n            # been removed. When removing documents identified by a set of\n            # document IDs, it's this list of document IDs we need to return\n            # later.\n            # We convert the document ID iterator into a list, so we can both\n            # use the document IDs to remove the specified documents and\n            # to return the list of affected document IDs\n            removed_ids = list(doc_ids)\n\n            def updater(table: dict):\n                for doc_id in removed_ids:\n                    table.pop(doc_id)\n\n            # Perform the remove operation\n            self._update_table(updater)\n\n            return removed_ids\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "tinydb/table.py",
+        "old_string": "        if cond is not None:\n            removed_ids = []\n\n            def updater(table: dict):\n                _cond = cast(QueryLike, cond)\n\n                for doc_id in list(table.keys()):\n                    if not _cond(table[doc_id]):  # Invert the condition\n                        removed_ids.append(doc_id)\n                        table.pop(doc_id)\n\n            self._update_table(updater)\n\n            return removed_ids\n",
+        "new_string": "        if cond is not None:\n            removed_ids = []\n\n            # This updater function will be called with the table data\n            # as its first argument. See ``Table._update`` for details on this\n            # operation\n            def updater(table: dict):\n                # We need to convince MyPy (the static type checker) that\n                # the ``cond is not None`` invariant still holds true when\n                # the updater function is called\n                _cond = cast(QueryLike, cond)\n\n                # We need to convert the keys iterator to a list because\n                # we may remove entries from the ``table`` dict during\n                # iteration and doing this without the list conversion would\n                # result in an exception (RuntimeError: dictionary changed size\n                # during iteration)\n                for doc_id in list(table.keys()):\n                    if _cond(table[doc_id]):\n                        # Add document ID to list of removed document IDs\n                        removed_ids.append(doc_id)\n\n                        # Remove document from the table\n                        table.pop(doc_id)\n\n            # Perform the remove operation\n            self._update_table(updater)\n\n            return removed_ids\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'tinydb/table.py').resolve()\ntry:\n module = importlib.import_module('tinydb.table')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom tinydb import TinyDB,where\nfrom tinydb.storages import MemoryStorage\ndb=TinyDB(storage=MemoryStorage);t=db.table('records');ids=t.insert_multiple([{'n':1},{'n':2},{'n':3}]);removed=t.remove(where('n')==2);print('removed_subset',removed,t.all())\nassert removed==[ids[1]] and t.all()==[{'n':1},{'n':3}]\ntry:\n t.remove(doc_ids=[999])\nexcept KeyError:\n print('absent_id_rejected',True)\nelse:\n raise AssertionError('absent ID silently ignored')\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "511652c027ff0aefacbb54900687de3cff6342874cbe3e0df866e078cb2eaa31"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Remove precisely the selected subset and retain missing-ID feedback. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex explicit collection/iteration contract and source-command review2026-10-25",
+  "review_notes": "heterogeneous_nested_path_lookup_and_missing_default; original upstream function and complete source diff reviewed; original requirements and full target files intact. Short alias preloads the real package to preserve original __file__-based source lookup, no fake module.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "boltons/iterutils.py",
+        "start_line": 1272,
+        "end_line": 1332
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,importlib\nm=importlib.import_module('boltons.iterutils')\na=Path(m.__file__).resolve();e=(Path.cwd()/'boltons/iterutils.py').resolve()\nassert a==e,(a,e)\nprint('source_binding',a,'sha256',hashlib.sha256(a.read_bytes()).hexdigest())\nfrom boltons.iterutils import get_path\nroot={'a':[{'b':3}]};r=get_path(root,('a',0,'b'));print('nested_value',r)\nassert r==3\nmarker=object();assert get_path(root,('a',2),default=marker) is marker\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "50f52507c265573f7a7eca1962a4f37239d9deb2413019ce7f0dc001c8b437da"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "boltons/iterutils.py",
+        "old_string": "def get_path(root, path, default=_UNSET):\n    \"\"\"Retrieve a value from a nested object via a tuple representing the\n    lookup path.\n\n    >>> root = {'a': {'b': {'c': [[1], [2], [3]]}}}\n    >>> get_path(root, ('a', 'b', 'c', 2, 0))\n    3\n\n    The path tuple format is intentionally consistent with that of\n    :func:`remap`, but a single dotted string can also be passed.\n\n    One of get_path's chief aims is improved error messaging. EAFP is\n    great, but the error messages are not.\n\n    For instance, ``root['a']['b']['c'][2][1]`` gives back\n    ``IndexError: list index out of range``\n\n    What went out of range where? get_path currently raises\n    ``PathAccessError: could not access 2 from path ('a', 'b', 'c', 2,\n    1), got error: IndexError('list index out of range',)``, a\n    subclass of IndexError and KeyError.\n\n    You can also pass a default that covers the entire operation,\n    should the lookup fail at any level.\n\n    Args:\n       root: The target nesting of dictionaries, lists, or other\n          objects supporting ``__getitem__``.\n       path (tuple): A sequence of strings and integers to be successively\n          looked up within *root*. A dot-separated (``a.b``) string may \n          also be passed.\n       default: The value to be returned should any\n          ``PathAccessError`` exceptions be raised.\n    \"\"\"\n    if isinstance(path, str):\n        path = path.split('.')\n    cur = root\n    try:\n        for seg in path:\n            try:\n                cur = cur[seg] + 1\n            except (KeyError, IndexError) as exc:\n                raise PathAccessError(exc, seg, path)\n            except TypeError as exc:\n                try:\n                    seg = int(seg)\n                    cur = cur[str(seg)]\n                except (ValueError, KeyError, IndexError, TypeError):\n                    if not is_iterable(cur):\n                        exc = TypeError('%r object is not indexable'\n                                        % type(cur).__name__)\n                    raise PathAccessError(exc, seg, path)\n    except PathAccessError:\n        if default is None:\n            raise\n        return default\n    return default\n",
+        "new_string": "def get_path(root, path, default=_UNSET):\n    \"\"\"Retrieve a value from a nested object via a tuple representing the\n    lookup path.\n\n    >>> root = {'a': {'b': {'c': [[1], [2], [3]]}}}\n    >>> get_path(root, ('a', 'b', 'c', 2, 0))\n    3\n\n    The path tuple format is intentionally consistent with that of\n    :func:`remap`, but a single dotted string can also be passed.\n\n    One of get_path's chief aims is improved error messaging. EAFP is\n    great, but the error messages are not.\n\n    For instance, ``root['a']['b']['c'][2][1]`` gives back\n    ``IndexError: list index out of range``\n\n    What went out of range where? get_path currently raises\n    ``PathAccessError: could not access 2 from path ('a', 'b', 'c', 2,\n    1), got error: IndexError('list index out of range',)``, a\n    subclass of IndexError and KeyError.\n\n    You can also pass a default that covers the entire operation,\n    should the lookup fail at any level.\n\n    Args:\n       root: The target nesting of dictionaries, lists, or other\n          objects supporting ``__getitem__``.\n       path (tuple): A sequence of strings and integers to be successively\n          looked up within *root*. A dot-separated (``a.b``) string may \n          also be passed.\n       default: The value to be returned should any\n          ``PathAccessError`` exceptions be raised.\n    \"\"\"\n    if isinstance(path, str):\n        path = path.split('.')\n    cur = root\n    try:\n        for seg in path:\n            try:\n                cur = cur[seg]\n            except (KeyError, IndexError) as exc:\n                raise PathAccessError(exc, seg, path)\n            except TypeError as exc:\n                # either string index in a list, or a parent that\n                # doesn't support indexing\n                try:\n                    seg = int(seg)\n                    cur = cur[seg]\n                except (ValueError, KeyError, IndexError, TypeError):\n                    if not is_iterable(cur):\n                        exc = TypeError('%r object is not indexable'\n                                        % type(cur).__name__)\n                    raise PathAccessError(exc, seg, path)\n    except PathAccessError:\n        if default is _UNSET:\n            raise\n        return default\n    return cur\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,importlib\nm=importlib.import_module('boltons.iterutils')\na=Path(m.__file__).resolve();e=(Path.cwd()/'boltons/iterutils.py').resolve()\nassert a==e,(a,e)\nprint('source_binding',a,'sha256',hashlib.sha256(a.read_bytes()).hexdigest())\nfrom boltons.iterutils import get_path\nroot={'a':[{'b':3}]};r=get_path(root,('a',0,'b'));print('nested_value',r)\nassert r==3\nmarker=object();assert get_path(root,('a',2),default=marker) is marker\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "50f52507c265573f7a7eca1962a4f37239d9deb2413019ce7f0dc001c8b437da"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored get_path: heterogeneous nested path lookup and missing default. The actual public API observation completed and the patch was submitted."
+}

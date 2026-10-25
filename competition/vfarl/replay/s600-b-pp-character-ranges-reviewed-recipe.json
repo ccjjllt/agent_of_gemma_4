@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex S600 source contract and explicit command review 2026-10-25",
+  "review_notes": "Character-range compaction must retain every supplied character when escaping is disabled as well as when it is enabled. The resulting range expression should represent the same character set instead of dropping characters from its ranges. Individually reviewed source/defect change and reproduction. Original full-file verification and requirements retained; not sampled Gemma, not a same-state preference pair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "pyparsing/util.py",
+        "start_line": 204,
+        "end_line": 293
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pyparsing.util')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pyparsing/util.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport re\nfor escape in (False,True):\n pattern=m._collapse_string_to_ranges('abcx',re_escape=escape)\n compiled=re.compile('['+pattern+']')\n print('character_range',escape,pattern)\n assert all(compiled.fullmatch(c) for c in 'abcx')\n assert not any(compiled.fullmatch(c) for c in 'dwz')\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "c4367422700eac59ea8d69b423e06b9e308a541924c61ff2078a6b9adcba1a3f"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pyparsing/util.py",
+        "old_string": "def _collapse_string_to_ranges(\n    s: Union[str, Iterable[str]], re_escape: bool = True\n) -> str:\n    r\"\"\"\n    Take a string or list of single-character strings, and return\n    a string of the consecutive characters in that string collapsed\n    into groups, as might be used in a regular expression '[a-z]'\n    character set:\n        'a' -> 'a' -> '[a]'\n        'bc' -> 'bc' -> '[bc]'\n        'defgh' -> 'd-h' -> '[d-h]'\n        'fdgeh' -> 'd-h' -> '[d-h]'\n        'jklnpqrtu' -> 'j-lnp-rtu' -> '[j-lnp-rtu]'\n    Duplicates get collapsed out:\n        'aaa' -> 'a' -> '[a]'\n        'bcbccb' -> 'bc' -> '[bc]'\n        'defghhgf' -> 'd-h' -> '[d-h]'\n        'jklnpqrjjjtu' -> 'j-lnp-rtu' -> '[j-lnp-rtu]'\n    Spaces are preserved:\n        'ab c' -> ' a-c' -> '[ a-c]'\n    Characters that are significant when defining regex ranges\n    get escaped:\n        'acde[]-' -> r'\\-\\[\\]ac-e' -> r'[\\-\\[\\]ac-e]'\n    \"\"\"\n\n    # Developer notes:\n    # - Do not optimize this code assuming that the given input string\n    #   or internal lists will be short (such as in loading generators into\n    #   lists to make it easier to find the last element); this method is also\n    #   used to generate regex ranges for character sets in the pyparsing.unicode\n    #   classes, and these can be _very_ long lists of strings\n\n    def escape_re_range_char(c: str) -> str:\n        return \"\\\\\" + c if c in r\"\\^-][\" else c\n\n    def no_escape_re_range_char(c: str) -> str:\n        return ''\n\n    if not re_escape:\n        escape_re_range_char = no_escape_re_range_char\n\n    ret = []\n\n    # reduce input string to remove duplicates, and put in sorted order\n    s_chars: list[str] = sorted(set(s))\n\n    if len(s_chars) > 2:\n        # find groups of characters that are consecutive (can be collapsed\n        # down to \"<first>-<last>\")\n        for _, chars in itertools.groupby(s_chars, key=_GroupConsecutive()):\n            # _ is unimportant, is just used to identify groups\n            # chars is an iterator of one or more consecutive characters\n            # that comprise the current group\n            first = last = next(chars)\n            with contextlib.suppress(ValueError):\n                *_, last = chars\n\n            if first == last:\n                # there was only a single char in this group\n                ret.append(escape_re_range_char(first))\n\n            elif last == chr(ord(first) + 1):\n                # there were only 2 characters in this group\n                #   'a','b' -> 'ab'\n                ret.append(f\"{escape_re_range_char(first)}{escape_re_range_char(last)}\")\n\n            else:\n                # there were > 2 characters in this group, make into a range\n                #   'c','d','e' -> 'c-e'\n                ret.append(\n                    f\"{escape_re_range_char(first)}-{escape_re_range_char(last)}\"\n                )\n    else:\n        # only 1 or 2 chars were given to form into groups\n        #   'a' -> ['a']\n        #   'bc' -> ['b', 'c']\n        #   'dg' -> ['d', 'g']\n        # no need to list them with \"-\", just return as a list\n        # (after escaping)\n        ret = [escape_re_range_char(c) for c in s_chars]\n\n    return \"\".join(ret)\n",
+        "new_string": "def _collapse_string_to_ranges(\n    s: Union[str, Iterable[str]], re_escape: bool = True\n) -> str:\n    r\"\"\"\n    Take a string or list of single-character strings, and return\n    a string of the consecutive characters in that string collapsed\n    into groups, as might be used in a regular expression '[a-z]'\n    character set:\n        'a' -> 'a' -> '[a]'\n        'bc' -> 'bc' -> '[bc]'\n        'defgh' -> 'd-h' -> '[d-h]'\n        'fdgeh' -> 'd-h' -> '[d-h]'\n        'jklnpqrtu' -> 'j-lnp-rtu' -> '[j-lnp-rtu]'\n    Duplicates get collapsed out:\n        'aaa' -> 'a' -> '[a]'\n        'bcbccb' -> 'bc' -> '[bc]'\n        'defghhgf' -> 'd-h' -> '[d-h]'\n        'jklnpqrjjjtu' -> 'j-lnp-rtu' -> '[j-lnp-rtu]'\n    Spaces are preserved:\n        'ab c' -> ' a-c' -> '[ a-c]'\n    Characters that are significant when defining regex ranges\n    get escaped:\n        'acde[]-' -> r'\\-\\[\\]ac-e' -> r'[\\-\\[\\]ac-e]'\n    \"\"\"\n\n    # Developer notes:\n    # - Do not optimize this code assuming that the given input string\n    #   or internal lists will be short (such as in loading generators into\n    #   lists to make it easier to find the last element); this method is also\n    #   used to generate regex ranges for character sets in the pyparsing.unicode\n    #   classes, and these can be _very_ long lists of strings\n\n    def escape_re_range_char(c: str) -> str:\n        return \"\\\\\" + c if c in r\"\\^-][\" else c\n\n    def no_escape_re_range_char(c: str) -> str:\n        return c\n\n    if not re_escape:\n        escape_re_range_char = no_escape_re_range_char\n\n    ret = []\n\n    # reduce input string to remove duplicates, and put in sorted order\n    s_chars: list[str] = sorted(set(s))\n\n    if len(s_chars) > 2:\n        # find groups of characters that are consecutive (can be collapsed\n        # down to \"<first>-<last>\")\n        for _, chars in itertools.groupby(s_chars, key=_GroupConsecutive()):\n            # _ is unimportant, is just used to identify groups\n            # chars is an iterator of one or more consecutive characters\n            # that comprise the current group\n            first = last = next(chars)\n            with contextlib.suppress(ValueError):\n                *_, last = chars\n\n            if first == last:\n                # there was only a single char in this group\n                ret.append(escape_re_range_char(first))\n\n            elif last == chr(ord(first) + 1):\n                # there were only 2 characters in this group\n                #   'a','b' -> 'ab'\n                ret.append(f\"{escape_re_range_char(first)}{escape_re_range_char(last)}\")\n\n            else:\n                # there were > 2 characters in this group, make into a range\n                #   'c','d','e' -> 'c-e'\n                ret.append(\n                    f\"{escape_re_range_char(first)}-{escape_re_range_char(last)}\"\n                )\n    else:\n        # only 1 or 2 chars were given to form into groups\n        #   'a' -> ['a']\n        #   'bc' -> ['b', 'c']\n        #   'dg' -> ['d', 'g']\n        # no need to list them with \"-\", just return as a list\n        # (after escaping)\n        ret = [escape_re_range_char(c) for c in s_chars]\n\n    return \"\".join(ret)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pyparsing.util')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pyparsing/util.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport re\nfor escape in (False,True):\n pattern=m._collapse_string_to_ranges('abcx',re_escape=escape)\n compiled=re.compile('['+pattern+']')\n print('character_range',escape,pattern)\n assert all(compiled.fullmatch(c) for c in 'abcx')\n assert not any(compiled.fullmatch(c) for c in 'dwz')\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "c4367422700eac59ea8d69b423e06b9e308a541924c61ff2078a6b9adcba1a3f"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Character-range compaction must retain every supplied character when escaping is disabled as well as when it is enabled. The resulting range expression should represent the same character set instead of dropping characters from its ranges. The actual source-bound reproduction passes after the production repair. Patch submitted."
+}

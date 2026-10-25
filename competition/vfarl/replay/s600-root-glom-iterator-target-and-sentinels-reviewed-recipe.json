@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex S600 common-course source contract and explicit command review2026-10-25",
+  "review_notes": "The iterator consumes the actual target and passes each element into the declared transform while preserving SKIP and STOP meanings and positional scope. The complete production-file delta is exactly this reviewed function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "glom/streaming.py",
+        "start_line": 89,
+        "end_line": 114
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('glom.streaming')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'glom/streaming.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom glom import glom\nfrom glom import Iter,SKIP\ns=Iter(lambda x:SKIP if x<0 else x).all();v=glom([1,-1,2],s);print(v);assert v==[1,2]\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "9f2a73490f3d3494ad6996586787cf77701ba522ed98cdb0935f33b1a49e0f74"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "glom/streaming.py",
+        "old_string": "    def _iterate(self, target, scope):\n        iterate = scope[TargetRegistry].get_handler('iterate', target, path=scope[Path])\n        try:\n            iterator = iterate(scope)\n        except Exception as e:\n            raise RuntimeError('failed in iteration process on type %r at %r (got %r)'\n                               % (target.__class__.__name__, Path(scope[Path]), e))\n\n        base_path = scope[Path]\n        for i, t in enumerate(iterator):\n            scope[Path] = base_path + [i + 1]\n            yld = (t if self.subspec is STOP else scope[glom](t, self.subspec, scope))\n            if yld is None:\n                continue\n            elif yld is SKIP or yld is self.sentinel:\n                return\n            yield yld\n        return\n",
+        "new_string": "    def _iterate(self, target, scope):\n        iterate = scope[TargetRegistry].get_handler('iterate', target, path=scope[Path])\n        try:\n            iterator = iterate(target)\n        except Exception as e:\n            raise TypeError('failed to iterate on instance of type %r at %r (got %r)'\n                            % (target.__class__.__name__, Path(*scope[Path]), e))\n\n        base_path = scope[Path]\n        for i, t in enumerate(iterator):\n            scope[Path] = base_path + [i]\n            yld = (t if self.subspec is T else scope[glom](t, self.subspec, scope))\n            if yld is SKIP:\n                continue\n            elif yld is self.sentinel or yld is STOP:\n                # NB: sentinel defaults to STOP so I was torn whether\n                # to also check for STOP, and landed on the side of\n                # never letting STOP through.\n                return\n            yield yld\n        return\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('glom.streaming')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'glom/streaming.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom glom import glom\nfrom glom import Iter,SKIP\ns=Iter(lambda x:SKIP if x<0 else x).all();v=glom([1,-1,2],s);print(v);assert v==[1,2]\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "9f2a73490f3d3494ad6996586787cf77701ba522ed98cdb0935f33b1a49e0f74"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "The iterator consumes the actual target and passes each element into the declared transform while preserving SKIP and STOP meanings and positional scope. The source-bound reproduction passes after the repair. Patch submitted."
+}

@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex S600 common-course source contract and explicit command review2026-10-25",
+  "review_notes": "compiled ISO date grammar requires entire input The complete production-file delta is exactly this reviewed function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/isodate/isodates.py",
+        "start_line": 20,
+        "end_line": 107
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('isodate.isodates')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'src/isodate/isodates.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom isodate.isodates import build_date_regexps\np=build_date_regexps();r=any(x.match('2024-02-29') for x in p);print('valid_date_match',r)\nassert r\nassert not any(x.match('2024-02-29junk') for x in p)\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "accfc911d1b5ff24ab20dedb4671eb98e7ad1575757102c7dfcc864eef0e394f"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/isodate/isodates.py",
+        "old_string": "def build_date_regexps(yeardigits: int = 4, expanded: bool = False) -> list[re.Pattern[str]]:\n    \"\"\"Compile set of regular expressions to parse ISO dates.\n\n    The expressions will be created only if they are not already in REGEX_CACHE.\n\n    It is necessary to fix the number of year digits, else it is not possible\n    to automatically distinguish between various ISO date formats.\n\n    ISO 8601 allows more than 4 digit years, on prior agreement, but then a +/-\n    sign is required (expanded format). To support +/- sign for 4 digit years,\n    the expanded parameter needs to be set to True.\n    \"\"\"\n    if yeardigits != 4:\n        expanded = True\n    if (yeardigits, expanded) not in DATE_REGEX_CACHE:\n        cache_entry: list[re.Pattern[str]] = []\n        # ISO 8601 expanded DATE formats allow an arbitrary number of year\n        # digits with a leading +/- sign.\n        if expanded:\n            sign = 1\n        else:\n            sign = 0\n\n        def add_re(regex_text: str) -> None:\n            cache_entry.append(re.compile(r\"\\Z\" + regex_text + r\"\\A\"))\n\n        # 1. complete dates:\n        #    YYYY-MM-DD or +- YYYYYY-MM-DD... extended date format\n        add_re(\n            r\"(?P<sign>[+-]){%d}(?P<year>[0-9]{%d})\"\n            r\"-(?P<month>[0-9]{2})-(?P<day>[0-9]{2})\" % (sign, yeardigits)\n        )\n        #    YYYYMMDD or +- YYYYYYMMDD... basic date format\n        add_re(\n            r\"(?P<sign>[+-]){%d}(?P<year>[0-9]{%d})\"\n            r\"(?P<month>[0-9]{2})(?P<day>[0-9]{2})\" % (sign, yeardigits)\n        )\n        # 2. complete week dates:\n        #    YYYY-Www-D or +-YYYYYY-Www-D ... extended week date\n        add_re(\n            r\"(?P<sign>[+-]){%d}(?P<year>[0-9]{%d})\"\n            r\"-W(?P<week>[0-9]{2})-(?P<day>[0-9]{1})\" % (sign, yeardigits)\n        )\n        #    YYYYWwwD or +-YYYYYYWwwD ... basic week date\n        add_re(\n            r\"(?P<sign>[+-]){%d}(?P<year>[0-9]{%d})W\"\n            r\"(?P<week>[0-9]{2})(?P<day>[0-9]{1})\" % (sign, yeardigits)\n        )\n        # 3. ordinal dates:\n        #    YYYY-DDD or +-YYYYYY-DDD ... extended format\n        add_re(r\"(?P<sign>[+-]){%d}(?P<year>[0-9]{%d})\" r\"-(?P<day>[0-9]{3})\" % (sign, yeardigits))\n        #    YYYYDDD or +-YYYYYYDDD ... basic format\n        add_re(r\"(?P<sign>[+-]){%d}(?P<year>[0-9]{%d})\" r\"(?P<day>[0-9]{3})\" % (sign, yeardigits))\n        # 4. week dates:\n        #    YYYY-Www or +-YYYYYY-Www ... extended reduced accuracy week date\n        # 4. week dates:\n        #    YYYY-Www or +-YYYYYY-Www ... extended reduced accuracy week date\n        add_re(\n            r\"(?P<sign>[+-]){%d}(?P<year>[0-9]{%d})\" r\"-W(?P<week>[0-9]{2})\" % (sign, yeardigits)\n        )\n        #    YYYYWww or +-YYYYYYWww ... basic reduced accuracy week date\n        add_re(r\"(?P<sign>[+-]){%d}(?P<year>[0-9]{%d})W\" r\"(?P<week>[0-9]{2})\" % (sign, yeardigits))\n        # 5. month dates:\n        #    YYY-MM or +-YYYYYY-MM ... reduced accuracy specific month\n        # 5. month dates:\n        #    YYY-MM or +-YYYYYY-MM ... reduced accuracy specific month\n        add_re(\n            r\"(?P<sign>[+-]){%d}(?P<year>[0-9]{%d})\" r\"-(?P<month>[0-9]{2})\" % (sign, yeardigits)\n        )\n        #    YYYMM or +-YYYYYYMM ... basic incomplete month date format\n        add_re(r\"(?P<sign>[+-]){%d}(?P<year>[0-9]{%d})\" r\"(?P<month>[0-9]{2})\" % (sign, yeardigits))\n        # 6. year dates:\n        #    YYYY or +-YYYYYY ... reduced accuracy specific year\n        add_re(r\"(?P<sign>[+-]){%d}(?P<year>[0-9]{%d})\" % (sign, yeardigits))\n        # 7. century dates:\n        #    YY or +-YYYY ... reduced accuracy specific century\n        add_re(r\"(?P<sign>[+-]){%d}\" r\"(?P<century>[0-9]{%d})\" % (sign, yeardigits - 2))\n\n        DATE_REGEX_CACHE[(yeardigits, expanded)] = cache_entry\n    return DATE_REGEX_CACHE[(yeardigits, expanded)]\n",
+        "new_string": "def build_date_regexps(yeardigits: int = 4, expanded: bool = False) -> list[re.Pattern[str]]:\n    \"\"\"Compile set of regular expressions to parse ISO dates.\n\n    The expressions will be created only if they are not already in REGEX_CACHE.\n\n    It is necessary to fix the number of year digits, else it is not possible\n    to automatically distinguish between various ISO date formats.\n\n    ISO 8601 allows more than 4 digit years, on prior agreement, but then a +/-\n    sign is required (expanded format). To support +/- sign for 4 digit years,\n    the expanded parameter needs to be set to True.\n    \"\"\"\n    if yeardigits != 4:\n        expanded = True\n    if (yeardigits, expanded) not in DATE_REGEX_CACHE:\n        cache_entry: list[re.Pattern[str]] = []\n        # ISO 8601 expanded DATE formats allow an arbitrary number of year\n        # digits with a leading +/- sign.\n        if expanded:\n            sign = 1\n        else:\n            sign = 0\n\n        def add_re(regex_text: str) -> None:\n            cache_entry.append(re.compile(r\"\\A\" + regex_text + r\"\\Z\"))\n\n        # 1. complete dates:\n        #    YYYY-MM-DD or +- YYYYYY-MM-DD... extended date format\n        add_re(\n            r\"(?P<sign>[+-]){%d}(?P<year>[0-9]{%d})\"\n            r\"-(?P<month>[0-9]{2})-(?P<day>[0-9]{2})\" % (sign, yeardigits)\n        )\n        #    YYYYMMDD or +- YYYYYYMMDD... basic date format\n        add_re(\n            r\"(?P<sign>[+-]){%d}(?P<year>[0-9]{%d})\"\n            r\"(?P<month>[0-9]{2})(?P<day>[0-9]{2})\" % (sign, yeardigits)\n        )\n        # 2. complete week dates:\n        #    YYYY-Www-D or +-YYYYYY-Www-D ... extended week date\n        add_re(\n            r\"(?P<sign>[+-]){%d}(?P<year>[0-9]{%d})\"\n            r\"-W(?P<week>[0-9]{2})-(?P<day>[0-9]{1})\" % (sign, yeardigits)\n        )\n        #    YYYYWwwD or +-YYYYYYWwwD ... basic week date\n        add_re(\n            r\"(?P<sign>[+-]){%d}(?P<year>[0-9]{%d})W\"\n            r\"(?P<week>[0-9]{2})(?P<day>[0-9]{1})\" % (sign, yeardigits)\n        )\n        # 3. ordinal dates:\n        #    YYYY-DDD or +-YYYYYY-DDD ... extended format\n        add_re(r\"(?P<sign>[+-]){%d}(?P<year>[0-9]{%d})\" r\"-(?P<day>[0-9]{3})\" % (sign, yeardigits))\n        #    YYYYDDD or +-YYYYYYDDD ... basic format\n        add_re(r\"(?P<sign>[+-]){%d}(?P<year>[0-9]{%d})\" r\"(?P<day>[0-9]{3})\" % (sign, yeardigits))\n        # 4. week dates:\n        #    YYYY-Www or +-YYYYYY-Www ... extended reduced accuracy week date\n        # 4. week dates:\n        #    YYYY-Www or +-YYYYYY-Www ... extended reduced accuracy week date\n        add_re(\n            r\"(?P<sign>[+-]){%d}(?P<year>[0-9]{%d})\" r\"-W(?P<week>[0-9]{2})\" % (sign, yeardigits)\n        )\n        #    YYYYWww or +-YYYYYYWww ... basic reduced accuracy week date\n        add_re(r\"(?P<sign>[+-]){%d}(?P<year>[0-9]{%d})W\" r\"(?P<week>[0-9]{2})\" % (sign, yeardigits))\n        # 5. month dates:\n        #    YYY-MM or +-YYYYYY-MM ... reduced accuracy specific month\n        # 5. month dates:\n        #    YYY-MM or +-YYYYYY-MM ... reduced accuracy specific month\n        add_re(\n            r\"(?P<sign>[+-]){%d}(?P<year>[0-9]{%d})\" r\"-(?P<month>[0-9]{2})\" % (sign, yeardigits)\n        )\n        #    YYYMM or +-YYYYYYMM ... basic incomplete month date format\n        add_re(r\"(?P<sign>[+-]){%d}(?P<year>[0-9]{%d})\" r\"(?P<month>[0-9]{2})\" % (sign, yeardigits))\n        # 6. year dates:\n        #    YYYY or +-YYYYYY ... reduced accuracy specific year\n        add_re(r\"(?P<sign>[+-]){%d}(?P<year>[0-9]{%d})\" % (sign, yeardigits))\n        # 7. century dates:\n        #    YY or +-YYYY ... reduced accuracy specific century\n        add_re(r\"(?P<sign>[+-]){%d}\" r\"(?P<century>[0-9]{%d})\" % (sign, yeardigits - 2))\n\n        DATE_REGEX_CACHE[(yeardigits, expanded)] = cache_entry\n    return DATE_REGEX_CACHE[(yeardigits, expanded)]\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('isodate.isodates')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'src/isodate/isodates.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom isodate.isodates import build_date_regexps\np=build_date_regexps();r=any(x.match('2024-02-29') for x in p);print('valid_date_match',r)\nassert r\nassert not any(x.match('2024-02-29junk') for x in p)\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "accfc911d1b5ff24ab20dedb4671eb98e7ad1575757102c7dfcc864eef0e394f"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "compiled ISO date grammar requires entire input The source-bound reproduction passes after the repair. Patch submitted."
+}

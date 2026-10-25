@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex S600 common-course source contract and explicit command review2026-10-25",
+  "review_notes": "Advancing an error iterator raises DoException immediately with the same error, without yielding an intermediate None. The complete production-file delta is exactly this reviewed function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/result/result.py",
+        "start_line": 238,
+        "end_line": 251
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('result.result')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'src/result/result.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom result import Ok,Err,UnwrapError,as_result\nr=Err('failure');it=iter(r);caught=False\ntry:next(it)\nexcept m.DoException as error:\n print('iteration_error_identity',error.err is r);assert error.err is r;caught=True\nassert caught\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "29242e1382f004278407eecbd5d6d767b0f7367fb999bc946f1345ccf25670f3"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/result/result.py",
+        "old_string": "    def __iter__(self) -> Iterator[NoReturn]:\n        def _iter() -> Iterator[NoReturn]:\n            yield  # This yield will create a generator, but no exception is raised\n            raise DoException(self)  # This will not be executed when the iterator is advanced\n\n        return _iter()\n",
+        "new_string": "    def __iter__(self) -> Iterator[NoReturn]:\n        def _iter() -> Iterator[NoReturn]:\n            # Exception will be raised when the iterator is advanced, not when it's created\n            raise DoException(self)\n            yield  # This yield will never be reached, but is necessary to create a generator\n\n        return _iter()\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('result.result')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'src/result/result.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom result import Ok,Err,UnwrapError,as_result\nr=Err('failure');it=iter(r);caught=False\ntry:next(it)\nexcept m.DoException as error:\n print('iteration_error_identity',error.err is r);assert error.err is r;caught=True\nassert caught\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "29242e1382f004278407eecbd5d6d767b0f7367fb999bc946f1345ccf25670f3"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Advancing an error iterator raises DoException immediately with the same error, without yielding an intermediate None. The source-bound reproduction passes after the repair. Patch submitted."
+}

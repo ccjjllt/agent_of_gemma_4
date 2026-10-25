@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Retrieve a stored mutable value and request a missing key. The wrapper returns the key instead of the fetched value and suppresses missing-key errors; recency logic in get is unchanged. Return the existing value channel and retain KeyError for an absent lookup. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "tinydb/utils.py",
+        "start_line": 77,
+        "end_line": 97
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'tinydb/utils.py').resolve()\ntry:\n module = importlib.import_module('tinydb.utils')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom tinydb.utils import LRUCache\nc=LRUCache(3);payload=['value'];c['key']=payload;value=c['key'];print('cache_value_channel',value);assert value is payload\ntry:\n c['missing']\nexcept KeyError:\n print('missing_cache_key_rejected',True)\nelse:\n raise AssertionError('missing key returned a value')\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "788d4b0f638ff6cfb335d663ba380e9acf8b153e9935959a3b3b2994d420f6a4"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "tinydb/utils.py",
+        "old_string": "    def __getitem__(self, key) -> V:\n        value = self.get(key)\n        if value is None:\n            return None\n\n        return key\n\n    def __iter__(self) -> Iterator[K]:\n        return iter(self.cache)\n",
+        "new_string": "    def __getitem__(self, key) -> V:\n        value = self.get(key)\n        if value is None:\n            raise KeyError(key)\n\n        return value\n\n    def __iter__(self) -> Iterator[K]:\n        return iter(self.cache)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'tinydb/utils.py').resolve()\ntry:\n module = importlib.import_module('tinydb.utils')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom tinydb.utils import LRUCache\nc=LRUCache(3);payload=['value'];c['key']=payload;value=c['key'];print('cache_value_channel',value);assert value is payload\ntry:\n c['missing']\nexcept KeyError:\n print('missing_cache_key_rejected',True)\nelse:\n raise AssertionError('missing key returned a value')\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "788d4b0f638ff6cfb335d663ba380e9acf8b153e9935959a3b3b2994d420f6a4"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Return the existing value channel and retain KeyError for an absent lookup. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

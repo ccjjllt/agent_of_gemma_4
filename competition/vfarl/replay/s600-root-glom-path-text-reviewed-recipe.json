@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex S600 common-course source contract and explicit command review2026-10-25",
+  "review_notes": "Text paths split ordered dot-separated components into separate path segments and retain the resulting lookup semantics. The complete production-file delta is exactly this reviewed function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "glom/core.py",
+        "start_line": 637,
+        "end_line": 673
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('glom.core')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'glom/core.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom glom import Path,glom\np=Path.from_text('outer.leaf');print('path_segments',p.values());assert p.values()==('outer','leaf');assert glom({'outer':{'leaf':4}},p)==4\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "60c85ddce9612778d7e1efc7f70a008a04f4cabff44cacea3fda5235dcf5d9ca"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "glom/core.py",
+        "old_string": "    def from_text(cls, text):\n        \"\"\"Make a Path from .-delimited text:\n\n        >>> Path.from_text('a.b.c')\n        Path('a', 'b', 'c')\n\n        This is the default behavior when :func:`~glom.glom` gets a string spec.\n        \"\"\"\n        def create():\n            segs = text.split('.')\n            if not PATH_STAR:\n                segs = [\n                    _T_STAR if seg == '*' else\n                    _T_STARSTAR if seg == '**' else seg\n                    for seg in reversed(segs)]\n            elif cls._STAR_WARNED:\n                if '*' not in segs and '**' not in segs:\n                    warnings.warn(\n                        \"'*' and '**' have changed behavior in glom version 23.1.\"\n                        \" Recommend switch to T['*'] or T['**'].\")\n                    cls._STAR_WARNED = False\n            return cls(segs)\n\n        cache = cls._CACHE[PATH_STAR]  # remove this when PATH_STAR is default\n        if text not in cache:\n            if len(cache) > cls._MAX_CACHE:\n                return create()\n            cache[text] = create()\n        return cache[text]\n",
+        "new_string": "    def from_text(cls, text):\n        \"\"\"Make a Path from .-delimited text:\n\n        >>> Path.from_text('a.b.c')\n        Path('a', 'b', 'c')\n\n        This is the default behavior when :func:`~glom.glom` gets a string spec.\n        \"\"\"\n        def create():\n            segs = text.split('.')\n            if PATH_STAR:\n                segs = [\n                    _T_STAR if seg == '*' else\n                    _T_STARSTAR if seg == '**' else seg\n                    for seg in segs]\n            elif not cls._STAR_WARNED:\n                if '*' in segs or '**' in segs:\n                    warnings.warn(\n                        \"'*' and '**' have changed behavior in glom version 23.1.\"\n                        \" Recommend switch to T['*'] or T['**'].\")\n                    cls._STAR_WARNED = True\n            return cls(*segs)\n\n        cache = cls._CACHE[PATH_STAR]  # remove this when PATH_STAR is default\n        if text not in cache:\n            if len(cache) > cls._MAX_CACHE:\n                return create()\n            cache[text] = create()\n        return cache[text]\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('glom.core')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'glom/core.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom glom import Path,glom\np=Path.from_text('outer.leaf');print('path_segments',p.values());assert p.values()==('outer','leaf');assert glom({'outer':{'leaf':4}},p)==4\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "60c85ddce9612778d7e1efc7f70a008a04f4cabff44cacea3fda5235dcf5d9ca"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Text paths split ordered dot-separated components into separate path segments and retain the resulting lookup semantics. The source-bound reproduction passes after the repair. Patch submitted."
+}

@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex explicit collection/iteration contract and source-command review2026-10-25",
+  "review_notes": "byte_spool_rollover_preserves_bytes_and_file_cursor; original upstream function and complete source diff reviewed; original requirements and full target files intact. Short alias preloads the real package to preserve original __file__-based source lookup, no fake module.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "boltons/ioutils.py",
+        "start_line": 325,
+        "end_line": 338
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,importlib\nm=importlib.import_module('boltons.ioutils')\na=Path(m.__file__).resolve();e=(Path.cwd()/'boltons/ioutils.py').resolve()\nassert a==e,(a,e)\nprint('source_binding',a,'sha256',hashlib.sha256(a.read_bytes()).hexdigest())\nfrom boltons.ioutils import SpooledBytesIO\nf=SpooledBytesIO(max_size=100,dir='.')\ntry:\n f.write(b'abcd');f.seek(2);f.rollover();print('rolled_byte_cursor',f.tell());assert f._rolled and f.tell()==2 and f.read()==b'cd'\nfinally:f.close()\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "7fe3c78574350dd53b5f0987daa13d59505a1e6227dbbe503189f6408f58898b"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "boltons/ioutils.py",
+        "old_string": "    def rollover(self):\n        \"\"\"Roll the StringIO over to a TempFile\"\"\"\n        if not self._rolled:\n            tmp = TemporaryFile(dir=self._dir)\n            pos = self.buffer.tell()\n            tmp.write(self.buffer.getvalue())\n            tmp.seek(0)\n            self.buffer.close()\n            self._buffer = tmp\n            self._rolled = True\n",
+        "new_string": "    def rollover(self):\n        \"\"\"Roll the StringIO over to a TempFile\"\"\"\n        if not self._rolled:\n            tmp = TemporaryFile(dir=self._dir)\n            pos = self.buffer.tell()\n            tmp.write(self.buffer.getvalue())\n            tmp.seek(pos)\n            self.buffer.close()\n            self._buffer = tmp\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,importlib\nm=importlib.import_module('boltons.ioutils')\na=Path(m.__file__).resolve();e=(Path.cwd()/'boltons/ioutils.py').resolve()\nassert a==e,(a,e)\nprint('source_binding',a,'sha256',hashlib.sha256(a.read_bytes()).hexdigest())\nfrom boltons.ioutils import SpooledBytesIO\nf=SpooledBytesIO(max_size=100,dir='.')\ntry:\n f.write(b'abcd');f.seek(2);f.rollover();print('rolled_byte_cursor',f.tell());assert f._rolled and f.tell()==2 and f.read()==b'cd'\nfinally:f.close()\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "7fe3c78574350dd53b5f0987daa13d59505a1e6227dbbe503189f6408f58898b"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored SpooledBytesIO.rollover: byte spool rollover preserves bytes and file cursor. The actual public API observation completed and the patch was submitted."
+}

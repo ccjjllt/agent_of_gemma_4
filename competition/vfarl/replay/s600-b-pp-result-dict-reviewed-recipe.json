@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex S600 source contract and explicit command review 2026-10-25",
+  "review_notes": "Recursive parse-result export preserves mapping keys, nested list structure and leaf types. Named nested ParseResults become dictionaries, unnamed sequences become lists, and numeric leaves remain numeric. Individually reviewed source/defect change and reproduction. Original full-file verification and requirements retained; not sampled Gemma, not a same-state preference pair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "pyparsing/results.py",
+        "start_line": 539,
+        "end_line": 574
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pyparsing.results')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pyparsing/results.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport pyparsing as pp\noriginal={'outer':{'number':7,'items':[1,2]},'name':'alpha'}\nr=pp.ParseResults.from_dict(original).as_dict()\nprint('nested_result_export',r)\nassert r==original and type(r['outer']['number']) is int\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "6b8b26f5b6c27e3c5cd558d0f0314065880e149c0acddaec3010dde33656b4dc"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pyparsing/results.py",
+        "old_string": "    def as_dict(self) -> dict:\n        \"\"\"\n        Returns the named parse results as a nested dictionary.\n\n        Example::\n\n            integer = Word(nums)\n            date_str = integer(\"year\") + '/' + integer(\"month\") + '/' + integer(\"day\")\n\n            result = date_str.parse_string('12/31/1999')\n            print(type(result), repr(result)) # -> <class 'pyparsing.ParseResults'> (['12', '/', '31', '/', '1999'], {'day': [('1999', 4)], 'year': [('12', 0)], 'month': [('31', 2)]})\n\n            result_dict = result.as_dict()\n            print(type(result_dict), repr(result_dict)) # -> <class 'dict'> {'day': '1999', 'year': '12', 'month': '31'}\n\n            # even though a ParseResults supports dict-like access, sometime you just need to have a dict\n            import json\n            print(json.dumps(result)) # -> Exception: TypeError: ... is not JSON serializable\n            print(json.dumps(result.as_dict())) # -> {\"month\": \"31\", \"day\": \"1999\", \"year\": \"12\"}\n        \"\"\"\n\n        def to_item(obj):\n            if isinstance(obj, ParseResults):\n                return [to_item(v) for v in obj] if obj.haskeys() else obj.as_dict()\n            else:\n                return str(obj)\n\n        return dict((v, to_item(k)) for k, v in self.items())\n",
+        "new_string": "    def as_dict(self) -> dict:\n        \"\"\"\n        Returns the named parse results as a nested dictionary.\n\n        Example::\n\n            integer = Word(nums)\n            date_str = integer(\"year\") + '/' + integer(\"month\") + '/' + integer(\"day\")\n\n            result = date_str.parse_string('12/31/1999')\n            print(type(result), repr(result)) # -> <class 'pyparsing.ParseResults'> (['12', '/', '31', '/', '1999'], {'day': [('1999', 4)], 'year': [('12', 0)], 'month': [('31', 2)]})\n\n            result_dict = result.as_dict()\n            print(type(result_dict), repr(result_dict)) # -> <class 'dict'> {'day': '1999', 'year': '12', 'month': '31'}\n\n            # even though a ParseResults supports dict-like access, sometime you just need to have a dict\n            import json\n            print(json.dumps(result)) # -> Exception: TypeError: ... is not JSON serializable\n            print(json.dumps(result.as_dict())) # -> {\"month\": \"31\", \"day\": \"1999\", \"year\": \"12\"}\n        \"\"\"\n\n        def to_item(obj):\n            if isinstance(obj, ParseResults):\n                return obj.as_dict() if obj.haskeys() else [to_item(v) for v in obj]\n            else:\n                return obj\n\n        return dict((k, to_item(v)) for k, v in self.items())\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pyparsing.results')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pyparsing/results.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport pyparsing as pp\noriginal={'outer':{'number':7,'items':[1,2]},'name':'alpha'}\nr=pp.ParseResults.from_dict(original).as_dict()\nprint('nested_result_export',r)\nassert r==original and type(r['outer']['number']) is int\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "6b8b26f5b6c27e3c5cd558d0f0314065880e149c0acddaec3010dde33656b4dc"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Recursive parse-result export preserves mapping keys, nested list structure and leaf types. Named nested ParseResults become dictionaries, unnamed sequences become lists, and numeric leaves remain numeric. The actual source-bound reproduction passes after the production repair. Patch submitted."
+}

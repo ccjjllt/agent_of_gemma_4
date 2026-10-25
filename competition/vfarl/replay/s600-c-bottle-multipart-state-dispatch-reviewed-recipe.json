@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Feed a valid multipart upload across header and body phases. The dispatcher sends the header phase to write_body and the established-file phase back to write_header. Route feed events to the header or body consumer according to current file state. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "bottle.py",
+        "start_line": 3341,
+        "end_line": 3360
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'bottle.py').resolve()\ntry:\n module = importlib.import_module('bottle')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport io\nfrom bottle import _MultipartParser\nraw=b'--edge\\r\\nContent-Disposition: form-data; name=\"upload\"; filename=\"a.txt\"\\r\\nContent-Type: text/plain; charset=utf8\\r\\n\\r\\nabc\\r\\n--edge--\\r\\n'\nparts=list(_MultipartParser(io.BytesIO(raw),'edge').parse())\nvalue=parts[0].file.read();print('multipart_phase_dispatch',parts[0].name,value)\nassert parts[0].name=='upload' and value==b'abc'\nparts[0].close()\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "e69e2b776382f0bf0174c2da9b365bf36a397f2dfea8c657b876793f3d015aa8"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "bottle.py",
+        "old_string": "\n    def feed(self, line, nl=\"\"):\n        if self.file:\n            return self.write_header(line, nl)\n        return self.write_body(line, nl)\n\n    def write_header(self, line, nl):\n        line = line.decode(self.charset)\n",
+        "new_string": "\n    def feed(self, line, nl=\"\"):\n        if self.file:\n            return self.write_body(line, nl)\n        return self.write_header(line, nl)\n\n    def write_header(self, line, nl):\n        line = line.decode(self.charset)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'bottle.py').resolve()\ntry:\n module = importlib.import_module('bottle')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport io\nfrom bottle import _MultipartParser\nraw=b'--edge\\r\\nContent-Disposition: form-data; name=\"upload\"; filename=\"a.txt\"\\r\\nContent-Type: text/plain; charset=utf8\\r\\n\\r\\nabc\\r\\n--edge--\\r\\n'\nparts=list(_MultipartParser(io.BytesIO(raw),'edge').parse())\nvalue=parts[0].file.read();print('multipart_phase_dispatch',parts[0].name,value)\nassert parts[0].name=='upload' and value==b'abc'\nparts[0].close()\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "e69e2b776382f0bf0174c2da9b365bf36a397f2dfea8c657b876793f3d015aa8"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Route feed events to the header or body consumer according to current file state. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

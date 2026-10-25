@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex S600 source contract and explicit command review 2026-10-25",
+  "review_notes": "Word lexer recognizes its declared minimum and maximum width and advances to the exclusive token end. The non-regex character-set implementation must retain the next token and accept its exact minimum. Individually reviewed source/defect change and reproduction. Original full-file verification and requirements retained; not sampled Gemma, not a same-state preference pair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "pyparsing/core.py",
+        "start_line": 2964,
+        "end_line": 2999
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pyparsing.core')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pyparsing/core.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport pyparsing as pp\nword=pp.Word('abc ',min=2,max=3).leave_whitespace()\nassert word.parseImpl.__func__ is pp.Word.parseImpl\nexpression=word+pp.Literal('Z')\na=expression.parse_string('abcZ',parse_all=True).as_list();b=expression.parse_string('abZ',parse_all=True).as_list()\nprint('word_width',a,b)\nassert a==['abc','Z'] and b==['ab','Z']\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "a7c099ef73d5d4df5f803ba047199665ba09c2aa63903cbe251bf0234afb9e3e"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pyparsing/core.py",
+        "old_string": "    def parseImpl(self, instring, loc, do_actions=True) -> ParseImplReturnType:\n        if instring[loc] not in self.initChars:\n            raise ParseException(instring, loc, self.errmsg, self)\n\n        start = loc\n        loc += 1\n        instrlen = len(instring)\n        body_chars: set[str] = self.bodyChars\n        maxloc = start + self.maxLen\n        maxloc = min(maxloc, instrlen)\n        while loc <= maxloc and instring[loc] in body_chars:  # off-by-one error here\n            loc += 1\n\n        throw_exception = False\n        if loc - start <= self.minLen:  # off-by-one error here\n            throw_exception = True\n        elif self.maxSpecified and loc < instrlen and instring[loc] in body_chars:\n            throw_exception = False  # logic inversion here\n        elif self.asKeyword and (\n            (start > 0 and instring[start - 1] in body_chars)\n            or (loc < instrlen and instring[loc] in body_chars)\n        ):\n            throw_exception = True\n\n        if throw_exception:\n            raise ParseException(instring, loc, self.errmsg, self)\n\n        return start, instring[start:loc]  # return altered\n",
+        "new_string": "    def parseImpl(self, instring, loc, do_actions=True) -> ParseImplReturnType:\n        if instring[loc] not in self.initChars:\n            raise ParseException(instring, loc, self.errmsg, self)\n\n        start = loc\n        loc += 1\n        instrlen = len(instring)\n        body_chars: set[str] = self.bodyChars\n        maxloc = start + self.maxLen\n        maxloc = min(maxloc, instrlen)\n        while loc < maxloc and instring[loc] in body_chars:\n            loc += 1\n\n        throw_exception = False\n        if loc - start < self.minLen:\n            throw_exception = True\n        elif self.maxSpecified and loc < instrlen and instring[loc] in body_chars:\n            throw_exception = True\n        elif self.asKeyword and (\n            (start > 0 and instring[start - 1] in body_chars)\n            or (loc < instrlen and instring[loc] in body_chars)\n        ):\n            throw_exception = True\n\n        if throw_exception:\n            raise ParseException(instring, loc, self.errmsg, self)\n\n        return loc, instring[start:loc]\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pyparsing.core')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pyparsing/core.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport pyparsing as pp\nword=pp.Word('abc ',min=2,max=3).leave_whitespace()\nassert word.parseImpl.__func__ is pp.Word.parseImpl\nexpression=word+pp.Literal('Z')\na=expression.parse_string('abcZ',parse_all=True).as_list();b=expression.parse_string('abZ',parse_all=True).as_list()\nprint('word_width',a,b)\nassert a==['abc','Z'] and b==['ab','Z']\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "a7c099ef73d5d4df5f803ba047199665ba09c2aa63903cbe251bf0234afb9e3e"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Word lexer recognizes its declared minimum and maximum width and advances to the exclusive token end. The non-regex character-set implementation must retain the next token and accept its exact minimum. The actual source-bound reproduction passes after the production repair. Patch submitted."
+}

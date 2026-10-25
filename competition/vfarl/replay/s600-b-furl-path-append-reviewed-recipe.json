@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex S600 source contract and explicit command review 2026-10-25",
+  "review_notes": "Path appending places new path segments after existing segments, preserves the leading root marker, and reconciles only the joining slash boundary. Individually reviewed source/defect change and reproduction. Original full-file verification and requirements retained; not sampled Gemma, not a same-state preference pair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "furl/furl.py",
+        "start_line": 524,
+        "end_line": 557
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('furl.furl')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'furl/furl.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\np=m.Path('/a/');r=p.add('b/c')\nprint('appended_path',str(p),p.segments)\nassert r is p and str(p)=='/a/b/c' and p.segments==['a','b','c']\np.add(['d']);assert str(p)=='/a/b/c/d'\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "16839141e4693e06856a6520835d9f18f58d106d45e2afb62e92fb92b2ea36ac"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "furl/furl.py",
+        "old_string": "    def add(self, path):\n        \"\"\"\n        Add <path> to the existing path. <path> can either be a Path instance,\n        a list of segments, or a path string to append to the existing path.\n\n        Returns: <self>.\n        \"\"\"\n        if is_iterable_but_not_string(path):  # List interface.\n            newsegments = self._segments_from_path(path)\n        elif quacks_like_a_path_with_segments(path):  # Path interface.\n            newsegments = path.segments\n        else:  # String interface.\n            newsegments = path\n\n        # Preserve the opening '/' if one exists already (self.segments\n        # == ['']).\n        if self.segments == [''] and newsegments and newsegments[-1] != '':\n            newsegments.append('')\n\n        segments = self.segments\n        if self.isabsolute and self.segments and self.segments[-1] != '':\n            segments.append('')\n\n        self.load(join_path_segments(newsegments, segments))\n\n        return None\n",
+        "new_string": "    def add(self, path):\n        \"\"\"\n        Add <path> to the existing path. <path> can either be a Path instance,\n        a list of segments, or a path string to append to the existing path.\n\n        Returns: <self>.\n        \"\"\"\n        if quacks_like_a_path_with_segments(path):  # Path interface.\n            newsegments = path.segments\n        elif is_iterable_but_not_string(path):  # List interface.\n            newsegments = path\n        else:  # String interface.\n            newsegments = self._segments_from_path(path)\n\n        # Preserve the opening '/' if one exists already (self.segments\n        # == ['']).\n        if self.segments == [''] and newsegments and newsegments[0] != '':\n            newsegments.insert(0, '')\n\n        segments = self.segments\n        if self.isabsolute and self.segments and self.segments[0] != '':\n            segments.insert(0, '')\n\n        self.load(join_path_segments(segments, newsegments))\n\n        return self\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('furl.furl')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'furl/furl.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\np=m.Path('/a/');r=p.add('b/c')\nprint('appended_path',str(p),p.segments)\nassert r is p and str(p)=='/a/b/c' and p.segments==['a','b','c']\np.add(['d']);assert str(p)=='/a/b/c/d'\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "16839141e4693e06856a6520835d9f18f58d106d45e2afb62e92fb92b2ea36ac"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Path appending places new path segments after existing segments, preserves the leading root marker, and reconciles only the joining slash boundary. The actual source-bound reproduction passes after the production repair. Patch submitted."
+}

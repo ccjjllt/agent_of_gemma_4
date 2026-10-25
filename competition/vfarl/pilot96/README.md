@@ -1,5 +1,7 @@
 # 首批96题与明确补充课程
 
+当前优先准备[S600共同/专科课程](../s600/README.md)。本文件的81题总量和子机制表为S600启动时的历史起点；最新总量见[课程清单](../s600/course-manifest.json)。原96题成员、61正例和35未入池记录保持不变。
+
 2026-10-25。原96个任务身份保持不变，现已全部真实执行官方六工具；90题保存基线/修复双轮结果及完整JUnit，61题完整通过。另有20个逐题审阅的补充train任务通过，合计81条可用示范。原96仍有35题未入池：29题双轮结果完整但未通过，6题验证超时或报告不完整。**尚未完成全部候选的数据准备，未启动GPU训练。**
 
 入口：[原96逐题目录](catalog.md)、[原始来源与机制索引](catalog.json)、[20题明确补充目录](../acquisition/supplemental/catalog.json)、[完整重放总览](../replay/replay-summary.json)、[逐题准入与原始证据](../replay/canonical-results-manifest.json)、[Gemma导出清单](../replay/gemma-sft-manifest.json)、[四份主责课程及共享课程](../replay/adapter-curricula-manifest.json)。补充任务由此前6题和本轮14题组成，没有静默替换原失败记录；81题的最终动作导出与课程清单已同步。

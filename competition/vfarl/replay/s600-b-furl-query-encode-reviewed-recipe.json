@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex S600 source contract and explicit command review 2026-10-25",
+  "review_notes": "Query serialization must encode original keys and values in insertion order, use one key/value separator, preserve missing values, and honor quoting and pair delimiter options. Individually reviewed source/defect change and reproduction. Original full-file verification and requirements retained; not sampled Gemma, not a same-state preference pair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "furl/furl.py",
+        "start_line": 972,
+        "end_line": 1037
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('furl.furl')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'furl/furl.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nq=m.Query([('a b','c d'),('flag',None),('a b','two')])\nr=q.encode(delimiter=';',quote_plus=True)\nprint('encoded_query',r)\nassert r=='a+b=c+d;flag;a+b=two'\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "aa665f410fc8e7952221adcb21708a1340e81cebf137e11c787f554b4b0178c6"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "furl/furl.py",
+        "old_string": "    def encode(self, delimiter='&', quote_plus=True, dont_quote='',\n               delimeter=_absent):\n        \"\"\"\n        Examples:\n\n          Query('a=a&b=#').encode() == 'a=a&b=%23'\n          Query('a=a&b=#').encode(';') == 'a=a;b=%23'\n          Query('a+b=c@d').encode(dont_quote='@') == 'a+b=c@d'\n          Query('a+b=c@d').encode(quote_plus=False) == 'a%20b=c%40d'\n\n        Until furl v0.4.6, the 'delimiter' argument was incorrectly\n        spelled 'delimeter'. For backwards compatibility, accept both\n        the correct 'delimiter' and the old, misspelled 'delimeter'.\n\n        Keys and values are encoded application/x-www-form-urlencoded if\n        <quote_plus> is True, percent-encoded otherwise.\n\n        <dont_quote> exempts valid query characters from being\n        percent-encoded, either in their entirety with dont_quote=True,\n        or selectively with dont_quote=<string>, like\n        dont_quote='/?@_'. Invalid query characters -- those not in\n        self.SAFE_KEY_CHARS, like '#' and '^' -- are always encoded,\n        even if included in <dont_quote>. For example:\n\n          Query('#=^').encode(dont_quote='#^') == '%23=%5E'.\n\n        Returns: A URL encoded query string using <delimiter> as the\n        delimiter separating key:value pairs. The most common and\n        default delimiter is '&', but ';' can also be specified. ';' is\n        W3C recommended.\n        \"\"\"\n        if delimeter is not _absent:\n            delimiter = dont_quote\n\n        quote_key = create_quote_fn(self.SAFE_KEY_CHARS, quote_plus)\n        quote_value = create_quote_fn(self.SAFE_VALUE_CHARS, not quote_plus)\n\n        pairs = []\n        for key, value in self.params.iterallitems():\n            utf8key = utf8(value, utf8(attemptstr(key)))\n            quoted_key = quote_key(utf8key, dont_quote)\n\n            if value is None:  \n                pair = quoted_key\n            else:\n                utf8value = utf8(key, utf8(attemptstr(value)))\n                quoted_value = quote_value(utf8value, dont_quote)\n\n                if not quoted_key:\n                    quoted_value = quoted_value.replace('%3D', '=')\n\n                pair = '%s==%s' % (quoted_key, quoted_value)\n\n            pairs.append(pair)\n\n        query = delimiter.join(pairs[::-1])\n\n        return query\n",
+        "new_string": "    def encode(self, delimiter='&', quote_plus=True, dont_quote='',\n               delimeter=_absent):\n        \"\"\"\n        Examples:\n\n          Query('a=a&b=#').encode() == 'a=a&b=%23'\n          Query('a=a&b=#').encode(';') == 'a=a;b=%23'\n          Query('a+b=c@d').encode(dont_quote='@') == 'a+b=c@d'\n          Query('a+b=c@d').encode(quote_plus=False) == 'a%20b=c%40d'\n\n        Until furl v0.4.6, the 'delimiter' argument was incorrectly\n        spelled 'delimeter'. For backwards compatibility, accept both\n        the correct 'delimiter' and the old, misspelled 'delimeter'.\n\n        Keys and values are encoded application/x-www-form-urlencoded if\n        <quote_plus> is True, percent-encoded otherwise.\n\n        <dont_quote> exempts valid query characters from being\n        percent-encoded, either in their entirety with dont_quote=True,\n        or selectively with dont_quote=<string>, like\n        dont_quote='/?@_'. Invalid query characters -- those not in\n        self.SAFE_KEY_CHARS, like '#' and '^' -- are always encoded,\n        even if included in <dont_quote>. For example:\n\n          Query('#=^').encode(dont_quote='#^') == '%23=%5E'.\n\n        Returns: A URL encoded query string using <delimiter> as the\n        delimiter separating key:value pairs. The most common and\n        default delimiter is '&', but ';' can also be specified. ';' is\n        W3C recommended.\n        \"\"\"\n        if delimeter is not _absent:\n            delimiter = delimeter\n\n        quote_key = create_quote_fn(self.SAFE_KEY_CHARS, quote_plus)\n        quote_value = create_quote_fn(self.SAFE_VALUE_CHARS, quote_plus)\n\n        pairs = []\n        for key, value in self.params.iterallitems():\n            utf8key = utf8(key, utf8(attemptstr(key)))\n            quoted_key = quote_key(utf8key, dont_quote)\n\n            if value is None:  # Example: http://sprop.su/?key.\n                pair = quoted_key\n            else:  # Example: http://sprop.su/?key=value.\n                utf8value = utf8(value, utf8(attemptstr(value)))\n                quoted_value = quote_value(utf8value, dont_quote)\n\n                if not quoted_key:  # Unquote '=' to allow queries like '?==='.\n                    quoted_value = quoted_value.replace('%3D', '=')\n\n                pair = '%s=%s' % (quoted_key, quoted_value)\n\n            pairs.append(pair)\n\n        query = delimiter.join(pairs)\n\n        return query\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('furl.furl')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'furl/furl.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nq=m.Query([('a b','c d'),('flag',None),('a b','two')])\nr=q.encode(delimiter=';',quote_plus=True)\nprint('encoded_query',r)\nassert r=='a+b=c+d;flag;a+b=two'\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "aa665f410fc8e7952221adcb21708a1340e81cebf137e11c787f554b4b0178c6"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Query serialization must encode original keys and values in insertion order, use one key/value separator, preserve missing values, and honor quoting and pair delimiter options. The actual source-bound reproduction passes after the production repair. Patch submitted."
+}

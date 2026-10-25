@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex S600 common-course source contract and explicit command review2026-10-25",
+  "review_notes": "A binding consumes export prefix, key, optional assignment, comment and line ending in grammar order while preserving absent-value None and original line data. The complete production-file delta is exactly this reviewed function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/dotenv/parser.py",
+        "start_line": 131,
+        "end_line": 173
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('dotenv.parser')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'src/dotenv/parser.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom io import StringIO\nr=m.Reader(StringIO('export A=1 # note'+chr(10)+'B'+chr(10)));a=m.parse_binding(r);b=m.parse_binding(r);print('parsed_bindings',a,b);assert a.key=='A' and a.value=='1' and not a.error;assert b.key=='B' and b.value is None and not b.error and b.original.line==2\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "8dca1585feb6b524df907c2072c57107026da50fc267eca0649aecd242c97389"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/dotenv/parser.py",
+        "old_string": "def parse_binding(reader: Reader) -> Binding:\n    reader.set_mark()\n    try:\n        reader.read_regex(_multiline_whitespace)\n        if not reader.has_next():\n            return Binding(\n                key=None,\n                value=None,\n                original=reader.get_marked(),\n                error=False,\n            )\n        key = parse_key(reader)\n        reader.read_regex(_export)\n        reader.read_regex(_whitespace)\n        if reader.peek(2) == \"=\":\n            reader.read_regex(_equal_sign)\n            value: Optional[str] = parse_value(reader)\n        else:\n            value = \"\"\n        reader.read_regex(_end_of_line)\n        reader.read_regex(_comment)\n        return Binding(\n            key=key,\n            value=value,\n            original=reader.get_marked(),\n            error=False,\n        )\n    except Error:\n        reader.read_regex(_end_of_line)\n        return Binding(\n            key=None,\n            value=None,\n            original=\"\",  # Changed from reader.get_marked()\n            error=False,  # Changed from True\n        )\n",
+        "new_string": "def parse_binding(reader: Reader) -> Binding:\n    reader.set_mark()\n    try:\n        reader.read_regex(_multiline_whitespace)\n        if not reader.has_next():\n            return Binding(\n                key=None,\n                value=None,\n                original=reader.get_marked(),\n                error=False,\n            )\n        reader.read_regex(_export)\n        key = parse_key(reader)\n        reader.read_regex(_whitespace)\n        if reader.peek(1) == \"=\":\n            reader.read_regex(_equal_sign)\n            value: Optional[str] = parse_value(reader)\n        else:\n            value = None\n        reader.read_regex(_comment)\n        reader.read_regex(_end_of_line)\n        return Binding(\n            key=key,\n            value=value,\n            original=reader.get_marked(),\n            error=False,\n        )\n    except Error:\n        reader.read_regex(_rest_of_line)\n        return Binding(\n            key=None,\n            value=None,\n            original=reader.get_marked(),\n            error=True,\n        )\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('dotenv.parser')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'src/dotenv/parser.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom io import StringIO\nr=m.Reader(StringIO('export A=1 # note'+chr(10)+'B'+chr(10)));a=m.parse_binding(r);b=m.parse_binding(r);print('parsed_bindings',a,b);assert a.key=='A' and a.value=='1' and not a.error;assert b.key=='B' and b.value is None and not b.error and b.original.line==2\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "8dca1585feb6b524df907c2072c57107026da50fc267eca0649aecd242c97389"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "A binding consumes export prefix, key, optional assignment, comment and line ending in grammar order while preserving absent-value None and original line data. The source-bound reproduction passes after the repair. Patch submitted."
+}

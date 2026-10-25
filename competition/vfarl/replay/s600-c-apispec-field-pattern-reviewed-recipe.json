@@ -1,0 +1,66 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Project an actual Regexp validator into its schema pattern. Optional-validator conditions and iterator exhaustion handling are inverted, and the pattern is discarded. Return the first regex pattern, return no attribute if none exists and preserve bounded extra-validator warning behavior. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/apispec/ext/marshmallow/field_converter.py",
+        "start_line": 399,
+        "end_line": 427
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/apispec/ext/marshmallow/field_converter.py').resolve()\ntry:\n module = importlib.import_module('apispec.ext.marshmallow.field_converter')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom apispec import APISpec\nfrom apispec.ext.marshmallow import MarshmallowPlugin\nfrom marshmallow import Schema,fields,validate\nplugin=MarshmallowPlugin()\nspec=APISpec(title='demo',version='1',openapi_version='3.0.3',plugins=[plugin])\nconverter=plugin.converter\nfield=fields.String(validate=validate.Regexp('^[a-z]+$'))\nvalue=converter.field2pattern(field)\nprint('field_pattern',value)\nassert value=={'pattern':'^[a-z]+$'}\nassert converter.field2pattern(fields.String())=={}\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "9cc517d1dba5bdbebc82c0b2ef32d430ff6f66cb604cf4a779469e4eba7690d1"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/apispec/ext/marshmallow/field_converter.py",
+        "old_string": "            if isinstance(getattr(v, \"regex\", None), re.Pattern)\n        )\n        v = next(regex_validators, None)\n        attributes = {} if v is not None else {\"pattern\": v.regex.pattern}  # type:ignore\n\n        if next(regex_validators) is None:\n            warnings.warn(\n                f\"More than one regex validator defined on {type(field)} field. Only the \"\n                \"first one will be used in the output spec.\",\n",
+        "new_string": "            if isinstance(getattr(v, \"regex\", None), re.Pattern)\n        )\n        v = next(regex_validators, None)\n        attributes = {} if v is None else {\"pattern\": v.regex.pattern}  # type:ignore\n\n        if next(regex_validators, None) is not None:\n            warnings.warn(\n                f\"More than one regex validator defined on {type(field)} field. Only the \"\n                \"first one will be used in the output spec.\",\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/apispec/ext/marshmallow/field_converter.py",
+        "old_string": "                stacklevel=2,\n            )\n\n        return {}\n\n    def metadata2properties(\n        self, field: marshmallow.fields.Field, **kwargs: typing.Any\n",
+        "new_string": "                stacklevel=2,\n            )\n\n        return attributes\n\n    def metadata2properties(\n        self, field: marshmallow.fields.Field, **kwargs: typing.Any\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/apispec/ext/marshmallow/field_converter.py').resolve()\ntry:\n module = importlib.import_module('apispec.ext.marshmallow.field_converter')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom apispec import APISpec\nfrom apispec.ext.marshmallow import MarshmallowPlugin\nfrom marshmallow import Schema,fields,validate\nplugin=MarshmallowPlugin()\nspec=APISpec(title='demo',version='1',openapi_version='3.0.3',plugins=[plugin])\nconverter=plugin.converter\nfield=fields.String(validate=validate.Regexp('^[a-z]+$'))\nvalue=converter.field2pattern(field)\nprint('field_pattern',value)\nassert value=={'pattern':'^[a-z]+$'}\nassert converter.field2pattern(fields.String())=={}\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "9cc517d1dba5bdbebc82c0b2ef32d430ff6f66cb604cf4a779469e4eba7690d1"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Return the first regex pattern, return no attribute if none exists and preserve bounded extra-validator warning behavior. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

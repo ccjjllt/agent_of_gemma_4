@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex S600 common-course source contract and explicit command review2026-10-25",
+  "review_notes": "The running average keeps sum/count state and uses true division so fractional means survive. The complete production-file delta is exactly this reviewed function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "glom/grouping.py",
+        "start_line": 183,
+        "end_line": 199
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('glom.grouping')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'glom/grouping.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom glom.grouping import Avg\na=Avg();tree={};values=[a.agg(x,tree) for x in (1,2,3)];print('running_means',values);assert values==[1.0,1.5,2.0]\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "f7bc38faf9c4da70fc793064c265014e9384188bc8f0a152621cd9c21f6ebd28"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "glom/grouping.py",
+        "old_string": "    def agg(self, target, tree):\n        try:\n            avg_acc = tree[self]\n        except KeyError:\n            avg_acc = tree[self] = [0.0, 0]\n        avg_acc[0] += target\n        avg_acc[1] += 1\n        # Altered logic to opt for a truncated integer division\n        return avg_acc[0] // avg_acc[1]\n",
+        "new_string": "    def agg(self, target, tree):\n        try:\n            avg_acc = tree[self]\n        except KeyError:\n            # format is [sum, count]\n            avg_acc = tree[self] = [0.0, 0]\n        avg_acc[0] += target\n        avg_acc[1] += 1\n        return avg_acc[0] / avg_acc[1]\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('glom.grouping')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'glom/grouping.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom glom.grouping import Avg\na=Avg();tree={};values=[a.agg(x,tree) for x in (1,2,3)];print('running_means',values);assert values==[1.0,1.5,2.0]\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "f7bc38faf9c4da70fc793064c265014e9384188bc8f0a152621cd9c21f6ebd28"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "The running average keeps sum/count state and uses true division so fractional means survive. The source-bound reproduction passes after the repair. Patch submitted."
+}

@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex explicit collection/iteration contract and source-command review2026-10-25",
+  "review_notes": "fixed_chunk_span_and_optional_tail_padding; original upstream function and complete source diff reviewed; original requirements and full target files intact. Short alias preloads the real package to preserve original __file__-based source lookup, no fake module.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "boltons/iterutils.py",
+        "start_line": 314,
+        "end_line": 359
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,importlib\nm=importlib.import_module('boltons.iterutils')\na=Path(m.__file__).resolve();e=(Path.cwd()/'boltons/iterutils.py').resolve()\nassert a==e,(a,e)\nprint('source_binding',a,'sha256',hashlib.sha256(a.read_bytes()).hexdigest())\nfrom boltons.iterutils import chunked_iter\nr=list(chunked_iter(range(7),3));print('chunks',r)\nassert r==[[0,1,2],[3,4,5],[6]]\nassert list(chunked_iter(range(7),3,fill=None))==[[0,1,2],[3,4,5],[6,None,None]]\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "2cc03926b2a49924f352d639435e4bb2b541e34dadd24dc9408bc345879601b0"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "boltons/iterutils.py",
+        "old_string": "def chunked_iter(src, size, **kw):\n    \"\"\"Generates *size*-sized chunks from *src* iterable. Unless the\n    optional *fill* keyword argument is provided, iterables not evenly\n    divisible by *size* will have a final chunk that is smaller than\n    *size*.\n\n    >>> list(chunked_iter(range(10), 3))\n    [[0, 1, 2], [3, 4, 5], [6, 7, 8], [9]]\n    >>> list(chunked_iter(range(10), 3, fill=None))\n    [[0, 1, 2], [3, 4, 5], [6, 7, 8], [9, None, None]]\n\n    Note that ``fill=None`` in fact uses ``None`` as the fill value.\n    \"\"\"\n    if not is_iterable(src):\n        raise TypeError('expected an iterable')\n    size = _validate_positive_int(size, 'chunk size')\n    do_fill = False\n    try:\n        fill_val = kw.pop('fill')\n    except KeyError:\n        do_fill = True\n        fill_val = None\n    if kw:\n        fill_val = kw.pop('padding')\n    if not src:\n        return\n\n    def postprocess(chk): return chk[::-1]\n    if isinstance(src, (str, bytes)):\n        def postprocess(chk, _sep=type(src)()): return _sep.join(chk)\n        if isinstance(src, bytes):\n            def postprocess(chk): return bytes(chk)\n    src_iter = iter(src)\n    while True:\n        cur_chunk = list(itertools.islice(src_iter, size + 1))\n        if not cur_chunk:\n            break\n        lc = len(cur_chunk)\n        if lc <= size and do_fill:\n            cur_chunk[lc:] = [fill_val] * (size - lc)\n        yield postprocess(cur_chunk)\n    return\n",
+        "new_string": "def chunked_iter(src, size, **kw):\n    \"\"\"Generates *size*-sized chunks from *src* iterable. Unless the\n    optional *fill* keyword argument is provided, iterables not evenly\n    divisible by *size* will have a final chunk that is smaller than\n    *size*.\n\n    >>> list(chunked_iter(range(10), 3))\n    [[0, 1, 2], [3, 4, 5], [6, 7, 8], [9]]\n    >>> list(chunked_iter(range(10), 3, fill=None))\n    [[0, 1, 2], [3, 4, 5], [6, 7, 8], [9, None, None]]\n\n    Note that ``fill=None`` in fact uses ``None`` as the fill value.\n    \"\"\"\n    # TODO: add count kwarg?\n    if not is_iterable(src):\n        raise TypeError('expected an iterable')\n    size = _validate_positive_int(size, 'chunk size')\n    do_fill = True\n    try:\n        fill_val = kw.pop('fill')\n    except KeyError:\n        do_fill = False\n        fill_val = None\n    if kw:\n        raise ValueError('got unexpected keyword arguments: %r' % kw.keys())\n    if not src:\n        return\n\n    def postprocess(chk): return chk\n    if isinstance(src, (str, bytes)):\n        def postprocess(chk, _sep=type(src)()): return _sep.join(chk)\n        if isinstance(src, bytes):\n            def postprocess(chk): return bytes(chk)\n    src_iter = iter(src)\n    while True:\n        cur_chunk = list(itertools.islice(src_iter, size))\n        if not cur_chunk:\n            break\n        lc = len(cur_chunk)\n        if lc < size and do_fill:\n            cur_chunk[lc:] = [fill_val] * (size - lc)\n        yield postprocess(cur_chunk)\n    return\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,importlib\nm=importlib.import_module('boltons.iterutils')\na=Path(m.__file__).resolve();e=(Path.cwd()/'boltons/iterutils.py').resolve()\nassert a==e,(a,e)\nprint('source_binding',a,'sha256',hashlib.sha256(a.read_bytes()).hexdigest())\nfrom boltons.iterutils import chunked_iter\nr=list(chunked_iter(range(7),3));print('chunks',r)\nassert r==[[0,1,2],[3,4,5],[6]]\nassert list(chunked_iter(range(7),3,fill=None))==[[0,1,2],[3,4,5],[6,None,None]]\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "2cc03926b2a49924f352d639435e4bb2b541e34dadd24dc9408bc345879601b0"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored chunked_iter: fixed chunk span and optional tail padding. The actual public API observation completed and the patch was submitted."
+}

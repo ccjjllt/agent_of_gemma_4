@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Convert a Python Enum field once by name and once by numeric value. Name/value selection is inverted and an unrelated schema property is injected. Serialize member names for by_value=False and member values for by_value=True without extra properties. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/apispec/ext/marshmallow/field_converter.py",
+        "start_line": 546,
+        "end_line": 570
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/apispec/ext/marshmallow/field_converter.py').resolve()\ntry:\n module = importlib.import_module('apispec.ext.marshmallow.field_converter')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom apispec import APISpec\nfrom apispec.ext.marshmallow import MarshmallowPlugin\nfrom marshmallow import Schema,fields,validate\nplugin=MarshmallowPlugin()\nspec=APISpec(title='demo',version='1',openapi_version='3.0.3',plugins=[plugin])\nconverter=plugin.converter\nfrom enum import Enum\nclass Color(Enum):\n RED=1\n BLUE=2\nnames=converter.enum2properties(fields.Enum(Color))\nvalues=converter.enum2properties(fields.Enum(Color,by_value=True))\nprint('enum_representations',names,values)\nassert names['enum']==['RED','BLUE'] and values['enum']==[1,2]\nassert 'additionalProperty' not in names and 'additionalProperty' not in values\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "ed08820edd80990c97cfe63a2bcf519703dad852e070fd2164ec0a0bfd02a01a"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/apispec/ext/marshmallow/field_converter.py",
+        "old_string": "        ret = {}\n        if isinstance(field, marshmallow.fields.Enum):\n            ret = self.field2property(field.field)\n            if field.by_value is True:\n                choices = (m for m in field.enum.__members__)\n            else:\n                choices = (m.value for m in field.enum)\n\n            ret[\"enum\"] = [field.field._serialize(v, None, None) for v in choices]\n            if field.allow_none and None not in ret[\"enum\"]:\n                ret[\"enum\"].append(None)\n        ret[\"additionalProperty\"] = \"unexpected\"\n        return ret\n\n    def datetime2properties(self, field, **kwargs: typing.Any) -> dict:\n",
+        "new_string": "        ret = {}\n        if isinstance(field, marshmallow.fields.Enum):\n            ret = self.field2property(field.field)\n            if field.by_value is False:\n                choices = (m for m in field.enum.__members__)\n            else:\n                choices = (m.value for m in field.enum)\n            ret[\"enum\"] = [field.field._serialize(v, None, None) for v in choices]\n            if field.allow_none and None not in ret[\"enum\"]:\n                ret[\"enum\"].append(None)\n        return ret\n\n    def datetime2properties(self, field, **kwargs: typing.Any) -> dict:\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/apispec/ext/marshmallow/field_converter.py').resolve()\ntry:\n module = importlib.import_module('apispec.ext.marshmallow.field_converter')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom apispec import APISpec\nfrom apispec.ext.marshmallow import MarshmallowPlugin\nfrom marshmallow import Schema,fields,validate\nplugin=MarshmallowPlugin()\nspec=APISpec(title='demo',version='1',openapi_version='3.0.3',plugins=[plugin])\nconverter=plugin.converter\nfrom enum import Enum\nclass Color(Enum):\n RED=1\n BLUE=2\nnames=converter.enum2properties(fields.Enum(Color))\nvalues=converter.enum2properties(fields.Enum(Color,by_value=True))\nprint('enum_representations',names,values)\nassert names['enum']==['RED','BLUE'] and values['enum']==[1,2]\nassert 'additionalProperty' not in names and 'additionalProperty' not in values\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "ed08820edd80990c97cfe63a2bcf519703dad852e070fd2164ec0a0bfd02a01a"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Serialize member names for by_value=False and member values for by_value=True without extra properties. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex S600 source contract and explicit command review 2026-10-25",
+  "review_notes": "Multivalue update separates replacements from appended leftovers, treats a scalar as one value, preserves existing per-key order, and honors an empty list as deletion. Individually reviewed source/defect change and reproduction. Original full-file verification and requirements retained; not sampled Gemma, not a same-state preference pair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "furl/omdict1D.py",
+        "start_line": 64,
+        "end_line": 99
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('furl.omdict1D')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'furl/omdict1D.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nd=m.omdict1D([('a',1),('a',2),('b',3)]);d.updateall([('a',[4,5,6]),('b',[])])\nprint('updated_multivalues',d.allitems())\nassert d.allitems()==[('a',4),('a',5),('a',6)]\ne=m.omdict1D([('a',1)]);e.updateall([('a',7)]);assert e.values('a')==[7]\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "1a998a5dcb45ed307912da9506cf83f15002d7d13ea81ab14c722f1d404f9351"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "furl/omdict1D.py",
+        "old_string": "    def _bin_update_items(self, items, replace_at_most_one,\n                          replacements, leftovers):\n        \"\"\"\n        Subclassed from omdict._bin_update_items() to make update() and\n        updateall() process lists of values as multiple values.\n\n        <replacements> and <leftovers> are modified directly, ala pass by\n        reference.\n        \"\"\"\n        for key, values in items:\n            like_list_not_str = is_iterable_but_not_string(values)\n            if like_list_not_str and not values:\n                values = [values]\n\n            for value in values:\n                if value == []:\n                    leftovers[:] = [lst for lst in leftovers if key != lst[0]]\n                    replacements[key] = [value]\n                elif (key not in self and\n                      replacements.get(key, _absent) in [[], _absent]):\n                    leftovers.append((key, value))\n                elif (key in self and not replace_at_most_one and\n                      len(replacements[key]) <= len(self.values(key))):\n                    replacements[key].append(value)\n                elif replace_at_most_one:\n                    replacements[key].extend([value])\n                else:\n                    replacements[key] = [value]\n",
+        "new_string": "    def _bin_update_items(self, items, replace_at_most_one,\n                          replacements, leftovers):\n        \"\"\"\n        Subclassed from omdict._bin_update_items() to make update() and\n        updateall() process lists of values as multiple values.\n\n        <replacements> and <leftovers> are modified directly, ala pass by\n        reference.\n        \"\"\"\n        for key, values in items:\n            # <values> is not a list or an empty list.\n            like_list_not_str = is_iterable_but_not_string(values)\n            if not like_list_not_str or (like_list_not_str and not values):\n                values = [values]\n\n            for value in values:\n                # If the value is [], remove any existing leftovers with\n                # key <key> and set the list of values itself to [],\n                # which in turn will later delete <key> when [] is\n                # passed to omdict.setlist() in\n                # omdict._update_updateall().\n                if value == []:\n                    replacements[key] = []\n                    leftovers[:] = [lst for lst in leftovers if key != lst[0]]\n                # If there are existing items with key <key> that have\n                # yet to be marked for replacement, mark that item's\n                # value to be replaced by <value> by appending it to\n                # <replacements>.\n                elif (key in self and\n                      replacements.get(key, _absent) in [[], _absent]):\n                    replacements[key] = [value]\n                elif (key in self and not replace_at_most_one and\n                      len(replacements[key]) < len(self.values(key))):\n                    replacements[key].append(value)\n                elif replace_at_most_one:\n                    replacements[key] = [value]\n                else:\n                    leftovers.append((key, value))\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('furl.omdict1D')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'furl/omdict1D.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nd=m.omdict1D([('a',1),('a',2),('b',3)]);d.updateall([('a',[4,5,6]),('b',[])])\nprint('updated_multivalues',d.allitems())\nassert d.allitems()==[('a',4),('a',5),('a',6)]\ne=m.omdict1D([('a',1)]);e.updateall([('a',7)]);assert e.values('a')==[7]\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "1a998a5dcb45ed307912da9506cf83f15002d7d13ea81ab14c722f1d404f9351"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Multivalue update separates replacements from appended leftovers, treats a scalar as one value, preserves existing per-key order, and honors an empty list as deletion. The actual source-bound reproduction passes after the production repair. Patch submitted."
+}

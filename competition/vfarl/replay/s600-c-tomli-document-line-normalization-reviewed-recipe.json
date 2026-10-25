@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Parse a complete valid document with CRLF statement boundaries. The rewrite removes initial CRLF normalization and changes statement/pending-flag boundaries. Normalize document line endings before applying the original statement grammar. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/tomli/_parser.py",
+        "start_line": 124,
+        "end_line": 212
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/tomli/_parser.py').resolve()\ntry:\n module = importlib.import_module('tomli._parser')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport tomli\nvalue=tomli.loads('first=1\\r\\nsecond=2\\r\\n');print('normalized_document_lines',value)\nassert value=={'first':1,'second':2}\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "86ee4fca78787111f640225de9751907f10b5c4f81d33ca55d595cdf07c82704"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/tomli/_parser.py",
+        "old_string": "    return loads(s, parse_float=parse_float)\n\n\ndef loads(__s: str, *, parse_float: ParseFloat=float) ->dict[str, Any]:\n    \"\"\"Parse TOML from a string.\"\"\"\n    parse_float = make_safe_parse_float(parse_float)\n    \n    out = Output(NestedDict(), Flags())\n    pos = 0\n    header: Key = ()\n    \n    # Skip initial comments and whitespace\n    pos = skip_comments_and_array_ws(__s, pos)\n    \n    while pos < len(__s):\n        # Skip comments and whitespace\n        pos_before_skip = pos\n        pos = skip_comments_and_array_ws(__s, pos)\n        if pos >= len(__s):\n            break\n        \n        # Check for table headers\n        if __s.startswith(\"[[\", pos):\n            pos, header = create_list_rule(__s, pos, out)\n        elif __s.startswith(\"[\", pos):\n            pos, header = create_dict_rule(__s, pos, out)\n        else:\n            # Parse key/value pairs\n            pos = key_value_rule(__s, pos, out, header, parse_float)\n        \n        # Finalize any pending flags after processing a line\n        out.flags.finalize_pending()\n        \n        # If we didn't advance, we're stuck in an infinite loop\n        if pos == pos_before_skip:\n            raise TOMLDecodeError(\"Parser stuck\", __s, pos)\n    \n    return out.data.dict\n\nclass Flags:\n    \"\"\"Flags that map to parsed keys/namespaces.\"\"\"\n\n",
+        "new_string": "    return loads(s, parse_float=parse_float)\n\n\ndef loads(__s: str, *, parse_float: ParseFloat = float) -> dict[str, Any]:  # noqa: C901\n    \"\"\"Parse TOML from a string.\"\"\"\n\n    # The spec allows converting \"\\r\\n\" to \"\\n\", even in string\n    # literals. Let's do so to simplify parsing.\n    try:\n        src = __s.replace(\"\\r\\n\", \"\\n\")\n    except (AttributeError, TypeError):\n        raise TypeError(\n            f\"Expected str object, not '{type(__s).__qualname__}'\"\n        ) from None\n    pos = 0\n    out = Output(NestedDict(), Flags())\n    header: Key = ()\n    parse_float = make_safe_parse_float(parse_float)\n\n    # Parse one statement at a time\n    # (typically means one line in TOML source)\n    while True:\n        # 1. Skip line leading whitespace\n        pos = skip_chars(src, pos, TOML_WS)\n\n        # 2. Parse rules. Expect one of the following:\n        #    - end of file\n        #    - end of line\n        #    - comment\n        #    - key/value pair\n        #    - append dict to list (and move to its namespace)\n        #    - create dict (and move to its namespace)\n        # Skip trailing whitespace when applicable.\n        try:\n            char = src[pos]\n        except IndexError:\n            break\n        if char == \"\\n\":\n            pos += 1\n            continue\n        if char in KEY_INITIAL_CHARS:\n            pos = key_value_rule(src, pos, out, header, parse_float)\n            pos = skip_chars(src, pos, TOML_WS)\n        elif char == \"[\":\n            try:\n                second_char: str | None = src[pos + 1]\n            except IndexError:\n                second_char = None\n            out.flags.finalize_pending()\n            if second_char == \"[\":\n                pos, header = create_list_rule(src, pos, out)\n            else:\n                pos, header = create_dict_rule(src, pos, out)\n            pos = skip_chars(src, pos, TOML_WS)\n        elif char != \"#\":\n            raise TOMLDecodeError(\"Invalid statement\", src, pos)\n\n        # 3. Skip comment\n        pos = skip_comment(src, pos)\n\n        # 4. Expect end of line or end of file\n        try:\n            char = src[pos]\n        except IndexError:\n            break\n        if char != \"\\n\":\n            raise TOMLDecodeError(\n                \"Expected newline or end of document after a statement\", src, pos\n            )\n        pos += 1\n\n    return out.data.dict\n\n\nclass Flags:\n    \"\"\"Flags that map to parsed keys/namespaces.\"\"\"\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/tomli/_parser.py').resolve()\ntry:\n module = importlib.import_module('tomli._parser')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport tomli\nvalue=tomli.loads('first=1\\r\\nsecond=2\\r\\n');print('normalized_document_lines',value)\nassert value=={'first':1,'second':2}\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "86ee4fca78787111f640225de9751907f10b5c4f81d33ca55d595cdf07c82704"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Normalize document line endings before applying the original statement grammar. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

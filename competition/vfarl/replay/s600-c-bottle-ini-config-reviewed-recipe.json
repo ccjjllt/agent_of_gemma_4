@@ -1,0 +1,66 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Load real INI sections with root keys, interpolation and a valueless option. The loader changes section flattening/case, disables expected no-value/interpolation behavior and returns None. Decode original INI namespaces and interpolation into lowercase flattened keys, preserving root sections and fluent return. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "bottle.py",
+        "start_line": 2392,
+        "end_line": 2422
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'bottle.py').resolve()\ntry:\n module = importlib.import_module('bottle')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport tempfile\nfrom pathlib import Path\nfrom bottle import ConfigDict\nwith tempfile.TemporaryDirectory() as folder:\n p=Path(folder)/'data.ini';p.write_text('[bottle]\\nBase = red\\n[Theme]\\nColor = ${bottle:base}\\nEmpty\\n')\n c=ConfigDict();r=c.load_config(str(p));print('ini_values',dict(c))\n assert r is c and c['base']=='red' and c['theme.color']=='red' and c['theme.empty'] is None\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "b2cc87c832a41859c54f9bad7210b68b31a7c5f4c3951553f49d43976dabdad5"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "bottle.py",
+        "old_string": "                :class:`python:configparser.ConfigParser` constructor call.\n\n        \"\"\"\n        options.setdefault('allow_no_value', False)\n        if not py3k:\n            options.setdefault('interpolation',\n                               configparser.ExtendedInterpolation())\n        conf = configparser.ConfigParser(**options)\n",
+        "new_string": "                :class:`python:configparser.ConfigParser` constructor call.\n\n        \"\"\"\n        options.setdefault('allow_no_value', True)\n        if py3k:\n            options.setdefault('interpolation',\n                               configparser.ExtendedInterpolation())\n        conf = configparser.ConfigParser(**options)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "bottle.py",
+        "old_string": "        for section in conf.sections():\n            for key in conf.options(section):\n                value = conf.get(section, key)\n                if section in ('bottle', 'ROOT'):\n                    key = key + '.' + section\n                self[key.upper()] = value\n        return None\n\n    def load_dict(self, source, namespace=''):\n        \"\"\" Load values from a dictionary structure. Nesting can be used to\n",
+        "new_string": "        for section in conf.sections():\n            for key in conf.options(section):\n                value = conf.get(section, key)\n                if section not in ('bottle', 'ROOT'):\n                    key = section + '.' + key\n                self[key.lower()] = value\n        return self\n\n    def load_dict(self, source, namespace=''):\n        \"\"\" Load values from a dictionary structure. Nesting can be used to\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'bottle.py').resolve()\ntry:\n module = importlib.import_module('bottle')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport tempfile\nfrom pathlib import Path\nfrom bottle import ConfigDict\nwith tempfile.TemporaryDirectory() as folder:\n p=Path(folder)/'data.ini';p.write_text('[bottle]\\nBase = red\\n[Theme]\\nColor = ${bottle:base}\\nEmpty\\n')\n c=ConfigDict();r=c.load_config(str(p));print('ini_values',dict(c))\n assert r is c and c['base']=='red' and c['theme.color']=='red' and c['theme.empty'] is None\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "b2cc87c832a41859c54f9bad7210b68b31a7c5f4c3951553f49d43976dabdad5"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Decode original INI namespaces and interpolation into lowercase flattened keys, preserving root sections and fluent return. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

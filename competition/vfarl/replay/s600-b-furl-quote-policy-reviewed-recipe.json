@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex S600 source contract and explicit command review 2026-10-25",
+  "review_notes": "Quoting policy must intersect requested unquoted characters with the declared safe set and convert encoded spaces to plus only when requested. Individually reviewed source/defect change and reproduction. Original full-file verification and requirements retained; not sampled Gemma, not a same-state preference pair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "furl/furl.py",
+        "start_line": 142,
+        "end_line": 168
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('furl.furl')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'furl/furl.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nquote=m.create_quote_fn('/:',True)\na=quote('a b/c:d',False);b=quote('a b/c:d',True);c=quote('a b/c:d','/!')\nprint('quote_policies',a,b,c)\nassert (a,b,c)==('a+b%2Fc%3Ad','a+b/c:d','a+b/c%3Ad')\nassert m.create_quote_fn('/',False)('a b/c',False)=='a%20b%2Fc'\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "0d071549257b1c98fbed8b0cc3abedfdc2ff14084d3d8dbc3a9bb7a0664d4029"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "furl/furl.py",
+        "old_string": "def create_quote_fn(safe_charset, quote_plus):\n    def quote_fn(s, dont_quote):\n        if dont_quote is True:\n            safe = ''\n        elif dont_quote is False:\n            safe = safe_charset\n        else:  # <dont_quote> is expected to be a string.\n            safe = ''.join(set(dont_quote))  # Incorrect data transformation\n\n        # Prune duplicates and characters not in <safe_charset>.\n        safe = ''.join(set(safe) | set(safe_charset))  # Use union instead of intersection\n\n        quoted = quote(s, safe)\n        if not quote_plus:  # Invert condition\n            quoted = quoted.replace('+', '%20')\n\n        return quoted\n\n    return quote_fn\n",
+        "new_string": "def create_quote_fn(safe_charset, quote_plus):\n    def quote_fn(s, dont_quote):\n        if dont_quote is True:\n            safe = safe_charset\n        elif dont_quote is False:\n            safe = ''\n        else:  # <dont_quote> is expected to be a string.\n            safe = dont_quote\n\n        # Prune duplicates and characters not in <safe_charset>.\n        safe = ''.join(set(safe) & set(safe_charset))  # E.g. '?^#?' -> '?'.\n\n        quoted = quote(s, safe)\n        if quote_plus:\n            quoted = quoted.replace('%20', '+')\n\n        return quoted\n\n    return quote_fn\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('furl.furl')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'furl/furl.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nquote=m.create_quote_fn('/:',True)\na=quote('a b/c:d',False);b=quote('a b/c:d',True);c=quote('a b/c:d','/!')\nprint('quote_policies',a,b,c)\nassert (a,b,c)==('a+b%2Fc%3Ad','a+b/c:d','a+b/c%3Ad')\nassert m.create_quote_fn('/',False)('a b/c',False)=='a%20b%2Fc'\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "0d071549257b1c98fbed8b0cc3abedfdc2ff14084d3d8dbc3a9bb7a0664d4029"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Quoting policy must intersect requested unquoted characters with the declared safe set and convert encoded spaces to plus only when requested. The actual source-bound reproduction passes after the production repair. Patch submitted."
+}

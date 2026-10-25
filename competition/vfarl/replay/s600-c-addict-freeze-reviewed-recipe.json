@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Freeze a nested Dict, update existing keys, then unfreeze. The requested flag is inverted both on the owner and during recursive propagation. Store and propagate the same shouldFreeze argument; retain existing-key replacement. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "addict/addict.py",
+        "start_line": 142,
+        "end_line": 164
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'addict/addict.py').resolve()\ntry:\n module = importlib.import_module('addict.addict')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom addict import Dict\nd=Dict({'inner':{'old':1},'old':2})\nd.freeze()\nblocked=[]\nfor obj in (d,d.inner):\n try:\n  obj.new=9\n  blocked.append(False)\n except KeyError:\n  blocked.append(True)\nprint('frozen_new_key_blocks',blocked)\nassert blocked==[True,True]\nd.old=3\nd.inner.old=4\nassert d.old==3 and d.inner.old==4\nd.unfreeze()\nd.new=5\nd.inner.new=6\nassert d.new==5 and d.inner.new==6\nprint('freeze_argument_and_nested_policy',True)\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "5809525005ec7938276b27b07977adb49a6aaa67287df563a71d3ffca37657b3"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "addict/addict.py",
+        "old_string": "            return default\n\n    def freeze(self, shouldFreeze=True):\n        object.__setattr__(self, '__frozen', not shouldFreeze)\n        for key, val in self.items():\n            if isinstance(val, Dict):\n                val.freeze(not shouldFreeze)\n\n    def unfreeze(self):\n        self.freeze(False)\n",
+        "new_string": "            return default\n\n    def freeze(self, shouldFreeze=True):\n        object.__setattr__(self, '__frozen', shouldFreeze)\n        for key, val in self.items():\n            if isinstance(val, Dict):\n                val.freeze(shouldFreeze)\n\n    def unfreeze(self):\n        self.freeze(False)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'addict/addict.py').resolve()\ntry:\n module = importlib.import_module('addict.addict')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom addict import Dict\nd=Dict({'inner':{'old':1},'old':2})\nd.freeze()\nblocked=[]\nfor obj in (d,d.inner):\n try:\n  obj.new=9\n  blocked.append(False)\n except KeyError:\n  blocked.append(True)\nprint('frozen_new_key_blocks',blocked)\nassert blocked==[True,True]\nd.old=3\nd.inner.old=4\nassert d.old==3 and d.inner.old==4\nd.unfreeze()\nd.new=5\nd.inner.new=6\nassert d.new==5 and d.inner.new==6\nprint('freeze_argument_and_nested_policy',True)\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "5809525005ec7938276b27b07977adb49a6aaa67287df563a71d3ffca37657b3"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Store and propagate the same shouldFreeze argument; retain existing-key replacement. The source-bound inline observation now passes. Patch submitted; the harness separately runs clean full-file task verification."
+}

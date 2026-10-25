@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Append four rows to a real PrettyTable in one call. Only even-indexed rows are forwarded to add_row. Forward each input row exactly once and retain input order. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/prettytable/prettytable.py",
+        "start_line": 1563,
+        "end_line": 1582
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/prettytable/prettytable.py').resolve()\ntry:\n module = importlib.import_module('prettytable.prettytable')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom prettytable import PrettyTable\ntable=PrettyTable(['A','B'])\nrows=[[1,'first'],[2,'second'],[3,'third'],[4,'fourth']]\ntable.add_rows(rows)\nprint('stored_rows',table.rows)\nassert table.rows==rows\ntext=table.get_string()\nassert all(word in text for word in ['first','second','third','fourth'])\nprint('all_rows_reach_rendering',True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "300fbaf0608278429e97c0857692366db4ff28db80fc2a35f0904fd191812970"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/prettytable/prettytable.py",
+        "old_string": "\n        rows - rows of data, should be an iterable of lists, each list with as many\n        elements as the table has fields\"\"\"\n        for index, row in enumerate(rows):\n            if index % 2 == 0:\n                self.add_row(row)\n\n    def add_row(self, row: RowType, *, divider: bool = False) -> None:\n        \"\"\"Add a row to the table\n",
+        "new_string": "\n        rows - rows of data, should be an iterable of lists, each list with as many\n        elements as the table has fields\"\"\"\n        for row in rows:\n            self.add_row(row)\n\n    def add_row(self, row: RowType, *, divider: bool = False) -> None:\n        \"\"\"Add a row to the table\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/prettytable/prettytable.py').resolve()\ntry:\n module = importlib.import_module('prettytable.prettytable')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom prettytable import PrettyTable\ntable=PrettyTable(['A','B'])\nrows=[[1,'first'],[2,'second'],[3,'third'],[4,'fourth']]\ntable.add_rows(rows)\nprint('stored_rows',table.rows)\nassert table.rows==rows\ntext=table.get_string()\nassert all(word in text for word in ['first','second','third','fourth'])\nprint('all_rows_reach_rendering',True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "300fbaf0608278429e97c0857692366db4ff28db80fc2a35f0904fd191812970"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Forward each input row exactly once and retain input order. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

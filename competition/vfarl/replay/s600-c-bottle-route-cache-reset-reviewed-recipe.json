@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Compile a route callback, reset it, then invoke it again. The rewrite clears all route attributes instead of removing only its cached call. Invalidate the compiled callback while preserving route identity/configuration needed to rebuild it. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "bottle.py",
+        "start_line": 530,
+        "end_line": 548
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'bottle.py').resolve()\ntry:\n module = importlib.import_module('bottle')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom bottle import Bottle,Route\napp=Bottle();callback=lambda:'ok';r=Route(app,'/x','GET',callback);assert r.call()=='ok';r.reset()\nprint('route_cache_reset',r.app is app,r.callback is callback)\nassert r.app is app and r.callback is callback and r.call()=='ok'\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "b2a8f13f5c8b589a8c3deaec000c26cfeba1ca503572fcd05beaf605680d0276"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "bottle.py",
+        "old_string": "    def reset(self):\n        \"\"\" Forget any cached values. The next time :attr:`call` is accessed,\n            all plugins are re-applied. \"\"\"\n        self.__dict__.clear()\n\n    def prepare(self):\n        \"\"\" Do all on-demand work immediately (useful for debugging).\"\"\"\n",
+        "new_string": "    def reset(self):\n        \"\"\" Forget any cached values. The next time :attr:`call` is accessed,\n            all plugins are re-applied. \"\"\"\n        self.__dict__.pop('call', None)\n\n    def prepare(self):\n        \"\"\" Do all on-demand work immediately (useful for debugging).\"\"\"\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'bottle.py').resolve()\ntry:\n module = importlib.import_module('bottle')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom bottle import Bottle,Route\napp=Bottle();callback=lambda:'ok';r=Route(app,'/x','GET',callback);assert r.call()=='ok';r.reset()\nprint('route_cache_reset',r.app is app,r.callback is callback)\nassert r.app is app and r.callback is callback and r.call()=='ok'\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "b2a8f13f5c8b589a8c3deaec000c26cfeba1ca503572fcd05beaf605680d0276"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Invalidate the compiled callback while preserving route identity/configuration needed to rebuild it. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

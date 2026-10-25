@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Render a multiline header and cell as XHTML. The rewrite preserves cell linebreak conversion but omits it for header content. Convert newline boundaries in both header and data channels using the selected HTML/XHTML break encoding. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/prettytable/prettytable.py",
+        "start_line": 2387,
+        "end_line": 2465
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/prettytable/prettytable.py').resolve()\ntry:\n module = importlib.import_module('prettytable.prettytable')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom prettytable import PrettyTable\nt=PrettyTable(['a\\nb']);t.add_row(['c\\nd']);value=t.get_html_string(xhtml=True)\nprint('xhtml_linebreaks',value)\nassert '<th>a<br/>b</th>' in value and '<td>c<br/>d</td>' in value\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "17b6e110f97141e820acbc014e6e53acd29c444b805fe08bd8291acf8a82783b"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/prettytable/prettytable.py",
+        "old_string": "        return string\n\n    def _get_simple_html_string(self, options: OptionsType) -> str:\n        \"\"\"Return HTML formatted version of the table without applying styles\"\"\"\n        from html import escape\n\n        lines = []\n    \n        # Start the table\n        open_tag = [\"<table\"]\n        if options[\"attributes\"]:\n            for attr_name, attr_value in options[\"attributes\"].items():\n                open_tag.append(f' {escape(attr_name)}=\"{escape(attr_value)}\"')\n        open_tag.append(\">\")\n        lines.append(\"\".join(open_tag))\n    \n        # Add title if specified\n        title = options[\"title\"] or self._title\n        if title:\n            lines.append(f\"<caption>{escape(title)}</caption>\")\n    \n        # Add header row if requested\n        if options[\"header\"]:\n            lines.append(\"<thead>\")\n            lines.append(\"<tr>\")\n            for field in self._field_names:\n                if options[\"fields\"] and field not in options[\"fields\"]:\n                    continue\n            \n                field_content = field\n                if options[\"escape_header\"]:\n                    field_content = escape(field_content)\n                \n                lines.append(f\"<th>{field_content}</th>\")\n            lines.append(\"</tr>\")\n            lines.append(\"</thead>\")\n    \n        # Add data rows\n        lines.append(\"<tbody>\")\n        rows = self._get_rows(options)\n        formatted_rows = self._format_rows(rows)\n    \n        for row in formatted_rows:\n            lines.append(\"<tr>\")\n            for field, value in zip(self._field_names, row):\n                if options[\"fields\"] and field not in options[\"fields\"]:\n                    continue\n                \n                if options[\"escape_data\"]:\n                    value = escape(value)\n                \n                if options[\"xhtml\"]:\n                    value = value.replace(\"\\n\", \"<br/>\")\n                else:\n                    value = value.replace(\"\\n\", \"<br>\")\n                \n                lines.append(f\"<td>{value}</td>\")\n            lines.append(\"</tr>\")\n        lines.append(\"</tbody>\")\n    \n        # Close the table\n        lines.append(\"</table>\")\n    \n        return \"\\n\".join(lines)\n    def _get_formatted_html_string(self, options: OptionsType) -> str:\n        from html import escape\n\n",
+        "new_string": "        return string\n\n    def _get_simple_html_string(self, options: OptionsType) -> str:\n        from html import escape\n\n        lines: list[str] = []\n        if options[\"xhtml\"]:\n            linebreak = \"<br/>\"\n        else:\n            linebreak = \"<br>\"\n\n        open_tag = [\"<table\"]\n        if options[\"attributes\"]:\n            for attr_name, attr_value in options[\"attributes\"].items():\n                open_tag.append(f' {escape(attr_name)}=\"{escape(attr_value)}\"')\n        open_tag.append(\">\")\n        lines.append(\"\".join(open_tag))\n\n        # Title\n        title = options[\"title\"] or self._title\n        if title:\n            lines.append(f\"    <caption>{escape(title)}</caption>\")\n\n        # Headers\n        if options[\"header\"]:\n            lines.append(\"    <thead>\")\n            lines.append(\"        <tr>\")\n            for field in self._field_names:\n                if options[\"fields\"] and field not in options[\"fields\"]:\n                    continue\n                if options[\"escape_header\"]:\n                    field = escape(field)\n\n                lines.append(\n                    \"            <th>{}</th>\".format(field.replace(\"\\n\", linebreak))\n                )\n\n            lines.append(\"        </tr>\")\n            lines.append(\"    </thead>\")\n\n        # Data\n        lines.append(\"    <tbody>\")\n        rows = self._get_rows(options)\n        formatted_rows = self._format_rows(rows)\n        for row in formatted_rows:\n            lines.append(\"        <tr>\")\n            for field, datum in zip(self._field_names, row):\n                if options[\"fields\"] and field not in options[\"fields\"]:\n                    continue\n                if options[\"escape_data\"]:\n                    datum = escape(datum)\n\n                lines.append(\n                    \"            <td>{}</td>\".format(datum.replace(\"\\n\", linebreak))\n                )\n            lines.append(\"        </tr>\")\n        lines.append(\"    </tbody>\")\n        lines.append(\"</table>\")\n\n        return \"\\n\".join(lines)\n\n    def _get_formatted_html_string(self, options: OptionsType) -> str:\n        from html import escape\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/prettytable/prettytable.py').resolve()\ntry:\n module = importlib.import_module('prettytable.prettytable')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom prettytable import PrettyTable\nt=PrettyTable(['a\\nb']);t.add_row(['c\\nd']);value=t.get_html_string(xhtml=True)\nprint('xhtml_linebreaks',value)\nassert '<th>a<br/>b</th>' in value and '<td>c<br/>d</td>' in value\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "17b6e110f97141e820acbc014e6e53acd29c444b805fe08bd8291acf8a82783b"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Convert newline boundaries in both header and data channels using the selected HTML/XHTML break encoding. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

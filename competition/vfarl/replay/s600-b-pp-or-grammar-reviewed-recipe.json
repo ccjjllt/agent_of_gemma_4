@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex S600 source contract and explicit command review 2026-10-25",
+  "review_notes": "Alternative grammar selection should return the longest result actually obtained when actions run. If the nominal longest candidate becomes shorter during action-aware parsing, another alternative can still provide the full longer match. Preserve the alternative tokens and consumed span. Individually reviewed source/defect change and reproduction. Original full-file verification and requirements retained; not sampled Gemma, not a same-state preference pair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "pyparsing/core.py",
+        "start_line": 4207,
+        "end_line": 4287
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pyparsing.core')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pyparsing/core.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport pyparsing as pp\nclass ActionSensitive(pp.Token):\n def parseImpl(self,text,loc,do_actions=True):\n  if not text.startswith('ab',loc):\n   raise pp.ParseException(text,loc,'expected ab')\n  return (loc+1,['a']) if do_actions else (loc+2,['ab'])\nexpression=pp.Or([ActionSensitive(),pp.Literal('ab')])\nr=expression.parse_string('ab',parse_all=True).as_list()\nprint('action_aware_longest_alternative',r)\nassert r==['ab']\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "cec6f6683b9064173fb61b48da2028eaa3cdb296dc77bcac016a7aa8f3ae85c8"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pyparsing/core.py",
+        "old_string": "    def parseImpl(self, instring, loc, do_actions=True) -> ParseImplReturnType:\n        maxExcLoc = -1\n        maxException = None\n        matches: list[tuple[int, ParserElement]] = []\n        fatals: list[ParseFatalException] = []\n        if all(e.callPreparse for e in self.exprs):\n            loc = self.preParse(instring, loc)\n        for e in self.exprs:\n            try:\n                loc2 = e.try_parse(instring, loc, raise_fatal=True)\n            except ParseFatalException as pfe:\n                pfe.__traceback__ = None\n                pfe.parser_element = e\n                fatals.append(pfe)\n                maxException = pfe\n                maxExcLoc = pfe.loc\n            except ParseException as err:\n                if not fatals:\n                    err.__traceback__ = None\n                    if err.loc < maxExcLoc:\n                        maxException = err\n                        maxExcLoc = err.loc\n            except IndexError:\n                if len(instring) <= maxExcLoc:\n                    maxException = ParseException(\n                        instring, len(instring), e.errmsg, self\n                    )\n                    maxExcLoc = len(instring)\n            else:\n                matches.append((loc2, e))\n\n        if matches:\n            matches.sort(key=itemgetter(0), reverse=True)\n\n            if not do_actions:\n                best_expr = matches[0][1]\n                return best_expr._parse(instring, loc, do_actions)\n\n            longest: tuple[int, typing.Optional[ParseResults]] = -1, None\n            for loc1, expr1 in matches:\n                if loc1 < longest[0]:\n                    return longest\n\n                try:\n                    loc2, toks = expr1._parse(instring, loc, do_actions)\n                except ParseException as err:\n                    err.__traceback__ = None\n                    if err.loc < maxExcLoc:\n                        maxException = err\n                        maxExcLoc = err.loc\n                else:\n                    if loc2 <= loc1:\n                        return loc2, toks\n                    elif loc2 < longest[0]:\n                        longest = loc2, toks\n\n            if longest != (-1, None):\n                return longest\n\n        if fatals:\n            if len(fatals) > 1:\n                fatals.sort(key=lambda e: -e.loc)\n                if fatals[0].loc == fatals[1].loc:\n                    fatals.sort(key=lambda e: (-e.loc, len(str(e.parser_element))))\n            max_fatal = fatals[-1]\n            raise max_fatal\n\n        if maxException is not None:\n            if maxExcLoc != loc:\n                maxException.msg = self.errmsg or \"\"\n            raise maxException\n\n        raise IndexError(f\"Unexpected end of {instring}\")\n",
+        "new_string": "    def parseImpl(self, instring, loc, do_actions=True) -> ParseImplReturnType:\n        maxExcLoc = -1\n        maxException = None\n        matches: list[tuple[int, ParserElement]] = []\n        fatals: list[ParseFatalException] = []\n        if all(e.callPreparse for e in self.exprs):\n            loc = self.preParse(instring, loc)\n        for e in self.exprs:\n            try:\n                loc2 = e.try_parse(instring, loc, raise_fatal=True)\n            except ParseFatalException as pfe:\n                pfe.__traceback__ = None\n                pfe.parser_element = e\n                fatals.append(pfe)\n                maxException = None\n                maxExcLoc = -1\n            except ParseException as err:\n                if not fatals:\n                    err.__traceback__ = None\n                    if err.loc > maxExcLoc:\n                        maxException = err\n                        maxExcLoc = err.loc\n            except IndexError:\n                if len(instring) > maxExcLoc:\n                    maxException = ParseException(\n                        instring, len(instring), e.errmsg, self\n                    )\n                    maxExcLoc = len(instring)\n            else:\n                # save match among all matches, to retry longest to shortest\n                matches.append((loc2, e))\n\n        if matches:\n            # re-evaluate all matches in descending order of length of match, in case attached actions\n            # might change whether or how much they match of the input.\n            matches.sort(key=itemgetter(0), reverse=True)\n\n            if not do_actions:\n                # no further conditions or parse actions to change the selection of\n                # alternative, so the first match will be the best match\n                best_expr = matches[0][1]\n                return best_expr._parse(instring, loc, do_actions)\n\n            longest: tuple[int, typing.Optional[ParseResults]] = -1, None\n            for loc1, expr1 in matches:\n                if loc1 <= longest[0]:\n                    # already have a longer match than this one will deliver, we are done\n                    return longest\n\n                try:\n                    loc2, toks = expr1._parse(instring, loc, do_actions)\n                except ParseException as err:\n                    err.__traceback__ = None\n                    if err.loc > maxExcLoc:\n                        maxException = err\n                        maxExcLoc = err.loc\n                else:\n                    if loc2 >= loc1:\n                        return loc2, toks\n                    # didn't match as much as before\n                    elif loc2 > longest[0]:\n                        longest = loc2, toks\n\n            if longest != (-1, None):\n                return longest\n\n        if fatals:\n            if len(fatals) > 1:\n                fatals.sort(key=lambda e: -e.loc)\n                if fatals[0].loc == fatals[1].loc:\n                    fatals.sort(key=lambda e: (-e.loc, -len(str(e.parser_element))))\n            max_fatal = fatals[0]\n            raise max_fatal\n\n        if maxException is not None:\n            # infer from this check that all alternatives failed at the current position\n            # so emit this collective error message instead of any single error message\n            if maxExcLoc == loc:\n                maxException.msg = self.errmsg or \"\"\n            raise maxException\n\n        raise ParseException(instring, loc, \"no defined alternatives to match\", self)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pyparsing.core')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pyparsing/core.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport pyparsing as pp\nclass ActionSensitive(pp.Token):\n def parseImpl(self,text,loc,do_actions=True):\n  if not text.startswith('ab',loc):\n   raise pp.ParseException(text,loc,'expected ab')\n  return (loc+1,['a']) if do_actions else (loc+2,['ab'])\nexpression=pp.Or([ActionSensitive(),pp.Literal('ab')])\nr=expression.parse_string('ab',parse_all=True).as_list()\nprint('action_aware_longest_alternative',r)\nassert r==['ab']\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "cec6f6683b9064173fb61b48da2028eaa3cdb296dc77bcac016a7aa8f3ae85c8"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Alternative grammar selection should return the longest result actually obtained when actions run. If the nominal longest candidate becomes shorter during action-aware parsing, another alternative can still provide the full longer match. Preserve the alternative tokens and consumed span. The actual source-bound reproduction passes after the production repair. Patch submitted."
+}

@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex explicit collection/iteration contract and source-command review2026-10-25",
+  "review_notes": "typed_function_cache_and_zero_argument_result; original upstream function and complete source diff reviewed; original requirements and full target files intact. Short alias preloads the real package to preserve original __file__-based source lookup, no fake module.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "boltons/cacheutils.py",
+        "start_line": 460,
+        "end_line": 473
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,importlib\nm=importlib.import_module('boltons.cacheutils')\na=Path(m.__file__).resolve();e=(Path.cwd()/'boltons/cacheutils.py').resolve()\nassert a==e,(a,e)\nprint('source_binding',a,'sha256',hashlib.sha256(a.read_bytes()).hexdigest())\nfrom boltons.cacheutils import CachedFunction\ncalls=[]\ndef fn(*args):calls.append(args);return type(args[0]).__name__ if args else 'empty'\nf=CachedFunction(fn,{},typed=True);r=(f(),f(),f(1),f(1.0),f(1));print('cached_results',r,calls);assert r==('empty','empty','int','float','int') and len(calls)==3\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "ae177ceb4ccce01d31adc08427d5add051e40f39f45908d50d3abf7908e33df7"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "boltons/cacheutils.py",
+        "old_string": "    def __call__(self, *args, **kwargs):\n        cache = self.get_cache()\n        if not args and not kwargs:\n            return None\n        key = self.key_func(args, kwargs, typed=not self.typed)\n        try:\n            ret = cache[key]\n        except KeyError:\n            ret = cache[key] = self.func(*args, **kwargs)\n        return ret\n",
+        "new_string": "    def __call__(self, *args, **kwargs):\n        cache = self.get_cache()\n        key = self.key_func(args, kwargs, typed=self.typed)\n        try:\n            ret = cache[key]\n        except KeyError:\n            ret = cache[key] = self.func(*args, **kwargs)\n        return ret\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,importlib\nm=importlib.import_module('boltons.cacheutils')\na=Path(m.__file__).resolve();e=(Path.cwd()/'boltons/cacheutils.py').resolve()\nassert a==e,(a,e)\nprint('source_binding',a,'sha256',hashlib.sha256(a.read_bytes()).hexdigest())\nfrom boltons.cacheutils import CachedFunction\ncalls=[]\ndef fn(*args):calls.append(args);return type(args[0]).__name__ if args else 'empty'\nf=CachedFunction(fn,{},typed=True);r=(f(),f(),f(1),f(1.0),f(1));print('cached_results',r,calls);assert r==('empty','empty','int','float','int') and len(calls)==3\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "ae177ceb4ccce01d31adc08427d5add051e40f39f45908d50d3abf7908e33df7"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored CachedFunction.__call__: typed function cache and zero argument result. The actual public API observation completed and the patch was submitted."
+}

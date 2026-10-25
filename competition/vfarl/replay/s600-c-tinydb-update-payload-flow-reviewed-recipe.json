@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Update selected documents with a mapping, then use a callback and explicit ID iterator. Mapping payload values are replaced with None, predicate selection is inverted and explicit-ID results are discarded. Preserve payload/callback channels, selected target IDs and the reported IDs of actual updates. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "tinydb/table.py",
+        "start_line": 370,
+        "end_line": 471
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'tinydb/table.py').resolve()\ntry:\n module = importlib.import_module('tinydb.table')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom tinydb import TinyDB,where\nfrom tinydb.storages import MemoryStorage\ndb=TinyDB(storage=MemoryStorage);t=db.table('records');ids=t.insert_multiple([{'n':1},{'n':2},{'n':3}]);changed=t.update({'flag':True},where('n')==2)\nprint('mapping_update',changed,t.all());assert changed==[ids[1]] and t.get(doc_id=ids[1])['flag'] is True and 'flag' not in t.get(doc_id=ids[0])\nchanged=t.update(lambda doc:doc.update(n=doc['n']+10),doc_ids=(i for i in [ids[0]]));assert changed==[ids[0]] and t.get(doc_id=ids[0])['n']==11\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "1e1011e6f91fae7a4907e4e9b12615553aa9a41730a5487bdf3dd46730417771"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "tinydb/table.py",
+        "old_string": "        cond: Optional[QueryLike] = None,\n        doc_ids: Optional[Iterable[int]] = None,\n    ) -> List[int]:\n\n        if not callable(fields):\n            def perform_update(table, doc_id):\n                table[doc_id].update({k: None for k in fields})\n        else:\n            def perform_update(table, doc_id):\n                fields(table[doc_id])\n\n        updated_ids = []\n\n        if doc_ids is not None:\n            def updater(table: dict):\n                for doc_id in list(doc_ids):\n                    perform_update(table, doc_id)\n\n            self._update_table(updater)\n\n            return []\n\n        elif cond is not None:\n            def updater(table: dict):\n                for doc_id in list(table.keys()):\n                    if not cond(table[doc_id]):\n                        updated_ids.append(doc_id)\n                        perform_update(table, doc_id)\n\n            self._update_table(updater)\n\n            return list(reversed(updated_ids))\n\n        else:\n            def updater(table: dict):\n                for doc_id in list(table.keys()):\n                    updated_ids.append(doc_id)\n\n            self._update_table(updater)\n\n            return list(dict.fromkeys(updated_ids))\n\n    def update_multiple(\n        self,\n",
+        "new_string": "        cond: Optional[QueryLike] = None,\n        doc_ids: Optional[Iterable[int]] = None,\n    ) -> List[int]:\n        \"\"\"\n        Update all matching documents to have a given set of fields.\n\n        :param fields: the fields that the matching documents will have\n                       or a method that will update the documents\n        :param cond: which documents to update\n        :param doc_ids: a list of document IDs\n        :returns: a list containing the updated document's ID\n        \"\"\"\n\n        # Define the function that will perform the update\n        if callable(fields):\n            def perform_update(table, doc_id):\n                # Update documents by calling the update function provided by\n                # the user\n                fields(table[doc_id])\n        else:\n            def perform_update(table, doc_id):\n                # Update documents by setting all fields from the provided data\n                table[doc_id].update(fields)\n\n        if doc_ids is not None:\n            # Perform the update operation for documents specified by a list\n            # of document IDs\n\n            updated_ids = list(doc_ids)\n\n            def updater(table: dict):\n                # Call the processing callback with all document IDs\n                for doc_id in updated_ids:\n                    perform_update(table, doc_id)\n\n            # Perform the update operation (see _update_table for details)\n            self._update_table(updater)\n\n            return updated_ids\n\n        elif cond is not None:\n            # Perform the update operation for documents specified by a query\n\n            # Collect affected doc_ids\n            updated_ids = []\n\n            def updater(table: dict):\n                _cond = cast(QueryLike, cond)\n\n                # We need to convert the keys iterator to a list because\n                # we may remove entries from the ``table`` dict during\n                # iteration and doing this without the list conversion would\n                # result in an exception (RuntimeError: dictionary changed size\n                # during iteration)\n                for doc_id in list(table.keys()):\n                    # Pass through all documents to find documents matching the\n                    # query. Call the processing callback with the document ID\n                    if _cond(table[doc_id]):\n                        # Add ID to list of updated documents\n                        updated_ids.append(doc_id)\n\n                        # Perform the update (see above)\n                        perform_update(table, doc_id)\n\n            # Perform the update operation (see _update_table for details)\n            self._update_table(updater)\n\n            return updated_ids\n\n        else:\n            # Update all documents unconditionally\n\n            updated_ids = []\n\n            def updater(table: dict):\n                # Process all documents\n                for doc_id in list(table.keys()):\n                    # Add ID to list of updated documents\n                    updated_ids.append(doc_id)\n\n                    # Perform the update (see above)\n                    perform_update(table, doc_id)\n\n            # Perform the update operation (see _update_table for details)\n            self._update_table(updater)\n\n            return updated_ids\n\n    def update_multiple(\n        self,\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'tinydb/table.py').resolve()\ntry:\n module = importlib.import_module('tinydb.table')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom tinydb import TinyDB,where\nfrom tinydb.storages import MemoryStorage\ndb=TinyDB(storage=MemoryStorage);t=db.table('records');ids=t.insert_multiple([{'n':1},{'n':2},{'n':3}]);changed=t.update({'flag':True},where('n')==2)\nprint('mapping_update',changed,t.all());assert changed==[ids[1]] and t.get(doc_id=ids[1])['flag'] is True and 'flag' not in t.get(doc_id=ids[0])\nchanged=t.update(lambda doc:doc.update(n=doc['n']+10),doc_ids=(i for i in [ids[0]]));assert changed==[ids[0]] and t.get(doc_id=ids[0])['n']==11\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "1e1011e6f91fae7a4907e4e9b12615553aa9a41730a5487bdf3dd46730417771"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Preserve payload/callback channels, selected target IDs and the reported IDs of actual updates. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

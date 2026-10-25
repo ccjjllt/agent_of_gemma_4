@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Add an arbitrary object to an empty Dict and add to a populated Dict. The operator asks its right operand for keys and may return TypeError instead of raising. Return the exact right operand for empty Dict; raise original TypeError for nonempty unsupported addition. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "addict/addict.py",
+        "start_line": 46,
+        "end_line": 60
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'addict/addict.py').resolve()\ntry:\n module = importlib.import_module('addict.addict')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom addict import Dict\nright=object()\nvalue=Dict()+right\nprint('empty_addition_identity',value is right)\nassert value is right\ntry:\n Dict(a=1)+2\n raise AssertionError('nonempty addition did not raise')\nexcept TypeError as exc:\n assert \"'Dict' and 'int'\" in str(exc)\nprint('empty_identity_nonempty_exception_protocol',True)\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "56667302ed0b006b017dcf08dca10e0037e18ffe6bcf727b971909a00451193b"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "addict/addict.py",
+        "old_string": "            object.__delattr__(self, '__key')\n\n    def __add__(self, other):\n        if self.keys() == other.keys():\n            return self\n        else:\n            self_type = type(other).__name__\n            other_type = type(self).__name__\n            msg = \"unsupported operand type(s) for +: '{}' and '{}'\"\n            return TypeError(msg.format(self_type, other_type))\n\n    @classmethod\n    def _hook(cls, item):\n",
+        "new_string": "            object.__delattr__(self, '__key')\n\n    def __add__(self, other):\n        if not self.keys():\n            return other\n        else:\n            self_type = type(self).__name__\n            other_type = type(other).__name__\n            msg = \"unsupported operand type(s) for +: '{}' and '{}'\"\n            raise TypeError(msg.format(self_type, other_type))\n\n    @classmethod\n    def _hook(cls, item):\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'addict/addict.py').resolve()\ntry:\n module = importlib.import_module('addict.addict')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom addict import Dict\nright=object()\nvalue=Dict()+right\nprint('empty_addition_identity',value is right)\nassert value is right\ntry:\n Dict(a=1)+2\n raise AssertionError('nonempty addition did not raise')\nexcept TypeError as exc:\n assert \"'Dict' and 'int'\" in str(exc)\nprint('empty_identity_nonempty_exception_protocol',True)\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "56667302ed0b006b017dcf08dca10e0037e18ffe6bcf727b971909a00451193b"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Return the exact right operand for empty Dict; raise original TypeError for nonempty unsupported addition. The source-bound inline observation now passes. Patch submitted; the harness separately runs clean full-file task verification."
+}

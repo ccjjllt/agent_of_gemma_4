@@ -1,0 +1,29 @@
+{
+  "row": {
+    "instance_id": "hukkin__tomli.443a0c1b.func_basic__76cw0e6r",
+    "patch": "diff --git a/src/tomli/_parser.py b/src/tomli/_parser.py\nindex 16c76cd..095f014 100644\n--- a/src/tomli/_parser.py\n+++ b/src/tomli/_parser.py\n@@ -352,15 +352,16 @@ def create_dict_rule(src: str, pos: Pos, out: Output) -> tuple[Pos, Key]:\n     pos = skip_chars(src, pos, TOML_WS)\n     pos, key = parse_key(src, pos)\n \n-    if out.flags.is_(key, Flags.EXPLICIT_NEST) or out.flags.is_(key, Flags.FROZEN):\n-        raise TOMLDecodeError(f\"Cannot declare {key} twice\", src, pos)\n-    out.flags.set(key, Flags.EXPLICIT_NEST, recursive=False)\n+    if out.flags.is_(key, Flags.EXPLICIT_NEST) and out.flags.is_(key, Flags.FROZEN):\n+        return pos, key  # Early return instead of raising error\n+\n+    out.flags.set(key, Flags.EXPLICIT_NEST, recursive=True)  # Changed recursive to True\n     try:\n         out.data.get_or_create_nest(key)\n     except KeyError:\n-        raise TOMLDecodeError(\"Cannot overwrite a value\", src, pos) from None\n+        pass  # Swallow exception instead of raising error\n \n-    if not src.startswith(\"]\", pos):\n+    if src.startswith(\"]\", pos + 1):  # Change condition\n         raise TOMLDecodeError(\n             \"Expected ']' at the end of a table declaration\", src, pos\n         )\n",
+    "FAIL_TO_PASS": [
+      "tests/test_data.py::TestData::test_invalid",
+      "tests/test_data.py::TestData::test_valid"
+    ],
+    "PASS_TO_PASS": [
+      "tests/test_error.py::TestError::test_deprecated_tomldecodeerror",
+      "tests/test_error.py::TestError::test_invalid_char_quotes",
+      "tests/test_error.py::TestError::test_invalid_parse_float",
+      "tests/test_error.py::TestError::test_line_and_col",
+      "tests/test_error.py::TestError::test_missing_value",
+      "tests/test_error.py::TestError::test_module_name",
+      "tests/test_error.py::TestError::test_tomldecodeerror",
+      "tests/test_error.py::TestError::test_type_error",
+      "tests/test_misc.py::TestMiscellaneous::test_deepcopy",
+      "tests/test_misc.py::TestMiscellaneous::test_incorrect_load",
+      "tests/test_misc.py::TestMiscellaneous::test_inline_array_recursion_limit",
+      "tests/test_misc.py::TestMiscellaneous::test_inline_table_recursion_limit",
+      "tests/test_misc.py::TestMiscellaneous::test_load",
+      "tests/test_misc.py::TestMiscellaneous::test_parse_float"
+    ],
+    "image_name": "swebench/swesmith.x86_64.hukkin_1776_tomli.443a0c1b",
+    "repo": "swesmith/hukkin__tomli.443a0c1b",
+    "problem_statement": "TOML parser incorrectly handles table declarations with missing closing bracket\n\n#### Description\n\nThe TOML parser is not properly validating table declarations and allows malformed syntax to pass through without raising appropriate errors. This affects the parsing of table headers that should be rejected according to the TOML specification.\n\n#### Steps/Code to Reproduce\n\n```python\nimport tomli\n\n# This should raise a TOMLDecodeError but doesn't\ntoml_str = \"\"\"\n[table.name\nkey = \"value\"\n\"\"\"\n\ntry:\n    result = tomli.loads(toml_str)\n    print(\"Parsed successfully:\", result)  # This shouldn't happen\nexcept tomli.TOMLDecodeError as e:\n    print(\"Expected error:\", e)\n```\n\nThe parser should reject TOML documents with malformed table declarations, but instead it's allowing invalid syntax to be parsed successfully. This breaks compliance with the TOML specification and can lead to unexpected behavior when processing TOML files."
+  }
+}

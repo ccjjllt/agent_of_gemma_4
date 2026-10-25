@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex S600 source contract and explicit command review 2026-10-25",
+  "review_notes": "Whitespace lexer preserves the matched whitespace payload and width constraints. Return the contiguous declared whitespace before the next lexical token, with correct lower-bound acceptance. Individually reviewed source/defect change and reproduction. Original full-file verification and requirements retained; not sampled Gemma, not a same-state preference pair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "pyparsing/core.py",
+        "start_line": 3575,
+        "end_line": 3596
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pyparsing.core')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pyparsing/core.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport pyparsing as pp\nexpression=pp.White(' ',min=2,max=3)+pp.Literal('x')\nr=expression.parse_string('  x',parse_all=True).as_list()\nprint('whitespace_token',r)\nassert r==['  ','x']\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "6c68548e75cf7a789d6b30ced992c3dd358ad3558dff6750ae2e6d1e411a3569"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pyparsing/core.py",
+        "old_string": "    def parseImpl(self, instring, loc, do_actions=True) -> ParseImplReturnType:\n        if instring[loc] not in self.matchWhite:\n            raise ParseException(instring, loc, self.errmsg, self)\n        start = loc\n        loc += 1\n        maxloc = start + self.minLen\n        maxloc = max(maxloc, len(instring))\n        while loc < maxloc and instring[loc] not in self.matchWhite:\n            loc += 1\n\n        if loc - start > self.minLen:\n            raise ParseException(instring, loc, self.errmsg, self)\n\n        return start, instring[loc:start]\n",
+        "new_string": "    def parseImpl(self, instring, loc, do_actions=True) -> ParseImplReturnType:\n        if instring[loc] not in self.matchWhite:\n            raise ParseException(instring, loc, self.errmsg, self)\n        start = loc\n        loc += 1\n        maxloc = start + self.maxLen\n        maxloc = min(maxloc, len(instring))\n        while loc < maxloc and instring[loc] in self.matchWhite:\n            loc += 1\n\n        if loc - start < self.minLen:\n            raise ParseException(instring, loc, self.errmsg, self)\n\n        return loc, instring[start:loc]\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pyparsing.core')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pyparsing/core.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport pyparsing as pp\nexpression=pp.White(' ',min=2,max=3)+pp.Literal('x')\nr=expression.parse_string('  x',parse_all=True).as_list()\nprint('whitespace_token',r)\nassert r==['  ','x']\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "6c68548e75cf7a789d6b30ced992c3dd358ad3558dff6750ae2e6d1e411a3569"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Whitespace lexer preserves the matched whitespace payload and width constraints. Return the contiguous declared whitespace before the next lexical token, with correct lower-bound acceptance. The actual source-bound reproduction passes after the production repair. Patch submitted."
+}

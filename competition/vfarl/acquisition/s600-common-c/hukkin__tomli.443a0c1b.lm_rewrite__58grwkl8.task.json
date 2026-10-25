@@ -1,0 +1,38 @@
+{
+  "row": {
+    "instance_id": "hukkin__tomli.443a0c1b.lm_rewrite__58grwkl8",
+    "patch": "diff --git a/src/tomli/_parser.py b/src/tomli/_parser.py\nindex 16c76cd..754c5c8 100644\n--- a/src/tomli/_parser.py\n+++ b/src/tomli/_parser.py\n@@ -127,77 +127,42 @@ def load(__fp: IO[bytes], *, parse_float: ParseFloat = float) -> dict[str, Any]:\n     return loads(s, parse_float=parse_float)\n \n \n-def loads(__s: str, *, parse_float: ParseFloat = float) -> dict[str, Any]:  # noqa: C901\n+def loads(__s: str, *, parse_float: ParseFloat=float) ->dict[str, Any]:\n     \"\"\"Parse TOML from a string.\"\"\"\n-\n-    # The spec allows converting \"\\r\\n\" to \"\\n\", even in string\n-    # literals. Let's do so to simplify parsing.\n-    try:\n-        src = __s.replace(\"\\r\\n\", \"\\n\")\n-    except (AttributeError, TypeError):\n-        raise TypeError(\n-            f\"Expected str object, not '{type(__s).__qualname__}'\"\n-        ) from None\n-    pos = 0\n+    parse_float = make_safe_parse_float(parse_float)\n+    \n     out = Output(NestedDict(), Flags())\n+    pos = 0\n     header: Key = ()\n-    parse_float = make_safe_parse_float(parse_float)\n-\n-    # Parse one statement at a time\n-    # (typically means one line in TOML source)\n-    while True:\n-        # 1. Skip line leading whitespace\n-        pos = skip_chars(src, pos, TOML_WS)\n-\n-        # 2. Parse rules. Expect one of the following:\n-        #    - end of file\n-        #    - end of line\n-        #    - comment\n-        #    - key/value pair\n-        #    - append dict to list (and move to its namespace)\n-        #    - create dict (and move to its namespace)\n-        # Skip trailing whitespace when applicable.\n-        try:\n-            char = src[pos]\n-        except IndexError:\n-            break\n-        if char == \"\\n\":\n-            pos += 1\n-            continue\n-        if char in KEY_INITIAL_CHARS:\n-            pos = key_value_rule(src, pos, out, header, parse_float)\n-            pos = skip_chars(src, pos, TOML_WS)\n-        elif char == \"[\":\n-            try:\n-                second_char: str | None = src[pos + 1]\n-            except IndexError:\n-                second_char = None\n-            out.flags.finalize_pending()\n-            if second_char == \"[\":\n-                pos, header = create_list_rule(src, pos, out)\n-            else:\n-                pos, header = create_dict_rule(src, pos, out)\n-            pos = skip_chars(src, pos, TOML_WS)\n-        elif char != \"#\":\n-            raise TOMLDecodeError(\"Invalid statement\", src, pos)\n-\n-        # 3. Skip comment\n-        pos = skip_comment(src, pos)\n-\n-        # 4. Expect end of line or end of file\n-        try:\n-            char = src[pos]\n-        except IndexError:\n+    \n+    # Skip initial comments and whitespace\n+    pos = skip_comments_and_array_ws(__s, pos)\n+    \n+    while pos < len(__s):\n+        # Skip comments and whitespace\n+        pos_before_skip = pos\n+        pos = skip_comments_and_array_ws(__s, pos)\n+        if pos >= len(__s):\n             break\n-        if char != \"\\n\":\n-            raise TOMLDecodeError(\n-                \"Expected newline or end of document after a statement\", src, pos\n-            )\n-        pos += 1\n-\n+        \n+        # Check for table headers\n+        if __s.startswith(\"[[\", pos):\n+            pos, header = create_list_rule(__s, pos, out)\n+        elif __s.startswith(\"[\", pos):\n+            pos, header = create_dict_rule(__s, pos, out)\n+        else:\n+            # Parse key/value pairs\n+            pos = key_value_rule(__s, pos, out, header, parse_float)\n+        \n+        # Finalize any pending flags after processing a line\n+        out.flags.finalize_pending()\n+        \n+        # If we didn't advance, we're stuck in an infinite loop\n+        if pos == pos_before_skip:\n+            raise TOMLDecodeError(\"Parser stuck\", __s, pos)\n+    \n     return out.data.dict\n \n-\n class Flags:\n     \"\"\"Flags that map to parsed keys/namespaces.\"\"\"\n \n",
+    "FAIL_TO_PASS": [
+      "tests/test_data.py::TestData::test_invalid",
+      "tests/test_data.py::TestData::test_valid",
+      "tests/test_error.py::TestError::test_line_and_col",
+      "tests/test_error.py::TestError::test_type_error"
+    ],
+    "PASS_TO_PASS": [
+      "tests/test_error.py::TestError::test_deprecated_tomldecodeerror",
+      "tests/test_error.py::TestError::test_invalid_char_quotes",
+      "tests/test_error.py::TestError::test_invalid_parse_float",
+      "tests/test_error.py::TestError::test_missing_value",
+      "tests/test_error.py::TestError::test_module_name",
+      "tests/test_error.py::TestError::test_tomldecodeerror",
+      "tests/test_misc.py::TestMiscellaneous::test_deepcopy",
+      "tests/test_misc.py::TestMiscellaneous::test_incorrect_load",
+      "tests/test_misc.py::TestMiscellaneous::test_inline_array_recursion_limit",
+      "tests/test_misc.py::TestMiscellaneous::test_inline_table_recursion_limit",
+      "tests/test_misc.py::TestMiscellaneous::test_load",
+      "tests/test_misc.py::TestMiscellaneous::test_parse_float"
+    ],
+    "image_name": "swebench/swesmith.x86_64.hukkin_1776_tomli.443a0c1b",
+    "repo": "swesmith/hukkin__tomli.443a0c1b",
+    "problem_statement": "# TOML parser fails to handle certain valid TOML files\n\n## Description\n\nI've discovered an issue with the TOML parser in tomli. After making some changes to the parser implementation, it's failing to correctly parse valid TOML files. The parser seems to be incorrectly handling certain TOML syntax, particularly around whitespace handling, line endings, and possibly table headers.\n\n## How to Reproduce\n\nHere's a simple example that demonstrates the issue:\n\n```python\nimport tomli\n\n# This should be valid TOML but now fails\ntoml_str = \"\"\"\n[table]\nkey = \"value\"\n\n# Comment\n[[array_table]]\nnested_key = 42\n\"\"\"\n\ntry:\n    parsed = tomli.loads(toml_str)\n    print(\"Successfully parsed:\", parsed)\nexcept tomli.TOMLDecodeError as e:\n    print(f\"Failed to parse: {e}\")\n```\n\nWhen running this code, you'll get a TOMLDecodeError instead of the expected parsed dictionary.\n\nAdditionally, the parser now fails on this valid TOML:\n\n```toml\ntitle = \"TOML Example\"\n\n[owner]\nname = \"Tom Preston-Werner\"\ndob = 1979-05-27T07:32:00-08:00\n\n[database]\nenabled = true\nports = [ 8000, 8001, 8002 ]\ndata = [ [\"delta\", \"phi\"], [3.14] ]\n```\n\n## Expected Behavior\n\nThe parser should correctly parse all valid TOML files according to the TOML specification.\n\n## Environment Information\n\n- Python version: 3.10\n- tomli version: latest\n\n## Additional Context\n\nThe issue seems to be related to how the parser handles the TOML document structure. It might be failing to properly process comments, whitespace, or handle certain valid TOML constructs. The error messages are not very helpful in identifying the exact cause."
+  },
+  "source": {
+    "dataset": "SWE-bench/SWE-smith-py",
+    "revision": "77cab9055d42ab4a5c25c89a8f937096db13558e",
+    "split": "train",
+    "row_idx": 14192,
+    "source_page": "competition/vfarl/acquisition/s600-common-c/artifacts/pages/train-14124.json",
+    "source_page_sha256": "d1310d1c886a0a0989b30398868e486796287444e9878c00a0d0a8d338024095",
+    "source_url": "https://datasets-server.huggingface.co/rows?dataset=SWE-bench%2FSWE-smith-py&config=default&split=train&offset=14124&length=80&revision=77cab9055d42ab4a5c25c89a8f937096db13558e"
+  }
+}

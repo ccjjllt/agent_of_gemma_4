@@ -1,0 +1,66 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Match a dynamic integer route, then request an unknown path. The selected regex group is used as a one-based list index; the missing-route response also changes from404 to400. Convert regex group position to the zero-based rule slot and retain the missing-route result contract. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "bottle.py",
+        "start_line": 469,
+        "end_line": 506
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'bottle.py').resolve()\ntry:\n module = importlib.import_module('bottle')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom bottle import Router,HTTPError\nr=Router();r.add('/item/<id:int>','GET','target');value=r.match({'PATH_INFO':'/item/42','REQUEST_METHOD':'GET'});print('dynamic_rule_position',value)\nassert value==('target',{'id':42})\ntry:\n r.match({'PATH_INFO':'/missing','REQUEST_METHOD':'GET'})\nexcept HTTPError as exc:\n assert exc.status_code==404\nelse:\n raise AssertionError('missing route accepted')\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "a5d2034d447c456ccc896da4e751ced9243edbc37df7263141f6c1315e183563"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "bottle.py",
+        "old_string": "                for combined, rules in self.dyna_regexes[method]:\n                    match = combined(path)\n                    if match:\n                        target, getargs = rules[match.lastindex]\n                        return target, getargs(path) if getargs else {}\n\n        allowed = set([])\n        nocheck = set()\n        for method in set(self.static) - nocheck:\n            if path in self.static[method]:\n                allowed.add(method)\n",
+        "new_string": "                for combined, rules in self.dyna_regexes[method]:\n                    match = combined(path)\n                    if match:\n                        target, getargs = rules[match.lastindex - 1]\n                        return target, getargs(path) if getargs else {}\n\n        # No matching route found. Collect alternative methods for 405 response\n        allowed = set([])\n        nocheck = set(methods)\n        for method in set(self.static) - nocheck:\n            if path in self.static[method]:\n                allowed.add(method)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "bottle.py",
+        "old_string": "            allow_header = \",\".join(sorted(allowed))\n            raise HTTPError(405, \"Method not allowed.\", Allow=allow_header)\n\n        raise HTTPError(400, \"Bad request\")\n\n\nclass Route(object):\n",
+        "new_string": "            allow_header = \",\".join(sorted(allowed))\n            raise HTTPError(405, \"Method not allowed.\", Allow=allow_header)\n\n        # No matching route and no alternative method found. We give up\n        raise HTTPError(404, \"Not found: \" + repr(path))\n\n\nclass Route(object):\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'bottle.py').resolve()\ntry:\n module = importlib.import_module('bottle')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom bottle import Router,HTTPError\nr=Router();r.add('/item/<id:int>','GET','target');value=r.match({'PATH_INFO':'/item/42','REQUEST_METHOD':'GET'});print('dynamic_rule_position',value)\nassert value==('target',{'id':42})\ntry:\n r.match({'PATH_INFO':'/missing','REQUEST_METHOD':'GET'})\nexcept HTTPError as exc:\n assert exc.status_code==404\nelse:\n raise AssertionError('missing route accepted')\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "a5d2034d447c456ccc896da4e751ced9243edbc37df7263141f6c1315e183563"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Convert regex group position to the zero-based rule slot and retain the missing-route result contract. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

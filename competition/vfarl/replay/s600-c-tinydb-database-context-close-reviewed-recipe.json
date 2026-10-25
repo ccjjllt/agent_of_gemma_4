@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Leave a real JSON-backed database context. The changed exit path never closes an opened storage resource. Close live storage on context exit while respecting the database opened flag. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "tinydb/database.py",
+        "start_line": 242,
+        "end_line": 261
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'tinydb/database.py').resolve()\ntry:\n module = importlib.import_module('tinydb.database')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport tempfile\nfrom pathlib import Path\nfrom tinydb import TinyDB\nwith tempfile.TemporaryDirectory() as folder:\n with TinyDB(str(Path(folder)/'db.json')) as db:\n  db.insert({'v':1});handle=db.storage._handle\n print('context_handle_closed',handle.closed);assert handle.closed and not db._opened\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "fcd321063207b0ecdea90fa50f5ade6422ab8253fd32f7840d55d7d00ec28883"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "tinydb/database.py",
+        "old_string": "        \"\"\"\n        Close the storage instance when leaving a context.\n        \"\"\"\n        if not self._opened:\n            return\n\n    def __getattr__(self, name):\n        \"\"\"\n",
+        "new_string": "        \"\"\"\n        Close the storage instance when leaving a context.\n        \"\"\"\n        if self._opened:\n            self.close()\n\n    def __getattr__(self, name):\n        \"\"\"\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'tinydb/database.py').resolve()\ntry:\n module = importlib.import_module('tinydb.database')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport tempfile\nfrom pathlib import Path\nfrom tinydb import TinyDB\nwith tempfile.TemporaryDirectory() as folder:\n with TinyDB(str(Path(folder)/'db.json')) as db:\n  db.insert({'v':1});handle=db.storage._handle\n print('context_handle_closed',handle.closed);assert handle.closed and not db._opened\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "fcd321063207b0ecdea90fa50f5ade6422ab8253fd32f7840d55d7d00ec28883"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Close live storage on context exit while respecting the database opened flag. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

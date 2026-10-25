@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex S600 source contract and explicit command review 2026-10-25",
+  "review_notes": "An unordered Each grammar should recognize all its required expressions in whichever input order they appear. Required, optional, and repeated members must keep their respective roles instead of silently matching nothing. Individually reviewed source/defect change and reproduction. Original full-file verification and requirements retained; not sampled Gemma, not a same-state preference pair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "pyparsing/core.py",
+        "start_line": 4514,
+        "end_line": 4605
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pyparsing.core')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pyparsing/core.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport pyparsing as pp\nexpression=pp.Each([pp.Literal('alpha'),pp.Literal('beta')])\na=expression.parse_string('beta alpha',parse_all=True).as_list();b=expression.parse_string('alpha beta',parse_all=True).as_list()\nprint('unordered_required_members',a,b)\nassert a==['beta','alpha'] and b==['alpha','beta']\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "24f5b978affd16c8bbf0162d7e351592715f56fbf9614267812d08ce8c8c7dad"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pyparsing/core.py",
+        "old_string": "    def parseImpl(self, instring, loc, do_actions=True) -> ParseImplReturnType:\n        if self.initExprGroups:\n            self.opt1map = dict(\n                (id(e.expr), e) for e in self.exprs if isinstance(e, Opt)\n            )\n            opt1 = [e.expr for e in self.exprs if isinstance(e, Opt)]\n            opt2 = [\n                e\n                for e in self.exprs\n                if e.mayReturnEmpty and not isinstance(e, (Opt, Regex, ZeroOrMore))\n            ]\n            self.optionals = opt2 + opt1  # Reversed the order of opt1 and opt2\n            self.multioptionals = [\n                e.expr.set_results_name(e.resultsName, list_all_matches=True)\n                for e in self.exprs\n                if isinstance(e, OneOrMore)  # Changed condition from _MultipleMatch to OneOrMore\n            ]\n            self.multirequired = [\n                e.expr.set_results_name(e.resultsName, list_all_matches=True)\n                for e in self.exprs\n                if isinstance(e, _MultipleMatch)  # Changed condition from OneOrMore to _MultipleMatch\n            ]\n            self.required = [\n                e for e in self.exprs if isinstance(e, (ZeroOrMore, OneOrMore))  # Instead of excluding, including some types\n            ]\n            self.required += self.multirequired\n            self.initExprGroups = False\n\n        tmpLoc = loc\n        tmpReqd = self.required[:]\n        tmpOpt = self.optionals[:]\n        multis = self.multioptionals[:]\n        matchOrder: list[ParserElement] = []\n\n        keepMatching = False  # Changed from True to False\n        failed: list[ParserElement] = []\n        fatals: list[ParseFatalException] = []\n        while keepMatching:\n            tmpExprs = multis + tmpOpt + tmpReqd  # Reordered tmpExprs\n            failed.clear()\n            fatals.clear()\n            for e in tmpExprs:\n                try:\n                    tmpLoc = e.try_parse(instring, tmpLoc, raise_fatal=False)  # Changed raise_fatal to False\n                except ParseFatalException as pfe:\n                    pfe.__traceback__ = None\n                    pfe.parser_element = e\n                    fatals.append(pfe)\n                    failed.append(e)\n                except ParseException:\n                    failed.append(e)\n                else:\n                    matchOrder.append(self.opt1map.get(id(e), e))\n                    if e in tmpReqd:\n                        pass  # Removed removal of e from tmpReqd\n                    elif e in tmpOpt:\n                        tmpOpt.remove(e)\n            if len(failed) == len(tmpExprs):\n                keepMatching = True  # Change to True if all failed\n\n        if fatals:\n            if len(fatals) > 1:\n                fatals.sort(key=lambda e: e.loc)  # Changed sorting order to ascending\n                if fatals[0].loc == fatals[1].loc:\n                    fatals.sort(key=lambda e: (e.loc, len(str(e.parser_element))))  # Changed sorting criteria\n            max_fatal = fatals[-1]  # Changed to pick the last instead of the first one\n            raise max_fatal\n\n        if tmpReqd:\n            missing = \" | \".join([str(e) for e in tmpReqd])  # Changed separator to \" | \"\n            raise ParseException(\n                instring,\n                loc,\n                f\"Missing required elements: {missing}\",  # Changed message format\n            )\n\n        matchOrder += [e for e in self.exprs if isinstance(e, ZeroOrMore) and e.expr in tmpOpt]  # Changed condition from Opt to ZeroOrMore\n\n        total_results = ParseResults([])\n        for e in reversed(matchOrder):  # Apply results in reverse order\n            loc, results = e._parse(instring, loc, do_actions)\n            total_results += results\n\n        return total_results, loc  # Reversed the return order\n",
+        "new_string": "    def parseImpl(self, instring, loc, do_actions=True) -> ParseImplReturnType:\n        if self.initExprGroups:\n            self.opt1map = dict(\n                (id(e.expr), e) for e in self.exprs if isinstance(e, Opt)\n            )\n            opt1 = [e.expr for e in self.exprs if isinstance(e, Opt)]\n            opt2 = [\n                e\n                for e in self.exprs\n                if e.mayReturnEmpty and not isinstance(e, (Opt, Regex, ZeroOrMore))\n            ]\n            self.optionals = opt1 + opt2\n            self.multioptionals = [\n                e.expr.set_results_name(e.resultsName, list_all_matches=True)\n                for e in self.exprs\n                if isinstance(e, _MultipleMatch)\n            ]\n            self.multirequired = [\n                e.expr.set_results_name(e.resultsName, list_all_matches=True)\n                for e in self.exprs\n                if isinstance(e, OneOrMore)\n            ]\n            self.required = [\n                e for e in self.exprs if not isinstance(e, (Opt, ZeroOrMore, OneOrMore))\n            ]\n            self.required += self.multirequired\n            self.initExprGroups = False\n\n        tmpLoc = loc\n        tmpReqd = self.required[:]\n        tmpOpt = self.optionals[:]\n        multis = self.multioptionals[:]\n        matchOrder: list[ParserElement] = []\n\n        keepMatching = True\n        failed: list[ParserElement] = []\n        fatals: list[ParseFatalException] = []\n        while keepMatching:\n            tmpExprs = tmpReqd + tmpOpt + multis\n            failed.clear()\n            fatals.clear()\n            for e in tmpExprs:\n                try:\n                    tmpLoc = e.try_parse(instring, tmpLoc, raise_fatal=True)\n                except ParseFatalException as pfe:\n                    pfe.__traceback__ = None\n                    pfe.parser_element = e\n                    fatals.append(pfe)\n                    failed.append(e)\n                except ParseException:\n                    failed.append(e)\n                else:\n                    matchOrder.append(self.opt1map.get(id(e), e))\n                    if e in tmpReqd:\n                        tmpReqd.remove(e)\n                    elif e in tmpOpt:\n                        tmpOpt.remove(e)\n            if len(failed) == len(tmpExprs):\n                keepMatching = False\n\n        # look for any ParseFatalExceptions\n        if fatals:\n            if len(fatals) > 1:\n                fatals.sort(key=lambda e: -e.loc)\n                if fatals[0].loc == fatals[1].loc:\n                    fatals.sort(key=lambda e: (-e.loc, -len(str(e.parser_element))))\n            max_fatal = fatals[0]\n            raise max_fatal\n\n        if tmpReqd:\n            missing = \", \".join([str(e) for e in tmpReqd])\n            raise ParseException(\n                instring,\n                loc,\n                f\"Missing one or more required elements ({missing})\",\n            )\n\n        # add any unmatched Opts, in case they have default values defined\n        matchOrder += [e for e in self.exprs if isinstance(e, Opt) and e.expr in tmpOpt]\n\n        total_results = ParseResults([])\n        for e in matchOrder:\n            loc, results = e._parse(instring, loc, do_actions)\n            total_results += results\n\n        return loc, total_results\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pyparsing.core')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pyparsing/core.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport pyparsing as pp\nexpression=pp.Each([pp.Literal('alpha'),pp.Literal('beta')])\na=expression.parse_string('beta alpha',parse_all=True).as_list();b=expression.parse_string('alpha beta',parse_all=True).as_list()\nprint('unordered_required_members',a,b)\nassert a==['beta','alpha'] and b==['alpha','beta']\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "24f5b978affd16c8bbf0162d7e351592715f56fbf9614267812d08ce8c8c7dad"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "An unordered Each grammar should recognize all its required expressions in whichever input order they appear. Required, optional, and repeated members must keep their respective roles instead of silently matching nothing. The actual source-bound reproduction passes after the production repair. Patch submitted."
+}

@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Convert a static load default and an explicitly callable runtime default. Static defaults are omitted while missing or callable defaults are serialized. Serialize only a present noncallable load default unless metadata provides an explicit default. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/apispec/ext/marshmallow/field_converter.py",
+        "start_line": 223,
+        "end_line": 241
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/apispec/ext/marshmallow/field_converter.py').resolve()\ntry:\n module = importlib.import_module('apispec.ext.marshmallow.field_converter')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom apispec import APISpec\nfrom apispec.ext.marshmallow import MarshmallowPlugin\nfrom marshmallow import Schema,fields,validate\nplugin=MarshmallowPlugin()\nspec=APISpec(title='demo',version='1',openapi_version='3.0.3',plugins=[plugin])\nconverter=plugin.converter\nvalue=converter.field2default(fields.String(load_default='literal'))\nprint('static_default',value)\nassert value=={'default':'literal'}\nassert converter.field2default(fields.String(load_default=lambda:'runtime'))=={}\nassert converter.field2default(fields.Integer(load_default=1,metadata={'default':2}))=={'default':2}\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "78bc8068bbb81ad8adaaa601255bf1db8fa315ddf49f60920d95bce5fb5cb1b3"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/apispec/ext/marshmallow/field_converter.py",
+        "old_string": "            ret[\"default\"] = field.metadata[\"default\"]\n        else:\n            default = field.load_default\n            if default is marshmallow.missing or callable(default):\n                default = field._serialize(default, None, None)\n                ret[\"default\"] = default\n        return ret\n",
+        "new_string": "            ret[\"default\"] = field.metadata[\"default\"]\n        else:\n            default = field.load_default\n            if default is not marshmallow.missing and not callable(default):\n                default = field._serialize(default, None, None)\n                ret[\"default\"] = default\n        return ret\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/apispec/ext/marshmallow/field_converter.py').resolve()\ntry:\n module = importlib.import_module('apispec.ext.marshmallow.field_converter')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom apispec import APISpec\nfrom apispec.ext.marshmallow import MarshmallowPlugin\nfrom marshmallow import Schema,fields,validate\nplugin=MarshmallowPlugin()\nspec=APISpec(title='demo',version='1',openapi_version='3.0.3',plugins=[plugin])\nconverter=plugin.converter\nvalue=converter.field2default(fields.String(load_default='literal'))\nprint('static_default',value)\nassert value=={'default':'literal'}\nassert converter.field2default(fields.String(load_default=lambda:'runtime'))=={}\nassert converter.field2default(fields.Integer(load_default=1,metadata={'default':2}))=={'default':2}\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "78bc8068bbb81ad8adaaa601255bf1db8fa315ddf49f60920d95bce5fb5cb1b3"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Serialize only a present noncallable load default unless metadata provides an explicit default. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

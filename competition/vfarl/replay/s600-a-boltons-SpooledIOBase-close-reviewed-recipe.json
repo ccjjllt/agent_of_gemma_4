@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex explicit collection/iteration contract and source-command review2026-10-25",
+  "review_notes": "spooled_stream_close_releases_existing_backing_stream; original upstream function and complete source diff reviewed; original requirements and full target files intact. Short alias preloads the real package to preserve original __file__-based source lookup, no fake module.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "boltons/ioutils.py",
+        "start_line": 141,
+        "end_line": 148
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,importlib\nm=importlib.import_module('boltons.ioutils')\na=Path(m.__file__).resolve();e=(Path.cwd()/'boltons/ioutils.py').resolve()\nassert a==e,(a,e)\nprint('source_binding',a,'sha256',hashlib.sha256(a.read_bytes()).hexdigest())\nfrom boltons.ioutils import SpooledBytesIO\nf=SpooledBytesIO();stream=f.buffer\ntry:\n f.close();print('backing_stream_closed',stream.closed);assert stream.closed and f.closed\nfinally:stream.close()\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "e3f252222053046bd5022a323590198bb3eaa5a06969f61c997fc08e43d75d56"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "boltons/ioutils.py",
+        "old_string": "    def close(self):\n        if self.buffer:\n            self.buffer = None\n            return None\n",
+        "new_string": "    def close(self):\n        return self.buffer.close()\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,importlib\nm=importlib.import_module('boltons.ioutils')\na=Path(m.__file__).resolve();e=(Path.cwd()/'boltons/ioutils.py').resolve()\nassert a==e,(a,e)\nprint('source_binding',a,'sha256',hashlib.sha256(a.read_bytes()).hexdigest())\nfrom boltons.ioutils import SpooledBytesIO\nf=SpooledBytesIO();stream=f.buffer\ntry:\n f.close();print('backing_stream_closed',stream.closed);assert stream.closed and f.closed\nfinally:stream.close()\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "e3f252222053046bd5022a323590198bb3eaa5a06969f61c997fc08e43d75d56"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored SpooledIOBase.close: spooled stream close releases existing backing stream. The actual public API observation completed and the patch was submitted."
+}

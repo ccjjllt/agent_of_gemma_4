@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex S600 common-course source contract and explicit command review2026-10-25",
+  "review_notes": "The result decorator preserves callable arguments, wraps normal values as Ok, converts declared exceptions to Err and propagates undeclared exception types. The complete production-file delta is exactly this reviewed function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/result/result.py",
+        "start_line": 463,
+        "end_line": 503
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('result.result')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'src/result/result.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom result import Ok,Err,UnwrapError,as_result\n@as_result(ValueError)\ndef produce(value):\n if isinstance(value,BaseException):raise value\n return value\nnormal=produce(3);failure=ValueError('failure');wrapped=produce(failure)\nprint('decorated_result',normal,wrapped);assert normal==Ok(3) and isinstance(wrapped,Err) and wrapped.err_value is failure\ntry:produce(TypeError('other'))\nexcept TypeError:pass\nelse:raise AssertionError('undeclared exception swallowed')\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "fe671efaf8e763d22038e8cd164de87c5ded4da223f746501e029723fc7e2465"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/result/result.py",
+        "old_string": "def as_result(\n    *exceptions: Type[TBE],\n) -> Callable[[Callable[P, R]], Callable[P, Result[R, TBE]]]:\n    \"\"\"\n    Make a decorator to turn a function into one that returns a ``Result``.\n\n    Regular return values are turned into ``Ok(return_value)``. Raised\n    exceptions of the specified exception type(s) are turned into ``Err(exc)``.\n    \"\"\"\n    if not exceptions or not all(\n        inspect.isclass(exception) and issubclass(exception, BaseException)\n        for exception in exceptions\n    ):\n        raise TypeError(\"as_result() requires one or more exception types\")\n\n    def decorator(f: Callable[P, R]) -> Callable[P, Result[R, TBE]]:\n        \"\"\"\n        Decorator to turn a function into one that returns a ``Result``.\n        \"\"\"\n\n        @functools.wraps(f)\n        def wrapper(*args: P.args, **kwargs: P.kwargs) -> Result[R, TBE]:\n            try:\n                result = f(*args, **kwargs)\n                if isinstance(result, Result):\n                    return result\n                return Ok(result)\n            except exceptions:\n                return Ok(None)\n\n        return wrapper\n\n    return decorator\n",
+        "new_string": "def as_result(\n    *exceptions: Type[TBE],\n) -> Callable[[Callable[P, R]], Callable[P, Result[R, TBE]]]:\n    \"\"\"\n    Make a decorator to turn a function into one that returns a ``Result``.\n\n    Regular return values are turned into ``Ok(return_value)``. Raised\n    exceptions of the specified exception type(s) are turned into ``Err(exc)``.\n    \"\"\"\n    if not exceptions or not all(\n        inspect.isclass(exception) and issubclass(exception, BaseException)\n        for exception in exceptions\n    ):\n        raise TypeError(\"as_result() requires one or more exception types\")\n\n    def decorator(f: Callable[P, R]) -> Callable[P, Result[R, TBE]]:\n        \"\"\"\n        Decorator to turn a function into one that returns a ``Result``.\n        \"\"\"\n\n        @functools.wraps(f)\n        def wrapper(*args: P.args, **kwargs: P.kwargs) -> Result[R, TBE]:\n            try:\n                return Ok(f(*args, **kwargs))\n            except exceptions as exc:\n                return Err(exc)\n\n        return wrapper\n\n    return decorator\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('result.result')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'src/result/result.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom result import Ok,Err,UnwrapError,as_result\n@as_result(ValueError)\ndef produce(value):\n if isinstance(value,BaseException):raise value\n return value\nnormal=produce(3);failure=ValueError('failure');wrapped=produce(failure)\nprint('decorated_result',normal,wrapped);assert normal==Ok(3) and isinstance(wrapped,Err) and wrapped.err_value is failure\ntry:produce(TypeError('other'))\nexcept TypeError:pass\nelse:raise AssertionError('undeclared exception swallowed')\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "fe671efaf8e763d22038e8cd164de87c5ded4da223f746501e029723fc7e2465"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "The result decorator preserves callable arguments, wraps normal values as Ok, converts declared exceptions to Err and propagates undeclared exception types. The source-bound reproduction passes after the repair. Patch submitted."
+}

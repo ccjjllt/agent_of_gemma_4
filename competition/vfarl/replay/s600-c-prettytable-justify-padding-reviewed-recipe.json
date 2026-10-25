@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Center even-width content in an odd-width cell, and justify text wider than its cell. The rewrite allocates the odd extra space to the wrong side for even content and truncates overwide text. Restore parity-sensitive centering and preserve source content when padding is nonpositive. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/prettytable/prettytable.py",
+        "start_line": 414,
+        "end_line": 451
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/prettytable/prettytable.py').resolve()\ntry:\n module = importlib.import_module('prettytable.prettytable')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom prettytable import PrettyTable\nt=PrettyTable();center=t._justify('ab',5,'c');wide=t._justify('abcdef',3,'l')\nprint('cell_padding',repr(center),repr(wide))\nassert center=='  ab ' and wide=='abcdef'\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "671d91f7c0bf71f6626103af600b2e8664f4b488ec015c72b6c2b8f8a4276a4f"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/prettytable/prettytable.py",
+        "old_string": "        self._attributes = kwargs[\"attributes\"] or {}\n\n    def _justify(self, text: str, width: int, align: AlignType) -> str:\n        \"\"\"Justify a string according to the specified alignment type within the given width.\n    \n        Arguments:\n        text - the string to justify\n        width - the width to justify the string within\n        align - alignment type, one of \"l\", \"c\", or \"r\" for left, center, or right alignment\n        \"\"\"\n        text_width = _str_block_width(text)\n    \n        if text_width >= width:\n            return text[:width]\n    \n        if align == \"l\":\n            return text + \" \" * (width - text_width)\n        elif align == \"r\":\n            return \" \" * (width - text_width) + text\n        else:  # align == \"c\"\n            left_padding = (width - text_width) // 2\n            right_padding = width - text_width - left_padding\n            return \" \" * left_padding + text + \" \" * right_padding\n    def __getattr__(self, name):\n        if name == \"rowcount\":\n            return len(self._rows)\n",
+        "new_string": "        self._attributes = kwargs[\"attributes\"] or {}\n\n    def _justify(self, text: str, width: int, align: AlignType) -> str:\n        excess = width - _str_block_width(text)\n        if align == \"l\":\n            return text + excess * \" \"\n        elif align == \"r\":\n            return excess * \" \" + text\n        else:\n            if excess % 2:\n                # Uneven padding\n                # Put more space on right if text is of odd length...\n                if _str_block_width(text) % 2:\n                    return (excess // 2) * \" \" + text + (excess // 2 + 1) * \" \"\n                # and more space on left if text is of even length\n                else:\n                    return (excess // 2 + 1) * \" \" + text + (excess // 2) * \" \"\n                # Why distribute extra space this way?  To match the behaviour of\n                # the inbuilt str.center() method.\n            else:\n                # Equal padding on either side\n                return (excess // 2) * \" \" + text + (excess // 2) * \" \"\n\n    def __getattr__(self, name):\n        if name == \"rowcount\":\n            return len(self._rows)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/prettytable/prettytable.py').resolve()\ntry:\n module = importlib.import_module('prettytable.prettytable')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom prettytable import PrettyTable\nt=PrettyTable();center=t._justify('ab',5,'c');wide=t._justify('abcdef',3,'l')\nprint('cell_padding',repr(center),repr(wide))\nassert center=='  ab ' and wide=='abcdef'\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "671d91f7c0bf71f6626103af600b2e8664f4b488ec015c72b6c2b8f8a4276a4f"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restore parity-sensitive centering and preserve source content when padding is nonpositive. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

@@ -79,6 +79,8 @@ def acquire(repo: str, revision: str, destination: Path) -> dict:
             if not relative.parts:
                 continue
             target = destination / relative
+            if not target.resolve().is_relative_to(destination.resolve()):
+                raise ValueError("Archive member resolves outside its source workspace")
             if member.isdir():
                 target.mkdir(parents=True, exist_ok=True)
             elif member.isfile():
@@ -89,7 +91,8 @@ def acquire(repo: str, revision: str, destination: Path) -> dict:
                 target.write_bytes(payload)
                 target.chmod(member.mode)
             elif member.issym():
-                if Path(member.linkname).is_absolute() or ".." in Path(member.linkname).parts:
+                if (Path(member.linkname).is_absolute()
+                        or not (target.parent / member.linkname).resolve().is_relative_to(destination.resolve())):
                     raise ValueError("Unsafe archive symlink")
                 if not target.exists():
                     target.symlink_to(member.linkname)

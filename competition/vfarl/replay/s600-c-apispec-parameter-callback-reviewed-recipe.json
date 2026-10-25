@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Register a custom parameter converter that expects the converter instance as self. The public attribute remains an unbound function and the callback precedes built-ins. Bind the function to this converter and append it after existing parameter attribute functions. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/apispec/ext/marshmallow/openapi.py",
+        "start_line": 90,
+        "end_line": 109
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/apispec/ext/marshmallow/openapi.py').resolve()\ntry:\n module = importlib.import_module('apispec.ext.marshmallow.openapi')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom apispec import APISpec\nfrom apispec.ext.marshmallow import MarshmallowPlugin\nfrom marshmallow import Schema,fields,validate\nplugin=MarshmallowPlugin()\nspec=APISpec(title='demo',version='1',openapi_version='3.0.3',plugins=[plugin])\nconverter=plugin.converter\ndef extra(self,field,ret):\n return {'x-extra':self is converter}\nbefore=list(converter.parameter_attribute_functions)\nconverter.add_parameter_attribute_function(extra)\nprint('callback_binding',getattr(converter.extra,'__self__',None) is converter)\nassert converter.extra.__self__ is converter\nassert converter.parameter_attribute_functions[:-1]==before\nassert converter.parameter_attribute_functions[-1]==converter.extra\nassert converter.extra(fields.Integer(),ret={})=={'x-extra':True}\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "aa032bb8a53182eb46bb56ed764e1530dbd38e91e8a6268484f02a1088168951"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/apispec/ext/marshmallow/openapi.py",
+        "old_string": "            field parameter functions in the order they were added.\n        \"\"\"\n        bound_func = func.__get__(self)\n        setattr(self, func.__name__, func)\n        self.parameter_attribute_functions.insert(0, bound_func)\n\n    def resolve_nested_schema(self, schema):\n        \"\"\"Return the OpenAPI representation of a marshmallow Schema.\n",
+        "new_string": "            field parameter functions in the order they were added.\n        \"\"\"\n        bound_func = func.__get__(self)\n        setattr(self, func.__name__, bound_func)\n        self.parameter_attribute_functions.append(bound_func)\n\n    def resolve_nested_schema(self, schema):\n        \"\"\"Return the OpenAPI representation of a marshmallow Schema.\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/apispec/ext/marshmallow/openapi.py').resolve()\ntry:\n module = importlib.import_module('apispec.ext.marshmallow.openapi')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom apispec import APISpec\nfrom apispec.ext.marshmallow import MarshmallowPlugin\nfrom marshmallow import Schema,fields,validate\nplugin=MarshmallowPlugin()\nspec=APISpec(title='demo',version='1',openapi_version='3.0.3',plugins=[plugin])\nconverter=plugin.converter\ndef extra(self,field,ret):\n return {'x-extra':self is converter}\nbefore=list(converter.parameter_attribute_functions)\nconverter.add_parameter_attribute_function(extra)\nprint('callback_binding',getattr(converter.extra,'__self__',None) is converter)\nassert converter.extra.__self__ is converter\nassert converter.parameter_attribute_functions[:-1]==before\nassert converter.parameter_attribute_functions[-1]==converter.extra\nassert converter.extra(fields.Integer(),ret={})=={'x-extra':True}\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "aa032bb8a53182eb46bb56ed764e1530dbd38e91e8a6268484f02a1088168951"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Bind the function to this converter and append it after existing parameter attribute functions. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

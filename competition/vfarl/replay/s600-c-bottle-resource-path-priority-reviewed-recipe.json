@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Register two relative resource directories and prepend the second after caching a lookup. The rewrite bypasses path normalization and changes insertion-index semantics. Cache clearing itself is unchanged. Normalize paths relative to the configured base and honor the requested insertion priority before consumers resolve resources. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "bottle.py",
+        "start_line": 2668,
+        "end_line": 2698
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'bottle.py').resolve()\ntry:\n module = importlib.import_module('bottle')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport os,tempfile\nfrom pathlib import Path\nfrom bottle import ResourceManager\nwith tempfile.TemporaryDirectory() as folder:\n root=Path(folder);(root/'a').mkdir();(root/'b').mkdir();(root/'a'/'x').write_text('A');(root/'b'/'x').write_text('B')\n r=ResourceManager(base=str(root/'anchor.py'));assert r.add_path('a/');first=r.lookup('x');assert r.add_path('b/',index=0);second=r.lookup('x')\n print('resource_priority',first,second);assert first==str(root/'a'/'x') and second==str(root/'b'/'x')\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "0ac0717272ffb43eac4b1c0cab82094cce24aa5e9a9172c790c86761c1b6d3f5"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "bottle.py",
+        "old_string": "                res.add_path('./resources/', __file__)\n        \"\"\"\n        base = os.path.abspath(os.path.dirname(base or self.base))\n        if create and not os.path.isdir(path):\n            path = os.path.abspath(os.path.join(base, os.path.basename(path)))\n        path += os.sep\n        if path in self.path:\n            self.path.remove(path)\n        if not create and os.path.isdir(path):\n            os.makedirs(path)\n        if index is None:\n            self.path.insert(0, path)\n        else:\n            self.path.append(path)\n        self.cache.clear()\n        return not os.path.exists(path)\n\n    def __iter__(self):\n        \"\"\" Iterate over all existing files in all registered paths. \"\"\"\n",
+        "new_string": "                res.add_path('./resources/', __file__)\n        \"\"\"\n        base = os.path.abspath(os.path.dirname(base or self.base))\n        path = os.path.abspath(os.path.join(base, os.path.dirname(path)))\n        path += os.sep\n        if path in self.path:\n            self.path.remove(path)\n        if create and not os.path.isdir(path):\n            os.makedirs(path)\n        if index is None:\n            self.path.append(path)\n        else:\n            self.path.insert(index, path)\n        self.cache.clear()\n        return os.path.exists(path)\n\n    def __iter__(self):\n        \"\"\" Iterate over all existing files in all registered paths. \"\"\"\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'bottle.py').resolve()\ntry:\n module = importlib.import_module('bottle')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport os,tempfile\nfrom pathlib import Path\nfrom bottle import ResourceManager\nwith tempfile.TemporaryDirectory() as folder:\n root=Path(folder);(root/'a').mkdir();(root/'b').mkdir();(root/'a'/'x').write_text('A');(root/'b'/'x').write_text('B')\n r=ResourceManager(base=str(root/'anchor.py'));assert r.add_path('a/');first=r.lookup('x');assert r.add_path('b/',index=0);second=r.lookup('x')\n print('resource_priority',first,second);assert first==str(root/'a'/'x') and second==str(root/'b'/'x')\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "0ac0717272ffb43eac4b1c0cab82094cce24aa5e9a9172c790c86761c1b6d3f5"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Normalize paths relative to the configured base and honor the requested insertion priority before consumers resolve resources. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

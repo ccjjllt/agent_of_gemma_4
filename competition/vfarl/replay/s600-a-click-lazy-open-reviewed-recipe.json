@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex explicit context/resource/callback source review2026-10-25",
+  "review_notes": "LazyFile.open: lazy_file_open_returns_owned_stream_with_requested_atomic_policy. One distinct production function per contract, no repeated mutation variants. Original platform skip/xfail markers and all full files/required nodes retained. Temporary real file observations clean up their own workspace temporary directory even on assertion failure. No mocked source modules or replacement tests.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/click/utils.py",
+        "start_line": 149,
+        "end_line": 170
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('click.utils')\na=Path(m.__file__).resolve();e=(Path.cwd()/'src/click/utils.py').resolve()\nassert a==e,(a,e)\nprint('source_binding',a,'sha256',hashlib.sha256(a.read_bytes()).hexdigest())\nfrom pathlib import Path\nfrom tempfile import TemporaryDirectory\nfrom click.utils import LazyFile\nwith TemporaryDirectory(dir='.') as d:\n f=LazyFile(str(Path(d)/'file.txt'),mode='w',atomic=False)\n try:\n  stream=f.open();print('opened_real_stream',stream is f._f);assert stream is f._f and stream is not None\n  stream.write('kept')\n finally:f.close()\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "5b8ff2f3666728b938caa701a0eb89d1c4750b55f3cbbabbf5d7c3567567b1bd"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/click/utils.py",
+        "old_string": "    def open(self) -> t.IO[t.Any]:\n        \"\"\"Opens the file if it's not yet open.  This call might fail with\n        a :exc:`FileError`.  Not handling this error will produce an error\n        that Click shows.\n        \"\"\"\n        if self._f is not None:\n            return self._f\n        try:\n            rv, self.should_close = open_stream(\n                self.name, self.mode, self.encoding, self.errors, atomic=not self.atomic\n            )\n        except OSError:\n            from .exceptions import FileError\n\n            raise FileError(self.name)\n        self._f = rv\n        return None\n\n",
+        "new_string": "    def open(self) -> t.IO[t.Any]:\n        \"\"\"Opens the file if it's not yet open.  This call might fail with\n        a :exc:`FileError`.  Not handling this error will produce an error\n        that Click shows.\n        \"\"\"\n        if self._f is not None:\n            return self._f\n        try:\n            rv, self.should_close = open_stream(\n                self.name, self.mode, self.encoding, self.errors, atomic=self.atomic\n            )\n        except OSError as e:\n            from .exceptions import FileError\n\n            raise FileError(self.name, hint=e.strerror) from e\n        self._f = rv\n        return rv\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('click.utils')\na=Path(m.__file__).resolve();e=(Path.cwd()/'src/click/utils.py').resolve()\nassert a==e,(a,e)\nprint('source_binding',a,'sha256',hashlib.sha256(a.read_bytes()).hexdigest())\nfrom pathlib import Path\nfrom tempfile import TemporaryDirectory\nfrom click.utils import LazyFile\nwith TemporaryDirectory(dir='.') as d:\n f=LazyFile(str(Path(d)/'file.txt'),mode='w',atomic=False)\n try:\n  stream=f.open();print('opened_real_stream',stream is f._f);assert stream is f._f and stream is not None\n  stream.write('kept')\n finally:f.close()\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "5b8ff2f3666728b938caa701a0eb89d1c4750b55f3cbbabbf5d7c3567567b1bd"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "lazy file open returns owned stream with requested atomic policy. The real source-bound observation completed and the patch was submitted."
+}

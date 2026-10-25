@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex S600 common-course source contract and explicit command review2026-10-25",
+  "review_notes": "Function serialization separates arguments with commas and suppresses argument aliases while keeping special-parameter spacing. The complete production-file delta is exactly this reviewed function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "pypika/terms.py",
+        "start_line": 1419,
+        "end_line": 1439
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pypika.terms')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pypika/terms.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom pypika import Query,Table,Field,Column\nfrom pypika.terms import Function\nf=Function('PAIR',Field('x').as_('hidden'),Field('y'));s=f.get_function_sql();print(s);assert s=='PAIR(x,y)'\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "50193054a9a85df52d9d036402657770da044f6306806c3eaa2618f5a9ec4597"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pypika/terms.py",
+        "old_string": "    def get_function_sql(self, **kwargs: Any) -> str:\n        special_params_sql = self.get_special_params_sql(**kwargs)\n\n        return \"{name}({args}{special})\".format(\n            name=special_params_sql if self.name == \"\" else self.name,\n            args=\";\".join(\n                p.get_sql(with_alias=True, subquery=False, **kwargs)\n                if hasattr(p, \"get_sql\")\n                else self.get_arg_sql(p, **kwargs)\n                for p in self.args\n            ),\n            special=(\" \" + special_params_sql) if not special_params_sql else \"\",\n        )\n",
+        "new_string": "    def get_function_sql(self, **kwargs: Any) -> str:\n        special_params_sql = self.get_special_params_sql(**kwargs)\n\n        return \"{name}({args}{special})\".format(\n            name=self.name,\n            args=\",\".join(\n                p.get_sql(with_alias=False, subquery=True, **kwargs)\n                if hasattr(p, \"get_sql\")\n                else self.get_arg_sql(p, **kwargs)\n                for p in self.args\n            ),\n            special=(\" \" + special_params_sql) if special_params_sql else \"\",\n        )\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pypika.terms')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pypika/terms.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom pypika import Query,Table,Field,Column\nfrom pypika.terms import Function\nf=Function('PAIR',Field('x').as_('hidden'),Field('y'));s=f.get_function_sql();print(s);assert s=='PAIR(x,y)'\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "50193054a9a85df52d9d036402657770da044f6306806c3eaa2618f5a9ec4597"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Function serialization separates arguments with commas and suppresses argument aliases while keeping special-parameter spacing. The source-bound reproduction passes after the repair. Patch submitted."
+}

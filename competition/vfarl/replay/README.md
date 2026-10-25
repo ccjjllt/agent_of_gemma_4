@@ -1,5 +1,7 @@
 # 官方六工具 CPU 数据重放
 
+当前数据扩容集中在[S600](../s600/README.md)，400共同与200专科名单互不重复。下段81题数字为该阶段开始前的历史起点；最新运行、对白与课程数量以本目录机器清单和[S600课程清单](../s600/course-manifest.json)为准。
+
 2026-10-25。当前81条可用示范（原96中的61题＋明确补充20题），G28/S16/F18/R19，实际导出716条决策（641工具调用＋75实际终止回答）、89,774个助手监督tokens，最大动作上下文8,973。精确实物以[准入清单](canonical-results-manifest.json)、[重放总览](replay-summary.json)、[对白清单](gemma-sft-manifest.json)和[四份主责/共享课程](adapter-curricula-manifest.json)为准。
 
 `run_official.py`正常导入原版swegemma0.2.11、adk-eval-core0.1.0、adk-submission0.2.13、google-adk1.39.1。真实Context/Budget、六工具、路径保护、verify_task和JUnit matcher未修改。动作由Codex编排审阅，legacy human_reviewed字段不是用户人工标注或Gemma采样。每条命令有审阅hash，原始参数、观察、双轮干净验证、快照/补丁与源绑定均保存。

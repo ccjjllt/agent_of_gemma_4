@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Read a missing child, write through it, then access a missing key under freeze. An unfrozen read raises and a returned child is detached from the parent. Create missing children bound to parent/key only when unfrozen; reject missing keys when frozen. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "addict/addict.py",
+        "start_line": 64,
+        "end_line": 77
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'addict/addict.py').resolve()\ntry:\n module = importlib.import_module('addict.addict')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom addict import Dict\nd=Dict()\nchild=d.later\nassert d=={}\nchild.value=8\nprint('lazy_parent_identity',d.get('later') is child,dict(d))\nassert d['later'] is child and d.later.value==8\nd.freeze()\ntry:\n d.missing\n raise AssertionError('frozen missing access accepted')\nexcept KeyError:\n pass\nprint('lazy_parent_binding_frozen_missing',True)\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "eb959209d3c7bcaa95a71a456d742ca319801cc31af53c37dc1d5c5fbf250e31"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "addict/addict.py",
+        "old_string": "        return self.__getitem__(item)\n\n    def __missing__(self, name):\n        if not object.__getattribute__(self, '__frozen'):\n            raise KeyError(name)\n        return self.__class__(__parent=None, __key=name)\n\n    def __delattr__(self, name):\n        del self[name]\n",
+        "new_string": "        return self.__getitem__(item)\n\n    def __missing__(self, name):\n        if object.__getattribute__(self, '__frozen'):\n            raise KeyError(name)\n        return self.__class__(__parent=self, __key=name)\n\n    def __delattr__(self, name):\n        del self[name]\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'addict/addict.py').resolve()\ntry:\n module = importlib.import_module('addict.addict')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom addict import Dict\nd=Dict()\nchild=d.later\nassert d=={}\nchild.value=8\nprint('lazy_parent_identity',d.get('later') is child,dict(d))\nassert d['later'] is child and d.later.value==8\nd.freeze()\ntry:\n d.missing\n raise AssertionError('frozen missing access accepted')\nexcept KeyError:\n pass\nprint('lazy_parent_binding_frozen_missing',True)\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "eb959209d3c7bcaa95a71a456d742ca319801cc31af53c37dc1d5c5fbf250e31"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Create missing children bound to parent/key only when unfrozen; reject missing keys when frozen. The source-bound inline observation now passes. Patch submitted; the harness separately runs clean full-file task verification."
+}

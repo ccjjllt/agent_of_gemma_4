@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex explicit context/resource/callback source review2026-10-25",
+  "review_notes": "Context.forward: forwarded_context_parameters_keep_explicit_keyword_precedence. One distinct production function per contract, no repeated mutation variants. Original platform skip/xfail markers and all full files/required nodes retained. Temporary real file observations clean up their own workspace temporary directory even on assertion failure. No mocked source modules or replacement tests.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/click/core.py",
+        "start_line": 787,
+        "end_line": 809
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('click.core')\na=Path(m.__file__).resolve();e=(Path.cwd()/'src/click/core.py').resolve()\nassert a==e,(a,e)\nprint('source_binding',a,'sha256',hashlib.sha256(a.read_bytes()).hexdigest())\nimport click\nctx=click.Context(click.Command('parent'));ctx.params={'value':3};target=click.Command('target',callback=lambda value:value,params=[click.Option(['--value'],type=int,default=1)]);r=(ctx.forward(target),ctx.forward(target,value=9));print('forwarded_parameters',r);assert r==(3,9)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "562ca70e9b9b00082d5d5294d1da91d32a690f094ea945268b71f54039e2a97b"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/click/core.py",
+        "old_string": "    def forward(self, cmd: Command, /, *args: t.Any, **kwargs: t.Any) -> t.Any:\n        \"\"\"Similar to :meth:`invoke` but fills in default keyword\n        arguments from the current context if the other command expects\n        it.  This cannot invoke callbacks directly, only other commands.\n\n        .. versionchanged:: 8.0\n            All ``kwargs`` are tracked in :attr:`params` so they will be\n            passed if ``forward`` is called at multiple levels.\n        \"\"\"\n        # Can only forward to other commands, not direct callbacks.\n        if not isinstance(cmd, Command):\n            raise ValueError(\"Callback is not a command.\")\n\n        for param in list(self.params):\n            if param in kwargs:\n                kwargs.pop(param)\n\n        return self.invoke(cmd, *args, **kwargs)\n\n",
+        "new_string": "    def forward(self, cmd: Command, /, *args: t.Any, **kwargs: t.Any) -> t.Any:\n        \"\"\"Similar to :meth:`invoke` but fills in default keyword\n        arguments from the current context if the other command expects\n        it.  This cannot invoke callbacks directly, only other commands.\n\n        .. versionchanged:: 8.0\n            All ``kwargs`` are tracked in :attr:`params` so they will be\n            passed if ``forward`` is called at multiple levels.\n        \"\"\"\n        # Can only forward to other commands, not direct callbacks.\n        if not isinstance(cmd, Command):\n            raise TypeError(\"Callback is not a command.\")\n\n        for param in self.params:\n            if param not in kwargs:\n                kwargs[param] = self.params[param]\n\n        return self.invoke(cmd, *args, **kwargs)\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('click.core')\na=Path(m.__file__).resolve();e=(Path.cwd()/'src/click/core.py').resolve()\nassert a==e,(a,e)\nprint('source_binding',a,'sha256',hashlib.sha256(a.read_bytes()).hexdigest())\nimport click\nctx=click.Context(click.Command('parent'));ctx.params={'value':3};target=click.Command('target',callback=lambda value:value,params=[click.Option(['--value'],type=int,default=1)]);r=(ctx.forward(target),ctx.forward(target,value=9));print('forwarded_parameters',r);assert r==(3,9)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "562ca70e9b9b00082d5d5294d1da91d32a690f094ea945268b71f54039e2a97b"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "forwarded context parameters keep explicit keyword precedence. The real source-bound observation completed and the patch was submitted."
+}

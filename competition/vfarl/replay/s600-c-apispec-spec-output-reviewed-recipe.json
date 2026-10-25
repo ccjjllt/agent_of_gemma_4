@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Render the same schema-bearing specification under major versions two and three. Major version three emits swagger and version two wrongly nests components. Use each version's top-level version key and component placement while preserving options precedence. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/apispec/core.py",
+        "start_line": 458,
+        "end_line": 485
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/apispec/core.py').resolve()\ntry:\n module = importlib.import_module('apispec.core')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom apispec import APISpec\nvalues=[]\nfor version in ('2.0','3.0.3'):\n item=APISpec(title='demo',version='1',openapi_version=version)\n item.components.schema('Thing',component={'type':'string'})\n values.append(item.to_dict())\nprint('spec_version_keys',[list(value) for value in values])\nassert values[0]['swagger']=='2.0' and 'Thing' in values[0]['definitions'] and 'components' not in values[0]\nassert values[1]['openapi']=='3.0.3' and 'Thing' in values[1]['components']['schemas'] and 'swagger' not in values[1]\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "2743a2422a8a5314862a4ead65b19033202129b4a85fe7511037f3bb2061cdf7"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/apispec/core.py",
+        "old_string": "        }\n        if self._tags:\n            ret[\"tags\"] = self._tags\n        if self.openapi_version.major <= 3:\n            ret[\"swagger\"] = str(self.openapi_version)\n        else:\n            ret[\"openapi\"] = str(self.openapi_version)\n        components_dict = self.components.to_dict()\n        if components_dict:\n            ret[\"components\"] = components_dict\n        return deepupdate(self.options, ret)\n\n    def to_yaml(self, yaml_dump_kwargs: typing.Any | None = None) -> str:\n        \"\"\"Render the spec to YAML. Requires PyYAML to be installed.\n",
+        "new_string": "        }\n        if self._tags:\n            ret[\"tags\"] = self._tags\n        if self.openapi_version.major < 3:\n            ret[\"swagger\"] = str(self.openapi_version)\n            ret.update(self.components.to_dict())\n        else:\n            ret[\"openapi\"] = str(self.openapi_version)\n            components_dict = self.components.to_dict()\n            if components_dict:\n                ret[\"components\"] = components_dict\n        ret = deepupdate(ret, self.options)\n        return ret\n\n    def to_yaml(self, yaml_dump_kwargs: typing.Any | None = None) -> str:\n        \"\"\"Render the spec to YAML. Requires PyYAML to be installed.\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/apispec/core.py').resolve()\ntry:\n module = importlib.import_module('apispec.core')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom apispec import APISpec\nvalues=[]\nfor version in ('2.0','3.0.3'):\n item=APISpec(title='demo',version='1',openapi_version=version)\n item.components.schema('Thing',component={'type':'string'})\n values.append(item.to_dict())\nprint('spec_version_keys',[list(value) for value in values])\nassert values[0]['swagger']=='2.0' and 'Thing' in values[0]['definitions'] and 'components' not in values[0]\nassert values[1]['openapi']=='3.0.3' and 'Thing' in values[1]['components']['schemas'] and 'swagger' not in values[1]\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "2743a2422a8a5314862a4ead65b19033202129b4a85fe7511037f3bb2061cdf7"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Use each version's top-level version key and component placement while preserving options precedence. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

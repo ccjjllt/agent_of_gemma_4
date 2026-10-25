@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Merge overlapping nested mappings plus top-level keyword values. Constructor-style replacement loses unmentioned nested entries. Accumulate positional mapping and overriding keywords, recursing only when old/new values are mappings. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "addict/addict.py",
+        "start_line": 98,
+        "end_line": 129
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'addict/addict.py').resolve()\ntry:\n module = importlib.import_module('addict.addict')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom addict import Dict\nd=Dict({'branch':{'a':1,'keep':2},'leaf':0})\nchild=d.branch\nd.update({'branch':{'a':3,'new':4}},leaf=5)\nprint('recursive_merge',d.to_dict(),'subtree_identity',d.branch is child)\nassert d.to_dict()=={'branch':{'a':3,'keep':2,'new':4},'leaf':5}\nassert d.branch is child\nd.update({'leaf':6},leaf=7)\nassert d.leaf==7\nprint('recursive_merge_and_keyword_override',True)\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "3301e35923b27833f946435953a6a265bc37def06dfac188e5096a0fe4142faf"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "addict/addict.py",
+        "old_string": "        return other\n\n    def update(self, *args, **kwargs):\n        \"\"\"TODO: Implement this function\"\"\"\n        for arg in args:\n            if not arg:\n                continue\n            elif isinstance(arg, dict):\n                for key, val in arg.items():\n                    self[key] = self._hook(val)\n            elif isinstance(arg, tuple) and (not isinstance(arg[0], tuple)):\n                self[arg[0]] = self._hook(arg[1])\n            else:\n                for key, val in iter(arg):\n                    self[key] = self._hook(val)\n\n        for key, val in kwargs.items():\n            self[key] = self._hook(val)\n    def __getnewargs__(self):\n        return tuple(self.items())\n\n",
+        "new_string": "        return other\n\n    def update(self, *args, **kwargs):\n        other = {}\n        if args:\n            if len(args) > 1:\n                raise TypeError()\n            other.update(args[0])\n        other.update(kwargs)\n        for k, v in other.items():\n            if ((k not in self) or\n                (not isinstance(self[k], dict)) or\n                (not isinstance(v, dict))):\n                self[k] = v\n            else:\n                self[k].update(v)\n\n    def __getnewargs__(self):\n        return tuple(self.items())\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'addict/addict.py').resolve()\ntry:\n module = importlib.import_module('addict.addict')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom addict import Dict\nd=Dict({'branch':{'a':1,'keep':2},'leaf':0})\nchild=d.branch\nd.update({'branch':{'a':3,'new':4}},leaf=5)\nprint('recursive_merge',d.to_dict(),'subtree_identity',d.branch is child)\nassert d.to_dict()=={'branch':{'a':3,'keep':2,'new':4},'leaf':5}\nassert d.branch is child\nd.update({'leaf':6},leaf=7)\nassert d.leaf==7\nprint('recursive_merge_and_keyword_override',True)\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "3301e35923b27833f946435953a6a265bc37def06dfac188e5096a0fe4142faf"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Accumulate positional mapping and overriding keywords, recursing only when old/new values are mappings. The source-bound inline observation now passes. Patch submitted; the harness separately runs clean full-file task verification."
+}

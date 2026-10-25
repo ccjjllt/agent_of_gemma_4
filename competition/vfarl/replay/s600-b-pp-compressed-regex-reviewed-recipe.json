@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex S600 source contract and explicit command review 2026-10-25",
+  "review_notes": "Recursive prefix-factored regex construction preserves every input word and optional suffix. Shared-prefix and whole-word alternatives must recognize the exact original word language. Individually reviewed source/defect change and reproduction. Original full-file verification and requirements retained; not sampled Gemma, not a same-state preference pair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "pyparsing/util.py",
+        "start_line": 300,
+        "end_line": 361
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pyparsing.util')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pyparsing/util.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport re\nwords=sorted(['cat','car','dog','do'])\npattern=m.make_compressed_re(words)\ncompiled=re.compile('(?:'+pattern+')'+r'\\Z')\nprint('factored_regex',pattern)\nassert all(compiled.fullmatch(s) for s in words)\nassert not any(compiled.fullmatch(s) for s in ['ca','cart','dogs','acat'])\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "fa1e054432d4661549c283ccc64f4f04c86209f1513b2d2a26988e0409e9823d"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pyparsing/util.py",
+        "old_string": "def make_compressed_re(\n    word_list: Iterable[str], max_level: int = 2, _level: int = 1\n) -> str:\n    \"\"\"\n    Create a regular expression string from a list of words, collapsing by common\n    prefixes and optional suffixes.\n\n    Calls itself recursively to build nested sublists for each group of suffixes\n    that have a shared prefix.\n    \"\"\"\n\n    def get_suffixes_from_common_prefixes(namelist: list[str]):\n        if len(namelist) > 1:\n            for prefix, suffixes in itertools.groupby(namelist, key=lambda s: s[:1]):\n                yield prefix, sorted([s[1:] for s in suffixes], key=len)\n        else:\n            yield namelist[0][0], [namelist[0][1:]]\n\n    if max_level == 1:\n        return \"|\".join(sorted(word_list, key=len))\n\n    ret = []\n    sep = \"\"\n    for initial, suffixes in get_suffixes_from_common_prefixes(sorted(word_list)):\n        ret.append(sep)\n        sep = \"|\"\n\n        trailing = \"\"\n        if \"\" not in suffixes:\n            trailing = \"?\"\n            suffixes.remove(\"\")\n\n        if len(suffixes) > 1:\n            if all(len(s) == 1 for s in suffixes):\n                ret.append(f\"{initial}[{''.join(suffixes)}]{trailing}\")\n            else:\n                if _level <= max_level:\n                    suffix_re = make_compressed_re(\n                        sorted(suffixes), max_level, _level + 1\n                    )\n                    ret.append(f\"{initial}({suffix_re}){trailing}\")\n                else:\n                    suffixes.sort(key=len)\n                    ret.append(f\"{initial}({'|'.join(suffixes)}){trailing}\")\n        else:\n            if suffixes:\n                suffix = suffixes[0]\n                if len(suffix) > 1 or trailing:\n                    ret.append(f\"{initial}({suffix}){trailing}\")\n                else:\n                    ret.append(f\"{initial}{suffix}{trailing}\")\n            else:\n                ret.append(initial)\n    return \"\".join(ret)\n",
+        "new_string": "def make_compressed_re(\n    word_list: Iterable[str], max_level: int = 2, _level: int = 1\n) -> str:\n    \"\"\"\n    Create a regular expression string from a list of words, collapsing by common\n    prefixes and optional suffixes.\n\n    Calls itself recursively to build nested sublists for each group of suffixes\n    that have a shared prefix.\n    \"\"\"\n\n    def get_suffixes_from_common_prefixes(namelist: list[str]):\n        if len(namelist) > 1:\n            for prefix, suffixes in itertools.groupby(namelist, key=lambda s: s[:1]):\n                yield prefix, sorted([s[1:] for s in suffixes], key=len, reverse=True)\n        else:\n            yield namelist[0][0], [namelist[0][1:]]\n\n    if max_level == 0:\n        return \"|\".join(sorted(word_list, key=len, reverse=True))\n\n    ret = []\n    sep = \"\"\n    for initial, suffixes in get_suffixes_from_common_prefixes(sorted(word_list)):\n        ret.append(sep)\n        sep = \"|\"\n\n        trailing = \"\"\n        if \"\" in suffixes:\n            trailing = \"?\"\n            suffixes.remove(\"\")\n\n        if len(suffixes) > 1:\n            if all(len(s) == 1 for s in suffixes):\n                ret.append(f\"{initial}[{''.join(suffixes)}]{trailing}\")\n            else:\n                if _level < max_level:\n                    suffix_re = make_compressed_re(\n                        sorted(suffixes), max_level, _level + 1\n                    )\n                    ret.append(f\"{initial}({suffix_re}){trailing}\")\n                else:\n                    suffixes.sort(key=len, reverse=True)\n                    ret.append(f\"{initial}({'|'.join(suffixes)}){trailing}\")\n        else:\n            if suffixes:\n                suffix = suffixes[0]\n                if len(suffix) > 1 and trailing:\n                    ret.append(f\"{initial}({suffix}){trailing}\")\n                else:\n                    ret.append(f\"{initial}{suffix}{trailing}\")\n            else:\n                ret.append(initial)\n    return \"\".join(ret)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pyparsing.util')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pyparsing/util.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport re\nwords=sorted(['cat','car','dog','do'])\npattern=m.make_compressed_re(words)\ncompiled=re.compile('(?:'+pattern+')'+r'\\Z')\nprint('factored_regex',pattern)\nassert all(compiled.fullmatch(s) for s in words)\nassert not any(compiled.fullmatch(s) for s in ['ca','cart','dogs','acat'])\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "fa1e054432d4661549c283ccc64f4f04c86209f1513b2d2a26988e0409e9823d"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Recursive prefix-factored regex construction preserves every input word and optional suffix. Shared-prefix and whole-word alternatives must recognize the exact original word language. The actual source-bound reproduction passes after the production repair. Patch submitted."
+}

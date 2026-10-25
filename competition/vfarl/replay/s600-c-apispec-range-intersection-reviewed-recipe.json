@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Combine overlapping range validators into one schema range. Lower and upper bound attributes are crossed when collecting validators. Use the greatest lower bound and least upper bound across nonempty bounds. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/apispec/ext/marshmallow/field_converter.py",
+        "start_line": 631,
+        "end_line": 650
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/apispec/ext/marshmallow/field_converter.py').resolve()\ntry:\n module = importlib.import_module('apispec.ext.marshmallow.field_converter')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom marshmallow import validate\nfrom apispec.ext.marshmallow.field_converter import make_min_max_attributes\nvalue=make_min_max_attributes([validate.Range(min=1,max=10),validate.Range(min=3,max=8)],'minimum','maximum')\nprint('intersected_range',value)\nassert value=={'minimum':3,'maximum':8}\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "005d00b0b86382dca347ad118cf72903abee6b9957a0ea33d2d485b8a6ac4900"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/apispec/ext/marshmallow/field_converter.py",
+        "old_string": "    :param max_attr string: The OpenAPI attribute for the maximum value\n    \"\"\"\n    attributes = {}\n    min_list = [validator.max for validator in validators if validator.min is not None]\n    max_list = [validator.min for validator in validators if validator.max is not None]\n    if min_list:\n        attributes[min_attr] = max(min_list)\n    if max_list:\n",
+        "new_string": "    :param max_attr string: The OpenAPI attribute for the maximum value\n    \"\"\"\n    attributes = {}\n    min_list = [validator.min for validator in validators if validator.min is not None]\n    max_list = [validator.max for validator in validators if validator.max is not None]\n    if min_list:\n        attributes[min_attr] = max(min_list)\n    if max_list:\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/apispec/ext/marshmallow/field_converter.py').resolve()\ntry:\n module = importlib.import_module('apispec.ext.marshmallow.field_converter')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom marshmallow import validate\nfrom apispec.ext.marshmallow.field_converter import make_min_max_attributes\nvalue=make_min_max_attributes([validate.Range(min=1,max=10),validate.Range(min=3,max=8)],'minimum','maximum')\nprint('intersected_range',value)\nassert value=={'minimum':3,'maximum':8}\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "005d00b0b86382dca347ad118cf72903abee6b9957a0ea33d2d485b8a6ac4900"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Use the greatest lower bound and least upper bound across nonempty bounds. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

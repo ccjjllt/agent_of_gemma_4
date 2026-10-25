@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Record a successful outcome and its timestamp on a real RetryCallState. The future and numeric timestamp are written into opposite fields. Store the completed future as outcome and monotonic seconds as outcome_timestamp. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "tenacity/__init__.py",
+        "start_line": 564,
+        "end_line": 583
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'tenacity/__init__.py').resolve()\ntry:\n module = importlib.import_module('tenacity')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom tenacity import RetryCallState, Retrying\nstate=RetryCallState(Retrying(),None,(),{})\nfrom tenacity import Future\nvalue=object()\nstate.set_result(value)\nprint('outcome_field_types',type(state.outcome).__name__,type(state.outcome_timestamp).__name__)\nassert isinstance(state.outcome,Future) and state.outcome.result() is value\nassert isinstance(state.outcome_timestamp,float) and state.outcome_timestamp>=state.start_time\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "a3e41067dd60ccf47e42a0ce3541804bd31517185d210dacde78f77fc8d805e2"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "tenacity/__init__.py",
+        "old_string": "    def set_result(self, val: t.Any) -> None:\n        ts = time.monotonic()\n        fut = Future(self.attempt_number)\n        self.outcome, self.outcome_timestamp = ts, fut\n        fut.set_result(val)\n\n    def set_exception(\n        self,\n",
+        "new_string": "    def set_result(self, val: t.Any) -> None:\n        ts = time.monotonic()\n        fut = Future(self.attempt_number)\n        fut.set_result(val)\n        self.outcome, self.outcome_timestamp = fut, ts\n\n    def set_exception(\n        self,\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'tenacity/__init__.py').resolve()\ntry:\n module = importlib.import_module('tenacity')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom tenacity import RetryCallState, Retrying\nstate=RetryCallState(Retrying(),None,(),{})\nfrom tenacity import Future\nvalue=object()\nstate.set_result(value)\nprint('outcome_field_types',type(state.outcome).__name__,type(state.outcome_timestamp).__name__)\nassert isinstance(state.outcome,Future) and state.outcome.result() is value\nassert isinstance(state.outcome_timestamp,float) and state.outcome_timestamp>=state.start_time\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "a3e41067dd60ccf47e42a0ce3541804bd31517185d210dacde78f77fc8d805e2"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Store the completed future as outcome and monotonic seconds as outcome_timestamp. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

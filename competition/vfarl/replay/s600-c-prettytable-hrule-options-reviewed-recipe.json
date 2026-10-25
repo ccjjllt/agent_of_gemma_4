@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Override top corner junctions for one rendering call. The rewrite obtains junctions from instance getters instead of the merged per-call options. Use the selected options at the rule consumer so call-local corner overrides are honored. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/prettytable/prettytable.py",
+        "start_line": 2012,
+        "end_line": 2102
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/prettytable/prettytable.py').resolve()\ntry:\n module = importlib.import_module('prettytable.prettytable')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom prettytable import PrettyTable\nt=PrettyTable(['a']);t.add_row([1]);value=t.get_string(top_left_junction_char='L',top_right_junction_char='R')\nprint('call_local_junctions',value)\nassert value.splitlines()[0]=='L---R' and t.top_left_junction_char=='+'\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "3d762149c51bcd741969d09e07d8bd7dfe402cf2ecb677efbbbd657a0b3cd5bf"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/prettytable/prettytable.py",
+        "old_string": "\n        return \"\\n\".join(lines)\n\n    def _stringify_hrule(self, options: OptionsType, where: Literal['top_',\n        'bottom_', '']='') ->str:\n        \"\"\"Return a string representation of a horizontal rule with the appropriate\n        junction characters based on the position in the table and the table's styling options.\"\"\"\n        if not options[\"border\"] and not options[\"preserve_internal_border\"]:\n            return \"\"\n    \n        lpad, rpad = self._get_padding_widths(options)\n        bits = []\n    \n        # Left border junction character\n        if options[\"vrules\"] in (VRuleStyle.ALL, VRuleStyle.FRAME) and options[\"border\"]:\n            if where == \"top_\":\n                bits.append(getattr(self, \"top_left_junction_char\"))\n            elif where == \"bottom_\":\n                bits.append(getattr(self, \"bottom_left_junction_char\"))\n            else:\n                bits.append(getattr(self, \"left_junction_char\"))\n        else:\n            bits.append(\" \")\n    \n        # For each field, add the appropriate horizontal line\n        for field, width in zip(self._field_names, self._widths):\n            if options[\"fields\"] and field not in options[\"fields\"]:\n                continue\n        \n            # Calculate the total width of the field including padding\n            field_width = width + lpad + rpad\n        \n            # Add horizontal alignment character if specified\n            if options[\"horizontal_align_char\"] and self._style == TableStyle.MARKDOWN:\n                if self._align[field] == \"l\":\n                    bits.append(options[\"horizontal_char\"] + options[\"horizontal_align_char\"] + \n                               options[\"horizontal_char\"] * (field_width - 2))\n                elif self._align[field] == \"r\":\n                    bits.append(options[\"horizontal_char\"] * (field_width - 2) + \n                               options[\"horizontal_align_char\"] + options[\"horizontal_char\"])\n                else:  # center alignment\n                    bits.append(options[\"horizontal_char\"] + options[\"horizontal_align_char\"] + \n                               options[\"horizontal_char\"] * (field_width - 4) + \n                               options[\"horizontal_align_char\"] + options[\"horizontal_char\"])\n            else:\n                bits.append(options[\"horizontal_char\"] * field_width)\n        \n            # Add junction character between fields\n            if options[\"vrules\"] == VRuleStyle.ALL:\n                if where == \"top_\":\n                    bits.append(getattr(self, \"top_junction_char\"))\n                elif where == \"bottom_\":\n                    bits.append(getattr(self, \"bottom_junction_char\"))\n                else:\n                    bits.append(getattr(self, \"junction_char\"))\n            elif options[\"preserve_internal_border\"] and not options[\"border\"]:\n                bits.append(getattr(self, \"junction_char\"))\n            else:\n                bits.append(\" \")\n    \n        # Remove the last junction character if it's not needed\n        if not options[\"border\"] and options[\"preserve_internal_border\"]:\n            bits.pop()\n            bits.append(\" \")\n    \n        # Replace the last junction character with the right border junction if needed\n        if options[\"border\"] and options[\"vrules\"] in (VRuleStyle.ALL, VRuleStyle.FRAME):\n            bits.pop()\n            if where == \"top_\":\n                bits.append(getattr(self, \"top_right_junction_char\"))\n            elif where == \"bottom_\":\n                bits.append(getattr(self, \"bottom_right_junction_char\"))\n            else:\n                bits.append(getattr(self, \"right_junction_char\"))\n    \n        return \"\".join(bits)\n    def _stringify_title(self, title: str, options: OptionsType) -> str:\n        lines: list[str] = []\n        lpad, rpad = self._get_padding_widths(options)\n",
+        "new_string": "\n        return \"\\n\".join(lines)\n\n    def _stringify_hrule(\n        self, options: OptionsType, where: Literal[\"top_\", \"bottom_\", \"\"] = \"\"\n    ) -> str:\n        if not options[\"border\"] and not options[\"preserve_internal_border\"]:\n            return \"\"\n        lpad, rpad = self._get_padding_widths(options)\n        if options[\"vrules\"] in (VRuleStyle.ALL, VRuleStyle.FRAME):\n            bits = [options[where + \"left_junction_char\"]]  # type: ignore[literal-required]\n        else:\n            bits = [options[\"horizontal_char\"]]\n        # For tables with no data or fieldnames\n        if not self._field_names:\n            bits.append(options[where + \"right_junction_char\"])  # type: ignore[literal-required]\n            return \"\".join(bits)\n        for field, width in zip(self._field_names, self._widths):\n            if options[\"fields\"] and field not in options[\"fields\"]:\n                continue\n\n            line = (width + lpad + rpad) * options[\"horizontal_char\"]\n\n            # If necessary, add column alignment characters (e.g. \":\" for Markdown)\n            if self._horizontal_align_char:\n                if self._align[field] in (\"l\", \"c\"):\n                    line = \" \" + self._horizontal_align_char + line[2:]\n                if self._align[field] in (\"c\", \"r\"):\n                    line = line[:-2] + self._horizontal_align_char + \" \"\n\n            bits.append(line)\n            if options[\"vrules\"] == VRuleStyle.ALL:\n                bits.append(options[where + \"junction_char\"])  # type: ignore[literal-required]\n            else:\n                bits.append(options[\"horizontal_char\"])\n        if options[\"vrules\"] in (VRuleStyle.ALL, VRuleStyle.FRAME):\n            bits.pop()\n            bits.append(options[where + \"right_junction_char\"])  # type: ignore[literal-required]\n\n        if options[\"preserve_internal_border\"] and not options[\"border\"]:\n            bits = bits[1:-1]\n\n        return \"\".join(bits)\n\n    def _stringify_title(self, title: str, options: OptionsType) -> str:\n        lines: list[str] = []\n        lpad, rpad = self._get_padding_widths(options)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/prettytable/prettytable.py').resolve()\ntry:\n module = importlib.import_module('prettytable.prettytable')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom prettytable import PrettyTable\nt=PrettyTable(['a']);t.add_row([1]);value=t.get_string(top_left_junction_char='L',top_right_junction_char='R')\nprint('call_local_junctions',value)\nassert value.splitlines()[0]=='L---R' and t.top_left_junction_char=='+'\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "3d762149c51bcd741969d09e07d8bd7dfe402cf2ecb677efbbbd657a0b3cd5bf"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Use the selected options at the rule consumer so call-local corner overrides are honored. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

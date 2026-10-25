@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Search using a non-cacheable mapped predicate whose captured state changes between calls. The rewrite caches every query and returns cached lists directly, ignoring is_cacheable. Re-evaluate non-cacheable queries and keep cache ownership behavior for cacheable results. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "tinydb/table.py",
+        "start_line": 240,
+        "end_line": 294
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'tinydb/table.py').resolve()\ntry:\n module = importlib.import_module('tinydb.table')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom tinydb import TinyDB,where\nfrom tinydb.storages import MemoryStorage\ndb=TinyDB(storage=MemoryStorage);t=db.table('records');t.insert({'value':5});state={'offset':5};query=where('value').map(lambda value:value+state['offset'])==10\nassert not query.is_cacheable();first=t.search(query);state['offset']=10;second=t.search(query);print('stateful_query_results',first,second)\nassert len(first)==1 and second==[]\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "eca7ca9641eab3e164dcf44a728c8cec61e55b2c378c1b2927b1b26f4f0bb8b2"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "tinydb/table.py",
+        "old_string": "        :param cond: the condition to check against\n        :returns: list of matching documents\n        \"\"\"\n        # Check if the query result is already cached\n        if cond in self._query_cache:\n            return self._query_cache[cond]\n    \n        # If not cached, read the table and filter documents\n        documents = []\n    \n        # Iterate through all documents in the table\n        for doc_id, doc in self._read_table().items():\n            # Check if the document matches the condition\n            if cond(doc):\n                # Convert to Document class and add to results\n                documents.append(\n                    self.document_class(doc, self.document_id_class(doc_id))\n                )\n    \n        # Store the result in the cache\n        self._query_cache[cond] = documents\n    \n        return documents\n    def get(\n        self,\n        cond: Optional[QueryLike] = None,\n",
+        "new_string": "        :param cond: the condition to check against\n        :returns: list of matching documents\n        \"\"\"\n\n        # First, we check the query cache to see if it has results for this\n        # query\n        cached_results = self._query_cache.get(cond)\n        if cached_results is not None:\n            return cached_results[:]\n\n        # Perform the search by applying the query to all documents.\n        # Then, only if the document matches the query, convert it\n        # to the document class and document ID class.\n        docs = [\n            self.document_class(doc, self.document_id_class(doc_id))\n            for doc_id, doc in self._read_table().items()\n            if cond(doc)\n        ]\n\n        # Only cache cacheable queries.\n        #\n        # This weird `getattr` dance is needed to make MyPy happy as\n        # it doesn't know that a query might have a `is_cacheable` method\n        # that is not declared in the `QueryLike` protocol due to it being\n        # optional.\n        # See: https://github.com/python/mypy/issues/1424\n        #\n        # Note also that by default we expect custom query objects to be\n        # cacheable (which means they need to have a stable hash value).\n        # This is to keep consistency with TinyDB's behavior before\n        # `is_cacheable` was introduced which assumed that all queries\n        # are cacheable.\n        is_cacheable: Callable[[], bool] = getattr(cond, 'is_cacheable',\n                                                   lambda: True)\n        if is_cacheable():\n            # Update the query cache\n            self._query_cache[cond] = docs[:]\n\n        return docs\n\n    def get(\n        self,\n        cond: Optional[QueryLike] = None,\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'tinydb/table.py').resolve()\ntry:\n module = importlib.import_module('tinydb.table')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom tinydb import TinyDB,where\nfrom tinydb.storages import MemoryStorage\ndb=TinyDB(storage=MemoryStorage);t=db.table('records');t.insert({'value':5});state={'offset':5};query=where('value').map(lambda value:value+state['offset'])==10\nassert not query.is_cacheable();first=t.search(query);state['offset']=10;second=t.search(query);print('stateful_query_results',first,second)\nassert len(first)==1 and second==[]\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "eca7ca9641eab3e164dcf44a728c8cec61e55b2c378c1b2927b1b26f4f0bb8b2"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Re-evaluate non-cacheable queries and keep cache ownership behavior for cacheable results. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

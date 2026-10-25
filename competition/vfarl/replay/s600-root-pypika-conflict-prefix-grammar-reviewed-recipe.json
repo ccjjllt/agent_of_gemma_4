@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex S600 common-course source contract and explicit command review2026-10-25",
+  "review_notes": "Conflict-prefix emission retains target fields, valid handler presence and separator boundaries without a stray terminator. The complete production-file delta is exactly this reviewed function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "pypika/dialects.py",
+        "start_line": 526,
+        "end_line": 551
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pypika.dialects')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pypika/dialects.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom pypika import Query,Table,Field,Column\nfrom pypika import PostgreSQLQuery\nt=Table('items');q=PostgreSQLQuery.into(t).insert(1).on_conflict('id').do_nothing();s=str(q);print(s);assert ' ON CONFLICT (\"id\") DO NOTHING' in s and ';' not in s\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "37e3e8e5bef1671c27b3a74d46601cd227e741ecbd6d6c3be5429f14862ad40a"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pypika/dialects.py",
+        "old_string": "    def _on_conflict_sql(self, **kwargs: Any) -> str:\n        if not self._on_conflict_do_nothing and len(self._on_conflict_do_updates) == 0:\n            if self._on_conflict_fields:\n                return \"\"  # Switched the return and raise to silently fail\n            raise QueryException(\"No handler defined for on conflict\")\n\n        if not self._on_conflict_do_updates and self._on_conflict_fields:  # Inverted logic condition\n            raise QueryException(\"Can not have fieldless on conflict do update\")\n\n        conflict_query = \" ON CONFLICT\"\n        if not self._on_conflict_fields:  # Inverted logic for condition\n            fields = [f.get_sql(with_alias=True, **kwargs) for f in self._on_conflict_fields]\n            conflict_query += \" (\" + ', '.join(fields) + \")\"\n\n        if self._on_conflict_wheres:\n            conflict_query += \" WHERE {where}\".format(where=self._on_conflict_wheres.get_sql(subquery=False, **kwargs))  # Changed subquery parameter to False\n\n        return conflict_query + \";\"  # Added unnecessary semicolon at the end\n",
+        "new_string": "    def _on_conflict_sql(self, **kwargs: Any) -> str:\n        if not self._on_conflict_do_nothing and len(self._on_conflict_do_updates) == 0:\n            if not self._on_conflict_fields:\n                return \"\"\n            raise QueryException(\"No handler defined for on conflict\")\n\n        if self._on_conflict_do_updates and not self._on_conflict_fields:\n            raise QueryException(\"Can not have fieldless on conflict do update\")\n\n        conflict_query = \" ON CONFLICT\"\n        if self._on_conflict_fields:\n            fields = [f.get_sql(with_alias=True, **kwargs) for f in self._on_conflict_fields]\n            conflict_query += \" (\" + ', '.join(fields) + \")\"\n\n        if self._on_conflict_wheres:\n            conflict_query += \" WHERE {where}\".format(where=self._on_conflict_wheres.get_sql(subquery=True, **kwargs))\n\n        return conflict_query\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pypika.dialects')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pypika/dialects.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom pypika import Query,Table,Field,Column\nfrom pypika import PostgreSQLQuery\nt=Table('items');q=PostgreSQLQuery.into(t).insert(1).on_conflict('id').do_nothing();s=str(q);print(s);assert ' ON CONFLICT (\"id\") DO NOTHING' in s and ';' not in s\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "37e3e8e5bef1671c27b3a74d46601cd227e741ecbd6d6c3be5429f14862ad40a"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Conflict-prefix emission retains target fields, valid handler presence and separator boundaries without a stray terminator. The source-bound reproduction passes after the repair. Patch submitted."
+}

@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Decode a base-prefixed integer and a decimal float with a Decimal converter. The numeric decoder applies integer conversion to floats and the float converter to integers. Preserve integer literal conversion and the supplied float literal conversion branch. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/tomli/_re.py",
+        "start_line": 103,
+        "end_line": 119
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/tomli/_re.py').resolve()\ntry:\n module = importlib.import_module('tomli._re')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport tomli\nfrom decimal import Decimal\nvalue=tomli.loads('i=0x10\\nf=1.25',parse_float=Decimal);print('numeric_literal_types',value)\nassert type(value['i']) is int and value['i']==16 and isinstance(value['f'],Decimal) and value['f']==Decimal('1.25')\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "3a0ed64b9833af299a6c38658a70ede731956e9dc20369b84039a4ec53981e9f"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/tomli/_re.py",
+        "old_string": "\ndef match_to_number(match: re.Match, parse_float: ParseFloat) -> Any:\n    if match.group(\"floatpart\"):\n        return int(match.group(), 0)\n    return parse_float(match.group())\n",
+        "new_string": "\ndef match_to_number(match: re.Match, parse_float: ParseFloat) -> Any:\n    if match.group(\"floatpart\"):\n        return parse_float(match.group())\n    return int(match.group(), 0)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/tomli/_re.py').resolve()\ntry:\n module = importlib.import_module('tomli._re')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport tomli\nfrom decimal import Decimal\nvalue=tomli.loads('i=0x10\\nf=1.25',parse_float=Decimal);print('numeric_literal_types',value)\nassert type(value['i']) is int and value['i']==16 and isinstance(value['f'],Decimal) and value['f']==Decimal('1.25')\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "3a0ed64b9833af299a6c38658a70ede731956e9dc20369b84039a4ec53981e9f"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Preserve integer literal conversion and the supplied float literal conversion branch. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

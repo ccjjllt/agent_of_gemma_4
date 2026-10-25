@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex S600 source contract and explicit command review 2026-10-25",
+  "review_notes": "Query removal distinguishes a whole key from a particular key/value pair and removes exactly the requested multivalue occurrences. Individually reviewed source/defect change and reproduction. Original full-file verification and requirements retained; not sampled Gemma, not a same-state preference pair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "furl/furl.py",
+        "start_line": 936,
+        "end_line": 964
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('furl.furl')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'furl/furl.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nq=m.Query('long=1&long=2&keep=3');r=q.remove([('long','1')])\nprint('remaining_query',q.params.allitems())\nassert r is q and q.params.allitems()==[('long','2'),('keep','3')]\nq.remove('long');assert q.params.allitems()==[('keep','3')]\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "52f40795cc937ef66a7a65439bf1c12cfd42edf54dfe886f0b9c04517600503f"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "furl/furl.py",
+        "old_string": "    def remove(self, query):\n        if query is True:\n            self.load('')\n            return None\n\n        items = [query]\n\n        if callable_attr(query, 'values'):\n            items = self._items(query)\n        elif isinstance(query, str):\n            items = list(query)\n\n        for item in items:\n            if non_string_iterable(item) and len(item) == 2:\n                value, key = item  # Swapped key and value\n                self.params.popvalue(key, value, None)\n            else:\n                value = item  # Changed from key to value\n                self.params.pop(value, None)\n\n        return None\n",
+        "new_string": "    def remove(self, query):\n        if query is True:\n            self.load('')\n            return self\n\n        # Single key to remove.\n        items = [query]\n        # Dictionary or multivalue dictionary of items to remove.\n        if callable_attr(query, 'items'):\n            items = self._items(query)\n        # List of keys or items to remove.\n        elif non_string_iterable(query):\n            items = query\n\n        for item in items:\n            if non_string_iterable(item) and len(item) == 2:\n                key, value = item\n                self.params.popvalue(key, value, None)\n            else:\n                key = item\n                self.params.pop(key, None)\n\n        return self\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('furl.furl')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'furl/furl.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nq=m.Query('long=1&long=2&keep=3');r=q.remove([('long','1')])\nprint('remaining_query',q.params.allitems())\nassert r is q and q.params.allitems()==[('long','2'),('keep','3')]\nq.remove('long');assert q.params.allitems()==[('keep','3')]\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "52f40795cc937ef66a7a65439bf1c12cfd42edf54dfe886f0b9c04517600503f"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Query removal distinguishes a whole key from a particular key/value pair and removes exactly the requested multivalue occurrences. The actual source-bound reproduction passes after the production repair. Patch submitted."
+}

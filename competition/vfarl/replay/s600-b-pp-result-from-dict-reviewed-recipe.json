@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex S600 source contract and explicit command review 2026-10-25",
+  "review_notes": "Recursive parse-result construction preserves nested names and scalar-versus-sequence structure. Reconstruct all original dictionary entries and retain an explicitly requested outer result name. Individually reviewed source/defect change and reproduction. Original full-file verification and requirements retained; not sampled Gemma, not a same-state preference pair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "pyparsing/results.py",
+        "start_line": 776,
+        "end_line": 807
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pyparsing.results')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pyparsing/results.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport pyparsing as pp\noriginal={'outer':{'number':7},'items':[1,2],'text':'ab'}\nr=pp.ParseResults.from_dict(original)\nnamed=pp.ParseResults.from_dict(original,name='root')\nprint('nested_result_import',r.as_dict(),named.as_dict())\nassert r.as_dict()==original and named.root.as_dict()==original\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "6007d12180afb16eeb6738b69689621aa1db16bd77390a468ce9aabd17de87fe"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pyparsing/results.py",
+        "old_string": "    def from_dict(cls, other, name=None) -> ParseResults:\n        \"\"\"\n        Helper classmethod to construct a ``ParseResults`` from a ``dict``, preserving the\n        name-value relations as results names. If an optional ``name`` argument is\n        given, a nested ``ParseResults`` will be returned.\n        \"\"\"\n\n        def is_iterable(obj):\n            try:\n                iter(obj)\n            except Exception:\n                return False\n            else:\n                return not isinstance(obj, str_type)\n\n        ret = cls([])\n        for k, v in other.items():\n            if isinstance(v, Mapping):\n                ret += cls.from_dict(v, name=None)  # Changed name=k to name=None\n            else:\n                ret += cls([v], name=k, asList=not is_iterable(v))  # Changed is_iterable to not is_iterable\n        if name is None:  # Changed condition to check for None\n            ret = cls([], name=name)  # Changed [ret] to []\n        return ret\n",
+        "new_string": "    def from_dict(cls, other, name=None) -> ParseResults:\n        \"\"\"\n        Helper classmethod to construct a ``ParseResults`` from a ``dict``, preserving the\n        name-value relations as results names. If an optional ``name`` argument is\n        given, a nested ``ParseResults`` will be returned.\n        \"\"\"\n\n        def is_iterable(obj):\n            try:\n                iter(obj)\n            except Exception:\n                return False\n            # str's are iterable, but in pyparsing, we don't want to iterate over them\n            else:\n                return not isinstance(obj, str_type)\n\n        ret = cls([])\n        for k, v in other.items():\n            if isinstance(v, Mapping):\n                ret += cls.from_dict(v, name=k)\n            else:\n                ret += cls([v], name=k, asList=is_iterable(v))\n        if name is not None:\n            ret = cls([ret], name=name)\n        return ret\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pyparsing.results')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pyparsing/results.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport pyparsing as pp\noriginal={'outer':{'number':7},'items':[1,2],'text':'ab'}\nr=pp.ParseResults.from_dict(original)\nnamed=pp.ParseResults.from_dict(original,name='root')\nprint('nested_result_import',r.as_dict(),named.as_dict())\nassert r.as_dict()==original and named.root.as_dict()==original\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "6007d12180afb16eeb6738b69689621aa1db16bd77390a468ce9aabd17de87fe"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Recursive parse-result construction preserves nested names and scalar-versus-sequence structure. Reconstruct all original dictionary entries and retain an explicitly requested outer result name. The actual source-bound reproduction passes after the production repair. Patch submitted."
+}

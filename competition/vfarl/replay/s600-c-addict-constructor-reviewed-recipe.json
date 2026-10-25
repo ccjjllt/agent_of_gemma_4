@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Construct from individual key/value tuples, an empty argument and another tuple. Pair and iterable branches are exchanged; a scalar pair is iterated as a sequence of pairs. Restore direct pair assignment to the shape-specific branch and iterate only general pair iterables. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "addict/addict.py",
+        "start_line": 4,
+        "end_line": 26
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'addict/addict.py').resolve()\ntry:\n module = importlib.import_module('addict.addict')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom addict import Dict\nd=Dict((0, {'inner': 1}), [], (2, 3))\nprint('constructor_pairs',dict(d),type(d[0]).__name__)\nassert d[0].inner==1 and d[2]==3 and isinstance(d[0],Dict)\nother=Dict([('x',{'y':4})],z=5)\nassert other.x.y==4 and other.z==5\nprint('constructor_shapes_and_nested_values',True)\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "9aa11f01bd8ea1ce13aaafad8d399ad050306603707c3e7bdeb12b2406897349"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "addict/addict.py",
+        "old_string": "                for key, val in arg.items():\n                    __self[key] = __self._hook(val)\n            elif isinstance(arg, tuple) and (not isinstance(arg[0], tuple)):\n                for key, val in iter(arg):\n                    __self[key] = __self._hook(val)\n            else:\n                __self[arg[0]] = __self._hook(arg[1])\n\n        for key, val in kwargs.items():\n            __self[key] = __self._hook(val)\n    def __setattr__(self, name, value):\n        if hasattr(self.__class__, name):\n            raise AttributeError(\"'Dict' object attribute \"\n",
+        "new_string": "                for key, val in arg.items():\n                    __self[key] = __self._hook(val)\n            elif isinstance(arg, tuple) and (not isinstance(arg[0], tuple)):\n                __self[arg[0]] = __self._hook(arg[1])\n            else:\n                for key, val in iter(arg):\n                    __self[key] = __self._hook(val)\n\n        for key, val in kwargs.items():\n            __self[key] = __self._hook(val)\n\n    def __setattr__(self, name, value):\n        if hasattr(self.__class__, name):\n            raise AttributeError(\"'Dict' object attribute \"\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'addict/addict.py').resolve()\ntry:\n module = importlib.import_module('addict.addict')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom addict import Dict\nd=Dict((0, {'inner': 1}), [], (2, 3))\nprint('constructor_pairs',dict(d),type(d[0]).__name__)\nassert d[0].inner==1 and d[2]==3 and isinstance(d[0],Dict)\nother=Dict([('x',{'y':4})],z=5)\nassert other.x.y==4 and other.z==5\nprint('constructor_shapes_and_nested_values',True)\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "9aa11f01bd8ea1ce13aaafad8d399ad050306603707c3e7bdeb12b2406897349"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restore direct pair assignment to the shape-specific branch and iterate only general pair iterables. The source-bound inline observation now passes. Patch submitted; the harness separately runs clean full-file task verification."
+}

@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Trigger a configuration hook with positional and keyword arguments. The rewrite supplies the args tuple and kwargs dictionary as two positional values, and reverses callback traversal. Forward positional and keyword arguments to callbacks in the registered order. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "bottle.py",
+        "start_line": 683,
+        "end_line": 701
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'bottle.py').resolve()\ntry:\n module = importlib.import_module('bottle')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom bottle import Bottle\napp=Bottle();seen=[]\napp.add_hook('config',lambda key,value=None:seen.append(('first',key,value)))\napp.add_hook('config',lambda key,value=None:seen.append(('second',key,value)))\napp.trigger_hook('config','port',value=3);print('hook_forwarded_arguments',seen)\nassert seen==[('first','port',3),('second','port',3)]\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "e677544491dd18d7ea8463b01c11d4dd133c172a25f72a1acc240dc47b506897"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "bottle.py",
+        "old_string": "\n    def trigger_hook(self, __name, *args, **kwargs):\n        \"\"\" Trigger a hook and return a list of results. \"\"\"\n        return [hook(args, kwargs) for hook in reversed(self._hooks[__name])]\n\n    def hook(self, name):\n        \"\"\" Return a decorator that attaches a callback to a hook. See\n",
+        "new_string": "\n    def trigger_hook(self, __name, *args, **kwargs):\n        \"\"\" Trigger a hook and return a list of results. \"\"\"\n        return [hook(*args, **kwargs) for hook in self._hooks[__name][:]]\n\n    def hook(self, name):\n        \"\"\" Return a decorator that attaches a callback to a hook. See\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'bottle.py').resolve()\ntry:\n module = importlib.import_module('bottle')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom bottle import Bottle\napp=Bottle();seen=[]\napp.add_hook('config',lambda key,value=None:seen.append(('first',key,value)))\napp.add_hook('config',lambda key,value=None:seen.append(('second',key,value)))\napp.trigger_hook('config','port',value=3);print('hook_forwarded_arguments',seen)\nassert seen==[('first','port',3),('second','port',3)]\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "e677544491dd18d7ea8463b01c11d4dd133c172a25f72a1acc240dc47b506897"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Forward positional and keyword arguments to callbacks in the registered order. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

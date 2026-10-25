@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex S600 source contract and explicit command review 2026-10-25",
+  "review_notes": "Regex match-object representation retains the actual re.Match and exclusive end. Matching a following token must use the true end rather than consume the final digit twice. Individually reviewed source/defect change and reproduction. Original full-file verification and requirements retained; not sampled Gemma, not a same-state preference pair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "pyparsing/core.py",
+        "start_line": 3157,
+        "end_line": 3172
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pyparsing.core')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pyparsing/core.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport pyparsing as pp\nexpression=pp.Regex(r'\\d+',as_match=True)+pp.Literal('X')\nr=expression.parse_string('42X',parse_all=True)\nprint('regex_match_object',type(r[0]).__name__,r[0].group(),r[0].span(),r[1])\nassert r[0].group()=='42' and r[0].span()==(0,2) and r[1]=='X'\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "a3e3ae097078031a308b3ae8bc9cea7baf261b96b790c7102e866d23a7bed840"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pyparsing/core.py",
+        "old_string": "    def parseImplAsMatch(self, instring, loc, do_actions=True):\n        result = self.re_match(instring, loc)\n        if not result:\n            return loc, None\n\n        loc = result.end() - 1\n        ret = result.group()\n        return loc, ret\n",
+        "new_string": "    def parseImplAsMatch(self, instring, loc, do_actions=True):\n        result = self.re_match(instring, loc)\n        if not result:\n            raise ParseException(instring, loc, self.errmsg, self)\n\n        loc = result.end()\n        ret = result\n        return loc, ret\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pyparsing.core')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pyparsing/core.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport pyparsing as pp\nexpression=pp.Regex(r'\\d+',as_match=True)+pp.Literal('X')\nr=expression.parse_string('42X',parse_all=True)\nprint('regex_match_object',type(r[0]).__name__,r[0].group(),r[0].span(),r[1])\nassert r[0].group()=='42' and r[0].span()==(0,2) and r[1]=='X'\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "a3e3ae097078031a308b3ae8bc9cea7baf261b96b790c7102e866d23a7bed840"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Regex match-object representation retains the actual re.Match and exclusive end. Matching a following token must use the true end rather than consume the final digit twice. The actual source-bound reproduction passes after the production repair. Patch submitted."
+}

@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Access retry statistics before first use and in another thread. Missing thread-local state raises AttributeError, which the implementation catches as KeyError instead. Initialize an empty per-thread dictionary on AttributeError and retain same-thread identity. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "tenacity/__init__.py",
+        "start_line": 303,
+        "end_line": 323
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'tenacity/__init__.py').resolve()\ntry:\n module = importlib.import_module('tenacity')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom tenacity import Retrying\nimport threading\ncontroller=Retrying()\nfirst=controller.statistics\nfirst['marker']=1\nassert controller.statistics is first\nother=[]\ndef read_other():\n value=controller.statistics\n other.append((value is first,dict(value)))\nthread=threading.Thread(target=read_other)\nthread.start()\nthread.join()\nprint('thread_statistics',dict(first),other)\nassert other==[(False,{})] and first=={'marker':1}\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "c893e6c4aec82e57da9d0d3196790832c5b4fc2751008ddd05b1713da160f5ac"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "tenacity/__init__.py",
+        "old_string": "                  statistics from each thread).\n        \"\"\"\n        try:\n            return self._local.statistics\n        except KeyError:\n            self._local.statistics = t.cast(t.Dict[str, t.Any], {\"initial\": True})\n            return self._local.statistics\n\n    @property\n",
+        "new_string": "                  statistics from each thread).\n        \"\"\"\n        try:\n            return self._local.statistics  # type: ignore[no-any-return]\n        except AttributeError:\n            self._local.statistics = t.cast(t.Dict[str, t.Any], {})\n            return self._local.statistics\n\n    @property\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'tenacity/__init__.py').resolve()\ntry:\n module = importlib.import_module('tenacity')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom tenacity import Retrying\nimport threading\ncontroller=Retrying()\nfirst=controller.statistics\nfirst['marker']=1\nassert controller.statistics is first\nother=[]\ndef read_other():\n value=controller.statistics\n other.append((value is first,dict(value)))\nthread=threading.Thread(target=read_other)\nthread.start()\nthread.join()\nprint('thread_statistics',dict(first),other)\nassert other==[(False,{})] and first=={'marker':1}\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "c893e6c4aec82e57da9d0d3196790832c5b4fc2751008ddd05b1713da160f5ac"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Initialize an empty per-thread dictionary on AttributeError and retain same-thread identity. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

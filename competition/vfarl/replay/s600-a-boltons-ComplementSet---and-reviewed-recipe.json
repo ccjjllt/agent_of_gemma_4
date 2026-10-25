@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex explicit collection/iteration contract and source-command review2026-10-25",
+  "review_notes": "finite_and_complement_set_intersection; original upstream function and complete source diff reviewed; original requirements and full target files intact. Short alias preloads the real package to preserve original __file__-based source lookup, no fake module.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "boltons/setutils.py",
+        "start_line": 641,
+        "end_line": 658
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,importlib\nm=importlib.import_module('boltons.setutils')\na=Path(m.__file__).resolve();e=(Path.cwd()/'boltons/setutils.py').resolve()\nassert a==e,(a,e)\nprint('source_binding',a,'sha256',hashlib.sha256(a.read_bytes()).hexdigest())\nfrom boltons.setutils import complement\nr=complement({1}) & {1,2};print('intersection',r)\nassert r=={2}\nr=complement({1}) & complement({2});assert 1 not in r and 2 not in r and 3 in r\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "e1c5f8ab8eef0b4ce7e189eca018364f67413d233cad08dee4bfc2217f6d6a3d"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "boltons/setutils.py",
+        "old_string": "    def __and__(self, other):\n        inc, exc = _norm_args_notimplemented(other)\n        if exc is NotImplemented:\n            return NotImplemented\n        if self._included is None:\n            if inc is None:  \n                return _ComplementSet(excluded=exc.union(self._excluded))\n            else:\n                return _ComplementSet(included=inc - other._included)\n        else:\n            if exc is None:\n                return _ComplementSet(excluded=self._included.union(exc))\n            else:\n                return _ComplementSet(included=exc.intersection(self._excluded))\n",
+        "new_string": "    def __and__(self, other):\n        inc, exc = _norm_args_notimplemented(other)\n        if inc is NotImplemented:\n            return NotImplemented\n        if self._included is None:\n            if exc is None:  # - +\n                return _ComplementSet(included=inc - self._excluded)\n            else:  # - -\n                return _ComplementSet(excluded=self._excluded.union(other._excluded))\n        else:\n            if inc is None:  # + -\n                return _ComplementSet(included=exc - self._included)\n            else:  # + +\n                return _ComplementSet(included=self._included.intersection(inc))\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,importlib\nm=importlib.import_module('boltons.setutils')\na=Path(m.__file__).resolve();e=(Path.cwd()/'boltons/setutils.py').resolve()\nassert a==e,(a,e)\nprint('source_binding',a,'sha256',hashlib.sha256(a.read_bytes()).hexdigest())\nfrom boltons.setutils import complement\nr=complement({1}) & {1,2};print('intersection',r)\nassert r=={2}\nr=complement({1}) & complement({2});assert 1 not in r and 2 not in r and 3 in r\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "e1c5f8ab8eef0b4ce7e189eca018364f67413d233cad08dee4bfc2217f6d6a3d"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored _ComplementSet.__and__: finite and complement set intersection. The actual public API observation completed and the patch was submitted."
+}

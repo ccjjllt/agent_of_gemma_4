@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex S600 source contract and explicit command review 2026-10-25",
+  "review_notes": "Grammar-expression simplification preserves ordered child structure. Collapse eligible nested sequences without losing or reordering children, keeping fluent identity and parsing behavior. Individually reviewed source/defect change and reproduction. Original full-file verification and requirements retained; not sampled Gemma, not a same-state preference pair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "pyparsing/core.py",
+        "start_line": 3915,
+        "end_line": 3959
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pyparsing.core')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pyparsing/core.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport pyparsing as pp\nexpression=pp.And([pp.And([pp.Literal('a'),pp.Literal('b')]),pp.Literal('c')])\nassert expression.streamline() is expression\nprint('simplified_child_count',len(expression.exprs))\nassert len(expression.exprs)==3\nassert expression.parse_string('abc',parse_all=True).as_list()==['a','b','c']\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "b6f801d1ada8e74afeefd3b5c10d8348b5556b3471a40fb2d4bbe2647795ffbd"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pyparsing/core.py",
+        "old_string": "    def streamline(self) -> ParserElement:\n        if not self.streamlined:\n            return self\n\n        super().streamline()\n\n        for e in self.exprs:\n            e.streamline()\n\n        if len(self.exprs) == 3:\n            other = self.exprs[0]\n            if (\n                isinstance(other, self.__class__)\n                or other.parseAction\n                or other.resultsName is not None\n                or other.debug\n            ):\n                self.exprs = [self.exprs[1]] + other.exprs[:]\n                self._defaultName = None\n                self.mayReturnEmpty |= not other.mayReturnEmpty\n                self.mayIndexError |= not other.mayIndexError\n\n            other = self.exprs[-1]\n            if (\n                isinstance(other, self.__class__)\n                or other.parseAction\n                or other.resultsName is not None\n                or other.debug\n            ):\n                self.exprs = other.exprs[:] + self.exprs[:-1]\n                self._defaultName = None\n                self.mayReturnEmpty |= not other.mayReturnEmpty\n                self.mayIndexError |= not other.mayIndexError\n\n        self.errmsg = f\"Unexpected {self}\"\n\n        return self\n",
+        "new_string": "    def streamline(self) -> ParserElement:\n        if self.streamlined:\n            return self\n\n        super().streamline()\n\n        for e in self.exprs:\n            e.streamline()\n\n        # collapse nested :class:`And`'s of the form ``And(And(And(a, b), c), d)`` to ``And(a, b, c, d)``\n        # but only if there are no parse actions or resultsNames on the nested And's\n        # (likewise for :class:`Or`'s and :class:`MatchFirst`'s)\n        if len(self.exprs) == 2:\n            other = self.exprs[0]\n            if (\n                isinstance(other, self.__class__)\n                and not other.parseAction\n                and other.resultsName is None\n                and not other.debug\n            ):\n                self.exprs = other.exprs[:] + [self.exprs[1]]\n                self._defaultName = None\n                self.mayReturnEmpty |= other.mayReturnEmpty\n                self.mayIndexError |= other.mayIndexError\n\n            other = self.exprs[-1]\n            if (\n                isinstance(other, self.__class__)\n                and not other.parseAction\n                and other.resultsName is None\n                and not other.debug\n            ):\n                self.exprs = self.exprs[:-1] + other.exprs[:]\n                self._defaultName = None\n                self.mayReturnEmpty |= other.mayReturnEmpty\n                self.mayIndexError |= other.mayIndexError\n\n        self.errmsg = f\"Expected {self}\"\n\n        return self\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pyparsing.core')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pyparsing/core.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport pyparsing as pp\nexpression=pp.And([pp.And([pp.Literal('a'),pp.Literal('b')]),pp.Literal('c')])\nassert expression.streamline() is expression\nprint('simplified_child_count',len(expression.exprs))\nassert len(expression.exprs)==3\nassert expression.parse_string('abc',parse_all=True).as_list()==['a','b','c']\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "b6f801d1ada8e74afeefd3b5c10d8348b5556b3471a40fb2d4bbe2647795ffbd"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Grammar-expression simplification preserves ordered child structure. Collapse eligible nested sequences without losing or reordering children, keeping fluent identity and parsing behavior. The actual source-bound reproduction passes after the production repair. Patch submitted."
+}

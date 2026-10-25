@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex explicit collection/iteration contract and source-command review2026-10-25",
+  "review_notes": "function_copy_preserves_closure_and_separate_attribute_mapping; original upstream function and complete source diff reviewed; original requirements and full target files intact. Short alias preloads the real package to preserve original __file__-based source lookup, no fake module.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "boltons/funcutils.py",
+        "start_line": 160,
+        "end_line": 192
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,importlib\nm=importlib.import_module('boltons.funcutils')\na=Path(m.__file__).resolve();e=(Path.cwd()/'boltons/funcutils.py').resolve()\nassert a==e,(a,e)\nprint('source_binding',a,'sha256',hashlib.sha256(a.read_bytes()).hexdigest())\nfrom boltons.funcutils import copy_function\ndef factory(value):\n def fn(x=2):return value+x\n return fn\na=factory(5);a.label='original';b=copy_function(a);print('function_copy',b(),b is a);assert b is not a and b()==7 and b.__dict__ is not a.__dict__;b.label='changed';assert a.label=='original'\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "a21f19dc723c6b9a4023ea602b609f917f1c421f725a263a23aa2d8515f030fe"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "boltons/funcutils.py",
+        "old_string": "def copy_function(orig, copy_dict=True):\n    \"\"\"Returns a shallow copy of the function, including code object,\n    globals, closure, etc.\n\n    >>> func = lambda: func\n    >>> func() is func\n    True\n    >>> func_copy = copy_function(func)\n    >>> func_copy() is func\n    True\n    >>> func_copy is not func\n    True\n\n    Args:\n        orig (function): The function to be copied. Must be a\n            function, not just any method or callable.\n        copy_dict (bool): Also copy any attributes set on the function\n            instance. Defaults to ``True``.\n    \"\"\"\n    ret = FunctionType(orig.__code__,\n                       orig.__globals__,\n                       name=orig.__name__,\n                       argdefs=getattr(orig, \"__defaults__\", None),\n                       closure=None)  # Changed closure to None\n    if hasattr(orig, \"__kwdefaults__\"):\n        ret.__kwdefaults__ = orig.__kwdefaults__\n    if copy_dict:\n        ret.__dict__ = orig.__dict__  # Switched from update() to assignment\n    return orig  # Return original function instead of ret\n",
+        "new_string": "def copy_function(orig, copy_dict=True):\n    \"\"\"Returns a shallow copy of the function, including code object,\n    globals, closure, etc.\n\n    >>> func = lambda: func\n    >>> func() is func\n    True\n    >>> func_copy = copy_function(func)\n    >>> func_copy() is func\n    True\n    >>> func_copy is not func\n    True\n\n    Args:\n        orig (function): The function to be copied. Must be a\n            function, not just any method or callable.\n        copy_dict (bool): Also copy any attributes set on the function\n            instance. Defaults to ``True``.\n    \"\"\"\n    ret = FunctionType(orig.__code__,\n                       orig.__globals__,\n                       name=orig.__name__,\n                       argdefs=getattr(orig, \"__defaults__\", None),\n                       closure=getattr(orig, \"__closure__\", None))\n    if hasattr(orig, \"__kwdefaults__\"):\n        ret.__kwdefaults__ = orig.__kwdefaults__\n    if copy_dict:\n        ret.__dict__.update(orig.__dict__)\n    return ret\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,importlib\nm=importlib.import_module('boltons.funcutils')\na=Path(m.__file__).resolve();e=(Path.cwd()/'boltons/funcutils.py').resolve()\nassert a==e,(a,e)\nprint('source_binding',a,'sha256',hashlib.sha256(a.read_bytes()).hexdigest())\nfrom boltons.funcutils import copy_function\ndef factory(value):\n def fn(x=2):return value+x\n return fn\na=factory(5);a.label='original';b=copy_function(a);print('function_copy',b(),b is a);assert b is not a and b()==7 and b.__dict__ is not a.__dict__;b.label='changed';assert a.label=='original'\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "a21f19dc723c6b9a4023ea602b609f917f1c421f725a263a23aa2d8515f030fe"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored copy_function: function copy preserves closure and separate attribute mapping. The actual public API observation completed and the patch was submitted."
+}

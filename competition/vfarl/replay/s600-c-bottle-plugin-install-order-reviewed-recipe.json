@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Install a valid plugin whose setup inspects current registry visibility. The rewrite publishes the plugin before calling setup. Run setup before appending the plugin, preserving the installation event order. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "bottle.py",
+        "start_line": 804,
+        "end_line": 831
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'bottle.py').resolve()\ntry:\n module = importlib.import_module('bottle')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom bottle import Bottle\nclass Plugin:\n def setup(self,app):\n  self.seen_before_publication=self not in app.plugins\n def apply(self,callback,route):return callback\napp=Bottle();p=Plugin();r=app.install(p);print('setup_publication_order',p.seen_before_publication)\nassert r is p and p.seen_before_publication and p in app.plugins\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "4362fdbc29c6c61b692b5f4c3631a8882bee9248b3e719867746e414ab5d26f8"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "bottle.py",
+        "old_string": "            applied to all routes of this application. A plugin may be a simple\n            decorator or an object that implements the :class:`Plugin` API.\n        \"\"\"\n        if isinstance(plugin, basestring):\n            plugin = load(plugin)\n        if plugin in self.plugins:\n            return plugin\n        self.plugins.append(plugin)\n        if hasattr(plugin, 'setup'):\n            plugin.setup(self)\n        for route in self.routes:\n            route.reset()\n        return plugin\n    def uninstall(self, plugin):\n        \"\"\" Uninstall plugins. Pass an instance to remove a specific plugin, a type\n            object to remove all plugins that match that type, a string to remove\n",
+        "new_string": "            applied to all routes of this application. A plugin may be a simple\n            decorator or an object that implements the :class:`Plugin` API.\n        \"\"\"\n        if hasattr(plugin, 'setup'): plugin.setup(self)\n        if not callable(plugin) and not hasattr(plugin, 'apply'):\n            raise TypeError(\"Plugins must be callable or implement .apply()\")\n        self.plugins.append(plugin)\n        self.reset()\n        return plugin\n\n    def uninstall(self, plugin):\n        \"\"\" Uninstall plugins. Pass an instance to remove a specific plugin, a type\n            object to remove all plugins that match that type, a string to remove\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'bottle.py').resolve()\ntry:\n module = importlib.import_module('bottle')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom bottle import Bottle\nclass Plugin:\n def setup(self,app):\n  self.seen_before_publication=self not in app.plugins\n def apply(self,callback,route):return callback\napp=Bottle();p=Plugin();r=app.install(p);print('setup_publication_order',p.seen_before_publication)\nassert r is p and p.seen_before_publication and p in app.plugins\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "4362fdbc29c6c61b692b5f4c3631a8882bee9248b3e719867746e414ab5d26f8"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Run setup before appending the plugin, preserving the installation event order. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

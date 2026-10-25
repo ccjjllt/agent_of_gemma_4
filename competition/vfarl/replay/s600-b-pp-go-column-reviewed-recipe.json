@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex S600 source contract and explicit command review 2026-10-25",
+  "review_notes": "Column advancement retains the source span before the target column. Accept an already-aligned cursor, advance by target minus current column, and return exactly the skipped characters. Individually reviewed source/defect change and reproduction. Original full-file verification and requirements retained; not sampled Gemma, not a same-state preference pair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "pyparsing/core.py",
+        "start_line": 3623,
+        "end_line": 3637
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pyparsing.core')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pyparsing/core.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport pyparsing as pp\na=(pp.Literal('a')+pp.GoToColumn(4)+pp.Literal('b')).parse_string('a  b',parse_all=True).as_list()\nb=(pp.Literal('a')+pp.GoToColumn(2)+pp.Literal('b')).parse_string('ab',parse_all=True).as_list()\nspan=pp.GoToColumn(4).parseImpl('a  b',1)\nprint('column_parser_results',a,b,'direct_source_span',span)\nassert a==['a','','b'] and b==['a','','b'] and span==(3,'  ')\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "e6e01442f875f95c634820d978afe2911c71047e3444fec51e0a63662ae618ba"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pyparsing/core.py",
+        "old_string": "    def parseImpl(self, instring, loc, do_actions=True) -> ParseImplReturnType:\n        thiscol = col(loc, instring)\n        if thiscol >= self.col:\n            raise ParseException(instring, loc, \"Text not in expected column\", self)\n        newloc = loc + thiscol - self.col\n        ret = instring[newloc:loc]\n        return newloc, ret\n",
+        "new_string": "    def parseImpl(self, instring, loc, do_actions=True) -> ParseImplReturnType:\n        thiscol = col(loc, instring)\n        if thiscol > self.col:\n            raise ParseException(instring, loc, \"Text not in expected column\", self)\n        newloc = loc + self.col - thiscol\n        ret = instring[loc:newloc]\n        return newloc, ret\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pyparsing.core')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pyparsing/core.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport pyparsing as pp\na=(pp.Literal('a')+pp.GoToColumn(4)+pp.Literal('b')).parse_string('a  b',parse_all=True).as_list()\nb=(pp.Literal('a')+pp.GoToColumn(2)+pp.Literal('b')).parse_string('ab',parse_all=True).as_list()\nspan=pp.GoToColumn(4).parseImpl('a  b',1)\nprint('column_parser_results',a,b,'direct_source_span',span)\nassert a==['a','','b'] and b==['a','','b'] and span==(3,'  ')\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "e6e01442f875f95c634820d978afe2911c71047e3444fec51e0a63662ae618ba"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Column advancement retains the source span before the target column. Accept an already-aligned cursor, advance by target minus current column, and return exactly the skipped characters. The actual source-bound reproduction passes after the production repair. Patch submitted."
+}

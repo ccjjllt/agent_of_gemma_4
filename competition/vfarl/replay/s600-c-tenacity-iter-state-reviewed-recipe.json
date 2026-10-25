@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Access a controller iteration state before first use and in another thread. The lazy property catches KeyError rather than AttributeError and returns None after initialization. Create and return the per-thread IterState object on first access and retain its local identity. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "tenacity/__init__.py",
+        "start_line": 312,
+        "end_line": 332
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'tenacity/__init__.py').resolve()\ntry:\n module = importlib.import_module('tenacity')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom tenacity import Retrying,IterState\nimport threading\ncontroller=Retrying()\nstate=controller.iter_state\nprint('iter_state_type',type(state).__name__)\nassert isinstance(state,IterState) and controller.iter_state is state\nother=[]\ndef read_other():\n value=controller.iter_state\n other.append((isinstance(value,IterState),value is state))\nthread=threading.Thread(target=read_other)\nthread.start()\nthread.join()\nassert other==[(True,False)]\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "515d4d2c65e54eb9fd93ccbe357d30918fbf93c3a27828d775ec14a0dd3e5a15"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "tenacity/__init__.py",
+        "old_string": "    def iter_state(self) -> IterState:\n        try:\n            return self._local.iter_state  # type: ignore[no-any-return]\n        except KeyError:\n            self._local.iter_state = IterState()\n            return None\n\n    def wraps(self, f: WrappedFn) -> WrappedFn:\n        \"\"\"Wrap a function for retrying.\n",
+        "new_string": "    def iter_state(self) -> IterState:\n        try:\n            return self._local.iter_state  # type: ignore[no-any-return]\n        except AttributeError:\n            self._local.iter_state = IterState()\n            return self._local.iter_state\n\n    def wraps(self, f: WrappedFn) -> WrappedFn:\n        \"\"\"Wrap a function for retrying.\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'tenacity/__init__.py').resolve()\ntry:\n module = importlib.import_module('tenacity')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom tenacity import Retrying,IterState\nimport threading\ncontroller=Retrying()\nstate=controller.iter_state\nprint('iter_state_type',type(state).__name__)\nassert isinstance(state,IterState) and controller.iter_state is state\nother=[]\ndef read_other():\n value=controller.iter_state\n other.append((isinstance(value,IterState),value is state))\nthread=threading.Thread(target=read_other)\nthread.start()\nthread.join()\nassert other==[(True,False)]\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "515d4d2c65e54eb9fd93ccbe357d30918fbf93c3a27828d775ec14a0dd3e5a15"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Create and return the per-thread IterState object on first access and retain its local identity. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

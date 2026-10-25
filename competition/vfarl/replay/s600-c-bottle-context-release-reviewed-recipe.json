@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Enter and normally exit an application context. The rewrite invokes an invalid insert operation instead of popping the context on normal exit. Pop the pushed application for both normal and exceptional exits. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "bottle.py",
+        "start_line": 1117,
+        "end_line": 1138
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'bottle.py').resolve()\ntry:\n module = importlib.import_module('bottle')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom bottle import Bottle,default_app\napp=Bottle();old=list(default_app)\nwith app:\n assert default_app() is app\nprint('released_app_context',len(default_app),len(old))\nassert list(default_app)==old\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "c9bb41d5f18d61e0067baf8e59c8fa3de7db0db22e2eabe1b9bcbfa561713263"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "bottle.py",
+        "old_string": "        return self\n\n    def __exit__(self, exc_type, exc_value, traceback):\n        if exc_type is None:\n            default_app.insert(0)\n        else:\n            default_app.pop()\n\n    def __setattr__(self, name, value):\n        if name in self.__dict__:\n",
+        "new_string": "        return self\n\n    def __exit__(self, exc_type, exc_value, traceback):\n        default_app.pop()\n\n    def __setattr__(self, name, value):\n        if name in self.__dict__:\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'bottle.py').resolve()\ntry:\n module = importlib.import_module('bottle')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom bottle import Bottle,default_app\napp=Bottle();old=list(default_app)\nwith app:\n assert default_app() is app\nprint('released_app_context',len(default_app),len(old))\nassert list(default_app)==old\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "c9bb41d5f18d61e0067baf8e59c8fa3de7db0db22e2eabe1b9bcbfa561713263"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Pop the pushed application for both normal and exceptional exits. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

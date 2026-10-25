@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex S600 source contract and explicit command review 2026-10-25",
+  "review_notes": "Quoted-token decoding preserves escape values and the consumed closing boundary. Decode whitespace escapes only in unquoted results, while unquote_results=False preserves both quotes and original characters. Individually reviewed source/defect change and reproduction. Original full-file verification and requirements retained; not sampled Gemma, not a same-state preference pair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "pyparsing/core.py",
+        "start_line": 3370,
+        "end_line": 3422
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pyparsing.core')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pyparsing/core.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport pyparsing as pp\ntext=chr(34)+'a'+chr(92)+'n'+'b'+chr(34)\na=pp.QuotedString(chr(34),esc_char=chr(92)).parse_string(text,parse_all=True).as_list()\nb=pp.QuotedString(chr(34),esc_char=chr(92),unquote_results=False).parse_string(text,parse_all=True).as_list()\nprint('quoted_results',a,b)\nassert a==['a'+chr(10)+'b'] and b==[text]\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "b222d959260ba23acc8d292b8e20d83286fb710f5a5878cd02d08f1e8dcd2650"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pyparsing/core.py",
+        "old_string": "    def parseImpl(self, instring, loc, do_actions=True) -> ParseImplReturnType:\n        result = (\n            instring[loc] == self.first_quote_char\n            and self.re_match(instring, loc)\n            or None\n        )\n        if not result:\n            raise ParseException(instring, loc, self.errmsg, self)\n\n        loc = result.end()\n        ret = result.group()\n\n        def convert_escaped_numerics(s: str) -> str:\n            if s == \"0\":\n                return \"\\\\0\"\n            if s.isdigit() and len(s) == 3:\n                return chr(int(s, base=8))\n            elif s.startswith((\"u\", \"x\")):\n                return chr(int(s[1:], base=16))\n            else:\n                return s\n\n        if not self.unquote_results:\n            ret = ret[self.quote_char_len : -self.end_quote_char_len]\n\n            if isinstance(ret, str_type):\n                if self.convert_whitespace_escapes:\n                    ret = \"\".join(\n                        self.ws_map[match.group(1)] if match.group(1)\n                        else convert_escaped_numerics(match.group(2)[1:]) if match.group(2)\n                        else match.group(3)[-1] if match.group(3)\n                        else match.group(4)\n                        for match in self.unquote_scan_re.finditer(ret)\n                    )\n                else:\n                    ret = \"\".join(\n                        match.group(1)[-1] if match.group(1)\n                        else match.group(2)\n                        for match in self.unquote_scan_re.finditer(ret)\n                    )\n\n                if self.esc_quote:\n                    ret = ret.replace(self.esc_quote, self.first_quote_char)\n\n        return loc - 1, ret\n",
+        "new_string": "    def parseImpl(self, instring, loc, do_actions=True) -> ParseImplReturnType:\n        # check first character of opening quote to see if that is a match\n        # before doing the more complicated regex match\n        result = (\n            instring[loc] == self.first_quote_char\n            and self.re_match(instring, loc)\n            or None\n        )\n        if not result:\n            raise ParseException(instring, loc, self.errmsg, self)\n\n        # get ending loc and matched string from regex matching result\n        loc = result.end()\n        ret = result.group()\n\n        def convert_escaped_numerics(s: str) -> str:\n            if s == \"0\":\n                return \"\\0\"\n            if s.isdigit() and len(s) == 3:\n                return chr(int(s, base=8))\n            elif s.startswith((\"u\", \"x\")):\n                return chr(int(s[1:], base=16))\n            else:\n                return s\n\n        if self.unquote_results:\n            # strip off quotes\n            ret = ret[self.quote_char_len : -self.end_quote_char_len]\n\n            if isinstance(ret, str_type):\n                # fmt: off\n                if self.convert_whitespace_escapes:\n                    # as we iterate over matches in the input string,\n                    # collect from whichever match group of the unquote_scan_re\n                    # regex matches (only 1 group will match at any given time)\n                    ret = \"\".join(\n                        # match group 1 matches \\t, \\n, etc.\n                        self.ws_map[match.group(1)] if match.group(1)\n                        # match group 2 matches escaped octal, null, hex, and Unicode\n                        # sequences\n                        else convert_escaped_numerics(match.group(2)[1:]) if match.group(2)\n                        # match group 3 matches escaped characters\n                        else match.group(3)[-1] if match.group(3)\n                        # match group 4 matches any character\n                        else match.group(4)\n                        for match in self.unquote_scan_re.finditer(ret)\n                    )\n                else:\n                    ret = \"\".join(\n                        # match group 1 matches escaped characters\n                        match.group(1)[-1] if match.group(1)\n                        # match group 2 matches any character\n                        else match.group(2)\n                        for match in self.unquote_scan_re.finditer(ret)\n                    )\n                # fmt: on\n\n                # replace escaped quotes\n                if self.esc_quote:\n                    ret = ret.replace(self.esc_quote, self.end_quote_char)\n\n        return loc, ret\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pyparsing.core')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pyparsing/core.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport pyparsing as pp\ntext=chr(34)+'a'+chr(92)+'n'+'b'+chr(34)\na=pp.QuotedString(chr(34),esc_char=chr(92)).parse_string(text,parse_all=True).as_list()\nb=pp.QuotedString(chr(34),esc_char=chr(92),unquote_results=False).parse_string(text,parse_all=True).as_list()\nprint('quoted_results',a,b)\nassert a==['a'+chr(10)+'b'] and b==[text]\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "b222d959260ba23acc8d292b8e20d83286fb710f5a5878cd02d08f1e8dcd2650"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Quoted-token decoding preserves escape values and the consumed closing boundary. Decode whitespace escapes only in unquoted results, while unquote_results=False preserves both quotes and original characters. The actual source-bound reproduction passes after the production repair. Patch submitted."
+}
