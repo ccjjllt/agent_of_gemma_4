@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 source contract and explicit command review 2026-10-25",
+  "review_notes": "Builder mutation honors immutable=False as in-place ownership and uses a shallow independent owner for immutable builders while retaining nested references. Individually reviewed source/defect change and reproduction. Original full-file verification and requirements retained; not sampled Gemma, not a same-state preference pair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "pypika/utils.py",
+        "start_line": 38,
+        "end_line": 61
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pypika.utils')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pypika/utils.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nclass Builder:\n def __init__(self,immutable):self.immutable=immutable;self.value=0;self.nested=[]\n @m.builder\n def set_value(self,v):self.value=v\na=Builder(False);r=a.set_value(3);print('mutable_owner',r is a,a.value);assert r is a and a.value==3\nb=Builder(True);r=b.set_value(4);assert r is not b and b.value==0 and r.value==4 and r.nested is b.nested\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "e3ab17292d9c01a48eb8ac175739dd0a582fd32a46dce9ad559d94eb9539e268"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pypika/utils.py",
+        "old_string": "def builder(func: C) ->C:\n    \"\"\"\n    Decorator for wrapper \"builder\" functions.  These are functions on the Query class or other classes used for\n    building queries which mutate the query and return self.  To make the build functions immutable, this decorator is\n    used which will deepcopy the current instance.  This decorator will return the return value of the inner function\n    or the new copy of the instance.  The inner function does not need to return self.\n    \"\"\"\n    import copy\n\n    def wrapper(self, *args, **kwargs):\n        self_copy = copy.deepcopy(self)\n        result = func(self_copy, *args, **kwargs)\n        return self_copy if result is None else result\n\n    return wrapper\n\n",
+        "new_string": "def builder(func: C) -> C:\n    \"\"\"\n    Decorator for wrapper \"builder\" functions.  These are functions on the Query class or other classes used for\n    building queries which mutate the query and return self.  To make the build functions immutable, this decorator is\n    used which will deepcopy the current instance.  This decorator will return the return value of the inner function\n    or the new copy of the instance.  The inner function does not need to return self.\n    \"\"\"\n    import copy\n\n    def _copy(self, *args, **kwargs):\n        self_copy = copy.copy(self) if getattr(self, \"immutable\", True) else self\n        result = func(self_copy, *args, **kwargs)\n\n        # Return self if the inner function returns None.  This way the inner function can return something\n        # different (for example when creating joins, a different builder is returned).\n        if result is None:\n            return self_copy\n\n        return result\n\n    return _copy\n\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pypika.utils')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pypika/utils.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nclass Builder:\n def __init__(self,immutable):self.immutable=immutable;self.value=0;self.nested=[]\n @m.builder\n def set_value(self,v):self.value=v\na=Builder(False);r=a.set_value(3);print('mutable_owner',r is a,a.value);assert r is a and a.value==3\nb=Builder(True);r=b.set_value(4);assert r is not b and b.value==0 and r.value==4 and r.nested is b.nested\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "e3ab17292d9c01a48eb8ac175739dd0a582fd32a46dce9ad559d94eb9539e268"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Builder mutation honors immutable=False as in-place ownership and uses a shallow independent owner for immutable builders while retaining nested references. The actual source-bound reproduction passes after the production repair. Patch submitted."
+}

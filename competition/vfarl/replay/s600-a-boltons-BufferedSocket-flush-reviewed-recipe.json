@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex explicit collection/iteration contract and source-command review2026-10-25",
+  "review_notes": "flush_drains_pending_output_without_inventing_payload; original upstream function and complete source diff reviewed; original requirements and full target files intact. Short alias preloads the real package to preserve original __file__-based source lookup, no fake module.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "boltons/socketutils.py",
+        "start_line": 469,
+        "end_line": 477
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,importlib\nm=importlib.import_module('boltons.socketutils')\na=Path(m.__file__).resolve();e=(Path.cwd()/'boltons/socketutils.py').resolve()\nassert a==e,(a,e)\nprint('source_binding',a,'sha256',hashlib.sha256(a.read_bytes()).hexdigest())\nfrom boltons.socketutils import BufferedSocket\nimport socket\na,b=socket.socketpair()\nb.settimeout(0.05)\ns=BufferedSocket(a)\ns.buffer(b'queued');result=s.flush()\nassert result is None and b.recv(99)==b'queued'\ntry:b.recv(1)\nexcept socket.timeout:pass\nelse:raise AssertionError('flush appended unexpected payload')\ns.close();b.close()\nprint('flush_exact_pending_output')\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "d1547428776dc98b481fa5aad81dce54ba25857035bd738292584b6600571844"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "boltons/socketutils.py",
+        "old_string": "    def flush(self):\n        \"Send the contents of the internal send buffer.\"\n        with self._send_lock:\n            self.send(b'\\x00')\n        return 1\n",
+        "new_string": "    def flush(self):\n        \"Send the contents of the internal send buffer.\"\n        with self._send_lock:\n            self.send(b'')\n        return\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,importlib\nm=importlib.import_module('boltons.socketutils')\na=Path(m.__file__).resolve();e=(Path.cwd()/'boltons/socketutils.py').resolve()\nassert a==e,(a,e)\nprint('source_binding',a,'sha256',hashlib.sha256(a.read_bytes()).hexdigest())\nfrom boltons.socketutils import BufferedSocket\nimport socket\na,b=socket.socketpair()\nb.settimeout(0.05)\ns=BufferedSocket(a)\ns.buffer(b'queued');result=s.flush()\nassert result is None and b.recv(99)==b'queued'\ntry:b.recv(1)\nexcept socket.timeout:pass\nelse:raise AssertionError('flush appended unexpected payload')\ns.close();b.close()\nprint('flush_exact_pending_output')\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "d1547428776dc98b481fa5aad81dce54ba25857035bd738292584b6600571844"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored BufferedSocket.flush: flush drains pending output without inventing payload. The actual public API observation completed and the patch was submitted."
+}

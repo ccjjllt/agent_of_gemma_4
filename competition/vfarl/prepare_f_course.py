@@ -1,7 +1,7 @@
 """Export the admitted, disjoint common and specialist parts of the F course.
 
-F600_common reuses the admitted S_common 400 tasks; F600_specialist targets 200
-(F1-F5 x 40 each). No training or model invocation is performed.
+F600_common reuses the frozen S_common 400 tasks; F600_specialist targets 200
+reviewed flow/state repairs. Forty per mechanism is search guidance only.
 
 This prepares data only. Source candidates and repeated decisions cannot fill
 the 600-task objective. No training or model invocation is performed.
@@ -30,21 +30,36 @@ def label(path):
     return str(path.relative_to(ROOT)) if path.is_relative_to(ROOT) else str(path)
 
 
-def export(manifest_path, output, summary_path):
+def export(manifest_path, output, summary_path, common_catalog_path=None,
+           specialist_catalog_path=None, common_manifest_path=None):
     sft = read(manifest_path)
     actions_path = ROOT / sft["recommended_training_input"]
     if sha(actions_path) != sft["action_output_sha256"]:
         raise ValueError("Admitted action file differs from its source manifest")
     actions = [json.loads(line) for line in actions_path.read_text().splitlines() if line.strip()]
-    primary_path = VFARL / "pilot96/catalog.json"
-    supplemental_path = VFARL / "acquisition/supplemental/catalog.json"
+    primary_path = common_catalog_path or VFARL / "f600/common-catalog.json"
+    supplemental_path = specialist_catalog_path or VFARL / "f600/specialist-catalog.json"
     entries = read(primary_path)["tasks"] + read(supplemental_path)["tasks"]
     catalog = {entry["instance_id"]: entry for entry in entries}
+    if len(catalog) != len(entries):
+        raise ValueError("F course catalogs contain duplicate task identities")
+    common_manifest_path = common_manifest_path or VFARL / "s600/course-manifest.json"
+    frozen_common = read(common_manifest_path)["courses"]["common"]
+    frozen_common_ids = set(frozen_common["instance_ids"])
+    if len(frozen_common_ids) != 400 or {e["instance_id"] for e in read(primary_path)["tasks"]} != frozen_common_ids:
+        raise ValueError("F common course must reuse the exact admitted S_common 400 identities")
+    frozen_common_actions = ROOT / frozen_common["path"]
+    if sha(frozen_common_actions) != frozen_common["sha256"]:
+        raise ValueError("Frozen common action data differs from the S600 manifest")
     episodes = {}
     for action in actions:
         episodes.setdefault(action["instance_id"], action)
     if len(episodes) != sft["unique_task_episodes"]:
         raise ValueError("Master action identities differ from the admitted episode manifest")
+    if set(episodes) != set(catalog):
+        raise ValueError("Every explicitly selected F course task needs an admitted action episode")
+    if any(row["context_tokens"] > 32768 or row["assistant_loss_tokens"] > 8192 for row in actions):
+        raise ValueError("A complete recorded action exceeds the agreed 32K context or 8192 generated-token budget; do not truncate it")
     excluded_repositories = {"fastapi/fastapi", "textualize/rich", "psf/requests", "encode/httpx"}
     if any(row["canonical_repo"].lower() in excluded_repositories for row in episodes.values()):
         raise ValueError("A competition repository cannot enter this external training course")
@@ -58,18 +73,21 @@ def export(manifest_path, output, summary_path):
     membership = {}
     for iid, row in episodes.items():
         entry = catalog[iid]
-        declared = entry.get("course_membership")
-        # F600 reuses the admitted S_common 400 as F600_common. Pre-F600 source
-        # records use legacy course labels; non-F rows default to common.
-        if declared == "F600_common":
+        if iid in frozen_common_ids:
             role = "common"
-        elif declared == "F600_specialist":
+        elif entry.get("course_membership") == "F600_specialist":
             role = "specialist"
         else:
-            role = "specialist" if row["primary_adapter"] == "F" else "common"
-        if role == "specialist" and row["submechanism"] not in {"F1", "F2", "F3", "F4", "F5"}:
-            raise ValueError("A specialist slot needs reviewed representation/algorithm evidence")
+            raise ValueError("F specialist membership must be explicitly reviewed: " + iid)
+        if role == "specialist" and (row["primary_adapter"] != "F" or row["submechanism"] not in {"F1", "F2", "F3", "F4", "F5"}):
+            raise ValueError("A specialist slot needs reviewed flow/state evidence")
         membership[iid] = role
+    families = [row["repair_family_id"] for row in episodes.values()]
+    if len(set(families)) != len(families):
+        raise ValueError("Repeated repair families cannot increase F course size")
+    frozen_rows = [json.loads(line) for line in frozen_common_actions.read_text().splitlines() if line.strip()]
+    if [row for row in actions if membership[row["instance_id"]] == "common"] != frozen_rows:
+        raise ValueError("Reused common actions must preserve their exact frozen records and ordering")
     output.mkdir(parents=True, exist_ok=True)
     courses = {}
     for role, target in (("common", 400), ("specialist", 200)):
@@ -100,6 +118,8 @@ def export(manifest_path, output, summary_path):
                 "baseline_evidence_profile": action["baseline_evidence_profile"],
                 "actual_replay_result": prompt["replay_result"],
                 "actual_replay_result_sha256": prompt["replay_result_sha256"],
+                "actual_production_scopes": source.get("actual_production_scopes"),
+                "correlation_review": source.get("correlation_review"),
                 "metadata_is_policy_prompt": False,
                 "policy_input_field": "official_initial_user_prompt"})
         questions_path = output / ("F_" + role + "_questions.jsonl")
@@ -110,6 +130,8 @@ def export(manifest_path, output, summary_path):
             "admitted_unique_tasks": len(tasks), "remaining_unique_tasks": target-len(tasks),
             "decision_examples": len(chosen),
             "assistant_loss_tokens": sum(row["assistant_loss_tokens"] for row in chosen),
+            "maximum_action_context_tokens": max((row["context_tokens"] for row in chosen), default=0),
+            "maximum_generated_action_tokens": max((row["assistant_loss_tokens"] for row in chosen), default=0),
             "submechanism_task_counts": dict(Counter(row["submechanism"] for row in tasks.values())),
             "repair_family_count": len({row["repair_family_id"] for row in tasks.values()}),
             "snapshot_group_count": len({row["snapshot_group_id"] for row in tasks.values()}),
@@ -117,7 +139,7 @@ def export(manifest_path, output, summary_path):
     common, specialist = (set(courses[role]["instance_ids"]) for role in ("common", "specialist"))
     if common & specialist or common | specialist != set(episodes):
         raise ValueError("F course parts must be disjoint and cover the admitted selected identities")
-    result = {"schema_version": "F600-disjoint-course-v1", "date": "2026-10-25",
+    result = {"schema_version": "F600-disjoint-course-v1", "date": "2026-10-26",
         "objective_unique_tasks": 600, "admitted_unique_tasks": len(episodes),
         "remaining_unique_tasks": 600-len(episodes),
         "all_600_prepared": len(common) == 400 and len(specialist) == 200,
@@ -130,11 +152,19 @@ def export(manifest_path, output, summary_path):
         "excluded_competition_repositories": sorted(excluded_repositories),
         "source_catalog": label(primary_path), "source_catalog_sha256": sha(primary_path),
         "supplemental_catalog": label(supplemental_path), "supplemental_catalog_sha256": sha(supplemental_path),
+        "source_common_course_manifest": label(common_manifest_path),
+        "source_common_course_manifest_sha256": sha(common_manifest_path),
+        "source_common_action_sha256": frozen_common["sha256"],
         "courses": courses, "common_specialist_overlap": 0,
         "counting_policy": "Distinct admitted task identities; repeated actions and shared-course reuse do not add tasks. Family/snapshot groupings retained, not random evaluation splits.",
-        "initial_seed_policy": "F600_common reuses the admitted S_common 400 tasks; F600_specialist targets F1-F5 (40 each). New explicit F600_common/F600_specialist catalog membership overrides owner labels without relabeling the actual mechanism.",
+        "initial_seed_policy": "F600_common reuses the exact frozen S_common 400 tasks regardless of primary mechanism; only explicitly reviewed F600_specialist identities enter the additional 200. Forty per F mechanism guides search, never admission.",
         "specialist_search_targets": {s: 40 for s in ("F1", "F2", "F3", "F4", "F5")},
         "search_quota_is_admission_override": False,
+        "correlation_policy": "Different source tasks with different reviewed core contracts may share functions or restoration components; retain snapshot and explicit correlation groups. Exact repeated defects/patches do not add tasks. No random evaluation split is created.",
+        "generation_compatibility": {"max_model_len": 32768, "max_output_tokens": 8192,
+            "historical_coldstart_thinking_budget": 0,
+            "new_thinking_on_rollouts_require_real_sampling": True,
+            "training_window": "Use the actual complete F action context lengths; the earlier S-only 12288 window is not a valid F-wide truncation rule."},
         "evidence_kind": "Codex-authored actual official-tool off-policy coldstart demonstrations",
         "competition_Docker_environment_equivalent": False,
         "model_rollouts": 0, "verified_focal_action_pairs": 0,
@@ -150,8 +180,13 @@ if __name__ == "__main__":
     parser.add_argument("--manifest", type=Path, default=VFARL / "replay/gemma-f-manifest.json")
     parser.add_argument("--out", type=Path, default=VFARL / "replay/artifacts/f600")
     parser.add_argument("--summary", type=Path, default=VFARL / "f600/course-manifest.json")
+    parser.add_argument("--common-catalog", type=Path, default=VFARL / "f600/common-catalog.json")
+    parser.add_argument("--specialist-catalog", type=Path, default=VFARL / "f600/specialist-catalog.json")
+    parser.add_argument("--common-manifest", type=Path, default=VFARL / "s600/course-manifest.json")
     args = parser.parse_args()
-    result = export(args.manifest.resolve(), args.out.resolve(), args.summary.resolve())
+    result = export(args.manifest.resolve(), args.out.resolve(), args.summary.resolve(),
+                    args.common_catalog.resolve(), args.specialist_catalog.resolve(),
+                    args.common_manifest.resolve())
     print(json.dumps({"admitted_unique_tasks": result["admitted_unique_tasks"],
         "remaining_unique_tasks": result["remaining_unique_tasks"],
         "common": result["courses"]["common"]["admitted_unique_tasks"],

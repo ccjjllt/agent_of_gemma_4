@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "Only due jobs execute, ordered by their scheduled next_run, with future jobs left pending. The source changes both the due predicate and ordering; the probe compares the resulting event sequence, not a claimed single-action causal pair. The complete production-file delta is exactly the reviewed hunks inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "schedule/__init__.py",
+        "start_line": 85,
+        "end_line": 105
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('schedule.__init__')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'schedule/__init__.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport schedule,datetime\ns=schedule.Scheduler();seen=[]\na=s.every(10).seconds.do(lambda:seen.append('late'));b=s.every(10).seconds.do(lambda:seen.append('early'));c=s.every(10).seconds.do(lambda:seen.append('future'))\nnow=datetime.datetime.now();a.next_run=now-datetime.timedelta(seconds=1);b.next_run=now-datetime.timedelta(seconds=2);c.next_run=now+datetime.timedelta(hours=1)\ns.run_pending();print('events',seen,'remaining',len(s.jobs));assert seen==['early','late'],seen\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "22d5acd42bdf25249ae719aeea594cded96b7ade5e9422e4645b136d51eb7550"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "schedule/__init__.py",
+        "old_string": "        in one hour increments then your job won't be run 60 times in\n        between but only once.\n        \"\"\"\n        runnable_jobs = [job for job in self.jobs if not job.should_run]\n        for job in sorted(runnable_jobs, reverse=True):\n            self._run_job(job)\n\n    def run_all(self, delay_seconds: int = 0) -> None:",
+        "new_string": "        in one hour increments then your job won't be run 60 times in\n        between but only once.\n        \"\"\"\n        runnable_jobs = (job for job in self.jobs if job.should_run)\n        for job in sorted(runnable_jobs):\n            self._run_job(job)\n\n    def run_all(self, delay_seconds: int = 0) -> None:"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('schedule.__init__')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'schedule/__init__.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport schedule,datetime\ns=schedule.Scheduler();seen=[]\na=s.every(10).seconds.do(lambda:seen.append('late'));b=s.every(10).seconds.do(lambda:seen.append('early'));c=s.every(10).seconds.do(lambda:seen.append('future'))\nnow=datetime.datetime.now();a.next_run=now-datetime.timedelta(seconds=1);b.next_run=now-datetime.timedelta(seconds=2);c.next_run=now+datetime.timedelta(hours=1)\ns.run_pending();print('events',seen,'remaining',len(s.jobs));assert seen==['early','late'],seen\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "22d5acd42bdf25249ae719aeea594cded96b7ade5e9422e4645b136d51eb7550"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Only due jobs execute, ordered by their scheduled next_run, with future jobs left pending. The source changes both the due predicate and ordering; the probe compares the resulting event sequence, not a claimed single-action causal pair. The source-bound reproduction passes after the repair. Patch submitted."
+}

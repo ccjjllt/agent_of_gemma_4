@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "Cancel a registered job, cancel it again, then run all remaining jobs. Cancellation must remove the job permanently and preserve its peer. The mutation re-adds the removed object. The complete production-file delta is exactly the reviewed hunks inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "schedule/__init__.py",
+        "start_line": 146,
+        "end_line": 165
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('schedule.__init__')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'schedule/__init__.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport schedule\ns=schedule.Scheduler();seen=[]\na=s.every().seconds.do(lambda:seen.append('cancelled'));b=s.every().seconds.do(lambda:seen.append('peer'))\ns.cancel_job(a);s.cancel_job(a);s.run_all();print('events',seen,'retained',len(s.jobs));assert seen==['peer'] and s.jobs==[b],(seen,s.jobs)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "24c8d87398d50222ef32e4dca8a37bda717ca4627000a7dca026b3b2b3dc5bc2"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "schedule/__init__.py",
+        "old_string": "        try:\n            logger.debug('Cancelling job \"%s\"', str(job))\n            self.jobs.remove(job)\n            self.jobs.append(job)\n        except ValueError:\n            pass\n\n    def every(self, interval: int = 1) -> \"Job\":\n        \"\"\"",
+        "new_string": "        try:\n            logger.debug('Cancelling job \"%s\"', str(job))\n            self.jobs.remove(job)\n        except ValueError:\n            logger.debug('Cancelling not-scheduled job \"%s\"', str(job))\n\n    def every(self, interval: int = 1) -> \"Job\":\n        \"\"\""
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('schedule.__init__')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'schedule/__init__.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport schedule\ns=schedule.Scheduler();seen=[]\na=s.every().seconds.do(lambda:seen.append('cancelled'));b=s.every().seconds.do(lambda:seen.append('peer'))\ns.cancel_job(a);s.cancel_job(a);s.run_all();print('events',seen,'retained',len(s.jobs));assert seen==['peer'] and s.jobs==[b],(seen,s.jobs)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "24c8d87398d50222ef32e4dca8a37bda717ca4627000a7dca026b3b2b3dc5bc2"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Cancel a registered job, cancel it again, then run all remaining jobs. Cancellation must remove the job permanently and preserve its peer. The mutation re-adds the removed object. The source-bound reproduction passes after the repair. Patch submitted."
+}

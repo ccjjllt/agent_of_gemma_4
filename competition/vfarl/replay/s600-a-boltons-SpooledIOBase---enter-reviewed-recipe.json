@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex explicit collection/iteration contract and source-command review2026-10-25",
+  "review_notes": "resource_context_entry_returns_same_live_owner; original upstream function and complete source diff reviewed; original requirements and full target files intact. Short alias preloads the real package to preserve original __file__-based source lookup, no fake module.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "boltons/ioutils.py",
+        "start_line": 229,
+        "end_line": 235
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,importlib\nm=importlib.import_module('boltons.ioutils')\na=Path(m.__file__).resolve();e=(Path.cwd()/'boltons/ioutils.py').resolve()\nassert a==e,(a,e)\nprint('source_binding',a,'sha256',hashlib.sha256(a.read_bytes()).hexdigest())\nfrom boltons.ioutils import SpooledBytesIO\nf=SpooledBytesIO()\nwith f as live:\n assert live is f\n live.write(b'abc')\nassert f.closed\ntry:\n with f:pass\nexcept ValueError:pass\nelse:raise AssertionError('closed resource entered')\nprint('context_live_identity_and_closed_exit')\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "d436dad9d58dcf0720514cce452c5b5a1ba12ff4af80eaa52f83bd9a9fbd9906"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "boltons/ioutils.py",
+        "old_string": "    def __enter__(self):\n        self._checkClosed()\n        return None\n",
+        "new_string": "    def __enter__(self):\n        self._checkClosed()\n        return self\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,importlib\nm=importlib.import_module('boltons.ioutils')\na=Path(m.__file__).resolve();e=(Path.cwd()/'boltons/ioutils.py').resolve()\nassert a==e,(a,e)\nprint('source_binding',a,'sha256',hashlib.sha256(a.read_bytes()).hexdigest())\nfrom boltons.ioutils import SpooledBytesIO\nf=SpooledBytesIO()\nwith f as live:\n assert live is f\n live.write(b'abc')\nassert f.closed\ntry:\n with f:pass\nexcept ValueError:pass\nelse:raise AssertionError('closed resource entered')\nprint('context_live_identity_and_closed_exit')\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "d436dad9d58dcf0720514cce452c5b5a1ba12ff4af80eaa52f83bd9a9fbd9906"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored SpooledIOBase.__enter__: resource context entry returns same live owner. The actual public API observation completed and the patch was submitted."
+}

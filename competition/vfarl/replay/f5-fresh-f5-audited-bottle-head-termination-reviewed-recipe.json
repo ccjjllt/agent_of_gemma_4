@@ -1,0 +1,66 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "A HEAD response must finish headers and suppress body output after closing the route iterable. The source also deletes critical-error diagnostics; this probe isolates the HEAD response terminal behavior, not every changed branch. The complete production-file delta is exactly the reviewed hunks inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "bottle.py",
+        "start_line": 1079,
+        "end_line": 1110
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('bottle')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'bottle.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport bottle,io\nfrom wsgiref.util import setup_testing_defaults\napp=bottle.Bottle(catchall=False);app.get('/hello',callback=lambda:'body')\ne={};setup_testing_defaults(e);e.update(PATH_INFO='/hello',REQUEST_METHOD='HEAD',**{'wsgi.errors':io.StringIO()});status=[]\nbody=b''.join(app.wsgi(e,lambda s,h,exc_info=None:status.append(s)));print('head_body',body,'status',status);assert body==b'' and status[0].startswith('200'),(body,status)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "f8e7e5193a78790346e3ac8cecd3921adf9c7155b778fdd7ad43a2c65e775b67"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "bottle.py",
+        "old_string": "            raise\n        except Exception as E:\n            if not self.catchall: raise\n            if DEBUG:\n                pass\n            environ['wsgi.errors'].write(err)\n            environ['wsgi.errors'].flush()\n            headers = [('Content-Type', 'text/html; charset=UTF-8')]\n            start_response('500 INTERNAL SERVER ERROR', headers, sys.exc_info())\n            return [tob(err)]\n    def __call__(self, environ, start_response):\n        \"\"\" Each instance of :class:'Bottle' is a WSGI application. \"\"\"\n        return self.wsgi(environ, start_response)",
+        "new_string": "            raise\n        except Exception as E:\n            if not self.catchall: raise\n            err = '<h1>Critical error while processing request: %s</h1>' \\\n                  % html_escape(environ.get('PATH_INFO', '/'))\n            if DEBUG:\n                err += '<h2>Error:</h2>\\n<pre>\\n%s\\n</pre>\\n' \\\n                       '<h2>Traceback:</h2>\\n<pre>\\n%s\\n</pre>\\n' \\\n                       % (html_escape(repr(E)), html_escape(format_exc()))\n            environ['wsgi.errors'].write(err)\n            environ['wsgi.errors'].flush()\n            headers = [('Content-Type', 'text/html; charset=UTF-8')]\n            start_response('500 INTERNAL SERVER ERROR', headers, sys.exc_info())\n            return [tob(err)]\n\n    def __call__(self, environ, start_response):\n        \"\"\" Each instance of :class:'Bottle' is a WSGI application. \"\"\"\n        return self.wsgi(environ, start_response)"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "bottle.py",
+        "old_string": "            if response._status_code in (100, 101, 204, 304)\\\n            or environ['REQUEST_METHOD'] == 'HEAD':\n                if hasattr(out, 'close'): out.close()\n            exc_info = environ.get('bottle.exc_info')\n            if exc_info is not None:\n                del environ['bottle.exc_info']",
+        "new_string": "            if response._status_code in (100, 101, 204, 304)\\\n            or environ['REQUEST_METHOD'] == 'HEAD':\n                if hasattr(out, 'close'): out.close()\n                out = []\n            exc_info = environ.get('bottle.exc_info')\n            if exc_info is not None:\n                del environ['bottle.exc_info']"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('bottle')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'bottle.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport bottle,io\nfrom wsgiref.util import setup_testing_defaults\napp=bottle.Bottle(catchall=False);app.get('/hello',callback=lambda:'body')\ne={};setup_testing_defaults(e);e.update(PATH_INFO='/hello',REQUEST_METHOD='HEAD',**{'wsgi.errors':io.StringIO()});status=[]\nbody=b''.join(app.wsgi(e,lambda s,h,exc_info=None:status.append(s)));print('head_body',body,'status',status);assert body==b'' and status[0].startswith('200'),(body,status)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "f8e7e5193a78790346e3ac8cecd3921adf9c7155b778fdd7ad43a2c65e775b67"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "A HEAD response must finish headers and suppress body output after closing the route iterable. The source also deletes critical-error diagnostics; this probe isolates the HEAD response terminal behavior, not every changed branch. The source-bound reproduction passes after the repair. Patch submitted."
+}

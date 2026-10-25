@@ -293,6 +293,18 @@ def prepare(config):
         edit_pairs.append((old, new))
         current = current.replace(old, new, 1)
         current_lines = current.split("\n")
+    if current != new_text:
+        if current.rstrip("\n") != new_text.rstrip("\n"):
+            raise ValueError("Actual edit sequence differs from reviewed upstream: " + key)
+        # Hunk line arrays omit the terminal-newline marker. Preserve that
+        # byte-level difference as a real, uniquely anchored edit action.
+        tail_start = max(0, len(current) - 256)
+        while current.count(current[tail_start:]) != 1 and tail_start > 0:
+            tail_start = max(0, tail_start - 256)
+        edit_pairs.append((current[tail_start:], new_text[tail_start:]))
+        current = current[:tail_start] + new_text[tail_start:]
+    if current != new_text:
+        raise ValueError("Serialized edit actions do not restore the reviewed file: " + key)
     module = rel.removeprefix("src/").removesuffix(".py").replace("/", ".")
     command = ("python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\n"
         + "m=importlib.import_module(" + repr(module) + ")\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/"

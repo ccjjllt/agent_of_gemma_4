@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 source contract and explicit command review 2026-10-25",
+  "review_notes": "Path division owns a deep-copied result and appends in order; neither the division nor later result mutation changes the left operand. Individually reviewed source/defect change and reproduction. Original full-file verification and requirements retained; not sampled Gemma, not a same-state preference pair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "furl/furl.py",
+        "start_line": 628,
+        "end_line": 638
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('furl.furl')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'furl/furl.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\np=m.Path('left');r=p/'right';print('path_copy',r is p,str(p),str(r))\nassert r is not p and str(p)=='left' and str(r)=='left/right'\nr.add('tail');assert str(p)=='left' and str(r)=='left/right/tail'\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "b974898cdf39bac5e2946108032312b4fafd4d254d7208e497b7dc220f3cbd7e"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "furl/furl.py",
+        "old_string": "    def __truediv__(self, path):\n        copy = self  # Deep copy removed for shallow copy\n        return copy.add(path[::-1])  # Reverse the path before adding\n",
+        "new_string": "    def __truediv__(self, path):\n        copy = deepcopy(self)\n        return copy.add(path)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('furl.furl')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'furl/furl.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\np=m.Path('left');r=p/'right';print('path_copy',r is p,str(p),str(r))\nassert r is not p and str(p)=='left' and str(r)=='left/right'\nr.add('tail');assert str(p)=='left' and str(r)=='left/right/tail'\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "b974898cdf39bac5e2946108032312b4fafd4d254d7208e497b7dc220f3cbd7e"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Path division owns a deep-copied result and appends in order; neither the division nor later result mutation changes the left operand. The actual source-bound reproduction passes after the production repair. Patch submitted."
+}

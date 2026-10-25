@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "After a failed attempt accepted for retry, run after callback, compute wait and stop, then before_sleep before a fresh attempt. The source changes retry gating and removes stop scheduling; verify actual complete two-attempt behavior without claiming each altered line independently proved causal. The complete production-file delta is exactly the reviewed hunks inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "tenacity/__init__.py",
+        "start_line": 392,
+        "end_line": 410
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('tenacity.__init__')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'tenacity/__init__.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport tenacity\nseen=[];calls=[]\ndef fn():\n calls.append(1);seen.append('run'+str(len(calls)))\n if len(calls)==1:raise ValueError('retry')\n return 'done'\nr=tenacity.Retrying(stop=tenacity.stop_after_attempt(2),wait=tenacity.wait_fixed(0),sleep=lambda _:None,reraise=True,before=lambda s:seen.append('before'+str(s.attempt_number)),after=lambda s:seen.append('after'+str(s.attempt_number)),before_sleep=lambda s:seen.append('sleep'+str(s.attempt_number)))\nvalue=r(fn);print('attempt_stages',seen,'result',value);assert value=='done' and seen==['before1','run1','after1','sleep1','before2','run2'],seen\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "273577e40ffb477c1b3330f116bb163806a17c77e17c2b243c92d07c59f0555a"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "tenacity/__init__.py",
+        "old_string": "        self._add_action_func(self._post_retry_check_actions)\n\n    def _post_retry_check_actions(self, retry_state: \"RetryCallState\") -> None:\n        if not (self.iter_state.is_explicit_retry and self.iter_state.retry_run_result):\n            self._add_action_func(lambda rs: rs.outcome.result())\n            return\n\n        if self.after is None:\n            self._add_action_func(self.after)\n\n        self._add_action_func(self._run_wait)\n        # self._add_action_func(self._run_stop)  # Removed invocation\n        self._add_action_func(self._post_stop_check_actions)\n\n    def _post_stop_check_actions(self, retry_state: \"RetryCallState\") -> None:",
+        "new_string": "        self._add_action_func(self._post_retry_check_actions)\n\n    def _post_retry_check_actions(self, retry_state: \"RetryCallState\") -> None:\n        if not (self.iter_state.is_explicit_retry or self.iter_state.retry_run_result):\n            self._add_action_func(lambda rs: rs.outcome.result())\n            return\n\n        if self.after is not None:\n            self._add_action_func(self.after)\n\n        self._add_action_func(self._run_wait)\n        self._add_action_func(self._run_stop)\n        self._add_action_func(self._post_stop_check_actions)\n\n    def _post_stop_check_actions(self, retry_state: \"RetryCallState\") -> None:"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('tenacity.__init__')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'tenacity/__init__.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport tenacity\nseen=[];calls=[]\ndef fn():\n calls.append(1);seen.append('run'+str(len(calls)))\n if len(calls)==1:raise ValueError('retry')\n return 'done'\nr=tenacity.Retrying(stop=tenacity.stop_after_attempt(2),wait=tenacity.wait_fixed(0),sleep=lambda _:None,reraise=True,before=lambda s:seen.append('before'+str(s.attempt_number)),after=lambda s:seen.append('after'+str(s.attempt_number)),before_sleep=lambda s:seen.append('sleep'+str(s.attempt_number)))\nvalue=r(fn);print('attempt_stages',seen,'result',value);assert value=='done' and seen==['before1','run1','after1','sleep1','before2','run2'],seen\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "273577e40ffb477c1b3330f116bb163806a17c77e17c2b243c92d07c59f0555a"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "After a failed attempt accepted for retry, run after callback, compute wait and stop, then before_sleep before a fresh attempt. The source changes retry gating and removes stop scheduling; verify actual complete two-attempt behavior without claiming each altered line independently proved causal. The source-bound reproduction passes after the repair. Patch submitted."
+}

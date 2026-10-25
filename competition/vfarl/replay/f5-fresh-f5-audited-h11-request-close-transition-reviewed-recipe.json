@@ -1,0 +1,75 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "Receiving a Connection: close request must disable keep-alive before the request ends, moving the client side into MUST_CLOSE after EndOfMessage. The mutation also removes Upgrade proposal handling; the probe isolates the close transition. The complete production-file delta is exactly the reviewed hunks inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "h11/_connection.py",
+        "start_line": 268,
+        "end_line": 309
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('h11._connection')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'h11/_connection.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport h11\nc=h11.Connection(h11.SERVER);c.receive_data(b'GET / HTTP/1.1\\r\\nHost: example\\r\\nConnection: close\\r\\n\\r\\n');assert isinstance(c.next_event(),h11.Request);assert isinstance(c.next_event(),h11.EndOfMessage);print('keep_alive',c._cstate.keep_alive,'peer_state',c.their_state);assert c._cstate.keep_alive is False and c.their_state is h11.MUST_CLOSE\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "ee0e84d31be28ddf7e033bf34a1ae25ff5dcd813873e63018f0d6be6e29eff2a"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "h11/_connection.py",
+        "old_string": "            self.client_is_waiting_for_100_continue = False\n\n        self._respond_to_state_changes(old_states, event)\n    def _get_io_object(\n        self,\n        role: Type[Sentinel],",
+        "new_string": "            self.client_is_waiting_for_100_continue = False\n\n        self._respond_to_state_changes(old_states, event)\n\n    def _get_io_object(\n        self,\n        role: Type[Sentinel],"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "h11/_connection.py",
+        "old_string": "            event = cast(Union[Request, Response, InformationalResponse], event)\n            self.their_http_version = event.http_version\n\n        # 100-continue\n        if type(event) is Request and has_expect_100_continue(event):\n            self.client_is_waiting_for_100_continue = True",
+        "new_string": "            event = cast(Union[Request, Response, InformationalResponse], event)\n            self.their_http_version = event.http_version\n\n        # Keep alive handling\n        #\n        # RFC 7230 doesn't really say what one should do if Connection: close\n        # shows up on a 1xx InformationalResponse. I think the idea is that\n        # this is not supposed to happen. In any case, if it does happen, we\n        # ignore it.\n        if type(event) in (Request, Response) and not _keep_alive(\n            cast(Union[Request, Response], event)\n        ):\n            self._cstate.process_keep_alive_disabled()\n\n        # 100-continue\n        if type(event) is Request and has_expect_100_continue(event):\n            self.client_is_waiting_for_100_continue = True"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "h11/_connection.py",
+        "old_string": "        if role is CLIENT and type(event) is Request:\n            if event.method == b\"CONNECT\":\n                self._cstate.process_client_switch_proposal(_SWITCH_CONNECT)\n        server_switch_event = None\n        if role is SERVER:\n            server_switch_event = self._server_switch_event(event)",
+        "new_string": "        if role is CLIENT and type(event) is Request:\n            if event.method == b\"CONNECT\":\n                self._cstate.process_client_switch_proposal(_SWITCH_CONNECT)\n            if get_comma_header(event.headers, b\"upgrade\"):\n                self._cstate.process_client_switch_proposal(_SWITCH_UPGRADE)\n        server_switch_event = None\n        if role is SERVER:\n            server_switch_event = self._server_switch_event(event)"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('h11._connection')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'h11/_connection.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport h11\nc=h11.Connection(h11.SERVER);c.receive_data(b'GET / HTTP/1.1\\r\\nHost: example\\r\\nConnection: close\\r\\n\\r\\n');assert isinstance(c.next_event(),h11.Request);assert isinstance(c.next_event(),h11.EndOfMessage);print('keep_alive',c._cstate.keep_alive,'peer_state',c.their_state);assert c._cstate.keep_alive is False and c.their_state is h11.MUST_CLOSE\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "ee0e84d31be28ddf7e033bf34a1ae25ff5dcd813873e63018f0d6be6e29eff2a"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Receiving a Connection: close request must disable keep-alive before the request ends, moving the client side into MUST_CLOSE after EndOfMessage. The mutation also removes Upgrade proposal handling; the probe isolates the close transition. The source-bound reproduction passes after the repair. Patch submitted."
+}

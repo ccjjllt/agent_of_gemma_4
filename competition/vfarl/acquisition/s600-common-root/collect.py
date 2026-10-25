@@ -19,6 +19,9 @@ HERE = Path(__file__).resolve().parent
 REPLAY = ROOT / "competition/vfarl/replay"
 ART = REPLAY / "artifacts/s600-common-root"
 REV = "77cab9055d42ab4a5c25c89a8f937096db13558e"
+REPORT_PREFIX = "s600-root-"
+REVIEW_SCOPE = "Individually selected common repair contracts for S600, not relabeled S specialist data. Correct mechanism labels retained."
+DEFAULT_COURSE = "S600_common"
 sys.path.insert(0, str(REPLAY))
 from prepare_sfr import acquire
 from normalize_results import junit_report
@@ -98,8 +101,14 @@ def prepare(config):
     key = config["key"]
     compile(config["body"], "<reviewed observation " + key + ">", "exec")
     row, provenance = source_row(config["instance_id"])
-    if not row.get("problem_statement", "").strip():
-        raise ValueError("This batch requires nonempty publisher descriptions")
+    original_description = row.get("problem_statement", "")
+    curated = config.get("curated_prompt")
+    if curated is not None and (not isinstance(curated, str) or not curated.strip()):
+        raise ValueError("A curated description must be explicit nonempty reviewed text")
+    if not original_description.strip() and curated is None:
+        raise ValueError("An empty publisher description needs an explicit reviewed curated_prompt")
+    if curated is not None and original_description.strip() and not config.get("curation_reason"):
+        raise ValueError("Replacing a nonempty publisher description needs an explicit curation_reason")
     task_path = HERE / (row["instance_id"] + ".task.json")
     save(task_path, {"source_dataset": "SWE-bench/SWE-smith-py", "revision": REV,
                      "split": "train", **provenance, "row": row})
@@ -113,7 +122,10 @@ def prepare(config):
         if not path.is_file() or path.is_symlink():
             continue
         rel = path.relative_to(upstream)
-        if not any(part in {"test", "tests", "testing"} for part in rel.parts) and str(rel) not in {"conftest.py", "test.py"}:
+        if (not any(part in {"test", "tests", "testing"} for part in rel.parts)
+                and str(rel) not in {"conftest.py", "test.py"}
+                and not (rel.name.startswith("test_") and rel.suffix == ".py")
+                and not rel.name.endswith("_test.py")):
             continue
         actual, raw = source / rel, path.read_bytes()
         if actual.exists() and actual.read_bytes() != raw:
@@ -131,11 +143,30 @@ def prepare(config):
     targets = sorted({node.split("::", 1)[0] for node in row["FAIL_TO_PASS"] + row["PASS_TO_PASS"]})
     if not targets or not all((source / p).exists() or any(f["path"] == p for f in files) for p in targets):
         raise ValueError("Full original required file scope unavailable")
-    adapted = ART / (key + "-task" + config.get("task_version_suffix", "") + ".json")
-    save(adapted, {"instance_id": row["instance_id"], "repo": row["repo"], "base_commit": commit,
+    task_payload = {"instance_id": row["instance_id"], "repo": row["repo"], "base_commit": commit,
         "problem_statement": row["problem_statement"], "patch": "", "test_patch": "".join(missing),
         "FAIL_TO_PASS": row["FAIL_TO_PASS"], "PASS_TO_PASS": row["PASS_TO_PASS"],
-        "verification_target_files": targets})
+        "verification_target_files": targets}
+    adapted = ART / (key + "-task" + config.get("task_version_suffix", "") + ".json")
+    visible_profile = None
+    if curated is not None:
+        original_adapted = ART / (key + "-task-original-description.json")
+        save(original_adapted, task_payload)
+        adapted = ART / (key + "-task" + config.get("task_version_suffix", "-curated-v2") + ".json")
+        task_payload = {**task_payload, "problem_statement": curated}
+        visible_profile = {
+            "kind": "curator_authored_behavioral_clarification",
+            "reviewed_by": "Codex explicit fixed-source public API contract and mutation review",
+            "reason": config.get("curation_reason", "publisher description empty"),
+            "original_problem_statement_sha256": hashlib.sha256(original_description.encode()).hexdigest(),
+            "curated_problem_statement_sha256": hashlib.sha256(curated.encode()).hexdigest(),
+            "curated_prompt": curated,
+            "source_basis": ["Fixed upstream public API contract", "Reviewed allowed-train production mutation"],
+            "original_adapted_task": label(original_adapted),
+            "original_adapted_task_sha256": sha(original_adapted),
+            "reference_patch_or_required_list_in_prompt": False,
+        }
+    save(adapted, task_payload)
     rel = config["relative_path"]
     before, line, end = function_text(source / rel, config["symbol"])
     after, _, _ = function_text(upstream / rel, config["symbol"])
@@ -154,7 +185,7 @@ def prepare(config):
         return {"tool": "run_command", "arguments": {"command": command}, "expected_status": status,
                 "reviewed_command_sha256": hashlib.sha256(command.encode()).hexdigest()}
     recipe = {"evidence_kind": "human_reviewed_off_policy_demonstration",
-        "reviewed_by": "Codex S600 common-course source contract and explicit command review2026-10-25",
+        "reviewed_by": "Codex source contract and explicit command review2026-10-25",
         "review_notes": config["contract"] + " The complete production-file delta is exactly this reviewed function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
         "actions": [{"tool": "get_status", "arguments": {}, "expected_status": "ok"},
             {"tool": "read_file", "arguments": {"filepath": rel, "start_line": max(1, line-4),
@@ -163,18 +194,19 @@ def prepare(config):
             run("ok"), {"tool": "get_status", "arguments": {}, "expected_status": "ok"},
             {"tool": "submit_patch", "arguments": {}, "expected_status": "ok"}],
         "final_response": config["contract"] + " The source-bound reproduction passes after the repair. Patch submitted."}
-    recipe_path = REPLAY / ("s600-root-" + key + "-reviewed-recipe.json")
+    recipe_path = REPLAY / (REPORT_PREFIX + key + "-reviewed-recipe.json")
     save(recipe_path, recipe)
-    license_path = next((upstream / name for name in ("LICENSE", "LICENSE.txt", "LICENSE.md", "LICENSE.rst")
+    license_names = (config["license_file"],) if config.get("license_file") else ("LICENSE", "LICENSE.txt", "LICENSE.md", "LICENSE.rst", "LICENSE-MIT")
+    license_path = next((upstream / name for name in license_names
                          if (upstream / name).exists()), None)
-    if license_path is None:
+    if license_path is None or not license_path.resolve().is_relative_to(upstream.resolve()):
         raise ValueError("Original source license unavailable")
     copied = HERE / (config["canonical_repo"].replace("/", "__") + ".LICENSE")
     copied.write_bytes(license_path.read_bytes())
     dataset = ROOT / "competition/vfarl/acquisition/recover-semantics/sources/SWE-smith-py-README.txt"
     prep = {k: v for k, v in config.items() if k != "body"}
     prep.update({"source_dataset": "SWE-bench/SWE-smith-py", "source_revision": REV, "physical_split": "train",
-        "use_partition": "train_only", "course_membership": config.get("course_membership", "S600_common"),
+        "use_partition": "train_only", "course_membership": config.get("course_membership", DEFAULT_COURSE),
         "original_task": label(task_path), "original_task_sha256": sha(task_path), "execution_commit": commit,
         "mirror_ref": ref, "buggy_source": buggy, "upstream_source": up, "workspace": label(source),
         "adapted_task": label(adapted), "adapted_task_sha256": sha(adapted), "recipe": label(recipe_path),
@@ -189,6 +221,8 @@ def prepare(config):
             "bug_patch_direction": "introduces_defect_not_repair_target"},
         "original_patch_semantics": "bug_introducing", "original_verifier_requirements_relaxed": False,
         "source_mechanism_review_complete": True, **provenance})
+    if visible_profile is not None:
+        prep["visible_prompt_profile"] = visible_profile
     save(preparation_path(config), prep)
 
 
@@ -208,6 +242,8 @@ def replay(config, attempt="001"):
             "--task-site-packages-mode", "copy", "--command-timeout", "90", "--verification-timeout", "180"]
         for name, path in config.get("sandbox_executables", {}).items():
             command.extend(["--sandbox-executable", name + "=" + str(ROOT / path)])
+        if config.get("task_python"):
+            command.extend(["--task-python", str(ROOT / config["task_python"])])
         subprocess.run(command, check=True, stdout=log, stderr=subprocess.STDOUT)
 
 
@@ -245,16 +281,18 @@ def publish(configs, attempt="001", review_name="reviewed-candidates"):
             "mechanism": {"adapter": prep["primary_adapter"], "submechanism": prep["submechanism"], "evidence": prep["mechanism_evidence"]},
             "original_verifier_requirements_relaxed": False, "required_node_identifiers_verbatim_preserved": True,
             "actual_mechanism_observations": observations, "source_preparation": label(prep_path)})
+        if prep.get("visible_prompt_profile") is not None:
+            result["visible_prompt_profile"] = prep["visible_prompt_profile"]
         reviews.append({**prep, "source_review_complete": True, "actual_current_run": label(out),
             "actual_run_summary_sha256": sha(summary_path), "actual_recipe_sha256": sha(ROOT / prep["recipe"]),
             "actual_events_sha256": sha(events_path), "actual_reports": phases, "actual_observations": observations,
             "resolved_by_local_official_verify_task": result["resolved_by_local_official_verify_task"]})
-        reports.append((REPLAY / ("s600-root-" + key + "-attempt" + attempt + "-replay-result.json"), result))
+        reports.append((REPLAY / (REPORT_PREFIX + key + "-attempt" + attempt + "-replay-result.json"), result))
     path = HERE / (review_name + ".json")
     if path.exists() and json.loads(path.read_text()).get("tasks") != reviews:
         raise ValueError("Use a new review-name to preserve a frozen earlier source review")
     save(path, {"date": "2026-10-25", "source_revision": REV, "physical_split": "train",
-        "scope": "Individually selected common repair contracts for S600, not relabeled S specialist data. Correct mechanism labels retained.",
+        "scope": REVIEW_SCOPE,
         "independence_basis": "One reviewed production-function contract per selected mutation, with full source delta confirmation; same upstream snapshot grouped.",
         "tasks": reviews})
     for target, result in reports:

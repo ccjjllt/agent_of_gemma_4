@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "Update flush must invoke the callback on queued rows, sort and group by keys into update_many calls, then clear the queue; clearing first persists nothing and reports empty across the queue-flush-persist chain. The complete production-file delta is exactly the reviewed hunks inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action. 2026-10-26 correction: restore the exact upstream terminal newline; earlier full-task passed but original collector left its byte-equality claim unsupported at EOF.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "dataset/chunked.py",
+        "start_line": 75,
+        "end_line": 89
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('dataset.chunked')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'dataset/chunked.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom dataset.chunked import ChunkedUpdate\nseen=[]; calls=[]\nclass T:\n    def update_many(self, rows, keys): calls.append((list(rows),keys))\nt=T()\nup=ChunkedUpdate(t, keys=['id'], chunksize=100, callback=lambda q: seen.append(len(q)))\nwith up as u:\n    enter_ok=(u is up)\n    u.update({'id':1,'v':'a'})\n    u.update({'id':2,'v':'b'})\nprint('flush_order_sequence',[enter_ok,seen,len(calls),len(up.queue)])\nassert [enter_ok,seen,len(calls),len(up.queue)]==[True,[2],1,0]\nassert calls[0]==([{'id':1,'v':'a'},{'id':2,'v':'b'}],['id'])\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "8f8132b5fea84b439f015a746d5a75b1ef549662a5607ec8485eb60398c649ce"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "dataset/chunked.py",
+        "old_string": "        super()._queue_add(item)\n\n    def flush(self):\n        super().flush()\n        for fields, items in itertools.groupby(self.queue, key=dict.keys):\n            self.table.update_many(list(items), self.keys)\n        self.queue.sort(key=dict.keys)\n        if self.callback is not None:\n            self.callback(self.queue)",
+        "new_string": "        super()._queue_add(item)\n\n    def flush(self):\n        if self.callback is not None:\n            self.callback(self.queue)\n        self.queue.sort(key=dict.keys)\n        for fields, items in itertools.groupby(self.queue, key=dict.keys):\n            self.table.update_many(list(items), self.keys)\n        super().flush()\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('dataset.chunked')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'dataset/chunked.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom dataset.chunked import ChunkedUpdate\nseen=[]; calls=[]\nclass T:\n    def update_many(self, rows, keys): calls.append((list(rows),keys))\nt=T()\nup=ChunkedUpdate(t, keys=['id'], chunksize=100, callback=lambda q: seen.append(len(q)))\nwith up as u:\n    enter_ok=(u is up)\n    u.update({'id':1,'v':'a'})\n    u.update({'id':2,'v':'b'})\nprint('flush_order_sequence',[enter_ok,seen,len(calls),len(up.queue)])\nassert [enter_ok,seen,len(calls),len(up.queue)]==[True,[2],1,0]\nassert calls[0]==([{'id':1,'v':'a'},{'id':2,'v':'b'}],['id'])\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "8f8132b5fea84b439f015a746d5a75b1ef549662a5607ec8485eb60398c649ce"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Update flush must invoke the callback on queued rows, sort and group by keys into update_many calls, then clear the queue; clearing first persists nothing and reports empty across the queue-flush-persist chain. The source-bound reproduction passes after the repair. Patch submitted."
+}

@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex source contract and explicit command review2026-10-25",
+  "review_notes": "Cache timeout in seconds or timedelta defines actual expiration, including immediate expiry for negative timeout; no hidden extra second. The complete production-file delta is exactly this reviewed function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "funcy/calc.py",
+        "start_line": 30,
+        "end_line": 43
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('funcy.calc')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'funcy/calc.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom funcy import cache\nfrom datetime import timedelta\nimport time\nfor timeout in [0.01,timedelta(seconds=-1)]:\n calls=[]\n @cache(timeout)\n def f(x):\n  calls.append(x);return len(calls)\n first=f('a')\n time.sleep(0.03)\n second=f('a')\n assert (first,second)==(1,2),(timeout,first,second)\n assert calls==['a','a']\nprint('timeout_expiry_recomputes')\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "e2652f29349abbbb276ab0064bda35e75c0366a69646f3b61cce608aa6d4adde"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "funcy/calc.py",
+        "old_string": "def cache(timeout, *, key_func=None):\n    \"\"\"Caches a function results for timeout seconds.\"\"\"\n    if isinstance(timeout, timedelta):\n        timeout = abs(timeout.total_seconds())\n\n    return _memory_decorator(CacheMemory(timeout + 1), key_func)\n",
+        "new_string": "def cache(timeout, *, key_func=None):\n    \"\"\"Caches a function results for timeout seconds.\"\"\"\n    if isinstance(timeout, timedelta):\n        timeout = timeout.total_seconds()\n\n    return _memory_decorator(CacheMemory(timeout), key_func)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('funcy.calc')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'funcy/calc.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom funcy import cache\nfrom datetime import timedelta\nimport time\nfor timeout in [0.01,timedelta(seconds=-1)]:\n calls=[]\n @cache(timeout)\n def f(x):\n  calls.append(x);return len(calls)\n first=f('a')\n time.sleep(0.03)\n second=f('a')\n assert (first,second)==(1,2),(timeout,first,second)\n assert calls==['a','a']\nprint('timeout_expiry_recomputes')\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "e2652f29349abbbb276ab0064bda35e75c0366a69646f3b61cce608aa6d4adde"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Cache timeout in seconds or timedelta defines actual expiration, including immediate expiry for negative timeout; no hidden extra second. The source-bound reproduction passes after the repair. Patch submitted."
+}

@@ -463,8 +463,10 @@ def normalize(report_path: Path, catalog: dict, approvals: dict) -> dict:
                    "baseline_junit_source_root": junit_root_profile,
                    "required_source_files_missing_from_actual_pytest_targets": missing_files,
                    "parent_ADK_compatibility": compatibility,
-                   "mechanism": report.get("mechanism") or ({"adapter": entry["primary_adapter"],
-                       "submechanism": entry["submechanism"], "evidence": entry["mechanism_evidence"]} if entry else None),
+                   "mechanism": ({"adapter": entry["primary_adapter"],
+                       "submechanism": entry["submechanism"], "evidence": entry["mechanism_evidence"]}
+                       if entry else report.get("mechanism")),
+                   "source_report_mechanism": report.get("mechanism"),
                    "evidence_kind": summary.get("evidence_kind", recipe.get("evidence_kind")),
                    "demonstration_authorship": "Codex agents specified and reviewed the scripted actions; these are not Gemma policy samples or end-user manual annotations. The legacy human_reviewed schema label is retained for raw-format compatibility.",
                    "source_reported_eligibility": report.get("human_off_policy_sft_demonstration_available",
@@ -511,6 +513,8 @@ def normalize(report_path: Path, catalog: dict, approvals: dict) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--reports-dir", type=Path, default=REPLAY)
+    parser.add_argument("--reports", nargs="+", type=Path,
+                        help="Only these explicitly selected train replay reports are opened")
     parser.add_argument("--catalog", type=Path, default=REPLAY.parent / "pilot96/catalog.json")
     parser.add_argument("--supplemental-catalog", type=Path,
                         default=REPLAY.parent / "acquisition/supplemental/catalog.json",
@@ -537,7 +541,12 @@ def main() -> None:
     approval_blob = read_json(args.approved_mappings) or {"approvals": []}
     approvals = {row["instance_id"]: row for row in approval_blob["approvals"]}
     records = []
-    for path in sorted(args.reports_dir.glob("*-replay-result.json")):
+    report_paths = args.reports if args.reports is not None else args.reports_dir.glob("*-replay-result.json")
+    for path in sorted(set(report_paths)):
+        if args.reports is not None:
+            named = read_json(path)
+            if not isinstance(named, dict) or named.get("instance_id") not in catalog:
+                raise ValueError("An explicitly named report must belong to this reviewed train selection")
         try:
             result = normalize(path, catalog, approvals)
         except (OSError, ValueError, KeyError, TypeError, ET.ParseError) as error:

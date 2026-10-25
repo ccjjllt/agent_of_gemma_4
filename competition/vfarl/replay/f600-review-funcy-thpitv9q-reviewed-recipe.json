@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex source contract and explicit command review2026-10-25",
+  "review_notes": "Clearing cache storage resets its entry and expiration queues together, then permits fresh insert and expire cycles. The complete production-file delta is exactly this reviewed function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "funcy/calc.py",
+        "start_line": 94,
+        "end_line": 105
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('funcy.calc')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'funcy/calc.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom funcy.calc import CacheMemory\nfrom collections import deque\nc=CacheMemory(0.01)\nc['a']='A'\nc.clear()\nassert not c and isinstance(c._keys,deque) and isinstance(c._expires,deque)\nassert len(c._keys)==len(c._expires)==0\nc['b']='B'\nassert c['b']=='B'\nimport time\ntime.sleep(0.03)\nc.expire()\nassert not c and not c._keys and not c._expires\nprint('clear_insert_expire_cycle')\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "941ac31f320de1ffd4ba46b6ea9e2f0c709ea6d94a5fd64e8e2eed2ccbef114a"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "funcy/calc.py",
+        "old_string": "    def clear(self):\n        dict.clear(self)\n        self._keys = []\n        self._expires = deque([None])\n",
+        "new_string": "    def clear(self):\n        dict.clear(self)\n        self._keys = deque()\n        self._expires = deque()\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('funcy.calc')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'funcy/calc.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom funcy.calc import CacheMemory\nfrom collections import deque\nc=CacheMemory(0.01)\nc['a']='A'\nc.clear()\nassert not c and isinstance(c._keys,deque) and isinstance(c._expires,deque)\nassert len(c._keys)==len(c._expires)==0\nc['b']='B'\nassert c['b']=='B'\nimport time\ntime.sleep(0.03)\nc.expire()\nassert not c and not c._keys and not c._expires\nprint('clear_insert_expire_cycle')\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "941ac31f320de1ffd4ba46b6ea9e2f0c709ea6d94a5fd64e8e2eed2ccbef114a"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Clearing cache storage resets its entry and expiration queues together, then permits fresh insert and expire cycles. The source-bound reproduction passes after the repair. Patch submitted."
+}

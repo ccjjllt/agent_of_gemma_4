@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex explicit collection/iteration contract and source-command review2026-10-25",
+  "review_notes": "cache_eviction_replaces_oldest_key_only; original upstream function and complete source diff reviewed; original requirements and full target files intact. Short alias preloads the real package to preserve original __file__-based source lookup, no fake module.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "boltons/cacheutils.py",
+        "start_line": 192,
+        "end_line": 206
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,importlib\nm=importlib.import_module('boltons.cacheutils')\na=Path(m.__file__).resolve();e=(Path.cwd()/'boltons/cacheutils.py').resolve()\nassert a==e,(a,e)\nprint('source_binding',a,'sha256',hashlib.sha256(a.read_bytes()).hexdigest())\nfrom boltons.cacheutils import LRI\nc=LRI(max_size=2)\nc['a']=10;c['b']=20\nassert c['a']==10 and c['b']==20\nc['c']=30\nassert 'a' not in c and c['b']==20 and c['c']==30\nc.pop('b')\nassert 'b' not in c\nc['b']=200\nassert c['b']==200\nc.clear()\nassert len(c)==0\nc['fresh']=99\nassert c['fresh']==99\nprint('bounded_cache_eviction_invalidation_reuse')\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "0801d4ed27a55a7cdb54b1b45c10d9e126941ed10691f44f520839eac1dc62d1"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "boltons/cacheutils.py",
+        "old_string": "    def _set_key_and_evict_last_in_ll(self, key, value):\n        oldanchor = self._anchor\n        oldanchor[KEY] = value  # Swap key and value assignment\n        oldanchor[VALUE] = key\n\n        self._anchor = anchor = oldanchor[PREV]  # Use PREV instead of NEXT\n        evicted = anchor[VALUE]  # Swap KEY and VALUE for eviction\n        anchor[KEY] = anchor[VALUE] = _MISSING\n        del self._link_lookup[evicted]\n        self._link_lookup[value] = oldanchor  # Incorrectly use value instead of key\n        return evicted\n",
+        "new_string": "    def _set_key_and_evict_last_in_ll(self, key, value):\n        # the link after anchor is the oldest in the linked list\n        # (invariant 3).  the current anchor becomes a link that holds\n        # the newest key, and the oldest link becomes the new anchor\n        # (invariant 1).  now the newest link comes before anchor\n        # (invariant 2).  no links are moved; only their keys\n        # and values are changed.\n        oldanchor = self._anchor\n        oldanchor[KEY] = key\n        oldanchor[VALUE] = value\n\n        self._anchor = anchor = oldanchor[NEXT]\n        evicted = anchor[KEY]\n        anchor[KEY] = anchor[VALUE] = _MISSING\n        del self._link_lookup[evicted]\n        self._link_lookup[key] = oldanchor\n        return evicted\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,importlib\nm=importlib.import_module('boltons.cacheutils')\na=Path(m.__file__).resolve();e=(Path.cwd()/'boltons/cacheutils.py').resolve()\nassert a==e,(a,e)\nprint('source_binding',a,'sha256',hashlib.sha256(a.read_bytes()).hexdigest())\nfrom boltons.cacheutils import LRI\nc=LRI(max_size=2)\nc['a']=10;c['b']=20\nassert c['a']==10 and c['b']==20\nc['c']=30\nassert 'a' not in c and c['b']==20 and c['c']==30\nc.pop('b')\nassert 'b' not in c\nc['b']=200\nassert c['b']==200\nc.clear()\nassert len(c)==0\nc['fresh']=99\nassert c['fresh']==99\nprint('bounded_cache_eviction_invalidation_reuse')\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "0801d4ed27a55a7cdb54b1b45c10d9e126941ed10691f44f520839eac1dc62d1"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored LRI._set_key_and_evict_last_in_ll: cache eviction replaces oldest key only. The actual public API observation completed and the patch was submitted."
+}

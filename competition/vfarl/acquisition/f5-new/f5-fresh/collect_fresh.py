@@ -167,8 +167,10 @@ def smith_inverse_edits(patch, source_root, upstream_root, symbol, key):
         # Changed lines on each side (blank-only fallout, e.g. a deleted
         # separator line between methods, is exempt from confinement but
         # still applied and verified by full-file equality).
-        changed_buggy = [l for l in old if l not in new]
-        changed_base = [l for l in new if l not in old]
+        changes = [op for op in difflib.SequenceMatcher(
+            None, old, new, autojunk=False).get_opcodes() if op[0] != "equal"]
+        changed_buggy = [line for _, i, j, _, _ in changes for line in old[i:j]]
+        changed_base = [line for _, _, _, i, j in changes for line in new[i:j]]
         if changed_buggy + changed_base and all(not l.strip() for l in changed_buggy + changed_base):
             # Blank-only fallout: exempt from confinement, still applied
             # below and verified by full-file equality.
@@ -309,6 +311,18 @@ def prepare(config):
         edit_pairs.append((old, new))
         current = current.replace(old, new, 1)
         current_lines = current.split("\n")
+    if current != new_text:
+        if current.rstrip("\n") != new_text.rstrip("\n"):
+            raise ValueError("Actual edit sequence differs from reviewed upstream: " + key)
+        # Hunk line arrays omit the terminal-newline marker. Preserve that
+        # byte-level difference as a real, uniquely anchored edit action.
+        tail_start = max(0, len(current) - 256)
+        while current.count(current[tail_start:]) != 1 and tail_start > 0:
+            tail_start = max(0, tail_start - 256)
+        edit_pairs.append((current[tail_start:], new_text[tail_start:]))
+        current = current[:tail_start] + new_text[tail_start:]
+    if current != new_text:
+        raise ValueError("Serialized edit actions do not restore the reviewed file: " + key)
     module = rel.removeprefix("src/").removesuffix(".py").replace("/", ".")
     command = ("python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\n"
         + "m=importlib.import_module(" + repr(module) + ")\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/"
