@@ -1,0 +1,652 @@
+"""S600 real-policy collection, restored focal branches and official verification.
+
+Policy input is only the frozen public task prompt, actual generated tokens and
+actual six-tool responses. Recipes, source patches and verifier metadata are
+host-side assets. This entry point is also the CPU task-environment preparation
+consumer; --prevalidate does not import torch or load a model.
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import dataclasses
+import hashlib
+import importlib.metadata
+import json
+import re
+import shutil
+import subprocess
+import tarfile
+import time
+import traceback
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+SIX_TOOLS = {'run_command', 'read_file', 'edit_file', 'write_file', 'get_status', 'submit_patch'}
+
+
+def digest(value):
+    return hashlib.sha256(value).hexdigest()
+
+
+def runtime_digest(path):
+    return digest(json.dumps(json.loads(path.read_text()), ensure_ascii=False,
+                             sort_keys=True, separators=(',', ':')).encode())
+
+
+def write(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n")
+
+
+def append(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as handle:
+        handle.write(json.dumps(value, ensure_ascii=False, allow_nan=False) + "\n")
+        handle.flush()
+
+
+def safe_id(value):
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", value):
+        raise ValueError("Unexpected training task ID")
+    return value
+
+
+class NativeArguments:
+    """Parse Gemma's literal argument grammar; never eval model output."""
+    def __init__(self, text):
+        self.text, self.pos = text, 0
+
+    def space(self):
+        while self.pos < len(self.text) and self.text[self.pos].isspace():
+            self.pos += 1
+
+    def take(self, literal):
+        self.space()
+        if not self.text.startswith(literal, self.pos):
+            raise ValueError("Malformed native tool arguments at character %d" % self.pos)
+        self.pos += len(literal)
+
+    def value(self):
+        self.space()
+        if self.text.startswith('<|"|>', self.pos):
+            self.pos += 5
+            end = self.text.find('<|"|>', self.pos)
+            if end < 0:
+                raise ValueError("Unterminated native argument string")
+            value = self.text[self.pos:end]
+            self.pos = end + 5
+            return value
+        if self.text.startswith('{', self.pos):
+            self.pos += 1
+            result = {}
+            self.space()
+            while not self.text.startswith('}', self.pos):
+                self.space()
+                match = re.match(r'[A-Za-z_][A-Za-z_0-9]*', self.text[self.pos:])
+                if match is None:
+                    raise ValueError("Invalid native argument key")
+                key = match.group()
+                self.pos += len(key)
+                if key in result:
+                    raise ValueError("Duplicate native argument key")
+                self.take(':')
+                result[key] = self.value()
+                self.space()
+                if not self.text.startswith(',', self.pos):
+                    break
+                self.pos += 1
+            self.take('}')
+            return result
+        if self.text.startswith('[', self.pos):
+            self.pos += 1
+            result = []
+            self.space()
+            while not self.text.startswith(']', self.pos):
+                result.append(self.value())
+                self.space()
+                if not self.text.startswith(',', self.pos):
+                    break
+                self.pos += 1
+            self.take(']')
+            return result
+        match = re.match(r'(?:true|false|null|none|[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)', self.text[self.pos:])
+        if match is None:
+            raise ValueError("Invalid native argument literal")
+        self.pos += len(match.group())
+        return json.loads(match.group().replace('none', 'null'))
+
+
+def parse_call(text):
+    # Only a closed, real generated call is executable. A truncated JSON/string
+    # must not be repaired into an invented model action.
+    # Native control tokens inside a genuine thought channel are not actions.
+    visible, cursor = [], 0
+    while True:
+        opening = text.find('<|channel>', cursor)
+        if opening < 0:
+            visible.append(text[cursor:])
+            break
+        visible.append(text[cursor:opening])
+        closing = text.find('<channel|>', opening)
+        if closing < 0:
+            raise ValueError('Unterminated generated thought channel')
+        cursor = closing + len('<channel|>')
+    text = ''.join(visible)
+    start = text.find('<|tool_call>')
+    if start < 0:
+        return None
+    end = text.find('<tool_call|>', start)
+    if end < 0:
+        raise ValueError("Truncated model tool call")
+    body = text[start + len('<|tool_call>'):end]
+    match = re.match(r'call:([A-Za-z_][A-Za-z_0-9]*)', body)
+    if match is None:
+        raise ValueError("Malformed native tool name")
+    parser = NativeArguments(body[match.end():])
+    arguments = parser.value()
+    parser.space()
+    if parser.pos != len(parser.text) or not isinstance(arguments, dict):
+        raise ValueError("Malformed native tool-call tail")
+    return match.group(1), arguments
+
+
+def tool_suffix(tokenizer, name, arguments, response):
+    call_id = 'actual_call'
+    messages = [
+        {'role': 'assistant', 'content': None, 'tool_calls': [{'id': call_id,
+         'type': 'function', 'function': {'name': name, 'arguments': arguments}}]},
+        {'role': 'tool', 'tool_call_id': call_id, 'name': name,
+         'content': json.dumps(response, ensure_ascii=False)},
+    ]
+    rendered = tokenizer.apply_chat_template(messages, tools=[], tokenize=False,
+                                            add_generation_prompt=True, enable_thinking=True)
+    start = rendered.index('<|tool_response>')
+    # Keep every original generated token intact, including genuine thoughts.
+    # Only the actual new tool response is serialized by the pinned template.
+    return tokenizer.encode(rendered[start:], add_special_tokens=False)
+
+
+class TaskEnvironment:
+    def __init__(self, asset, output, *, tool_calls=32, turns=32):
+        from adk_submission import ModelRegistry
+        from swegemma.budget import EvaluationBudget, HarnessLimits
+        from swegemma.config import EvalConfig
+        from swegemma.models import Task
+        from swegemma.sandbox import SubprocessManager
+        from competition.vfarl.replay.run_official import ExternalTrainTask
+        self.asset, self.output = asset.resolve(), output.resolve()
+        self.output.mkdir(parents=True, exist_ok=True)
+        payload = json.loads((asset/'task.json').read_text())
+        task_cls = ExternalTrainTask if 'verification_target_files' in payload else Task
+        fields = {field.name for field in dataclasses.fields(task_cls)}
+        self.task = task_cls(**{key: value for key, value in payload.items() if key in fields})
+        self.runtime = json.loads((asset/'runtime.json').read_text())
+        historical = json.loads((asset/'run-summary.json').read_text())
+        self.site_packages_mode = self.runtime.get('site_packages_mode') or historical.get('task_site_packages_mode') or 'pth'
+        if self.site_packages_mode not in ('pth', 'copy'):
+            raise ValueError('Unsupported task dependency placement')
+        self.budget = EvaluationBudget(time_minutes=None, tool_calls=tool_calls, turns=turns)
+        self.harness = HarnessLimits(command_timeout_seconds=90, verification_timeout_seconds=300)
+        self.config = EvalConfig(tasks_path=asset/'task.json', snapshots_dir=output,
+            results_dir=output, submission_dir=output, models=ModelRegistry(), sandbox='subprocess',
+            budget=self.budget, harness=self.harness, graph_dir='', embeddings_dir='',
+            enable_sandbox_testing=True)
+        self.manager = SubprocessManager(base_dir=output/'sandboxes', system_site_packages=False)
+        original_start, original_stop = self.manager.start, self.manager.stop
+        self.phase, self.report_number = 'agent', 0
+
+        def start():
+            sid = original_start()
+            paths = self.manager.sandboxes[sid]
+            # Create from the actual base executable. Creating a venv from a
+            # nested UV venv can retain an intermediate host-only symlink which
+            # is deliberately absent from the isolated runtime.
+            python = str(Path(self.runtime['python']).resolve(strict=True))
+            subprocess.run([python, '-m', 'venv', '--clear', '--without-pip', str(paths['venv'])],
+                           check=True, capture_output=True)
+            source_root = paths['workspace']
+            if self.runtime.get('source_import_alias_root'):
+                # Keep the alias inside the snapshotted task root; a short path
+                # preserves the original boltons import profile without an
+                # untracked write outside the restored state.
+                source_root = paths['root']/'source'
+                source_root.symlink_to(paths['workspace'], target_is_directory=True)
+            source = source_root / self.runtime.get('source_layout', '')
+            dependencies = self.runtime['site_packages']
+            for site in paths['venv'].glob('lib/python*/site-packages'):
+                if self.site_packages_mode == 'copy':
+                    # Some source tests use the real sysconfig purelib/platlib
+                    # identity. Preserve the historical copy profile, without
+                    # hardlinking a writable venv to the shared package cache.
+                    shutil.copytree(dependencies, site, dirs_exist_ok=True, symlinks=True,
+                                    ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+                imports = [str(source)] + ([] if self.site_packages_mode == 'copy' else [dependencies])
+                code = f"import sys; sys.path[:0] = {imports!r}"
+                preload = self.runtime.get('source_preload_module')
+                if preload:
+                    if not all(part.isidentifier() for part in preload.split('.')):
+                        raise ValueError('Invalid source preload module')
+                    code += f'; import {preload}'
+                (site/'_vfarl_environment.pth').write_text(code+'\n')
+            # A .pth profile exposes modules but not installed console scripts.
+            # Recreate the actual package entry points in this task's PATH so
+            # model-issued `pytest` uses the same interpreter as `python -m pytest`.
+            for distribution in importlib.metadata.distributions(path=[dependencies]):
+                for entry in distribution.entry_points:
+                    if entry.group != 'console_scripts' or not re.fullmatch(r'[A-Za-z0-9_.-]+', entry.name):
+                        continue
+                    executable = paths['venv']/'bin'/entry.name
+                    if executable.exists() or executable.is_symlink():
+                        continue
+                    executable.write_text('#!/usr/bin/env python3\nimport sys\n'
+                        'from importlib.metadata import EntryPoint\n'
+                        f'sys.exit(EntryPoint(name={entry.name!r}, value={entry.value!r}, group="console_scripts").load()())\n')
+                    executable.chmod(0o755)
+            for name, target in self.runtime.get('source_console_scripts', {}).items():
+                if (not re.fullmatch(r'[A-Za-z0-9_.-]+', name)
+                        or name in ('python', 'python3', 'pytest', 'pip')
+                        or not re.fullmatch(r'[A-Za-z_][A-Za-z_0-9.]*:[A-Za-z_][A-Za-z_0-9.]*', target)):
+                    raise ValueError('Invalid source-declared console entry point')
+                executable = paths['venv']/'bin'/name
+                executable.write_text('#!/usr/bin/env python3\nimport sys\n'
+                    'from importlib.metadata import EntryPoint\n'
+                    f'sys.exit(EntryPoint(name={name!r}, value={target!r}, group="console_scripts").load()())\n')
+                executable.chmod(0o755)
+            return sid
+
+        def stop(sid):
+            paths = self.manager.sandboxes.get(sid, {})
+            self.report_number += 1
+            for report in paths.get('tmp', Path('/nonexistent')).glob('_swegemma_junit_*.xml'):
+                shutil.copy2(report, self.output/f'{self.phase}-{self.report_number}-{report.name}')
+            original_stop(sid)
+
+        self.manager.start, self.manager.stop = start, stop
+        self.sid = None
+
+    def start(self):
+        from swegemma.context import SwegemmaContext
+        from swegemma.tools import create_tools
+        self.sid = self.manager.start()
+        workspace = self.manager.sandboxes[self.sid]['workspace']
+        with tarfile.open(self.asset/'source-snapshot.tgz') as archive:
+            archive.extractall(workspace, filter='data')
+        baseline = self.manager.exec(self.sid, 'git rev-parse --verify _swegemma_baseline')
+        if baseline.exit_code:
+            raise RuntimeError('Original official source snapshot has no valid baseline commit')
+        self.ctx = SwegemmaContext(docker_manager=self.manager, container_id=self.sid,
+                                  task=self.task, budget=self.budget, harness=self.harness)
+        available = create_tools(self.ctx)
+        self.tools = {name: available[name] for name in sorted(SIX_TOOLS)}
+        self.ctx.start_agent_session()
+        return self.ctx
+
+    async def verify(self, patch, label):
+        from swegemma.harness.verification import verify_task
+        self.phase = label
+        result = await verify_task(self.manager, self.config, self.task,
+            self.asset/'source-snapshot.tgz', agent_patch=patch, start_time=time.perf_counter())
+        record = result.model_dump(mode='json')
+        verification_error = record.get('error_message') or record.get('error')
+        write(self.output/(label+'-official-verification.json'), record)
+        # A setup/collection/timeout failure is unknown, never a zero reward.
+        valid = (record.get('test_exit_code') in (0, 1)
+                 and bool(record.get('test_output'))
+                 and not str(verification_error or '').startswith(('Evaluation error:', 'Failed to apply test_patch:', 'Failed to apply agent patch', 'Missing test specification')))
+        reports = sorted(self.output.glob(label+'-*-_swegemma_junit_*.xml'))
+        observed_cases = []
+        for report in reports:
+            try:
+                observed_cases.extend(ET.parse(report).getroot().iter('testcase'))
+            except ET.ParseError:
+                valid = False
+        if not observed_cases or all(case.find('skipped') is not None for case in observed_cases):
+            valid = False
+        if record.get('test_exit_code') == 0 and not record.get('resolved'):
+            valid = False  # missing/malformed/required-skipped JUnit is not a failure signal
+        record['verification_complete'] = valid
+        record['junit_files'] = [str(path) for path in reports]
+        record['reward'] = int(bool(record['resolved'])) if valid else None
+        write(self.output/(label+'-result.json'), record)
+        return record
+
+    def close(self):
+        self.manager.cleanup_all()
+
+
+async def prevalidate(args, entries):
+    from competition.vfarl.l4x4.state import configure_isolation
+    isolation = configure_isolation(args.isolation, hidden_paths=[args.assets.resolve(),
+        args.out.resolve(), Path(__file__).resolve().parents[3]])
+    write(args.out/'isolation.json', isolation)
+    if args.isolation != 'observable' and isolation['effective_mode'] == 'observable':
+        raise RuntimeError('Requested task validation isolation could not run: '+str(isolation.get('reason')))
+    for entry in entries:
+        key = safe_id(entry['instance_id'])
+        asset = args.assets/key
+        out = args.out/key
+        result = {'instance_id': key, 'execution_isolation': isolation['effective_mode'],
+                  'task_input_sha256': digest((asset/'task.json').read_bytes()),
+                  'snapshot_sha256': digest((asset/'source-snapshot.tgz').read_bytes()),
+                  'reviewed_patch_sha256': digest((asset/'submitted.patch').read_bytes()),
+                  'runtime_sha256': runtime_digest(asset/'runtime.json'),
+                  'runtime_hash_encoding': 'canonical-json-utf8-sort-keys-compact'}
+        env = None
+        try:
+            env = TaskEnvironment(asset, out)
+            baseline = await env.verify('', 'baseline')
+            repaired = await env.verify((asset/'submitted.patch').read_text(), 'reviewed-repair')
+            result.update(baseline=baseline, repaired=repaired,
+                          usable=baseline['reward'] == 0 and repaired['reward'] == 1)
+        except Exception as exc:
+            result.update(usable=False, error=f'{type(exc).__name__}: {exc}')
+            out.mkdir(parents=True, exist_ok=True)
+            (out/'exception.txt').write_text(traceback.format_exc())
+        finally:
+            if env is not None:
+                env.close()
+        append(args.out/'prevalidation.jsonl', result)
+        print(json.dumps({'phase': 'prevalidate', 'instance_id': key,
+                          'usable': result['usable'], 'error': result.get('error'),
+                          'baseline_exit': result.get('baseline', {}).get('test_exit_code'),
+                          'repaired_exit': result.get('repaired', {}).get('test_exit_code'),
+                          'repaired_error': result.get('repaired', {}).get('error_message') or result.get('repaired', {}).get('error'),
+                          'repaired_output_tail': (result.get('repaired', {}).get('test_output') or '')[-2500:]
+                          if not result['usable'] else None}), flush=True)
+
+
+async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None,
+                  capture=False, seed=0, first_seed=None):
+    from competition.vfarl.l4x4.state import Snapshot
+    out.mkdir(parents=True, exist_ok=True)
+    ledger = ledger if ledger is not None else {'output_tokens': 0, 'turns': 0, 'context_limit': args.context}
+    candidates, actions, stop = [], [], None
+
+    def retain_candidates():
+        # Full venv copies are real state. Keep only the two best pre-action
+        # checkpoints while collecting, rather than multiplying a large task
+        # environment by every turn. Raw actions/tool evidence remain intact.
+        candidates.sort(key=lambda item: (not item.get('observed_tool_error', False),
+                                         len(item['action']['prompt_token_ids'])))
+        for item in candidates[2:]:
+            shutil.rmtree(item['snapshot'])
+        del candidates[2:]
+    while ledger['turns'] < args.turns:
+        room = min(args.context-len(ids), args.episode_tokens-ledger['output_tokens'])
+        if room < 16:
+            stop = 'context_or_output_budget_exhausted'
+            break
+        state = None
+        if capture:
+            state = Snapshot.capture(env.manager, env.sid, env.ctx, ids, ledger,
+                policy.identity, out/f'state-{ledger["turns"]:03d}')
+        env.ctx.record_llm_call()
+        action_seed = first_seed if first_seed is not None and not actions else seed+ledger['turns']
+        action = first_action if first_action is not None else policy.sample(ids,
+            max_new_tokens=min(room, args.turn_tokens), thinking_budget=1024,
+            seed=action_seed, stop_token_ids=policy.vfarl_stop_ids)
+        replayed = first_action is not None
+        first_action = None
+        if action['prompt_token_ids'] != ids:
+            raise ValueError('Action prompt differs from restored exact token prefix')
+        actions.append(action)
+        append(out/'actions.jsonl', dict(action, original_action_replay=replayed))
+        ids = ids + action['completion_token_ids']
+        ledger['output_tokens'] += len(action['completion_token_ids'])
+        ledger['turns'] += 1
+        if state is not None:
+            candidates.append({'snapshot': str(out/f'state-{ledger["turns"]-1:03d}'),
+                               'manifest': state, 'action': action})
+        try:
+            if action['finish_reason'] not in ('tool_calls', 'stop'):
+                raise ValueError('Model completion ended at a token/context limit')
+            call = parse_call(action['raw_text'])
+        except ValueError as exc:
+            if state is not None:
+                candidates[-1]['observed_tool_error'] = True
+            retain_candidates()
+            stop = 'malformed_action: ' + str(exc)
+            break
+        if call is None:
+            retain_candidates()
+            stop = 'model_text_termination'
+            break
+        name, arguments = call
+        if name not in env.tools:
+            if state is not None:
+                candidates[-1]['observed_tool_error'] = True
+            retain_candidates()
+            stop = 'unknown_tool: ' + name
+            break
+        if env.ctx.patch_submitted:
+            stop = 'tool_call_after_submission'
+            break
+        started = time.monotonic()
+        try:
+            response = env.tools[name](**arguments)
+        except Exception as exc:
+            # An actually raised tool exception is an observed failure, not a
+            # fabricated success/return. Retain it and end this attempt.
+            append(out/'tool-events.jsonl', {'tool': name, 'arguments': arguments,
+                   'exception': f'{type(exc).__name__}: {exc}'})
+            if state is not None:
+                candidates[-1]['observed_tool_error'] = True
+            retain_candidates()
+            stop = 'tool_exception'
+            break
+        append(out/'tool-events.jsonl', {'tool': name, 'arguments': arguments,
+            'response': response, 'seconds': time.monotonic()-started,
+            'tool_calls_used': env.ctx.tool_calls_used})
+        if candidates and candidates[-1]['action'] is action:
+            candidates[-1]['observed_tool_error'] = isinstance(response, dict) and response.get('status') == 'error'
+        retain_candidates()
+        ids += tool_suffix(policy.tokenizer, name, arguments, response)
+        if env.ctx.tool_calls_used >= args.tool_calls:
+            stop = 'tool_budget_exhausted'
+            break
+    retain_candidates()
+    env.ctx.stop_agent_session()
+    patch = env.ctx.submitted_patch or ''
+    (out/'submitted.patch').write_text(patch)
+    result = await env.verify(patch, out.name)
+    summary = {'instance_id': env.task.instance_id, 'reward': result['reward'],
+        'verified': result['verification_complete'], 'termination': stop or 'submitted',
+        'actions': len(actions), 'ledger': dict(ledger), 'policy_id': policy.identity['policy_id'],
+        'verification': str(env.output/(out.name+'-result.json')),
+        'patch_submitted': env.ctx.patch_submitted}
+    write(out/'episode.json', summary)
+    return summary, candidates, actions
+
+
+async def collect(args, entries, questions):
+    from competition.vfarl.l4x4.state import Snapshot, configure_isolation
+    from training.vfarl_policy import NF4Policy, read_config
+    model_config, _ = read_config(args.config)
+    if model_config['max_sequence_length'] != args.context:
+        raise ValueError('Sampling context and training config must match; use an explicit 8192 config for the 8K experiment')
+    source_root = Path(__file__).resolve().parents[3]
+    isolation = configure_isolation(args.isolation,
+        hidden_paths=[args.assets.resolve(), args.out.resolve(), source_root])
+    write(args.out/'isolation.json', isolation)
+    if isolation['effective_mode'] == 'observable':
+        raise RuntimeError('Task shell isolation is unavailable; do not load a GPU model while host judge assets are readable. '+str(isolation.get('reason')))
+    policy = NF4Policy(args.config, adapter_run=args.adapter_run)
+    # Identity contains exact base/cache, initialized LoRA, tokenizer/template
+    # and sampler configuration. Tool schema is bound by the collector below.
+    tools = json.loads(args.tools.read_text())
+    if isinstance(tools, dict):
+        tools = tools.get('tools', tools.get('functions', tools))
+    tools = [tool if 'function' in tool else {'type': 'function', 'function': tool} for tool in tools]
+    if digest(args.tools.read_bytes()) != policy.identity['policy_identity']['tool_schema_sha256']:
+        raise ValueError('Actual sampled tool schema differs from the bound policy configuration')
+    policy.vfarl_stop_ids = [policy.tokenizer.convert_tokens_to_ids(x) for x in
+                            ('<tool_call|>', '<turn|>', '<|end|>')]
+    policy.vfarl_stop_ids = [x for x in policy.vfarl_stop_ids if isinstance(x, int) and x != policy.tokenizer.unk_token_id]
+    write(args.out/'policy.json', policy.identity)
+    preparation = {row['instance_id']: row for row in
+                   (json.loads(line) for line in args.prevalidation.read_text().splitlines())}
+    usable = {key for key, row in preparation.items() if row.get('usable')}
+    states = 0
+    for position, entry in enumerate(entries):
+        key = safe_id(entry['instance_id'])
+        if key not in usable:
+            append(args.out/'collection.jsonl', {'instance_id': key, 'sampled': False,
+                'reason': 'Linux original baseline/reviewed-repair verification not usable'})
+            continue
+        if preparation[key].get('execution_isolation') != isolation['effective_mode']:
+            raise ValueError('Task was not verified in the actual collection isolation environment: '+key)
+        for filename, field in [('task.json', 'task_input_sha256'),
+                                ('source-snapshot.tgz', 'snapshot_sha256')]:
+            if digest((args.assets/key/filename).read_bytes()) != preparation[key].get(field):
+                raise ValueError('Linux verification belongs to different task assets: '+key)
+        for draw in range(args.draws):
+            env = None
+            retained_snapshot = None
+            out = args.out/key/f'draw-{draw}'
+            try:
+                env = TaskEnvironment(args.assets/key, out, tool_calls=args.tool_calls, turns=args.turns)
+                env.start()
+                from swegemma.harness.agent_runner import build_agent_prompt
+                # The source issue stays fixed. Rebuild only the official
+                # runtime/budget instructions so 60min/100tools/500turns from
+                # historical demonstrations are not silently misrepresented.
+                actual_prompt = build_agent_prompt(env.task, env.config,
+                    declared_tools=sorted(env.tools), enable_sandbox_testing=True)
+                actual_prompt += (f'\n\n## This training run\nThe total context limit is {args.context} tokens, '
+                    f'including all history and the next response. The session output budget is '
+                    f'{args.episode_tokens} tokens; each response allows at most {args.turn_tokens} tokens, '
+                    'including up to 1024 thought tokens. Full histories are never truncated.\n')
+                write(out/'prompt-provenance.json', {'original_prompt_sha256': digest(questions[key].encode()),
+                    'actual_prompt_sha256': digest(actual_prompt.encode()),
+                    'change': 'Official build_agent_prompt with actual run budgets plus explicit token limits'})
+                (out/'actual-prompt.txt').write_text(actual_prompt)
+                ids = policy.render_prompt([{'role': 'user', 'content': actual_prompt}], tools)
+                base_seed = 20261026 + position*10000 + draw*1000
+                summary, candidates, _ = await episode(env, policy, ids, args, out/'original',
+                    capture=states < args.max_states, seed=base_seed)
+                append(args.out/'collection.jsonl', dict(summary, sampled=True, draw=draw))
+                # Choose a real pre-action state from a genuinely failed attempt;
+                # no teacher repair, damaged source or fabricated failure.
+                if summary['reward'] == 0 and candidates and states < args.max_states:
+                    # Prefer an actual tool error with remaining context; a
+                    # late exhausted prefix cannot meaningfully test recovery.
+                    candidate = min(candidates, key=lambda item: (
+                        not item.get('observed_tool_error', False),
+                        len(item['action']['prompt_token_ids'])))
+                    retained_snapshot = candidate['snapshot']
+                    rows = []
+                    for branch in range(args.branches):
+                        ledger = {}
+                        restored = Snapshot.restore(Path(candidate['snapshot']), env.manager,
+                            env.sid, env.ctx, ledger=ledger, policy_identity=policy.identity,
+                            prompt_token_ids=candidate['action']['prompt_token_ids'])
+                        manifest = candidate['manifest']
+                        restored_ids = candidate['action']['prompt_token_ids']
+                        branch_dir = out/f'branch-{branch}'
+                        write(branch_dir/'restore.json', restored)
+                        branch_summary, _, actions = await episode(env, policy, restored_ids, args,
+                            branch_dir, ledger=ledger,
+                            first_action=candidate['action'] if branch == 0 else None,
+                            seed=base_seed+500, first_seed=base_seed+500+branch*100)
+                        if actions:
+                            row = dict(actions[0], state_id=manifest['state_id'],
+                                branch_id=f'{key}-{draw}-{branch}', instance_id=key,
+                                kind='original_action_replay' if branch == 0 else 'sampled_focal_action',
+                                on_policy=branch != 0, verified=branch_summary['verified'],
+                                reward=branch_summary['reward'],
+                                restoration_scope=manifest['restoration_scope'],
+                                restored_state_evidence=str(branch_dir/'restore.json'),
+                                verification=branch_summary['verification'])
+                            rows.append(row)
+                            append(args.out/'focal.jsonl', row)
+                    states += 1
+                    append(args.out/'state-results.jsonl', {'state_id': candidate['manifest']['state_id'],
+                        'instance_id': key, 'branches': len(rows),
+                        'rewards': [row['reward'] for row in rows],
+                        'restoration_scope': candidate['manifest']['restoration_scope']})
+            except Exception as exc:
+                out.mkdir(parents=True, exist_ok=True)
+                (out/'exception.txt').write_text(traceback.format_exc())
+                append(args.out/'collection.jsonl', {'instance_id': key, 'draw': draw,
+                    'sampled': any(out.rglob('actions.jsonl')), 'attempt_complete': False,
+                    'error': f'{type(exc).__name__}: {exc}'})
+                if 'out of memory' in str(exc).lower():
+                    raise  # Do not repeat a known capacity failure over 100 tasks.
+            finally:
+                if env is not None:
+                    env.close()
+                # Only the chosen focal state needs a durable full environment
+                # copy; keep all real action/tool/verifier records for every draw.
+                for checkpoint in (out/'original').glob('state-*'):
+                    if checkpoint.is_dir() and str(checkpoint) != retained_snapshot:
+                        shutil.rmtree(checkpoint)
+            print(json.dumps({'phase': 'collection', 'instance_id': key, 'draw': draw,
+                              'focal_states': states}), flush=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ('selection', 'questions', 'assets', 'out'):
+        parser.add_argument('--'+name, type=Path, required=True)
+    parser.add_argument('--config', type=Path)
+    parser.add_argument('--adapter-run', type=Path,
+                        help='Completed training run for a separate post-update rollout comparison')
+    parser.add_argument('--tools', type=Path, default=Path('competition/vfarl/six-tools.json'))
+    parser.add_argument('--prevalidate', action='store_true')
+    parser.add_argument('--prevalidation', type=Path)
+    parser.add_argument('--context', type=int, choices=(4096, 8192), default=4096)
+    parser.add_argument('--draws', type=int, choices=(1, 2), default=1)
+    parser.add_argument('--branches', type=int, choices=(2, 3), default=3)
+    parser.add_argument('--max-states', type=int, default=5)
+    parser.add_argument('--turns', type=int, default=32)
+    parser.add_argument('--tool-calls', type=int, default=32)
+    parser.add_argument('--turn-tokens', type=int, default=1536)
+    parser.add_argument('--episode-tokens', type=int, default=8192)
+    parser.add_argument('--worker-index', type=int, default=0)
+    parser.add_argument('--worker-count', type=int, default=1)
+    parser.add_argument('--only-task', action='append', default=[],
+                        help='Run named members of the frozen 100-task train pool, e.g. an environment repair or separate 8K continuation')
+    parser.add_argument('--isolation', choices=('bwrap', 'chroot', 'observable'), default='chroot')
+    args = parser.parse_args()
+    if not 0 <= args.worker_index < args.worker_count or args.max_states < 0:
+        parser.error('Invalid worker or focal-state count')
+    if args.out.exists():
+        parser.error('Output already exists; preserve the previous real run')
+    args.out.mkdir(parents=True)
+    selection = json.loads(args.selection.read_text())
+    entries = selection['tasks']
+    if len(entries) != 100 or len({x['instance_id'] for x in entries}) != 100:
+        parser.error('Expected the frozen 100 unique S600 training tasks')
+    if any(x['physical_split'] != 'train' for x in entries):
+        parser.error('Only train tasks are permitted')
+    questions = {}
+    for line in args.questions.read_text().splitlines():
+        row = json.loads(line)
+        if digest(row['official_initial_user_prompt'].encode()) != row['official_initial_user_prompt_sha256']:
+            raise ValueError('Question content hash mismatch')
+        questions[row['instance_id']] = row['official_initial_user_prompt']
+    for row in entries:
+        if digest(questions[row['instance_id']].encode()) != row['official_initial_user_prompt_sha256']:
+            raise ValueError('Question differs from the selected S600 prompt')
+        asset = args.assets/safe_id(row['instance_id'])
+        if digest((asset/'task.json').read_bytes()) != row['task_input_sha256']:
+            raise ValueError('Task definition differs from frozen source identity')
+    if args.only_task:
+        selected = set(args.only_task)
+        if not selected <= {row['instance_id'] for row in entries}:
+            parser.error('--only-task must remain inside the frozen S600 train100 pool')
+        entries = [row for row in entries if row['instance_id'] in selected]
+    entries = entries[args.worker_index::args.worker_count]
+    write(args.out/'execution.json', {'arguments': {k: str(v) if isinstance(v, Path) else v for k,v in vars(args).items()},
+                                    'selection_sha256': digest(args.selection.read_bytes())})
+    if args.prevalidate:
+        asyncio.run(prevalidate(args, entries))
+    else:
+        if not args.config or not args.prevalidation:
+            parser.error('Collection requires --config and actual Linux --prevalidation')
+        asyncio.run(collect(args, entries, questions))
+
+
+if __name__ == '__main__':
+    main()
