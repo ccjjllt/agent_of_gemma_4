@@ -1,0 +1,111 @@
+{
+  "schema_version": "S600-thinking-on-8k-32k-v1",
+  "date": "2026-10-25",
+  "applies_to": "New Gemma policy rollout/branch sampling and deployment inference; not a relabeling of historical coldstart examples.",
+  "user_selected_limits": {
+    "thinking_budget_min_tier": 1024,
+    "thinking_budget_max_tier": 4096,
+    "max_output_tokens_per_request": 8192,
+    "max_model_len": 32768
+  },
+  "thinking": {
+    "enabled": true,
+    "default_budget_tokens": 2048,
+    "allowed_budget_tokens": [
+      1024,
+      2048,
+      4096
+    ],
+    "is_upper_bound": true,
+    "minimum_tokens_required": 0,
+    "include_thoughts": true,
+    "selection": "Default2048; explicit1024/4096 profiles may use only current visible state and logical remaining budget. No reference-patch, oracle or future-outcome routing.",
+    "actual_automatic_tier_router_implemented": false
+  },
+  "completion": {
+    "configured_max_output_tokens": 8192,
+    "scope": [
+      "generated_reasoning",
+      "generated_tool_names_and_arguments",
+      "generated_answer_text",
+      "generated_control_tokens"
+    ],
+    "thinking_is_inside_not_additional_to_this_cap": true,
+    "per_request_not_per_episode": true
+  },
+  "context": {
+    "total_token_limit": 32768,
+    "input_scope": "Complete serialized prompt including system instructions, tool declarations, history, tool observations and generation prefix.",
+    "joint_constraint": "prompt_tokens + actual_completion_tokens <= 32768",
+    "effective_output_limit_formula": "min(8192, max(0, 32768 - serialized_prompt_tokens))",
+    "maximum_serialized_prompt_tokens_for_full_8192_output": 24576,
+    "remaining_space_is_checked_after_exact_template_tokenization": true,
+    "near_limit": "When less space remains, the effective output cap must shrink or the request must end/undergo explicitly supported context management. No silent training-history truncation or claim that a full8192 remains available.",
+    "zero_remaining_space": "No new generation request; record the actual context-limit outcome."
+  },
+  "runtime_mapping": {
+    "generate_content_config": "competition/vfarl/s600/sampling.yaml",
+    "generate_content_config_sha256": "27b0a6c507f786f5276f1ba04f45076ad2a8150579257853d0cf21d0af41bd48",
+    "agent_fields": {
+      "max_output_tokens": 8192,
+      "thinking_config": {
+        "thinking_budget": 2048,
+        "include_thoughts": true
+      }
+    },
+    "vllm_server_fields": {
+      "max_model_len": 32768
+    },
+    "vllm_request_fields": {
+      "max_tokens": "effective per-request output limit",
+      "extra_body": {
+        "thinking_token_budget": "selected positive thinking tier",
+        "chat_template_kwargs": {
+          "enable_thinking": true
+        }
+      }
+    },
+    "joint_context_preflight_implemented": false,
+    "execution_verified_on_selected_A800_host": false
+  },
+  "training_and_data_alignment": {
+    "historical_coldstart_policy": {
+      "thinking_budget": 0,
+      "include_thoughts": false,
+      "generated_reasoning": null,
+      "preserve_original_dataset_and_hashes": true
+    },
+    "thinking_zero_changes_the_actual_template_prefix": true,
+    "next_collection": "Keep the600 task sources. Collect authentic thinking-enabled messages and outcomes under this new version; do not invent reasoning or simply flip historical prefix metadata.",
+    "prefix_note": "Positive thinking tier values share the same initial template rendering only when all other inputs match; different generated histories are not identical states.",
+    "focal_pair_rule": "Same-state original and alternative branches must use the same thinking tier, effective output cap, full prefix and logical remaining task budget. A budget-tier intervention is a separate experiment, not evidence of changing only one action.",
+    "coldstart_training_window_candidate_remains": 12288,
+    "inference_context_does_not_require_padding_every_training_example_to_32k": true,
+    "long_rollout_training": "New full32K trajectories require a separately supported trainer/window and actual memory measurement; preserve their complete states rather than silently truncating to12K."
+  },
+  "accounting": {
+    "record": [
+      "policy_version",
+      "requested_thinking_budget",
+      "requested_max_output_tokens",
+      "effective_max_output_tokens",
+      "serialized_prompt_tokens",
+      "actual_reasoning_tokens_if_available",
+      "actual_total_completion_tokens",
+      "actual_tool_or_answer_tokens_if_available",
+      "finish_reason",
+      "task_budget_original_consumed_remaining",
+      "wall_seconds"
+    ],
+    "per_task_cost": "Accumulate all turns and the already-consumed prefix when branches are restored. Do not reset task budget or substitute CPU scripted-replay time for GPU policy inference time.",
+    "limits_are_not_target_lengths": true
+  },
+  "source_semantics": {
+    "official_local_generation_bridge": "research/006/official-data-20261013/wheels-source/adk_submission/resolvers/generation.py",
+    "pinned_template": "research/015/tokenizer-assets/official-31b-ct-v2-tokenizer/chat_template.jinja",
+    "vllm_reasoning_documentation": "https://docs.vllm.ai/en/stable/features/reasoning_outputs/",
+    "sampling_yaml_validation": "Parsed as GenerateContentConfig on CPU; no server request or GPU execution."
+  },
+  "GPU_started": false,
+  "historical_data_rewritten": false
+}
