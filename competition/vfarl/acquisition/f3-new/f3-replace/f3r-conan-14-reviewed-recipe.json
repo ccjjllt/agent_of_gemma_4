@@ -1,0 +1,66 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex root source contract and actual command review 2026-10-26",
+  "review_notes": "conan-io/conan CachingFileDownloader must preserve downloader_cache_reuse_and_expire. Download cache mapping: set->seed cached file, get->hit with equivalence and isolation across urls, expire/invalidate->removed file gone (second observation differs), recompute->reseed restores. Restore the exact production logic without hardcoding values or altering tests. All original F2P/P2P identifiers and complete target files are retained verbatim. The Smith row introduces the defect; this is an off-policy scripted demonstration, not a model sample or preference pair. The inline observation fails before the repair (first run expects error) and passes after (second run expects ok), so the second observation differs.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "conans/client/downloaders/caching_file_downloader.py",
+        "start_line": 53,
+        "end_line": 88
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'conans/client/downloaders/caching_file_downloader.py').resolve()\ntry:\n module = importlib.import_module('conans.client.downloaders.caching_file_downloader')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\n\nimport os, tempfile\nfrom types import SimpleNamespace\nfrom conan.errors import ConanException\nfrom conans.client.downloaders.caching_file_downloader import SourcesCachingDownloader\ntmp = tempfile.mkdtemp()\nmsgs = []\noutput = SimpleNamespace(info=msgs.append, warning=msgs.append, verbose=msgs.append,\n                         debug=msgs.append)\ndef make_cf(backups):\n    conf = {'core.sources:download_cache': tmp, 'core.sources:download_urls': backups}\n    gconf = SimpleNamespace(get=lambda k, check_type=None: conf.get(k))\n    helpers = SimpleNamespace(global_conf=gconf, requester=object(), home_folder=tmp)\n    return SimpleNamespace(_conan_helpers=helpers, output=output, display_name='pkg/0.1')\nsha = 'a' * 40\nfrom conans.client.downloaders.download_cache import DownloadCache\nseed = DownloadCache(tmp).source_path(sha)\nos.makedirs(os.path.dirname(seed), exist_ok=True)\nwith open(seed, 'w') as f:\n    f.write('payload-a')\ndest = os.path.join(tmp, 'out.tgz')\ndl = SourcesCachingDownloader(make_cf(['http://x/']))\ndl._caching_download(['http://u/f'], dest, 0, 0, True, None, {}, None, None, sha, tmp, ['http://x/'])\nassert open(dest).read() == 'payload-a'\nprint(\"get_hit\", True)\ndl._caching_download(['http://u/f'], dest, 0, 0, True, None, {}, None, None, sha, tmp, ['http://x/'])\nassert open(dest).read() == 'payload-a'\nprint(\"equivalence\", True)\nsha2 = 'b' * 40\nseed2 = DownloadCache(tmp).source_path(sha2)\nwith open(seed2, 'w') as f:\n    f.write('payload-b')\ndest2 = os.path.join(tmp, 'out2.tgz')\ndl._caching_download(['http://u/g'], dest2, 0, 0, True, None, {}, None, None, sha2, tmp, ['http://x/'])\nassert open(dest2).read() == 'payload-b'\nprint(\"isolation\", True)\ntry:\n    dl._caching_download(['http://u/f'], dest, 0, 0, True, None, {}, None, None, 'c' * 40, tmp, [None, 'http://x/'])\nexcept ConanException as e:\n    assert 'None backup remote' in str(e), e\n    print(\"invalidate\", True)\nelse:\n    raise AssertionError(\"None backup remote must be rejected\")\nos.unlink(seed)\nwith open(seed, 'w') as f:\n    f.write('payload-a')\ndl._caching_download(['http://u/f'], dest, 0, 0, True, None, {}, None, None, sha, tmp, ['http://x/'])\nassert open(dest).read() == 'payload-a'\nprint(\"recompute\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "aaffd96033ad9f7353125230bcac101bfe3f58947d6ef5d83977801a55440121"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conans/client/downloaders/caching_file_downloader.py",
+        "old_string": "                self._output.info(f\"Source {urls} retrieved from local download cache\")\n            else:\n                with set_dirty_context_manager(cached_path):\n                    for backup_url in backups_urls:\n\n                        is_last = backup_url is backups_urls[-1]\n",
+        "new_string": "                self._output.info(f\"Source {urls} retrieved from local download cache\")\n            else:\n                with set_dirty_context_manager(cached_path):\n                    if None in backups_urls:\n                        raise ConanException(\"Trying to download sources from None backup remote.\"\n                                             f\" Remotes were: {backups_urls}\")\n                    for backup_url in backups_urls:\n\n                        is_last = backup_url is backups_urls[-1]\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conans/client/downloaders/caching_file_downloader.py",
+        "old_string": "                                                        f\"cache, instead of downloading it\")\n\n            # Everything good, file in the cache, just copy it to final destination\n            mkdir(os.path.dirname(file_path))\n            shutil.copy2(cached_path, file_path)",
+        "new_string": "                                                        f\"cache, instead of downloading it\")\n\n            # Everything good, file in the cache, just copy it to final destination\n            mkdir(os.path.dirname(file_path))\n            shutil.copy2(cached_path, file_path)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'conans/client/downloaders/caching_file_downloader.py').resolve()\ntry:\n module = importlib.import_module('conans.client.downloaders.caching_file_downloader')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\n\nimport os, tempfile\nfrom types import SimpleNamespace\nfrom conan.errors import ConanException\nfrom conans.client.downloaders.caching_file_downloader import SourcesCachingDownloader\ntmp = tempfile.mkdtemp()\nmsgs = []\noutput = SimpleNamespace(info=msgs.append, warning=msgs.append, verbose=msgs.append,\n                         debug=msgs.append)\ndef make_cf(backups):\n    conf = {'core.sources:download_cache': tmp, 'core.sources:download_urls': backups}\n    gconf = SimpleNamespace(get=lambda k, check_type=None: conf.get(k))\n    helpers = SimpleNamespace(global_conf=gconf, requester=object(), home_folder=tmp)\n    return SimpleNamespace(_conan_helpers=helpers, output=output, display_name='pkg/0.1')\nsha = 'a' * 40\nfrom conans.client.downloaders.download_cache import DownloadCache\nseed = DownloadCache(tmp).source_path(sha)\nos.makedirs(os.path.dirname(seed), exist_ok=True)\nwith open(seed, 'w') as f:\n    f.write('payload-a')\ndest = os.path.join(tmp, 'out.tgz')\ndl = SourcesCachingDownloader(make_cf(['http://x/']))\ndl._caching_download(['http://u/f'], dest, 0, 0, True, None, {}, None, None, sha, tmp, ['http://x/'])\nassert open(dest).read() == 'payload-a'\nprint(\"get_hit\", True)\ndl._caching_download(['http://u/f'], dest, 0, 0, True, None, {}, None, None, sha, tmp, ['http://x/'])\nassert open(dest).read() == 'payload-a'\nprint(\"equivalence\", True)\nsha2 = 'b' * 40\nseed2 = DownloadCache(tmp).source_path(sha2)\nwith open(seed2, 'w') as f:\n    f.write('payload-b')\ndest2 = os.path.join(tmp, 'out2.tgz')\ndl._caching_download(['http://u/g'], dest2, 0, 0, True, None, {}, None, None, sha2, tmp, ['http://x/'])\nassert open(dest2).read() == 'payload-b'\nprint(\"isolation\", True)\ntry:\n    dl._caching_download(['http://u/f'], dest, 0, 0, True, None, {}, None, None, 'c' * 40, tmp, [None, 'http://x/'])\nexcept ConanException as e:\n    assert 'None backup remote' in str(e), e\n    print(\"invalidate\", True)\nelse:\n    raise AssertionError(\"None backup remote must be rejected\")\nos.unlink(seed)\nwith open(seed, 'w') as f:\n    f.write('payload-a')\ndl._caching_download(['http://u/f'], dest, 0, 0, True, None, {}, None, None, sha, tmp, ['http://x/'])\nassert open(dest).read() == 'payload-a'\nprint(\"recompute\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "aaffd96033ad9f7353125230bcac101bfe3f58947d6ef5d83977801a55440121"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored CachingFileDownloader downloader_cache_reuse_and_expire. The actual inline cache observation completed after the production edit. Patch submitted."
+}

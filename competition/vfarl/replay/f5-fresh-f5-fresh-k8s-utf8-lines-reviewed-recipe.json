@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "Stream split-multibyte then invalid-byte segments in order. Each segment must be buffered, split on newline bytes, decoded with replacement, then yielded in that order. The bug decodes each segment alone so split sequences crash. The complete production-file delta is exactly the reviewed repair edit inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "kubernetes/base/watch/watch.py",
+        "start_line": 50,
+        "end_line": 72
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('kubernetes.base.watch.watch')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'kubernetes/base/watch/watch.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom kubernetes.base.watch.watch import iter_resp_lines\nclass FakeResp:\n    def __init__(self, segs): self._segs = segs\n    def stream(self, amt=None, decode_content=False):\n        for s in self._segs: yield s\nseq1 = list(iter_resp_lines(FakeResp([b'\\xe4\\xb8', b'\\xad\\xe6\\x96\\x87\\n', b'line2\\n'])))\nseq2 = list(iter_resp_lines(FakeResp([b'\\xff\\n', b'ok\\n'])))\nseq = [seq1, seq2]\nprint('lines_sequence', seq)\nassert seq == [['\\u4e2d\\u6587', 'line2'], ['\\ufffd', 'ok']], seq\nprint('k8s_temporal_buffer_split_decode_yield', True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "e158a86767e679712b867c75ebd7165a8d5504a7e1d329ba09dec788da5b955c"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "kubernetes/base/watch/watch.py",
+        "old_string": "\n\ndef iter_resp_lines(resp):\n    prev = \"\"\n    for seg in resp.stream(amt=None, decode_content=False):\n        if isinstance(seg, bytes):\n            seg = seg.decode('utf8')\n        seg = prev + seg\n        lines = seg.split(\"\\n\")\n        if not seg.endswith(\"\\n\"):\n            prev = lines[-1]\n            lines = lines[:-1]\n        else:\n            prev = \"\"\n        for line in lines:\n            if line:\n                yield line\n\n\nclass Watch(object):\n",
+        "new_string": "\n\ndef iter_resp_lines(resp):\n    buffer = bytearray()\n    for segment in resp.stream(amt=None, decode_content=False):\n\n        # Append the segment (chunk) to the buffer\n        #\n        # Performance note: depending on contents of buffer and the type+value of segment,\n        # encoding segment into the buffer could be a wasteful step. The approach used here\n        # simplifies the logic farther down, but in the future it may be reasonable to\n        # sacrifice readability for performance.\n        if isinstance(segment, bytes):\n            buffer.extend(segment)\n        elif isinstance(segment, str):\n            buffer.extend(segment.encode(\"utf-8\"))\n        else:\n            raise TypeError(\n                f\"Received invalid segment type, {type(segment)}, from stream. Accepts only 'str' or 'bytes'.\")\n\n        # Split by newline (safe for utf-8 because multi-byte sequences cannot contain the newline byte)\n        next_newline = buffer.find(b'\\n')\n        while next_newline != -1:\n            # Convert bytes to a valid utf-8 string, replacing any invalid utf-8 with the '�' character\n            line = buffer[:next_newline].decode(\n                \"utf-8\", errors=\"replace\")\n            buffer = buffer[next_newline+1:]\n            if line:\n                yield line\n            next_newline = buffer.find(b'\\n')\n\n\nclass Watch(object):\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('kubernetes.base.watch.watch')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'kubernetes/base/watch/watch.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom kubernetes.base.watch.watch import iter_resp_lines\nclass FakeResp:\n    def __init__(self, segs): self._segs = segs\n    def stream(self, amt=None, decode_content=False):\n        for s in self._segs: yield s\nseq1 = list(iter_resp_lines(FakeResp([b'\\xe4\\xb8', b'\\xad\\xe6\\x96\\x87\\n', b'line2\\n'])))\nseq2 = list(iter_resp_lines(FakeResp([b'\\xff\\n', b'ok\\n'])))\nseq = [seq1, seq2]\nprint('lines_sequence', seq)\nassert seq == [['\\u4e2d\\u6587', 'line2'], ['\\ufffd', 'ok']], seq\nprint('k8s_temporal_buffer_split_decode_yield', True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "e158a86767e679712b867c75ebd7165a8d5504a7e1d329ba09dec788da5b955c"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Stream split-multibyte then invalid-byte segments in order. Each segment must be buffered, split on newline bytes, decoded with replacement, then yielded in that order. The bug decodes each segment alone so split sequences crash. The source-bound reproduction passes after the repair. Patch submitted."
+}

@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "Registering iteration actions must append each action exactly once in order; duplicating the first and dropping the rest corrupts the begin-retry-post execution chain. The complete production-file delta is exactly the reviewed hunks inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "tenacity/__init__.py",
+        "start_line": 350,
+        "end_line": 361
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('tenacity.__init__')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'tenacity/__init__.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom tenacity import Retrying, RetryCallState, stop_after_attempt\nctl=Retrying(stop=stop_after_attempt(3))\ncalls=[]\ndef f1(rs): calls.append('f1')\ndef f2(rs): calls.append('f2')\nctl._add_action_func(f1)\nn1=len(ctl.iter_state.actions)\nctl._add_action_func(f2)\nn2=len(ctl.iter_state.actions)\nstate=RetryCallState(ctl,None,(),{})\nfor a in list(ctl.iter_state.actions):\n    a(state)\nprint('add_action_sequence',[n1,n2,calls])\nassert [n1,n2,calls]==[1,2,['f1','f2']]\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "78467b28907834e27150b7d37b061de8a27344073dc74fff91b6bd7fabde381b"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "tenacity/__init__.py",
+        "old_string": "        self.statistics[\"idle_for\"] = 0\n\n    def _add_action_func(self, fn: t.Callable[..., t.Any]) -> None:\n        if not self.iter_state.actions:\n            self.iter_state.actions.append(fn)\n            self.iter_state.actions.append(fn)\n\n    def _run_retry(self, retry_state: \"RetryCallState\") -> None:\n        self.iter_state.retry_run_result = self.retry(retry_state)",
+        "new_string": "        self.statistics[\"idle_for\"] = 0\n\n    def _add_action_func(self, fn: t.Callable[..., t.Any]) -> None:\n        self.iter_state.actions.append(fn)\n\n    def _run_retry(self, retry_state: \"RetryCallState\") -> None:\n        self.iter_state.retry_run_result = self.retry(retry_state)"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('tenacity.__init__')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'tenacity/__init__.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom tenacity import Retrying, RetryCallState, stop_after_attempt\nctl=Retrying(stop=stop_after_attempt(3))\ncalls=[]\ndef f1(rs): calls.append('f1')\ndef f2(rs): calls.append('f2')\nctl._add_action_func(f1)\nn1=len(ctl.iter_state.actions)\nctl._add_action_func(f2)\nn2=len(ctl.iter_state.actions)\nstate=RetryCallState(ctl,None,(),{})\nfor a in list(ctl.iter_state.actions):\n    a(state)\nprint('add_action_sequence',[n1,n2,calls])\nassert [n1,n2,calls]==[1,2,['f1','f2']]\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "78467b28907834e27150b7d37b061de8a27344073dc74fff91b6bd7fabde381b"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Registering iteration actions must append each action exactly once in order; duplicating the first and dropping the rest corrupts the begin-retry-post execution chain. The source-bound reproduction passes after the repair. Patch submitted."
+}

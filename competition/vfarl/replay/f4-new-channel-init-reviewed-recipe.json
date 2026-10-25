@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Owner channel state; usage from construction; initial flags must be active=False, eof unset, closed=False, live buffers, so a new channel starts unreleased. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "paramiko/channel.py",
+        "start_line": 87,
+        "end_line": 138
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'paramiko/channel.py').resolve()\ntry:\n module = importlib.import_module('paramiko.channel')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom paramiko.channel import Channel\nch = Channel(7)\nprint('active', ch.active, 'closed', ch.closed, 'eof', ch.eof_received, ch.eof_sent)\nassert ch.active is False and ch.closed is False\nassert ch.eof_received == 0 and ch.eof_sent == 0\nassert ch.in_buffer is not None and ch.exit_status == -1\nprint('channel_init_ok')\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "e9b58755afeff505b8e19a1c8cd22acba9532b0affba863c5c7f365f473129a4"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "paramiko/channel.py",
+        "old_string": "        \"\"\"\n        Create a new channel.  The channel is not associated with any\n        particular session or `.Transport` until the Transport attaches it.\n        Normally, you would only call this method from the constructor of a\n        subclass of `.Channel`.\n\n        :param int chanid:\n            the ID of this channel, as passed by an existing `.Transport`.\n        \"\"\"\n        self.chanid = chanid\n        self.remote_chanid = -1\n        self.transport = None\n        self.active = True\n        self.eof_received = 1\n        self.eof_sent = 1\n        self.in_buffer = None\n        self.in_stderr_buffer = BufferedPipe()\n        self.timeout = None\n        self.closed = False\n        self.ultra_debug = False\n        self.lock = threading.Lock()\n        self.out_buffer_cv = threading.Condition(self.lock)\n        self.in_window_size = 0\n        self.out_window_size = 1\n        self.in_max_packet_size = 0\n        self.out_max_packet_size = 0\n        self.in_window_threshold = 0\n        self.in_window_sofar = 0\n        self.status_event = threading.Event()\n        self._name = chanid\n        self.logger = util.get_logger(\"paramiko.channel\")\n        self._pipe = None\n        self.event = None\n        self.event_ready = False\n        self.combine_stderr = False\n        self.exit_status = 0\n        self.origin_addr = None\n\n    def __del__(self):\n",
+        "new_string": "        \"\"\"\n        Create a new channel.  The channel is not associated with any\n        particular session or `.Transport` until the Transport attaches it.\n        Normally you would only call this method from the constructor of a\n        subclass of `.Channel`.\n\n        :param int chanid:\n            the ID of this channel, as passed by an existing `.Transport`.\n        \"\"\"\n        #: Channel ID\n        self.chanid = chanid\n        #: Remote channel ID\n        self.remote_chanid = 0\n        #: `.Transport` managing this channel\n        self.transport = None\n        #: Whether the connection is presently active\n        self.active = False\n        self.eof_received = 0\n        self.eof_sent = 0\n        self.in_buffer = BufferedPipe()\n        self.in_stderr_buffer = BufferedPipe()\n        self.timeout = None\n        #: Whether the connection has been closed\n        self.closed = False\n        self.ultra_debug = False\n        self.lock = threading.Lock()\n        self.out_buffer_cv = threading.Condition(self.lock)\n        self.in_window_size = 0\n        self.out_window_size = 0\n        self.in_max_packet_size = 0\n        self.out_max_packet_size = 0\n        self.in_window_threshold = 0\n        self.in_window_sofar = 0\n        self.status_event = threading.Event()\n        self._name = str(chanid)\n        self.logger = util.get_logger(\"paramiko.transport\")\n        self._pipe = None\n        self.event = threading.Event()\n        self.event_ready = False\n        self.combine_stderr = False\n        self.exit_status = -1\n        self.origin_addr = None\n\n    def __del__(self):\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'paramiko/channel.py').resolve()\ntry:\n module = importlib.import_module('paramiko.channel')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom paramiko.channel import Channel\nch = Channel(7)\nprint('active', ch.active, 'closed', ch.closed, 'eof', ch.eof_received, ch.eof_sent)\nassert ch.active is False and ch.closed is False\nassert ch.eof_received == 0 and ch.eof_sent == 0\nassert ch.in_buffer is not None and ch.exit_status == -1\nprint('channel_init_ok')\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "e9b58755afeff505b8e19a1c8cd22acba9532b0affba863c5c7f365f473129a4"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored paramiko.Channel.__init__ release semantics (channel_init_marks_inactive_unclosed). Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

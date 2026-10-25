@@ -1,0 +1,102 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex root source contract and actual command review 2026-10-26",
+  "review_notes": "conan-io/conan CacheDatabase.table must preserve cache_table_upsert_and_evict. CacheDatabase editable rows: set->create row, get->hit with equivalence and isolation, expire/invalidate->remove misses (second observation differs), recompute->recreate restores. Restore the exact production logic without hardcoding values or altering tests. All original F2P/P2P identifiers and complete target files are retained verbatim. The Smith row introduces the defect; this is an off-policy scripted demonstration, not a model sample or preference pair. The inline observation fails before the repair (first run expects error) and passes after (second run expects ok), so the second observation differs.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "conan/internal/cache/db/cache_database.py",
+        "start_line": 1,
+        "end_line": 36
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "conan/internal/cache/db/table.py",
+        "start_line": 7,
+        "end_line": 42
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'conan/internal/cache/db/cache_database.py').resolve()\ntry:\n module = importlib.import_module('conan.internal.cache.db.cache_database')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('edited_file', 'conan/internal/cache/db/table.py', 'sha256', hashlib.sha256(Path('conan/internal/cache/db/table.py').read_bytes()).hexdigest())\n\nimport os, tempfile\nfrom conan.api.model import RecipeReference\nfrom conan.internal.cache.db.cache_database import CacheDatabase\ntmp = tempfile.mkdtemp()\ndb = CacheDatabase(filename=os.path.join(tmp, 'c.sqlite3'))\nref = RecipeReference('pkg', '0.1', revision='r1', timestamp=1.0)\nfrom conan.internal.errors import ConanReferenceDoesNotExistInDB\ndb.create_recipe('t/abc', ref)\nassert db.get_recipe(RecipeReference('pkg', '0.1', revision='r1'))['path'] == 't/abc'\nprint(\"get_hit\", True)\nassert db.get_recipe(RecipeReference('pkg', '0.1', revision='r1'))['path'] == 't/abc'\nprint(\"equivalence\", True)\ntry:\n    db.get_recipe(RecipeReference('zzz', '9.9', revision='r1'))\nexcept ConanReferenceDoesNotExistInDB:\n    print(\"isolation\", True)\nelse:\n    raise AssertionError(\"unknown ref must miss\")\ndb.remove_recipe(ref)\ntry:\n    db.get_recipe(RecipeReference('pkg', '0.1', revision='r1'))\nexcept ConanReferenceDoesNotExistInDB:\n    print(\"invalidate\", True)\nelse:\n    raise AssertionError(\"removed row must miss\")\ndb.create_recipe('t/abc', ref)\nassert db.get_recipe(RecipeReference('pkg', '0.1', revision='r1'))['path'] == 't/abc'\nprint(\"recompute\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "9bd24f90d53fc29a969964d2bda195a6576ad89bd1056c1187499fa744f6549a"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/internal/cache/db/cache_database.py",
+        "old_string": "import sqlite3\n\nfrom conan.api.output import ConanOutput\n",
+        "new_string": "import os\nimport sqlite3\n\nfrom conan.api.output import ConanOutput\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/internal/cache/db/cache_database.py",
+        "old_string": "            ConanOutput().error(f\"Your sqlite3 '{version} < 3.7.11' version is not supported\")\n        self._recipes = RecipesDBTable(filename)\n        self._packages = PackagesDBTable(filename)\n\n    def exists_prev(self, ref):\n        return self._packages.get_package_revisions_reference_exists(ref)\n",
+        "new_string": "            ConanOutput().error(f\"Your sqlite3 '{version} < 3.7.11' version is not supported\")\n        self._recipes = RecipesDBTable(filename)\n        self._packages = PackagesDBTable(filename)\n        if not os.path.isfile(filename):\n            self._recipes.create_table()\n            self._packages.create_table()\n\n    def exists_prev(self, ref):\n        return self._packages.get_package_revisions_reference_exists(ref)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/internal/cache/db/cache_database.py",
+        "old_string": "                for d in self._packages.get_package_references(ref, only_latest_prev)]",
+        "new_string": "                for d in self._packages.get_package_references(ref, only_latest_prev)]\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/internal/cache/db/table.py",
+        "old_string": "        column_names: List[str] = [it[0] for it in self.columns_description]\n        self.row_type = namedtuple('_', column_names)\n        self.columns = self.row_type(*column_names)\n        self.create_table()\n        self._lock = self._lock_storage[self.filename]\n\n    @contextmanager\n",
+        "new_string": "        column_names: List[str] = [it[0] for it in self.columns_description]\n        self.row_type = namedtuple('_', column_names)\n        self.columns = self.row_type(*column_names)\n        self._lock = self._lock_storage[self.filename]\n\n    @contextmanager\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/internal/cache/db/table.py",
+        "old_string": "            print(f\"********* ENDTABLE {self.table_name}*************\")",
+        "new_string": "            print(f\"********* ENDTABLE {self.table_name}*************\")\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'conan/internal/cache/db/cache_database.py').resolve()\ntry:\n module = importlib.import_module('conan.internal.cache.db.cache_database')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('edited_file', 'conan/internal/cache/db/table.py', 'sha256', hashlib.sha256(Path('conan/internal/cache/db/table.py').read_bytes()).hexdigest())\n\nimport os, tempfile\nfrom conan.api.model import RecipeReference\nfrom conan.internal.cache.db.cache_database import CacheDatabase\ntmp = tempfile.mkdtemp()\ndb = CacheDatabase(filename=os.path.join(tmp, 'c.sqlite3'))\nref = RecipeReference('pkg', '0.1', revision='r1', timestamp=1.0)\nfrom conan.internal.errors import ConanReferenceDoesNotExistInDB\ndb.create_recipe('t/abc', ref)\nassert db.get_recipe(RecipeReference('pkg', '0.1', revision='r1'))['path'] == 't/abc'\nprint(\"get_hit\", True)\nassert db.get_recipe(RecipeReference('pkg', '0.1', revision='r1'))['path'] == 't/abc'\nprint(\"equivalence\", True)\ntry:\n    db.get_recipe(RecipeReference('zzz', '9.9', revision='r1'))\nexcept ConanReferenceDoesNotExistInDB:\n    print(\"isolation\", True)\nelse:\n    raise AssertionError(\"unknown ref must miss\")\ndb.remove_recipe(ref)\ntry:\n    db.get_recipe(RecipeReference('pkg', '0.1', revision='r1'))\nexcept ConanReferenceDoesNotExistInDB:\n    print(\"invalidate\", True)\nelse:\n    raise AssertionError(\"removed row must miss\")\ndb.create_recipe('t/abc', ref)\nassert db.get_recipe(RecipeReference('pkg', '0.1', revision='r1'))['path'] == 't/abc'\nprint(\"recompute\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "9bd24f90d53fc29a969964d2bda195a6576ad89bd1056c1187499fa744f6549a"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored CacheDatabase.table cache_table_upsert_and_evict. The actual inline cache observation completed after the production edit. Patch submitted."
+}

@@ -1,0 +1,150 @@
+[
+  {
+    "role": "user",
+    "content": "You are evaluating a software engineering task for repository swesmith/python-hyper__h11.bed0dd4a.\n\nProblem Statement:\nConnection.receive_data() raises RuntimeError when receiving empty data after connection close\n\n#### Description\n\nWhen calling `receive_data(b'')` (empty bytes) on a Connection that has already been closed, a RuntimeError is raised with the message \"received close, then received more data?\". This seems incorrect since empty data should not be considered \"more data\".\n\n#### Steps/Code to Reproduce\n\n```python\nimport h11\n\n# Create a connection and close it\nc = h11.Connection(h11.SERVER)\nc.receive_data(b'GET / HTTP/1.1\\r\\nHost: example.com\\r\\n\\r\\n')\nc.next_event()  # Get the request\nc.next_event()  # Get EndOfMessage\n\n# Close the connection\nc.receive_data(b'')  # This should work fine\n\n# Try to receive empty data again - this raises RuntimeError\nc.receive_data(b'')  # RuntimeError: received close, then received more data?\n```\n\nThe issue occurs when you call `receive_data(b'')` multiple times or after the connection has been marked as closed. Empty data should be handled gracefully and not trigger the \"received more data\" error since no actual data is being received.\n\nThis affects various connection scenarios including HTTP/1.0 connections, pipelined requests, and connection close handling where empty data might be received multiple times during the connection lifecycle.\n\n## Task Budget (Session terminates when any budget is exhausted)\n- Time allowance: 60 minutes\n- Tool calls allowance: 100 calls\n- Max loop iterations: 500 turns\n\n## Execution Environment Rules\n- Single command timeout: 300 seconds (commands exceeding this fail without ending the session)\n- Command output limit: 5000 characters\n- File view limit: 150 lines per read_file call\n- File character limit: 10000 characters per read_file call\n- Environment is offline (no network/PyPI access). All repository and test dependencies are ALREADY pre-installed. Do NOT attempt to run pip install or download packages.\n\n## Instructions:\n0. All source code is under `/workspace`. Do NOT search outside `/workspace` (e.g. `/usr/`, `/wheels/`, system site-packages). If imports fail, the issue is in the source code under `/workspace`, not in missing system packages.\n1. Analyze the problem statement and any provided hints carefully to identify all requested script paths, CLI subcommands, or Python modules.\n2. Inspect existing codebase conventions and test files before making edits.\n3. Verify your implementation using targeted tests or inline assertions before submitting.\n4. Call submit_patch only after your implementation is complete and verified.\n5. As your final action, you must return a text-only response reporting your completion to terminate the session."
+  },
+  {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+      {
+        "id": "replay_0000",
+        "type": "function",
+        "function": {
+          "name": "get_status",
+          "arguments": "{}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "replay_0000",
+    "name": "get_status",
+    "content": "{\"status\": \"ok\", \"tool_calls_used\": 0, \"patch_submitted\": false, \"patch_size\": 0, \"tool_calls_remaining\": 100, \"max_tool_calls\": 100, \"time_seconds_remaining\": 3599.9998027499532, \"max_time_minutes\": 60, \"agent_elapsed_seconds\": 0.00019816705025732517, \"max_turns\": 500, \"command_timeout_seconds\": 300}"
+  },
+  {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+      {
+        "id": "replay_0001",
+        "type": "function",
+        "function": {
+          "name": "read_file",
+          "arguments": "{\"filepath\": \"h11/_connection.py\", \"start_line\": 394, \"end_line\": 418}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "replay_0001",
+    "name": "read_file",
+    "content": "{\"status\": \"ok\", \"filepath\": \"h11/_connection.py\", \"content\": \"            RuntimeError:\\n                Raised if you pass an empty *data*, indicating EOF, and then\\n                pass a non-empty *data*, indicating more data that somehow\\n                arrived after the EOF.\\n\\n                (Calling ``receive_data(b\\\"\\\")`` multiple times is fine,\\n                and equivalent to calling it once.)\\n\\n        \\\"\\\"\\\"\\n        if not data:\\n            if not self._receive_buffer_closed:\\n                raise RuntimeError(\\\"received close, then received more data?\\\")\\n            self._receive_buffer_closed = True\\n        else:\\n            self._receive_buffer += data\\n\\n    def _extract_next_receive_event(\\n        self,\\n    ) -> Union[Event, Type[NEED_DATA], Type[PAUSED]]:\\n        state = self.their_state\\n        # We don't pause immediately when they enter DONE, because even in\\n        # DONE state we can still process a ConnectionClosed() event. But\\n        # if we have data in our buffer, then we definitely aren't getting\\n        # a ConnectionClosed() immediately and we need to pause.\\n        if state is DONE and self._receive_buffer:\", \"start_line\": 394, \"end_line\": 418, \"total_lines\": 659, \"is_truncated\": false}"
+  },
+  {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+      {
+        "id": "replay_0002",
+        "type": "function",
+        "function": {
+          "name": "run_command",
+          "arguments": "{\"command\": \"python3 - <<'PYREPLAY'\\nfrom pathlib import Path\\nimport hashlib, importlib\\nexpected=(Path.cwd() / 'h11/_connection.py').resolve()\\ntry:\\n module = importlib.import_module('h11._connection')\\nexcept Exception as import_error:\\n traceback=import_error.__traceback__\\n while traceback is not None:\\n  file=traceback.tb_frame.f_globals.get('__file__')\\n  if file and Path(file).resolve()==expected:\\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\\n  traceback=traceback.tb_next\\n raise\\nactual=Path(module.__file__).resolve()\\nprint(\\\"source_binding\\\", str(actual), \\\"sha256\\\", hashlib.sha256(actual.read_bytes()).hexdigest())\\nassert actual == expected, (actual, expected)\\nimport h11\\nc = h11.Connection(h11.CLIENT)\\nc.receive_data(b'')\\nprint('eof_marked')\\ntry:\\n    c.receive_data(b'x')\\n    raise SystemExit('expected RuntimeError')\\nexcept RuntimeError:\\n    print('post_close_data_rejected')\\n\\nPYREPLAY\"}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "replay_0002",
+    "name": "run_command",
+    "content": "{\"status\": \"error\", \"error_type\": \"CommandError\", \"error_message\": \"Traceback (most recent call last):\\n  File \\\"<stdin>\\\", line 19, in <module>\\n  File \\\"/Users/zhaohuaxiang/ccjjllt/agent_of_gemma_4/competition/vfarl/acquisition/f4-new/f4-cont/f4-new-h11-recv-closed-run-002/sandboxes/swegemma_sandbox_98f9e4a0-956/workspace/h11/_connection.py\\\", line 405, in receive_data\\n    raise RuntimeError(\\\"received close, then received more data?\\\")\\nRuntimeError: received close, then received more data?\\n\", \"details\": {\"stdout\": \"source_binding /Users/zhaohuaxiang/ccjjllt/agent_of_gemma_4/competition/vfarl/acquisition/f4-new/f4-cont/f4-new-h11-recv-closed-run-002/sandboxes/swegemma_sandbox_98f9e4a0-956/workspace/h11/_connection.py sha256 d718f82aa3a98a45374c1d9cfc6d46425d9fff7db3fa6d855fc68fc61146e36d\\n\", \"stderr\": \"Traceback (most recent call last):\\n  File \\\"<stdin>\\\", line 19, in <module>\\n  File \\\"/Users/zhaohuaxiang/ccjjllt/agent_of_gemma_4/competition/vfarl/acquisition/f4-new/f4-cont/f4-new-h11-recv-closed-run-002/sandboxes/swegemma_sandbox_98f9e4a0-956/workspace/h11/_connection.py\\\", line 405, in receive_data\\n    raise RuntimeError(\\\"received close, then received more data?\\\")\\nRuntimeError: received close, then received more data?\\n\", \"exit_code\": 1}}"
+  },
+  {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+      {
+        "id": "replay_0003",
+        "type": "function",
+        "function": {
+          "name": "edit_file",
+          "arguments": "{\"filepath\": \"h11/_connection.py\", \"old_string\": \"                and equivalent to calling it once.)\\n\\n        \\\"\\\"\\\"\\n        if not data:\\n            if not self._receive_buffer_closed:\\n                raise RuntimeError(\\\"received close, then received more data?\\\")\\n            self._receive_buffer_closed = True\\n        else:\\n            self._receive_buffer += data\\n\\n    def _extract_next_receive_event(\\n        self,\\n\", \"new_string\": \"                and equivalent to calling it once.)\\n\\n        \\\"\\\"\\\"\\n        if data:\\n            if self._receive_buffer_closed:\\n                raise RuntimeError(\\\"received close, then received more data?\\\")\\n            self._receive_buffer += data\\n        else:\\n            self._receive_buffer_closed = True\\n\\n    def _extract_next_receive_event(\\n        self,\\n\"}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "replay_0003",
+    "name": "edit_file",
+    "content": "{\"status\": \"ok\", \"filepath\": \"h11/_connection.py\", \"occurrences\": 1, \"strategy\": \"exact\", \"diff\": \"--- a/h11/_connection.py\\n+++ b/h11/_connection.py\\n@@ -400,12 +400,12 @@\\n                 and equivalent to calling it once.)\\n \\n         \\\"\\\"\\\"\\n-        if not data:\\n-            if not self._receive_buffer_closed:\\n+        if data:\\n+            if self._receive_buffer_closed:\\n                 raise RuntimeError(\\\"received close, then received more data?\\\")\\n+            self._receive_buffer += data\\n+        else:\\n             self._receive_buffer_closed = True\\n-        else:\\n-            self._receive_buffer += data\\n \\n     def _extract_next_receive_event(\\n         self,\\n\", \"is_truncated\": false}"
+  },
+  {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+      {
+        "id": "replay_0004",
+        "type": "function",
+        "function": {
+          "name": "run_command",
+          "arguments": "{\"command\": \"python3 - <<'PYREPLAY'\\nfrom pathlib import Path\\nimport hashlib, importlib\\nexpected=(Path.cwd() / 'h11/_connection.py').resolve()\\ntry:\\n module = importlib.import_module('h11._connection')\\nexcept Exception as import_error:\\n traceback=import_error.__traceback__\\n while traceback is not None:\\n  file=traceback.tb_frame.f_globals.get('__file__')\\n  if file and Path(file).resolve()==expected:\\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\\n  traceback=traceback.tb_next\\n raise\\nactual=Path(module.__file__).resolve()\\nprint(\\\"source_binding\\\", str(actual), \\\"sha256\\\", hashlib.sha256(actual.read_bytes()).hexdigest())\\nassert actual == expected, (actual, expected)\\nimport h11\\nc = h11.Connection(h11.CLIENT)\\nc.receive_data(b'')\\nprint('eof_marked')\\ntry:\\n    c.receive_data(b'x')\\n    raise SystemExit('expected RuntimeError')\\nexcept RuntimeError:\\n    print('post_close_data_rejected')\\n\\nPYREPLAY\"}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "replay_0004",
+    "name": "run_command",
+    "content": "{\"status\": \"ok\", \"stdout\": \"source_binding /Users/zhaohuaxiang/ccjjllt/agent_of_gemma_4/competition/vfarl/acquisition/f4-new/f4-cont/f4-new-h11-recv-closed-run-002/sandboxes/swegemma_sandbox_98f9e4a0-956/workspace/h11/_connection.py sha256 93d61155fea4a19a9bb6d056dfac5259a26959d6706bec50554f401c4a3d0ee2\\neof_marked\\npost_close_data_rejected\\n\", \"stderr\": \"\", \"exit_code\": 0}"
+  },
+  {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+      {
+        "id": "replay_0005",
+        "type": "function",
+        "function": {
+          "name": "get_status",
+          "arguments": "{}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "replay_0005",
+    "name": "get_status",
+    "content": "{\"status\": \"ok\", \"tool_calls_used\": 4, \"patch_submitted\": false, \"patch_size\": 0, \"tool_calls_remaining\": 96, \"max_tool_calls\": 100, \"time_seconds_remaining\": 3599.87323024997, \"max_time_minutes\": 60, \"agent_elapsed_seconds\": 0.12677070801146328, \"max_turns\": 500, \"command_timeout_seconds\": 300}"
+  },
+  {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+      {
+        "id": "replay_0006",
+        "type": "function",
+        "function": {
+          "name": "submit_patch",
+          "arguments": "{}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "replay_0006",
+    "name": "submit_patch",
+    "content": "{\"status\": \"ok\", \"patch_size\": 678, \"files_changed\": 1}"
+  },
+  {
+    "role": "assistant",
+    "content": "Restored h11.Connection.receive_data release semantics (receive_after_close_guards_buffer_state). Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+  }
+]

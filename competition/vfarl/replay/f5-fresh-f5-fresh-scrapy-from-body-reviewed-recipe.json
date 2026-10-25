@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "Probe three bodies in order html->xml->plain text. The dispatcher must slice, encode, gate binary, lower, then return HtmlResponse, XmlResponse, TextResponse in that probe order. The bug references lowercase_chunk before definition so every probe raises. The complete production-file delta is exactly the reviewed hunks inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "scrapy/responsetypes.py",
+        "start_line": 102,
+        "end_line": 126
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('scrapy.responsetypes')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'scrapy/responsetypes.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom scrapy.responsetypes import ResponseTypes\nrt=ResponseTypes()\nhtml=b'<html><head><title>t</title></head><body>hi</body></html>'\nxml=b'<?xml version=\"1.0\" encoding=\"utf-8\"?><root><a>1</a></root>'\ntext=b'Just some plain text without any markup'\nseq=[rt.from_body(html).__name__,rt.from_body(xml).__name__,rt.from_body(text).__name__]\nprint('body_type_sequence',seq)\nassert seq==['HtmlResponse','XmlResponse','TextResponse'],seq\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "2b807a94b78ce941afd89311e2ab14acd55da0c57f7cfa15887d654f97029a19"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "scrapy/responsetypes.py",
+        "old_string": "        return Response\n\n    def from_body(self, body: bytes) -> type[Response]:\n        if b\"<html>\" in lowercase_chunk:\n            return self.from_mimetype(\"text/html\")\n        chunk = body[:5000]\n        chunk = to_bytes(chunk)\n        if b\"<?xml\" in lowercase_chunk:\n            return self.from_mimetype(\"text/xml\")\n        \"\"\"Try to guess the appropriate response based on the body content.\n        This method is a bit magic and could be improved in the future, but\n        it's not meant to be used except for special cases where response types\n        cannot be guess using more straightforward methods.\"\"\"\n        return self.from_mimetype(\"text\")\n        if not binary_is_text(chunk):\n            return self.from_mimetype(\"application/octet-stream\")\n        if b\"<!doctype html>\" in lowercase_chunk:\n            return self.from_mimetype(\"text/html\")\n        lowercase_chunk = chunk.lower()\n    def from_args(\n        self,\n        headers: Mapping[bytes, bytes] | None = None,",
+        "new_string": "        return Response\n\n    def from_body(self, body: bytes) -> type[Response]:\n        \"\"\"Try to guess the appropriate response based on the body content.\n        This method is a bit magic and could be improved in the future, but\n        it's not meant to be used except for special cases where response types\n        cannot be guess using more straightforward methods.\"\"\"\n        chunk = body[:5000]\n        chunk = to_bytes(chunk)\n        if not binary_is_text(chunk):\n            return self.from_mimetype(\"application/octet-stream\")\n        lowercase_chunk = chunk.lower()\n        if b\"<html>\" in lowercase_chunk:\n            return self.from_mimetype(\"text/html\")\n        if b\"<?xml\" in lowercase_chunk:\n            return self.from_mimetype(\"text/xml\")\n        if b\"<!doctype html>\" in lowercase_chunk:\n            return self.from_mimetype(\"text/html\")\n        return self.from_mimetype(\"text\")\n\n    def from_args(\n        self,\n        headers: Mapping[bytes, bytes] | None = None,"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('scrapy.responsetypes')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'scrapy/responsetypes.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom scrapy.responsetypes import ResponseTypes\nrt=ResponseTypes()\nhtml=b'<html><head><title>t</title></head><body>hi</body></html>'\nxml=b'<?xml version=\"1.0\" encoding=\"utf-8\"?><root><a>1</a></root>'\ntext=b'Just some plain text without any markup'\nseq=[rt.from_body(html).__name__,rt.from_body(xml).__name__,rt.from_body(text).__name__]\nprint('body_type_sequence',seq)\nassert seq==['HtmlResponse','XmlResponse','TextResponse'],seq\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "2b807a94b78ce941afd89311e2ab14acd55da0c57f7cfa15887d654f97029a19"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Probe three bodies in order html->xml->plain text. The dispatcher must slice, encode, gate binary, lower, then return HtmlResponse, XmlResponse, TextResponse in that probe order. The bug references lowercase_chunk before definition so every probe raises. The source-bound reproduction passes after the repair. Patch submitted."
+}

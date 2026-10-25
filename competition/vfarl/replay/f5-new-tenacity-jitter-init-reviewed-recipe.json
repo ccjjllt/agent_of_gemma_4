@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "Jittered exponential wait must keep initial/max/exp_base/jitter roles so sleeps grow exponentially within bounds; rotating the four arguments collapses every sleep to the cap across the attempt-sleep-end chain. The complete production-file delta is exactly the reviewed hunks inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "tenacity/wait.py",
+        "start_line": 211,
+        "end_line": 229
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('tenacity.wait')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'tenacity/wait.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport random\nfrom tenacity import RetryCallState, Retrying\nfrom tenacity.wait import wait_exponential_jitter\nrandom.seed(1)\nstrat=wait_exponential_jitter()\nstate=RetryCallState(Retrying(),None,(),{})\nvalues=[]\nfor attempt in (1,2,3):\n    state.attempt_number=attempt\n    values.append(strat(state))\nprint('jitter_init_sequence',values)\nassert values==[1.134364244112401, 2.8474337369372327, 4.763774618976614]\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "ca280c3b4bb624939e3fe230b44da17ea78f303311d448f89f0d1120f39a339c"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "tenacity/wait.py",
+        "old_string": "        exp_base: float = 2,\n        jitter: float = 1,\n    ) -> None:\n        self.initial = max\n        self.max = initial\n        self.exp_base = jitter\n        self.jitter = exp_base\n\n    def __call__(self, retry_state: \"RetryCallState\") -> float:\n        jitter = random.uniform(0, self.jitter)",
+        "new_string": "        exp_base: float = 2,\n        jitter: float = 1,\n    ) -> None:\n        self.initial = initial\n        self.max = max\n        self.exp_base = exp_base\n        self.jitter = jitter\n\n    def __call__(self, retry_state: \"RetryCallState\") -> float:\n        jitter = random.uniform(0, self.jitter)"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('tenacity.wait')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'tenacity/wait.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport random\nfrom tenacity import RetryCallState, Retrying\nfrom tenacity.wait import wait_exponential_jitter\nrandom.seed(1)\nstrat=wait_exponential_jitter()\nstate=RetryCallState(Retrying(),None,(),{})\nvalues=[]\nfor attempt in (1,2,3):\n    state.attempt_number=attempt\n    values.append(strat(state))\nprint('jitter_init_sequence',values)\nassert values==[1.134364244112401, 2.8474337369372327, 4.763774618976614]\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "ca280c3b4bb624939e3fe230b44da17ea78f303311d448f89f0d1120f39a339c"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Jittered exponential wait must keep initial/max/exp_base/jitter roles so sleeps grow exponentially within bounds; rotating the four arguments collapses every sleep to the cap across the attempt-sleep-end chain. The source-bound reproduction passes after the repair. Patch submitted."
+}

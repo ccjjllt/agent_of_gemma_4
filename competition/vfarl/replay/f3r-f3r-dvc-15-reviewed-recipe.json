@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex root source contract and actual command review 2026-10-26",
+  "review_notes": "iterative/dvc Output._compute_meta_hash_info_from_files must preserve output_hash_meta_from_files_scope. Output hash-meta contract: set->file list computes hash_info/meta with counts and sizes, get->repeat computes identically with equivalence and isolation across names, expire/invalidate->reduced file list changes shape (second observation differs), recompute->restored list restores shape. Restore the exact production logic without hardcoding values or altering tests. All original F2P/P2P identifiers and complete target files are retained verbatim. The Smith row introduces the defect; this is an off-policy scripted demonstration, not a model sample or preference pair. The inline observation fails before the repair (first run expects error) and passes after (second run expects ok), so the second observation differs.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "dvc/output.py",
+        "start_line": 409,
+        "end_line": 444
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'dvc/output.py').resolve()\ntry:\n module = importlib.import_module('dvc.output')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\n\nfrom unittest import mock\nfrom dvc.output import Output\nfiles = [\n    {'size': 3, 'version_id': 'v1', 'etag': 'acbd18db4cc2f85cedef654fccc4a4d8',\n     'md5': 'acbd18db4cc2f85cedef654fccc4a4d8', 'relpath': 'bar'},\n    {'size': 3, 'version_id': 'v2', 'etag': 'acbd18db4cc2f85cedef654fccc4a4d8',\n     'md5': 'acbd18db4cc2f85cedef654fccc4a4d8', 'relpath': 'foo'},\n]\nstage = mock.MagicMock()\nstage.repo.fs.version_aware = False\nstage.repo.fs.PARAM_CHECKSUM = 'etag'\nout = Output(stage, 'path', files=files)\nassert out.hash_info.name == 'md5', out.hash_info\nassert out.hash_info.value == '77e8000f532886eef8ee1feba82e9bad.dir', out.hash_info\nassert out.meta.isdir\nassert out.meta.nfiles == 2\nassert out.meta.size == 6\nprint(\"get_hit\", True)\nout_b = Output(stage, 'path', files=files)\nassert (out_b.hash_info.value, out_b.meta.nfiles, out_b.meta.size) == (out.hash_info.value, 2, 6)\nprint(\"equivalence\", True)\nout_c = Output(stage, 'other', files=files)\nassert out_c.hash_info.value == out.hash_info.value\nprint(\"isolation\", True)\nout_d = Output(stage, 'path', files=files[:1])\nassert (out_d.meta.nfiles, out_d.meta.size) == (1, 3)\nassert out_d.hash_info.value != out.hash_info.value\nprint(\"invalidate\", True)\nout_e = Output(stage, 'path', files=files)\nassert (out_e.hash_info.value, out_e.meta.nfiles) == (out.hash_info.value, 2)\nprint(\"recompute\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "bd235b4d35a23214cff276f5c10f561a94fbebe369bec3b60d566dbaaed4cf2d"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "dvc/output.py",
+        "old_string": "        hash_info = HashInfo(name=hash_name, value=getattr(self.meta, meta_name, None))\n        return hash_name, hash_info\n\n    def _compute_meta_hash_info_from_files(self) ->None:\n        \"\"\"Compute hash info from files list if available.\"\"\"\n        if self.files:\n            tree = Tree.from_list(self.files, hash_name=self.hash_name)\n            tree.digest()\n            self.hash_info = tree.hash_info\n            self.obj = tree\n            # Update meta with file count and directory flag\n            self.meta = Meta(\n                nfiles=len(tree),\n                isdir=True,\n                size=self.meta.size if self.meta else None,\n                version_id=self.meta.version_id if self.meta else None,\n            )\n    def _parse_path(self, fs, fs_path):\n        parsed = urlparse(self.def_path)\n        if (\n",
+        "new_string": "        hash_info = HashInfo(name=hash_name, value=getattr(self.meta, meta_name, None))\n        return hash_name, hash_info\n\n    def _compute_meta_hash_info_from_files(self) -> None:\n        if self.files:\n            tree = Tree.from_list(self.files, hash_name=self.hash_name)\n            tree.digest(with_meta=True)\n\n            self.hash_info = tree.hash_info\n            self.meta.isdir = True\n            self.meta.nfiles = len(self.files)\n            self.meta.size = sum(filter(None, (f.get(\"size\") for f in self.files)))\n            self.meta.remote = first(f.get(\"remote\") for f in self.files)\n        elif self.meta.nfiles or (self.hash_info and self.hash_info.isdir):\n            self.meta.isdir = True\n            if not self.hash_info and self.hash_name not in (\"md5\", \"md5-dos2unix\"):\n                md5 = getattr(self.meta, \"md5\", None)\n                if md5:\n                    self.hash_info = HashInfo(\"md5\", md5)\n\n    def _parse_path(self, fs, fs_path):\n        parsed = urlparse(self.def_path)\n        if (\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'dvc/output.py').resolve()\ntry:\n module = importlib.import_module('dvc.output')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\n\nfrom unittest import mock\nfrom dvc.output import Output\nfiles = [\n    {'size': 3, 'version_id': 'v1', 'etag': 'acbd18db4cc2f85cedef654fccc4a4d8',\n     'md5': 'acbd18db4cc2f85cedef654fccc4a4d8', 'relpath': 'bar'},\n    {'size': 3, 'version_id': 'v2', 'etag': 'acbd18db4cc2f85cedef654fccc4a4d8',\n     'md5': 'acbd18db4cc2f85cedef654fccc4a4d8', 'relpath': 'foo'},\n]\nstage = mock.MagicMock()\nstage.repo.fs.version_aware = False\nstage.repo.fs.PARAM_CHECKSUM = 'etag'\nout = Output(stage, 'path', files=files)\nassert out.hash_info.name == 'md5', out.hash_info\nassert out.hash_info.value == '77e8000f532886eef8ee1feba82e9bad.dir', out.hash_info\nassert out.meta.isdir\nassert out.meta.nfiles == 2\nassert out.meta.size == 6\nprint(\"get_hit\", True)\nout_b = Output(stage, 'path', files=files)\nassert (out_b.hash_info.value, out_b.meta.nfiles, out_b.meta.size) == (out.hash_info.value, 2, 6)\nprint(\"equivalence\", True)\nout_c = Output(stage, 'other', files=files)\nassert out_c.hash_info.value == out.hash_info.value\nprint(\"isolation\", True)\nout_d = Output(stage, 'path', files=files[:1])\nassert (out_d.meta.nfiles, out_d.meta.size) == (1, 3)\nassert out_d.hash_info.value != out.hash_info.value\nprint(\"invalidate\", True)\nout_e = Output(stage, 'path', files=files)\nassert (out_e.hash_info.value, out_e.meta.nfiles) == (out.hash_info.value, 2)\nprint(\"recompute\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "bd235b4d35a23214cff276f5c10f561a94fbebe369bec3b60d566dbaaed4cf2d"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored Output._compute_meta_hash_info_from_files output_hash_meta_from_files_scope. The actual inline cache observation completed after the production edit. Patch submitted."
+}

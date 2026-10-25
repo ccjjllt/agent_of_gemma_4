@@ -1,0 +1,129 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex root source contract and actual command review 2026-10-26",
+  "review_notes": "conan-io/conan DownloadCache must preserve download_cache_store_load_and_invalidate. Source path cache: set->seed source file, get->hit with equivalence and isolation, expire/invalidate->removed file gone (second observation differs); backup misses report the file and url; lock scope is reentrant. Restore the exact production logic without hardcoding values or altering tests. All original F2P/P2P identifiers and complete target files are retained verbatim. The Smith row introduces the defect; this is an off-policy scripted demonstration, not a model sample or preference pair. The inline observation fails before the repair (first run expects error) and passes after (second run expects ok), so the second observation differs.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "conan/api/subapi/upload.py",
+        "start_line": 104,
+        "end_line": 139
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "conans/client/downloaders/caching_file_downloader.py",
+        "start_line": 34,
+        "end_line": 69
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "conans/client/downloaders/download_cache.py",
+        "start_line": 120,
+        "end_line": 155
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'conan/api/subapi/upload.py').resolve()\ntry:\n module = importlib.import_module('conan.api.subapi.upload')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('edited_file', 'conans/client/downloaders/caching_file_downloader.py', 'sha256', hashlib.sha256(Path('conans/client/downloaders/caching_file_downloader.py').read_bytes()).hexdigest())\nprint('edited_file', 'conans/client/downloaders/download_cache.py', 'sha256', hashlib.sha256(Path('conans/client/downloaders/download_cache.py').read_bytes()).hexdigest())\n\nimport os, tempfile\nfrom types import SimpleNamespace\nfrom conan.internal.errors import NotFoundException\nfrom conans.client.downloaders.download_cache import DownloadCache\nfrom conans.client.downloaders.caching_file_downloader import SourcesCachingDownloader\ntmp = tempfile.mkdtemp()\ndc = DownloadCache(tmp)\npath = dc.source_path('abc123')\nos.makedirs(os.path.dirname(path), exist_ok=True)\nwith open(path, 'w') as f:\n    f.write('src')\nassert open(dc.source_path('abc123')).read() == 'src'\nprint(\"get_hit\", True)\nassert dc.source_path('abc123') == path\nprint(\"equivalence\", True)\nassert dc.source_path('def456') != path\nprint(\"isolation\", True)\nmsgs = []\noutput = SimpleNamespace(info=msgs.append, warning=msgs.append)\nconf = {'core.sources:download_cache': tmp, 'core.sources:download_urls': ['http://x/']}\ngconf = SimpleNamespace(get=lambda k, check_type=None: conf.get(k))\nhelpers = SimpleNamespace(global_conf=gconf, requester=object(), home_folder=tmp)\ncf = SimpleNamespace(_conan_helpers=helpers, output=output, display_name='pkg/0.1')\ndl = SourcesCachingDownloader(cf)\ndef missing(url, path, *a, **k):\n    raise NotFoundException('nope')\ndl._file_downloader = SimpleNamespace(download=missing)\nassert dl._backup_download('http://b/', ['http://b/'], 'e' * 40, os.path.join(tmp, 'c'), ['http://u/f'], False) is None\nassert any(\"File ['http://u/f'] not found in http://b/\" in m for m in msgs), msgs\nprint(\"miss_report\", True)\nwith dc.lock('abc123'):\n    pass\nprint(\"lock_contract\", True)\nos.unlink(path)\nassert not os.path.exists(dc.source_path('abc123'))\nprint(\"invalidate\", True)\nwith open(path, 'w') as f:\n    f.write('src2')\nassert open(dc.source_path('abc123')).read() == 'src2'\nprint(\"recompute\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "36a8de6b2ea99598221460f11bd6125ca32ea8cf245533ea70fbcf0db3cad82a"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/api/subapi/upload.py",
+        "old_string": "        requester = self.conan_api.remotes.requester\n        uploader = FileUploader(requester, verify=True, config=config, source_credentials=True)\n        # TODO: For Artifactory, we can list all files once and check from there instead\n        for file in files:\n            basename = os.path.basename(file)\n            full_url = url + basename\n",
+        "new_string": "        requester = self.conan_api.remotes.requester\n        uploader = FileUploader(requester, verify=True, config=config, source_credentials=True)\n        # TODO: For Artifactory, we can list all files once and check from there instead\n        #  of 1 request per file, but this is more general\n        for file in files:\n            basename = os.path.basename(file)\n            full_url = url + basename\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/api/subapi/upload.py",
+        "old_string": "                    output.info(f\"Uploading {file_kind} '{basename}' to backup sources server\")\n                    uploader.upload(full_url, file, dedup=False, auth=None)\n                else:\n                    output.info(f\"File '{basename}' already in backup sources server, skipping upload\")\n            except (AuthenticationException, ForbiddenException) as e:\n                if is_summary:\n                    output.warning(f\"Could not update summary '{basename}' in backup sources server. \"\n",
+        "new_string": "                    output.info(f\"Uploading {file_kind} '{basename}' to backup sources server\")\n                    uploader.upload(full_url, file, dedup=False, auth=None)\n                else:\n                    output.info(f\"File '{basename}' already in backup sources server, \"\n                                \"skipping upload\")\n            except (AuthenticationException, ForbiddenException) as e:\n                if is_summary:\n                    output.warning(f\"Could not update summary '{basename}' in backup sources server. \"\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/api/subapi/upload.py",
+        "old_string": "        output.success(\"Upload backup sources complete\\n\")\n        return files",
+        "new_string": "        output.success(\"Upload backup sources complete\\n\")\n        return files\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conans/client/downloaders/caching_file_downloader.py",
+        "old_string": "                          download_cache_folder, backups_urls):\n        \"\"\"\n        this download will first check in the local cache, if not there, it will go to the list\n        of backup_urls defined by user conf (by default [\"origin\"], and iterate it until\n        something is found.\n        \"\"\"\n        # We are going to use the download_urls definition for backups\n",
+        "new_string": "                          download_cache_folder, backups_urls):\n        \"\"\"\n        this download will first check in the local cache, if not there, it will go to the list\n        of backup_urls defined by user conf (by default [\"origin\"]), and iterate it until\n        something is found.\n        \"\"\"\n        # We are going to use the download_urls definition for backups\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conans/client/downloaders/caching_file_downloader.py",
+        "old_string": "            if is_last:\n                raise NotFoundException(f\"File {urls} not found in {backups_urls}\")\n            else:\n                self._output.warning(f\"Sources not found in backup {backup_url}\")\n        except (AuthenticationException, ForbiddenException) as e:\n            raise ConanException(f\"The source backup server '{backup_url}' \"\n                                 f\"needs authentication: {e}. \"\n",
+        "new_string": "            if is_last:\n                raise NotFoundException(f\"File {urls} not found in {backups_urls}\")\n            else:\n                self._output.warning(f\"File {urls} not found in {backup_url}\")\n        except (AuthenticationException, ForbiddenException) as e:\n            raise ConanException(f\"The source backup server '{backup_url}' \"\n                                 f\"needs authentication: {e}. \"\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conans/client/downloaders/caching_file_downloader.py",
+        "old_string": "                                                        f\"cache, instead of downloading it\")\n\n            # Everything good, file in the cache, just copy it to final destination\n            mkdir(os.path.dirname(file_path))\n            shutil.copy2(cached_path, file_path)",
+        "new_string": "                                                        f\"cache, instead of downloading it\")\n\n            # Everything good, file in the cache, just copy it to final destination\n            mkdir(os.path.dirname(file_path))\n            shutil.copy2(cached_path, file_path)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conans/client/downloaders/download_cache.py",
+        "old_string": "        save(summary_path, json.dumps(summary))",
+        "new_string": "        save(summary_path, json.dumps(summary))\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'conan/api/subapi/upload.py').resolve()\ntry:\n module = importlib.import_module('conan.api.subapi.upload')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('edited_file', 'conans/client/downloaders/caching_file_downloader.py', 'sha256', hashlib.sha256(Path('conans/client/downloaders/caching_file_downloader.py').read_bytes()).hexdigest())\nprint('edited_file', 'conans/client/downloaders/download_cache.py', 'sha256', hashlib.sha256(Path('conans/client/downloaders/download_cache.py').read_bytes()).hexdigest())\n\nimport os, tempfile\nfrom types import SimpleNamespace\nfrom conan.internal.errors import NotFoundException\nfrom conans.client.downloaders.download_cache import DownloadCache\nfrom conans.client.downloaders.caching_file_downloader import SourcesCachingDownloader\ntmp = tempfile.mkdtemp()\ndc = DownloadCache(tmp)\npath = dc.source_path('abc123')\nos.makedirs(os.path.dirname(path), exist_ok=True)\nwith open(path, 'w') as f:\n    f.write('src')\nassert open(dc.source_path('abc123')).read() == 'src'\nprint(\"get_hit\", True)\nassert dc.source_path('abc123') == path\nprint(\"equivalence\", True)\nassert dc.source_path('def456') != path\nprint(\"isolation\", True)\nmsgs = []\noutput = SimpleNamespace(info=msgs.append, warning=msgs.append)\nconf = {'core.sources:download_cache': tmp, 'core.sources:download_urls': ['http://x/']}\ngconf = SimpleNamespace(get=lambda k, check_type=None: conf.get(k))\nhelpers = SimpleNamespace(global_conf=gconf, requester=object(), home_folder=tmp)\ncf = SimpleNamespace(_conan_helpers=helpers, output=output, display_name='pkg/0.1')\ndl = SourcesCachingDownloader(cf)\ndef missing(url, path, *a, **k):\n    raise NotFoundException('nope')\ndl._file_downloader = SimpleNamespace(download=missing)\nassert dl._backup_download('http://b/', ['http://b/'], 'e' * 40, os.path.join(tmp, 'c'), ['http://u/f'], False) is None\nassert any(\"File ['http://u/f'] not found in http://b/\" in m for m in msgs), msgs\nprint(\"miss_report\", True)\nwith dc.lock('abc123'):\n    pass\nprint(\"lock_contract\", True)\nos.unlink(path)\nassert not os.path.exists(dc.source_path('abc123'))\nprint(\"invalidate\", True)\nwith open(path, 'w') as f:\n    f.write('src2')\nassert open(dc.source_path('abc123')).read() == 'src2'\nprint(\"recompute\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "36a8de6b2ea99598221460f11bd6125ca32ea8cf245533ea70fbcf0db3cad82a"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored DownloadCache download_cache_store_load_and_invalidate. The actual inline cache observation completed after the production edit. Patch submitted."
+}

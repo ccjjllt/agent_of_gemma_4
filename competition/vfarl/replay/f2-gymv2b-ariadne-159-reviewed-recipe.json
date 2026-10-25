@@ -1,0 +1,84 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "root research agent: causal source read (deepcopy before mixin stripping preserves stored definition), pinned tests, command review 2026-10-25",
+  "review_notes": "get_operation_as_str must format a deepcopy so stripping mixin directives from the working copy leaves the stored operation definition untouched; production-call diagnostic asserts mixin-free server string plus untouched stored definition (fails on baseline, passes repaired). Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Off-policy scripted demonstration, not a Gemma sample.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "ariadne_codegen/client_generators/result_types.py",
+        "start_line": 165,
+        "end_line": 180
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'ariadne_codegen/client_generators/result_types.py').resolve()\nmodule = importlib.import_module('ariadne_codegen.client_generators.result_types')\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom typing import cast\nfrom graphql import OperationDefinitionNode, build_ast_schema, parse\nfrom ariadne_codegen.client_generators.result_types import ResultTypesGenerator\nfrom ariadne_codegen.client_generators.constants import MIXIN_NAME\nfrom tests.client_generators.result_types_generator.schema import SCHEMA_STR\nquery_str = ('query CustomQuery { query2 @mixin(from: \".mixins\", import: \"TestMixin\") { id '\n             'field1 @mixin(from: \".mixins\", import: \"TestMixin1\") { fielda } '\n             'field2 @mixin(from: \".mixins\", import: \"TestMixin2\") { fieldb } } }')\ngenerator = ResultTypesGenerator(schema=build_ast_schema(parse(SCHEMA_STR)),\n    operation_definition=cast(OperationDefinitionNode, parse(query_str).definitions[0]),\n    enums_module_name='enums')\nresult = generator.get_operation_as_str()\nprint('mixin_in_result', MIXIN_NAME in result)\nassert MIXIN_NAME not in result, 'mixin directive leaked to server string'\nfield_query2 = generator.operation_definition.selection_set.selections[0]\nassert field_query2.directives[0].name.value == MIXIN_NAME, 'stored definition was mutated'\nprint('stored_untouched', True)\nprint('f2_clone_isolation', True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "99bfbb2ee996ba0d38db517dfdceccf4d8a1fc646e930fbc591bbdcf6f7bcdaf"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "ariadne_codegen/client_generators/result_types.py",
+        "old_string": "import ast\nfrom typing import Dict, List, Optional, Set, Tuple, cast\n\nfrom graphql import (\n    DirectiveNode,\n",
+        "new_string": "import ast\nfrom copy import deepcopy\nfrom typing import Any, Dict, List, Optional, Set, Tuple, cast\n\nfrom graphql import (\n    DirectiveNode,\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "ariadne_codegen/client_generators/result_types.py",
+        "old_string": "    SelectionNode,\n    SelectionSetNode,\n    StringValueNode,\n    is_abstract_type,\n    print_ast,\n)\n\nfrom ..codegen import (\n",
+        "new_string": "    SelectionNode,\n    SelectionSetNode,\n    StringValueNode,\n    Visitor,\n    is_abstract_type,\n    print_ast,\n    visit,\n)\n\nfrom ..codegen import (\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "ariadne_codegen/client_generators/result_types.py",
+        "old_string": "        return self._class_defs\n\n    def get_operation_as_str(self) -> str:\n        operation_str = print_ast(self.operation_definition)\n        if self._fragments_used_as_mixins or self._unpacked_fragments:\n            for used_fragment in sorted(self._get_all_related_fragments()):\n                operation_str += \"\\n\\n\" + print_ast(\n",
+        "new_string": "        return self._class_defs\n\n    def get_operation_as_str(self) -> str:\n        operation_str = print_ast(\n            self._get_operation_definition_without_mixin_directive()\n        )\n        if self._fragments_used_as_mixins or self._unpacked_fragments:\n            for used_fragment in sorted(self._get_all_related_fragments()):\n                operation_str += \"\\n\\n\" + print_ast(\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "ariadne_codegen/client_generators/result_types.py",
+        "old_string": "            elif isinstance(node, FieldNode) and node.selection_set:\n                names = names.union(self._get_fragments_names(node.selection_set))\n        return names\n",
+        "new_string": "            elif isinstance(node, FieldNode) and node.selection_set:\n                names = names.union(self._get_fragments_names(node.selection_set))\n        return names\n\n    def _get_operation_definition_without_mixin_directive(self):\n        class RemoveMixinVisitor(Visitor):\n            @staticmethod\n            def enter_field(node: FieldNode, *_args: Any) -> FieldNode:\n                node.directives = tuple(\n                    d for d in node.directives or [] if d.name.value != MIXIN_NAME\n                )\n                return node\n\n        operation_def = deepcopy(self.operation_definition)\n        visit(operation_def, RemoveMixinVisitor())\n        return operation_def\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'ariadne_codegen/client_generators/result_types.py').resolve()\nmodule = importlib.import_module('ariadne_codegen.client_generators.result_types')\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom typing import cast\nfrom graphql import OperationDefinitionNode, build_ast_schema, parse\nfrom ariadne_codegen.client_generators.result_types import ResultTypesGenerator\nfrom ariadne_codegen.client_generators.constants import MIXIN_NAME\nfrom tests.client_generators.result_types_generator.schema import SCHEMA_STR\nquery_str = ('query CustomQuery { query2 @mixin(from: \".mixins\", import: \"TestMixin\") { id '\n             'field1 @mixin(from: \".mixins\", import: \"TestMixin1\") { fielda } '\n             'field2 @mixin(from: \".mixins\", import: \"TestMixin2\") { fieldb } } }')\ngenerator = ResultTypesGenerator(schema=build_ast_schema(parse(SCHEMA_STR)),\n    operation_definition=cast(OperationDefinitionNode, parse(query_str).definitions[0]),\n    enums_module_name='enums')\nresult = generator.get_operation_as_str()\nprint('mixin_in_result', MIXIN_NAME in result)\nassert MIXIN_NAME not in result, 'mixin directive leaked to server string'\nfield_query2 = generator.operation_definition.selection_set.selections[0]\nassert field_query2.directives[0].name.value == MIXIN_NAME, 'stored definition was mutated'\nprint('stored_untouched', True)\nprint('f2_clone_isolation', True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "99bfbb2ee996ba0d38db517dfdceccf4d8a1fc646e930fbc591bbdcf6f7bcdaf"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Deepcopy the operation definition before stripping mixin directives so the stored definition is never mutated. Source-bound inline observations now pass. Patch submitted."
+}

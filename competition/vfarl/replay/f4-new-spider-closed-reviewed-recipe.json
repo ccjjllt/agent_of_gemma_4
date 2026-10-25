@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Owner crawl timers; usage crawl lifetime; spider release must cancel active timeout tasks and stop the no-item timer. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "scrapy/extensions/closespider.py",
+        "start_line": 103,
+        "end_line": 128
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'scrapy/extensions/closespider.py').resolve()\ntry:\n module = importlib.import_module('scrapy.extensions.closespider')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom unittest import mock\nfrom scrapy.extensions.closespider import CloseSpider\next = CloseSpider.__new__(CloseSpider)\next.crawler = mock.Mock()\next.task = mock.Mock()\next.task.active.return_value = True\next.spider_closed(mock.Mock())\nprint('task_cancelled', ext.task.cancel.called)\nassert ext.task.cancel.called, 'release must cancel the active timeout task'\nprint('spider_closed_ok')\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "824a5b89c5e8104e4e0531f9c756be91af2adf9ef0b722d2b76d4fae4cc5d4b7"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "scrapy/extensions/closespider.py",
+        "old_string": "            self.crawler.engine.close_spider(spider, \"closespider_itemcount\")\n\n    def spider_closed(self, spider: Spider) -> None:\n        if task_no_item and task_no_item.running:\n            task_no_item.stop()\n        task = getattr(self, \"task\", None)\n        if task and task.active():\n            task.cancel()\n\n        task_no_item = getattr(self, \"task_no_item\", None)\n    def spider_opened_no_item(self, spider: Spider) -> None:\n        from twisted.internet import task\n\n",
+        "new_string": "            self.crawler.engine.close_spider(spider, \"closespider_itemcount\")\n\n    def spider_closed(self, spider: Spider) -> None:\n        task = getattr(self, \"task\", None)\n        if task and task.active():\n            task.cancel()\n\n        task_no_item = getattr(self, \"task_no_item\", None)\n        if task_no_item and task_no_item.running:\n            task_no_item.stop()\n\n    def spider_opened_no_item(self, spider: Spider) -> None:\n        from twisted.internet import task\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'scrapy/extensions/closespider.py').resolve()\ntry:\n module = importlib.import_module('scrapy.extensions.closespider')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom unittest import mock\nfrom scrapy.extensions.closespider import CloseSpider\next = CloseSpider.__new__(CloseSpider)\next.crawler = mock.Mock()\next.task = mock.Mock()\next.task.active.return_value = True\next.spider_closed(mock.Mock())\nprint('task_cancelled', ext.task.cancel.called)\nassert ext.task.cancel.called, 'release must cancel the active timeout task'\nprint('spider_closed_ok')\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "824a5b89c5e8104e4e0531f9c756be91af2adf9ef0b722d2b76d4fae4cc5d4b7"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored scrapy.CloseSpider.spider_closed release semantics (spider_closed_cancels_tasks_and_stops_no_item_timer). Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

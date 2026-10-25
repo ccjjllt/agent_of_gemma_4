@@ -1,0 +1,150 @@
+[
+  {
+    "role": "user",
+    "content": "You are evaluating a software engineering task for repository swesmith/python-hyper__h11.bed0dd4a.\n\nProblem Statement:\n# Connection state not properly validated when starting a new cycle\n\nI've found an issue with the `start_next_cycle()` method in the `ConnectionState` class. The method is supposed to reset the connection state to start a new request/response cycle, but it doesn't properly validate the current state before doing so.\n\n## Expected Result\n\nThe method should only reset the connection state if both client and server are in the DONE state, and should raise a `LocalProtocolError` otherwise.\n\n## Actual Result\n\nThe method resets the client and server states to IDLE individually if they are in the DONE state, without checking if both are in DONE state. This allows resetting the connection state when it's not in a reusable state.\n\n## Reproduction Steps\n\n```python\nfrom h11 import ConnectionState, Request, Response, EndOfMessage, ConnectionClosed\nfrom h11._events import _SWITCH_UPGRADE\nfrom h11._state import CLIENT, SERVER, IDLE, DONE\n\n# Create a connection state\ncs = ConnectionState()\n\n# Process a partial request/response cycle\ncs.process_event(CLIENT, Request)\ncs.process_event(CLIENT, EndOfMessage)\n\n# Try to start a new cycle when server is not in DONE state\n# This should raise an error but doesn't\ncs.start_next_cycle()\n\n# Check the states - client is now IDLE but server is still in its previous state\nprint(cs.states)  # Not both IDLE as expected\n```\n\nThe issue also affects cases where keep-alive is disabled or when a connection is closed, allowing state transitions that should be prohibited.\n\n## System Information\n\n- Python version: 3.10\n- h11 version: latest from main branch\n\nThis behavior breaks the HTTP connection state management and can lead to unexpected protocol errors when reusing connections that aren't in a proper state for reuse.\n\n## Task Budget (Session terminates when any budget is exhausted)\n- Time allowance: 60 minutes\n- Tool calls allowance: 100 calls\n- Max loop iterations: 500 turns\n\n## Execution Environment Rules\n- Single command timeout: 300 seconds (commands exceeding this fail without ending the session)\n- Command output limit: 5000 characters\n- File view limit: 150 lines per read_file call\n- File character limit: 10000 characters per read_file call\n- Environment is offline (no network/PyPI access). All repository and test dependencies are ALREADY pre-installed. Do NOT attempt to run pip install or download packages.\n\n## Instructions:\n0. All source code is under `/workspace`. Do NOT search outside `/workspace` (e.g. `/usr/`, `/wheels/`, system site-packages). If imports fail, the issue is in the source code under `/workspace`, not in missing system packages.\n1. Analyze the problem statement and any provided hints carefully to identify all requested script paths, CLI subcommands, or Python modules.\n2. Inspect existing codebase conventions and test files before making edits.\n3. Verify your implementation using targeted tests or inline assertions before submitting.\n4. Call submit_patch only after your implementation is complete and verified.\n5. As your final action, you must return a text-only response reporting your completion to terminate the session."
+  },
+  {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+      {
+        "id": "replay_0000",
+        "type": "function",
+        "function": {
+          "name": "get_status",
+          "arguments": "{}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "replay_0000",
+    "name": "get_status",
+    "content": "{\"status\": \"ok\", \"tool_calls_used\": 0, \"patch_submitted\": false, \"patch_size\": 0, \"tool_calls_remaining\": 100, \"max_tool_calls\": 100, \"time_seconds_remaining\": 3599.999860791955, \"max_time_minutes\": 60, \"agent_elapsed_seconds\": 0.0001402499619871378, \"max_turns\": 500, \"command_timeout_seconds\": 300}"
+  },
+  {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+      {
+        "id": "replay_0001",
+        "type": "function",
+        "function": {
+          "name": "read_file",
+          "arguments": "{\"filepath\": \"h11/_state.py\", \"start_line\": 347, \"end_line\": 376}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "replay_0001",
+    "name": "read_file",
+    "content": "{\"status\": \"ok\", \"filepath\": \"h11/_state.py\", \"content\": \"            # Tabular state-triggered transitions\\n            joint_state = (self.states[CLIENT], self.states[SERVER])\\n            changes = STATE_TRIGGERED_TRANSITIONS.get(joint_state, {})\\n            self.states.update(changes)\\n\\n            if self.states == start_states:\\n                # Fixed point reached\\n                return\\n\\n    def start_next_cycle(self) ->None:\\n        \\\"\\\"\\\"Reset the state machine to start a new request/response cycle.\\n    \\n        If the connection is currently healthy (both client and server in DONE state),\\n        this resets them to IDLE for a new request/response cycle.\\n    \\n        If the connection is not healthy (e.g., in MUST_CLOSE, CLOSED, ERROR, or\\n        SWITCHED_PROTOCOL states), this does nothing, since these are terminal states\\n        that shouldn't be reset.\\n        \\\"\\\"\\\"\\n        if self.states[CLIENT] is DONE:\\n            self.states[CLIENT] = IDLE\\n        if self.states[SERVER] is DONE:\\n            self.states[SERVER] = IDLE\\n        self._fire_state_triggered_transitions()\", \"start_line\": 347, \"end_line\": 370, \"total_lines\": 370, \"is_truncated\": false}"
+  },
+  {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+      {
+        "id": "replay_0002",
+        "type": "function",
+        "function": {
+          "name": "run_command",
+          "arguments": "{\"command\": \"python3 - <<'PYREPLAY'\\nfrom pathlib import Path\\nimport hashlib, importlib\\nexpected=(Path.cwd() / 'h11/_state.py').resolve()\\ntry:\\n module = importlib.import_module('h11._state')\\nexcept Exception as import_error:\\n traceback=import_error.__traceback__\\n while traceback is not None:\\n  file=traceback.tb_frame.f_globals.get('__file__')\\n  if file and Path(file).resolve()==expected:\\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\\n  traceback=traceback.tb_next\\n raise\\nactual=Path(module.__file__).resolve()\\nprint(\\\"source_binding\\\", str(actual), \\\"sha256\\\", hashlib.sha256(actual.read_bytes()).hexdigest())\\nassert actual == expected, (actual, expected)\\nfrom h11 import LocalProtocolError\\nfrom h11._state import ConnectionState, CLIENT, SERVER, CLOSED\\nst = ConnectionState()\\nst.states = {CLIENT: CLOSED, SERVER: CLOSED}\\ntry:\\n    st.start_next_cycle()\\n    raise SystemExit('expected LocalProtocolError')\\nexcept LocalProtocolError as e:\\n    print('reuse_guarded', e)\\n\\nPYREPLAY\"}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "replay_0002",
+    "name": "run_command",
+    "content": "{\"status\": \"error\", \"error_type\": \"CommandError\", \"error_message\": \"expected LocalProtocolError\\n\", \"details\": {\"stdout\": \"source_binding /Users/zhaohuaxiang/ccjjllt/agent_of_gemma_4/competition/vfarl/acquisition/f4-new/f4-cont/f4-new-reuse-guard-run-002/sandboxes/swegemma_sandbox_7a98a765-6ed/workspace/h11/_state.py sha256 d639494ed681a9a20ce7a2251a78c6cee9106358a19193d6ac33f04b66bf95df\\n\", \"stderr\": \"expected LocalProtocolError\\n\", \"exit_code\": 1}}"
+  },
+  {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+      {
+        "id": "replay_0003",
+        "type": "function",
+        "function": {
+          "name": "edit_file",
+          "arguments": "{\"filepath\": \"h11/_state.py\", \"old_string\": \"                # Fixed point reached\\n                return\\n\\n    def start_next_cycle(self) ->None:\\n        \\\"\\\"\\\"Reset the state machine to start a new request/response cycle.\\n    \\n        If the connection is currently healthy (both client and server in DONE state),\\n        this resets them to IDLE for a new request/response cycle.\\n    \\n        If the connection is not healthy (e.g., in MUST_CLOSE, CLOSED, ERROR, or\\n        SWITCHED_PROTOCOL states), this does nothing, since these are terminal states\\n        that shouldn't be reset.\\n        \\\"\\\"\\\"\\n        if self.states[CLIENT] is DONE:\\n            self.states[CLIENT] = IDLE\\n        if self.states[SERVER] is DONE:\\n            self.states[SERVER] = IDLE\\n        self._fire_state_triggered_transitions()\", \"new_string\": \"                # Fixed point reached\\n                return\\n\\n    def start_next_cycle(self) -> None:\\n        if self.states != {CLIENT: DONE, SERVER: DONE}:\\n            raise LocalProtocolError(\\n                f\\\"not in a reusable state. self.states={self.states}\\\"\\n            )\\n        # Can't reach DONE/DONE with any of these active, but still, let's be\\n        # sure.\\n        assert self.keep_alive\\n        assert not self.pending_switch_proposals\\n        self.states = {CLIENT: IDLE, SERVER: IDLE}\\n\"}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "replay_0003",
+    "name": "edit_file",
+    "content": "{\"status\": \"ok\", \"filepath\": \"h11/_state.py\", \"occurrences\": 1, \"strategy\": \"exact\", \"diff\": \"--- a/h11/_state.py\\n+++ b/h11/_state.py\\n@@ -353,18 +353,13 @@\\n                 # Fixed point reached\\n                 return\\n \\n-    def start_next_cycle(self) ->None:\\n-        \\\"\\\"\\\"Reset the state machine to start a new request/response cycle.\\n-    \\n-        If the connection is currently healthy (both client and server in DONE state),\\n-        this resets them to IDLE for a new request/response cycle.\\n-    \\n-        If the connection is not healthy (e.g., in MUST_CLOSE, CLOSED, ERROR, or\\n-        SWITCHED_PROTOCOL states), this does nothing, since these are terminal states\\n-        that shouldn't be reset.\\n-        \\\"\\\"\\\"\\n-        if self.states[CLIENT] is DONE:\\n-            self.states[CLIENT] = IDLE\\n-        if self.states[SERVER] is DONE:\\n-            self.states[SERVER] = IDLE\\n-        self._fire_state_triggered_transitions()+    def start_next_cycle(self) -> None:\\n+        if self.states != {CLIENT: DONE, SERVER: DONE}:\\n+            raise LocalProtocolError(\\n+                f\\\"not in a reusable state. self.states={self.states}\\\"\\n+            )\\n+        # Can't reach DONE/DONE with any of these active, but still, let's be\\n+        # sure.\\n+        assert self.keep_alive\\n+        assert not self.pending_switch_proposals\\n+        self.states = {CLIENT: IDLE, SERVER: IDLE}\\n\", \"is_truncated\": false}"
+  },
+  {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+      {
+        "id": "replay_0004",
+        "type": "function",
+        "function": {
+          "name": "run_command",
+          "arguments": "{\"command\": \"python3 - <<'PYREPLAY'\\nfrom pathlib import Path\\nimport hashlib, importlib\\nexpected=(Path.cwd() / 'h11/_state.py').resolve()\\ntry:\\n module = importlib.import_module('h11._state')\\nexcept Exception as import_error:\\n traceback=import_error.__traceback__\\n while traceback is not None:\\n  file=traceback.tb_frame.f_globals.get('__file__')\\n  if file and Path(file).resolve()==expected:\\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\\n  traceback=traceback.tb_next\\n raise\\nactual=Path(module.__file__).resolve()\\nprint(\\\"source_binding\\\", str(actual), \\\"sha256\\\", hashlib.sha256(actual.read_bytes()).hexdigest())\\nassert actual == expected, (actual, expected)\\nfrom h11 import LocalProtocolError\\nfrom h11._state import ConnectionState, CLIENT, SERVER, CLOSED\\nst = ConnectionState()\\nst.states = {CLIENT: CLOSED, SERVER: CLOSED}\\ntry:\\n    st.start_next_cycle()\\n    raise SystemExit('expected LocalProtocolError')\\nexcept LocalProtocolError as e:\\n    print('reuse_guarded', e)\\n\\nPYREPLAY\"}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "replay_0004",
+    "name": "run_command",
+    "content": "{\"status\": \"ok\", \"stdout\": \"source_binding /Users/zhaohuaxiang/ccjjllt/agent_of_gemma_4/competition/vfarl/acquisition/f4-new/f4-cont/f4-new-reuse-guard-run-002/sandboxes/swegemma_sandbox_7a98a765-6ed/workspace/h11/_state.py sha256 ff92c6fc1191f0509c1507813c7f93307826ffe07e1147160a74287fff578c51\\nreuse_guarded not in a reusable state. self.states={CLIENT: CLOSED, SERVER: CLOSED}\\n\", \"stderr\": \"\", \"exit_code\": 0}"
+  },
+  {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+      {
+        "id": "replay_0005",
+        "type": "function",
+        "function": {
+          "name": "get_status",
+          "arguments": "{}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "replay_0005",
+    "name": "get_status",
+    "content": "{\"status\": \"ok\", \"tool_calls_used\": 4, \"patch_submitted\": false, \"patch_size\": 0, \"tool_calls_remaining\": 96, \"max_tool_calls\": 100, \"time_seconds_remaining\": 3599.890183249954, \"max_time_minutes\": 60, \"agent_elapsed_seconds\": 0.10981783294118941, \"max_turns\": 500, \"command_timeout_seconds\": 300}"
+  },
+  {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+      {
+        "id": "replay_0006",
+        "type": "function",
+        "function": {
+          "name": "submit_patch",
+          "arguments": "{}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "replay_0006",
+    "name": "submit_patch",
+    "content": "{\"status\": \"ok\", \"patch_size\": 1415, \"files_changed\": 1}"
+  },
+  {
+    "role": "assistant",
+    "content": "Restored h11.ConnectionState.start_next_cycle release semantics (next_cycle_rejects_nonreusable_states). Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+  }
+]

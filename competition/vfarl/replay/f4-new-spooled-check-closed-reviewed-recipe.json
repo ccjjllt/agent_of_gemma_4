@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Owner spooled stream; usage any I/O op; release rule _checkClosed must raise ValueError only when the stream is closed, guarding post-release use. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "boltons/ioutils.py",
+        "start_line": 69,
+        "end_line": 89
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'boltons/ioutils.py').resolve()\ntry:\n module = importlib.import_module('boltons.ioutils')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom boltons.ioutils import SpooledBytesIO\nf = SpooledBytesIO()\nf.write(b'x')\nprint('write_open_ok')\nf.close()\ntry:\n    f.write(b'y')\n    raise SystemExit('expected ValueError')\nexcept ValueError:\n    print('write_closed_rejected')\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "d153adf4b4df71ae0b72ce9f4644e247ee6f68286168d3443c5cb6ef4404e060"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "boltons/ioutils.py",
+        "old_string": "\n    def _checkClosed(self, msg=None):\n        \"\"\"Raise a ValueError if file is closed\"\"\"\n        if not self.closed:\n            raise ValueError('I/O operation on open file.'\n                             if msg is None else msg)\n    @abstractmethod\n    def read(self, n=-1):\n",
+        "new_string": "\n    def _checkClosed(self, msg=None):\n        \"\"\"Raise a ValueError if file is closed\"\"\"\n        if self.closed:\n            raise ValueError('I/O operation on closed file.'\n                             if msg is None else msg)\n    @abstractmethod\n    def read(self, n=-1):\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'boltons/ioutils.py').resolve()\ntry:\n module = importlib.import_module('boltons.ioutils')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom boltons.ioutils import SpooledBytesIO\nf = SpooledBytesIO()\nf.write(b'x')\nprint('write_open_ok')\nf.close()\ntry:\n    f.write(b'y')\n    raise SystemExit('expected ValueError')\nexcept ValueError:\n    print('write_closed_rejected')\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "d153adf4b4df71ae0b72ce9f4644e247ee6f68286168d3443c5cb6ef4404e060"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored boltons.SpooledIOBase._checkClosed release semantics (closed_guard_raises_on_closed_stream). Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

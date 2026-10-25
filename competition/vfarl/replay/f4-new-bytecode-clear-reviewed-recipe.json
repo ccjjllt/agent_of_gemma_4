@@ -1,0 +1,65 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Owner bytecode cache directory; usage template compile lifetime (load/dump roundtrip); release clear() must remove every cached file, ignoring OSError. F2P exercises the load-roundtrip usage; the inline observation pins the clear() release. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/jinja2/bccache.py",
+        "start_line": 258,
+        "end_line": 285
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/jinja2/bccache.py').resolve()\ntry:\n module = importlib.import_module('jinja2.bccache')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('binding_ok')\nimport os, tempfile\nfrom jinja2 import DictLoader, Environment\nfrom jinja2.bccache import FileSystemBytecodeCache\nd = tempfile.mkdtemp(prefix='jinj clear'.replace(' ', ''))\nbcc = FileSystemBytecodeCache(d)\nenv = Environment(loader=DictLoader({'t.html': 'hello {{ 1 + 1 }}'}), bytecode_cache=bcc)\nassert env.get_template('t.html').render() == 'hello 2'\nassert env.get_template('t.html').render() == 'hello 2', 'usage must roundtrip through the cache'\nassert len(os.listdir(d)) > 0, 'usage must populate the cache dir'\nbcc.clear()\nassert os.listdir(d) == [], 'release clear must remove every cached file'\nprint('bytecode_clear_ok')\n"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "7007468a6e203906e992ef10cf111993f377767178bdf343fee87ef7b65834bd"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/jinja2/bccache.py",
+        "old_string": "    def _get_cache_filename(self, bucket: Bucket) -> str:\n        return os.path.join(self.directory, self.pattern % (bucket.key,))\n\n    def dump_bytecode(self, bucket: Bucket) -> None:",
+        "new_string": "    def _get_cache_filename(self, bucket: Bucket) -> str:\n        return os.path.join(self.directory, self.pattern % (bucket.key,))\n\n    def load_bytecode(self, bucket: Bucket) -> None:\n        filename = self._get_cache_filename(bucket)\n\n        # Don't test for existence before opening the file, since the\n        # file could disappear after the test before the open.\n        try:\n            f = open(filename, \"rb\")\n        except (FileNotFoundError, IsADirectoryError, PermissionError):\n            # PermissionError can occur on Windows when an operation is\n            # in progress, such as calling clear().\n            return\n\n        with f:\n            bucket.load_bytecode(f)\n\n    def dump_bytecode(self, bucket: Bucket) -> None:"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/jinja2/bccache.py",
+        "old_string": "            remove_silent()\n            raise\n\nclass MemcachedBytecodeCache(BytecodeCache):",
+        "new_string": "            remove_silent()\n            raise\n\n    def clear(self) -> None:\n        # imported lazily here because google app-engine doesn't support\n        # write access on the file system and the function does not exist\n        # normally.\n        from os import remove\n\n        files = fnmatch.filter(os.listdir(self.directory), self.pattern % (\"*\",))\n        for filename in files:\n            try:\n                remove(os.path.join(self.directory, filename))\n            except OSError:\n                pass\n\n\nclass MemcachedBytecodeCache(BytecodeCache):"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/jinja2/bccache.py').resolve()\ntry:\n module = importlib.import_module('jinja2.bccache')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('binding_ok')\nimport os, tempfile\nfrom jinja2 import DictLoader, Environment\nfrom jinja2.bccache import FileSystemBytecodeCache\nd = tempfile.mkdtemp(prefix='jinj clear'.replace(' ', ''))\nbcc = FileSystemBytecodeCache(d)\nenv = Environment(loader=DictLoader({'t.html': 'hello {{ 1 + 1 }}'}), bytecode_cache=bcc)\nassert env.get_template('t.html').render() == 'hello 2'\nassert env.get_template('t.html').render() == 'hello 2', 'usage must roundtrip through the cache'\nassert len(os.listdir(d)) > 0, 'usage must populate the cache dir'\nbcc.clear()\nassert os.listdir(d) == [], 'release clear must remove every cached file'\nprint('bytecode_clear_ok')\n"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "7007468a6e203906e992ef10cf111993f377767178bdf343fee87ef7b65834bd"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ]
+}

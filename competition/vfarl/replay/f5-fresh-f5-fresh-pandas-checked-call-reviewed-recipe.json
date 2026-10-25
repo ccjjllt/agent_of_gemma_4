@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "Call a good function, then a failing one, in order. Invocation must precede the errno gate and return. The bug gates on a result defined later so every call raises. The complete production-file delta is exactly the reviewed hunks inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "pandas/io/clipboard/__init__.py",
+        "start_line": 325,
+        "end_line": 337
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pandas.io.clipboard.__init__')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pandas/io/clipboard/__init__.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom pandas.io.clipboard import CheckedCall, PyperclipWindowsException\nimport errno\ndef bad():\n    raise OSError(errno.EINVAL, 'bad call')\ndef good(a, b):\n    return a + b\nseq = [CheckedCall(good)(1, 2)]\ntry:\n    CheckedCall(bad)()\n    seq.append('no-raise')\nexcept PyperclipWindowsException:\n    seq.append('WindowsException')\nprint('call_gate_sequence', seq)\nassert seq == [3, 'WindowsException'], seq\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "f754a34b4d8cc62f2125fce2e04edb7f27e6283af433b9be0adfc9e0b7f7b00d"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pandas/io/clipboard/__init__.py",
+        "old_string": "        super().__setattr__(\"f\", f)\n\n    def __call__(self, *args):\n        if not ret and get_errno():\n            raise PyperclipWindowsException(\"Error calling \" + self.f.__name__)\n        return ret\n        ret = self.f(*args)\n    def __setattr__(self, key, value):\n        setattr(self.f, key, value)\n",
+        "new_string": "        super().__setattr__(\"f\", f)\n\n    def __call__(self, *args):\n        ret = self.f(*args)\n        if not ret and get_errno():\n            raise PyperclipWindowsException(\"Error calling \" + self.f.__name__)\n        return ret\n\n    def __setattr__(self, key, value):\n        setattr(self.f, key, value)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pandas.io.clipboard.__init__')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pandas/io/clipboard/__init__.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom pandas.io.clipboard import CheckedCall, PyperclipWindowsException\nimport errno\ndef bad():\n    raise OSError(errno.EINVAL, 'bad call')\ndef good(a, b):\n    return a + b\nseq = [CheckedCall(good)(1, 2)]\ntry:\n    CheckedCall(bad)()\n    seq.append('no-raise')\nexcept PyperclipWindowsException:\n    seq.append('WindowsException')\nprint('call_gate_sequence', seq)\nassert seq == [3, 'WindowsException'], seq\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "f754a34b4d8cc62f2125fce2e04edb7f27e6283af433b9be0adfc9e0b7f7b00d"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Call a good function, then a failing one, in order. Invocation must precede the errno gate and return. The bug gates on a result defined later so every call raises. The source-bound reproduction passes after the repair. Patch submitted."
+}

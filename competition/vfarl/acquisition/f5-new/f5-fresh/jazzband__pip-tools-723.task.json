@@ -1,0 +1,117 @@
+{
+  "row": {
+    "base_commit": "49efbec42ba941b7e3cc56770d916b05ec425076",
+    "created_at": "2019-01-25 23:31:32",
+    "image_name": "docker.io/swerebenchv2/jazzband-pip-tools:723-49efbec",
+    "instance_id": "jazzband__pip-tools-723",
+    "interface": "Function: sync(to_install, to_uninstall, verbose=False, dry_run=False, pip_flags=None, install_flags=None)\nLocation: piptools/sync.py\nInputs: \n- **to_install**: set of `InstallRequirement` objects representing packages that should be installed.\n- **to_uninstall**: set of `InstallRequirement` objects representing packages that should be removed.\n- **verbose** (optional): bool flag enabling verbose pip output.\n- **dry_run** (optional): bool flag that prevents actual installation/uninstallation.\n- **pip_flags** (optional): list of additional command‑line flags passed to the `pip` subprocess.\n- **install_flags** (optional): list of extra flags used when invoking `pip install`.\nOutputs: \n- Returns `0` on success (int exit code).  \n- Side‑effects: writes a temporary requirements file, invokes `subprocess.check_call` to run `pip install -r <tmp_file>`, and finally deletes the temporary file via `os.unlink(tmp_file.name)`. If the temporary file cannot be created or deleted, the corresponding exception propagates.\nDescription: \nExecutes a synchronization operation that installs the packages in **to_install** and uninstalls those in **to_uninstall** using a generated temporary requirements file. After the pip command runs, the temporary file is always removed, ensuring no leftover files on any platform (including Windows). Use this function to implement the `pip‑sync` command or programmatic equivalent.\n",
+    "language": "python",
+    "license": "BSD-3-Clause",
+    "patch": "diff --git a/piptools/sync.py b/piptools/sync.py\nindex 619ada0..614fa01 100644\n--- a/piptools/sync.py\n+++ b/piptools/sync.py\n@@ -163,9 +163,13 @@ def sync(to_install, to_uninstall, verbose=False, dry_run=False, pip_flags=None,\n                 req_lines.append(format_requirement(ireq, hashes=ireq_hashes))\n \n             # save requirement lines to a temporary file\n-            with tempfile.NamedTemporaryFile(mode='wt') as tmp_req_file:\n-                tmp_req_file.write('\\n'.join(req_lines))\n-                tmp_req_file.flush()\n+            tmp_req_file = tempfile.NamedTemporaryFile(mode='wt', delete=False)\n+            tmp_req_file.write('\\n'.join(req_lines))\n+            tmp_req_file.close()\n \n+            try:\n                 check_call([pip, 'install', '-r', tmp_req_file.name] + pip_flags + install_flags)\n+            finally:\n+                os.unlink(tmp_req_file.name)\n+\n     return 0\n",
+    "pr_description": "Fix sync with a temp file on Windows\nFixes #722\r\n\r\n<!--- Describe the changes here. --->\r\n\r\n**Changelog-friendly one-liner**: Fix sync with a temporary requirement file on Windows\r\n\r\n##### Contributor checklist\r\n\r\n- [X] Provided the tests for the changes\r\n- [X] Requested (or received) a review from another contributor\r\n- [X] Gave a clear one-line description in the PR (that the maintainers can add to CHANGELOG.md afterwards).\r\n",
+    "problem_statement": "pip-sync broken on Windows\nCalling pip-sync on Windows returns:\r\n```\r\nCould not open requirements file: [Errno 13] Permission denied: 'c:\\\\users\\\\<username>\\\\appdata\\\\local\\\\temp\\\\tmpe9jswo'\r\n```\r\n\r\nThis was introduced in 3.3.1 by the change to using `tempfile.NamedTemporaryFile` in [sync.py](https://github.com/jazzband/pip-tools/blob/3.3.1/piptools/sync.py#L167) to create the requirements file before passing it to `pip install` via `subprocess.check_call`. This is caused by Windows requiring reopened temporary files to be opened with the `O_TEMPORARY`  flag. For context see https://stackoverflow.com/a/15235559. \r\n\r\n##### Environment Versions\r\n\r\n1. OS Type: Windows 10\r\n1. Python version: Python 2.7.12\r\n1. pip version: pip 9.0.3\r\n1. pip-tools version: pip-compile, version 3.3.1\r\n\r\n##### Steps to replicate\r\n\r\n1. `pip-sync -r <requirements_file>`\r\n\r\n##### Expected result\r\n\r\nCommand should complete successfully.\r\n\r\n##### Actual result\r\n\r\n```\r\nCould not open requirements file: [Errno 13] Permission denied: 'c:\\\\users\\\\<username>\\\\appdata\\\\local\\\\temp\\\\tmpe9jswo'\r\n```\r\n",
+    "repo": "jazzband/pip-tools",
+    "test_patch": "diff --git a/tests/test_sync.py b/tests/test_sync.py\nindex 51d7efd..32e820b 100644\n--- a/tests/test_sync.py\n+++ b/tests/test_sync.py\n@@ -12,10 +12,16 @@ from piptools.sync import dependency_tree, diff, merge, sync\n \n \n @pytest.fixture\n-def mocked_tmp_req_file():\n+def mocked_tmp_file():\n     with mock.patch.object(tempfile, 'NamedTemporaryFile') as m:\n-        m.return_value.__enter__.return_value.name = 'requirements.txt'\n-        yield m.return_value.__enter__.return_value\n+        yield m.return_value\n+\n+\n+@pytest.fixture\n+def mocked_tmp_req_file(mocked_tmp_file):\n+    with mock.patch('os.unlink'):\n+        mocked_tmp_file.name = 'requirements.txt'\n+        yield mocked_tmp_file\n \n \n @pytest.mark.parametrize(\n@@ -227,6 +233,16 @@ def test_sync_install_temporary_requirement_file(from_line, from_editable, mocke\n         check_call.assert_called_once_with(['pip', 'install', '-r', mocked_tmp_req_file.name, '-q'])\n \n \n+def test_temporary_requirement_file_deleted(from_line, from_editable, mocked_tmp_file):\n+    with mock.patch('piptools.sync.check_call'):\n+        to_install = {from_line('django==1.8')}\n+\n+        with mock.patch('os.unlink') as unlink:\n+            sync(to_install, set())\n+\n+            unlink.assert_called_once_with(mocked_tmp_file.name)\n+\n+\n def test_sync_requirement_file(from_line, from_editable, mocked_tmp_req_file):\n     with mock.patch('piptools.sync.check_call'):\n         to_install = {\n",
+    "FAIL_TO_PASS": [
+      "tests/test_sync.py::test_temporary_requirement_file_deleted",
+      "tests/test_sync.py::test_sync_requirement_file",
+      "tests/test_sync.py::test_sync_requirement_file_with_hashes"
+    ],
+    "PASS_TO_PASS": [
+      "tests/test_sync.py::test_dependency_tree[installed0-pip-tools-expected0]",
+      "tests/test_sync.py::test_dependency_tree[installed1-pip-tools-expected1]",
+      "tests/test_sync.py::test_dependency_tree[installed2-pip-tools-expected2]",
+      "tests/test_sync.py::test_dependency_tree[installed3-pip-tools-expected3]",
+      "tests/test_sync.py::test_dependency_tree[installed4-pip-tools-expected4]",
+      "tests/test_sync.py::test_dependency_tree[installed5-root-expected5]",
+      "tests/test_sync.py::test_dependency_tree[installed6-root-expected6]",
+      "tests/test_sync.py::test_merge_detect_conflicts",
+      "tests/test_sync.py::test_merge_ignore_conflicts",
+      "tests/test_sync.py::test_merge",
+      "tests/test_sync.py::test_diff_should_do_nothing",
+      "tests/test_sync.py::test_diff_should_install",
+      "tests/test_sync.py::test_diff_should_uninstall",
+      "tests/test_sync.py::test_diff_should_not_uninstall",
+      "tests/test_sync.py::test_diff_should_update",
+      "tests/test_sync.py::test_diff_should_install_with_markers",
+      "tests/test_sync.py::test_diff_should_uninstall_with_markers",
+      "tests/test_sync.py::test_diff_leave_packaging_packages_alone",
+      "tests/test_sync.py::test_diff_leave_piptools_alone",
+      "tests/test_sync.py::test_diff_with_editable"
+    ],
+    "install_config": {
+      "base_image_name": "python_base_37",
+      "docker_specs": {
+        "_variant": null,
+        "bazel_version": null,
+        "bun_version": null,
+        "cargo_version": null,
+        "deno_version": null,
+        "docker_version": null,
+        "erlang_version": null,
+        "gcc_version": null,
+        "go_version": null,
+        "helm_version": null,
+        "java_version": null,
+        "jdk_version": null,
+        "llvm_version": null,
+        "lua_version": null,
+        "luajit_version": null,
+        "neovim_version": null,
+        "node_version": null,
+        "npm_version": null,
+        "nvim_version": null,
+        "pnpm_version": null,
+        "python_image": "python_base_37",
+        "python_version": null,
+        "redis_version": null,
+        "ruby_version": null,
+        "rust_version": null,
+        "rustc_version": null,
+        "solana_version": null,
+        "sqlite_version": null
+      },
+      "install": [
+        "pip install -q pip==19.0",
+        "pip install -q -e . mock pytest wheel"
+      ],
+      "log_parser": "parse_log_pytest",
+      "test_cmd": "pytest --no-header -rA --tb=line --color=no -p no:cacheprovider -W ignore::DeprecationWarning tests/test_sync.py"
+    },
+    "meta": {
+      "llm_metadata": {
+        "code": "A",
+        "confidence": 0.96,
+        "detected_issues": {
+          "B1": false,
+          "B2": false,
+          "B3": false,
+          "B4": false,
+          "B5": false,
+          "B6": false
+        },
+        "difficulty": "easy",
+        "external_urls": [
+          "https://github.com/jazzband/pip-tools/blob/3.3.1/piptools/sync.py#L167",
+          "https://stackoverflow.com/a/15235559"
+        ],
+        "intent_completeness": "complete",
+        "pr_categories": [
+          "minor_bug"
+        ],
+        "reasoning": "The issue reports that pip-sync fails on Windows because NamedTemporaryFile deletes the file on close, causing a permission error. The tests verify that the temporary file is created with a persistent name, passed to pip, and then explicitly deleted, matching the described fix. No test‑suite coupling, implicit naming, missing specs, or hidden dependencies are present, so the task is clearly specified and solvable.",
+        "test_alignment_issues": []
+      },
+      "num_modified_files": 1,
+      "num_modified_lines": 7,
+      "pr_author": "atugushev",
+      "pr_labels": [
+        "Bug Fix: "
+      ],
+      "pr_url": null
+    }
+  },
+  "row_idx": 53,
+  "source_page": "parquet nebius/SWE-rebench-V2 train rows",
+  "revision": "10483de0f50fe5da545942705a76c6150171af7f"
+}

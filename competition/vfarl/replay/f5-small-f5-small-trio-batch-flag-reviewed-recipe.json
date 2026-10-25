@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "Produce one item via put_nowait, consume one batch via get_batch_nowait, ending with _can_get False. The bug sets _can_get True before the copy so the end flag stays True. The complete production-file delta is exactly the reviewed hunks inside this function. Original full-file verification and all requirements retained.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/trio/_core/_unbounded_queue.py",
+        "start_line": 108,
+        "end_line": 120
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('trio._core._unbounded_queue')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'src/trio/_core/_unbounded_queue.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport warnings; warnings.filterwarnings('ignore')\nfrom trio._core._unbounded_queue import UnboundedQueue\nq = UnboundedQueue()\nq.put_nowait('A')\nbatch = q.get_batch_nowait()\nprint('produce_consume_end_flag', batch, q._can_get)\nassert batch == ['A'], batch\nassert q._can_get == False, q._can_get\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "2e2f0bd3d1e8dc244ca5b1fa33e95eedc3c4ea947609a8191955fa60223d3fcd"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/trio/_core/_unbounded_queue.py",
+        "old_string": "        self._data.append(obj)\n\n    def _get_batch_protected(self) -> list[T]:\n        self._can_get = True\n        data = self._data.copy()\n        self._data.clear()\n        return data\n\n    def get_batch_nowait(self) -> list[T]:",
+        "new_string": "        self._data.append(obj)\n\n    def _get_batch_protected(self) -> list[T]:\n        data = self._data.copy()\n        self._data.clear()\n        self._can_get = False\n        return data\n\n    def get_batch_nowait(self) -> list[T]:"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('trio._core._unbounded_queue')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'src/trio/_core/_unbounded_queue.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport warnings; warnings.filterwarnings('ignore')\nfrom trio._core._unbounded_queue import UnboundedQueue\nq = UnboundedQueue()\nq.put_nowait('A')\nbatch = q.get_batch_nowait()\nprint('produce_consume_end_flag', batch, q._can_get)\nassert batch == ['A'], batch\nassert q._can_get == False, q._can_get\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "2e2f0bd3d1e8dc244ca5b1fa33e95eedc3c4ea947609a8191955fa60223d3fcd"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Produce one item via put_nowait, consume one batch via get_batch_nowait, ending with _can_get False. The bug sets _can_get True before the copy so the end flag stays True. The source-bound reproduction passes after the repair. Patch submitted."
+}

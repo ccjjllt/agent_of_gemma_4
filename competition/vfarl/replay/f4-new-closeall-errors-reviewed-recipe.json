@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Owner tracked socket set; usage dialing lifetime; exit must close every socket and surface close errors faithfully (single error raised as-is, many as ExceptionGroup). SPLIT-FAMILY with close_all_releases_every_tracked_socket. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/trio/_highlevel_open_tcp_stream.py",
+        "start_line": 117,
+        "end_line": 144
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/trio/_highlevel_open_tcp_stream.py').resolve()\ntry:\n module = importlib.import_module('trio._highlevel_open_tcp_stream')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom unittest import mock\nfrom trio._highlevel_open_tcp_stream import close_all\nm = mock.Mock()\nm.close.side_effect = OSError('boom')\ntry:\n    with close_all() as tracked:\n        tracked.add(m)\n    raise SystemExit('expected OSError')\nexcept OSError as e:\n    print('single_error', e)\n    assert str(e) == 'boom'\nm1, m2 = mock.Mock(), mock.Mock()\nm1.close.side_effect = OSError('one')\nm2.close.side_effect = OSError('two')\ntry:\n    with close_all() as tracked:\n        tracked.add(m1)\n        tracked.add(m2)\n    raise SystemExit('expected ExceptionGroup')\nexcept BaseExceptionGroup as e:\n    print('grouped', type(e).__name__, len(e.exceptions))\n    assert len(e.exceptions) == 2\nprint('closeall_errors_ok')\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "3f8de95afaf8dec2d6c278bb1a26995bed0f28636a11c76f07c7421baee655fe"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/trio/_highlevel_open_tcp_stream.py",
+        "old_string": "        yield sockets_to_close\n    finally:\n        errs = []\n        for sock in list(sockets_to_close):\n            try:\n                sock.close()\n            except Exception as exc:\n                pass\n        if len(errs) == 1:\n            raise ValueError(\"Single socket error\") from errs[0]\n        elif errs:\n            raise ExceptionGroup(\"Multiple socket errors encountered\", errs)\n\n\n# Explicit \"Any\" is not allowed\n",
+        "new_string": "        yield sockets_to_close\n    finally:\n        errs = []\n        for sock in sockets_to_close:\n            try:\n                sock.close()\n            except BaseException as exc:\n                errs.append(exc)\n        if len(errs) == 1:\n            raise errs[0]\n        elif errs:\n            raise BaseExceptionGroup(\"\", errs)\n\n\n# Explicit \"Any\" is not allowed\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/trio/_highlevel_open_tcp_stream.py').resolve()\ntry:\n module = importlib.import_module('trio._highlevel_open_tcp_stream')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom unittest import mock\nfrom trio._highlevel_open_tcp_stream import close_all\nm = mock.Mock()\nm.close.side_effect = OSError('boom')\ntry:\n    with close_all() as tracked:\n        tracked.add(m)\n    raise SystemExit('expected OSError')\nexcept OSError as e:\n    print('single_error', e)\n    assert str(e) == 'boom'\nm1, m2 = mock.Mock(), mock.Mock()\nm1.close.side_effect = OSError('one')\nm2.close.side_effect = OSError('two')\ntry:\n    with close_all() as tracked:\n        tracked.add(m1)\n        tracked.add(m2)\n    raise SystemExit('expected ExceptionGroup')\nexcept BaseExceptionGroup as e:\n    print('grouped', type(e).__name__, len(e.exceptions))\n    assert len(e.exceptions) == 2\nprint('closeall_errors_ok')\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "3f8de95afaf8dec2d6c278bb1a26995bed0f28636a11c76f07c7421baee655fe"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored trio.close_all release semantics (close_all_surfaces_close_errors_faithfully). Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

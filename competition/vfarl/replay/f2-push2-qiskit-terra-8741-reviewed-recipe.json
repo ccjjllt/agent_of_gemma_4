@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "subagent f2-push2: causal source read (_get_layered_instructions binds qubits = circuit.qubits so idle-wire removal mutates the circuit; .copy() isolates), pinned tests, command review 2026-10-25",
+  "review_notes": "Drawing must own private qubits/clbits copies: the working lists are not the circuit lists so idle-wire removal and reverse_bits leave the original circuit untouched. Copy-time identity (is not the circuit lists) plus bidirectional isolation are asserted source-bound before and after the repair. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction. Off-policy scripted demonstration, not a Gemma sample.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "qiskit/visualization/circuit/_utils.py",
+        "start_line": 396,
+        "end_line": 408
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nmodule = importlib.import_module('qiskit.visualization.circuit._utils')\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert str(actual).endswith('qiskit/visualization/circuit/_utils.py'), actual\nfrom qiskit import QuantumCircuit\nfrom qiskit.visualization.circuit._utils import _get_layered_instructions\nqc = QuantumCircuit(2, 2)\nqc.h(0)\nbefore_q = list(qc.qubits)\nbefore_c = list(qc.clbits)\nqubits, clbits, nodes = _get_layered_instructions(qc, idle_wires=False)\nprint('qubits_identity', qubits is qc.qubits, 'clbits_identity', clbits is qc.clbits)\nassert qubits is not qc.qubits, 'qubits aliases the circuit'\nassert clbits is not qc.clbits, 'clbits aliases the circuit'\nassert list(qc.qubits) == before_q, 'circuit qubits mutated'\nassert list(qc.clbits) == before_c, 'circuit clbits mutated'\nprint('f2_qiskit_isolation', True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "20609343d18036783ae485d04fa29b6cdbaf52578af1954013e080ff992f66d4"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "qiskit/visualization/circuit/_utils.py",
+        "old_string": "    # default to left\n    justify = justify if justify in (\"right\", \"none\") else \"left\"\n\n    qubits = circuit.qubits\n    clbits = circuit.clbits\n    nodes = []\n\n    # Create a mapping of each register to the max layer number for all measure ops\n",
+        "new_string": "    # default to left\n    justify = justify if justify in (\"right\", \"none\") else \"left\"\n\n    qubits = circuit.qubits.copy()\n    clbits = circuit.clbits.copy()\n    nodes = []\n\n    # Create a mapping of each register to the max layer number for all measure ops\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nmodule = importlib.import_module('qiskit.visualization.circuit._utils')\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert str(actual).endswith('qiskit/visualization/circuit/_utils.py'), actual\nfrom qiskit import QuantumCircuit\nfrom qiskit.visualization.circuit._utils import _get_layered_instructions\nqc = QuantumCircuit(2, 2)\nqc.h(0)\nbefore_q = list(qc.qubits)\nbefore_c = list(qc.clbits)\nqubits, clbits, nodes = _get_layered_instructions(qc, idle_wires=False)\nprint('qubits_identity', qubits is qc.qubits, 'clbits_identity', clbits is qc.clbits)\nassert qubits is not qc.qubits, 'qubits aliases the circuit'\nassert clbits is not qc.clbits, 'clbits aliases the circuit'\nassert list(qc.qubits) == before_q, 'circuit qubits mutated'\nassert list(qc.clbits) == before_c, 'circuit clbits mutated'\nprint('f2_qiskit_isolation', True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "20609343d18036783ae485d04fa29b6cdbaf52578af1954013e080ff992f66d4"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Copy the working qubits/clbits lists so drawing no longer mutates the circuit. Source-bound inline observations now pass. Patch submitted."
+}

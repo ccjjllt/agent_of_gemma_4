@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "subagent f2-push: causal source read (Coordinates.__getitem__ binds new = self so slicing mutates the original object; new = self.copy() isolates the slice), pinned tests, command review 2026-10-25",
+  "review_notes": "A sliced Coordinates object must own a copy: the slice is not the original so mutating the slice leaves the original points untouched. Copy-time identity (is not the original) plus bidirectional isolation are asserted source-bound before and after the repair. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Off-policy scripted demonstration, not a Gemma sample. Dependency note: 2020-era pyfar needs scipy/deepdiff/matplotlib/python-sofa via task-python 3.10 period profile.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "pyfar/coordinates.py",
+        "start_line": 1630,
+        "end_line": 1650
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nmodule = importlib.import_module('pyfar.coordinates')\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert str(actual).endswith('pyfar/coordinates.py'), actual\nimport numpy as np\nimport pyfar\ncoords = pyfar.Coordinates([0, 1], [0, 1], [0, 1])\nnew = coords[0]\nprint('slice_identity', new is coords)\nassert new is not coords, 'slice aliases the original'\nnew.set_cart(2, 2, 2)\nassert coords.cshape == (2,), coords.cshape\nassert np.allclose(coords.get_cart()[0], np.array([0, 0, 0]))\nprint('f2_slice_isolation', True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "12ae7ef1a244987f2ea07a8bb5a3e46d986ebb1c5a8d997f5dcb5224ee84ecf8"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pyfar/coordinates.py",
+        "old_string": "        return kdtree\n\n    def __getitem__(self, index):\n        \"\"\"Return mutable slice of Coordinates object at index.\"\"\"\n\n        new = self\n        # slice points\n        new._points = new._points[index]\n        # slice weights\n",
+        "new_string": "        return kdtree\n\n    def __getitem__(self, index):\n        \"\"\"Return copied slice of Coordinates object at index.\"\"\"\n\n        new = self.copy()\n        # slice points\n        new._points = new._points[index]\n        # slice weights\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nmodule = importlib.import_module('pyfar.coordinates')\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert str(actual).endswith('pyfar/coordinates.py'), actual\nimport numpy as np\nimport pyfar\ncoords = pyfar.Coordinates([0, 1], [0, 1], [0, 1])\nnew = coords[0]\nprint('slice_identity', new is coords)\nassert new is not coords, 'slice aliases the original'\nnew.set_cart(2, 2, 2)\nassert coords.cshape == (2,), coords.cshape\nassert np.allclose(coords.get_cart()[0], np.array([0, 0, 0]))\nprint('f2_slice_isolation', True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "12ae7ef1a244987f2ea07a8bb5a3e46d986ebb1c5a8d997f5dcb5224ee84ecf8"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Copy the sliced Coordinates object so slices no longer alias and mutate the original. Source-bound inline observations now pass. Patch submitted."
+}

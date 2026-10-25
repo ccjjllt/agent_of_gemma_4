@@ -1,0 +1,363 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "subagent f2-push4: causal source read (download_all consumed the caller SearchResult via products.remove; per-call products[:] snapshot isolates; same-issue sibling rows 254/260 share the fix hunk, COLLIDE-family; pinned tests, command review 2026-10-25)",
+  "review_notes": "download_all must own its working sequence: the working products list is not the caller SearchResult, so per-product removal stays invisible to the caller. Copy-time identity (snapshot is not the caller object) plus caller intactness are asserted source-bound before and after the repair. The real production retry/consume loop executes in both phases; only the leaf network download is stubbed (offline sandbox). Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Off-policy scripted demonstration, not a Gemma sample. Geo stack via task-site-packages-eodag; parent .venv otherwise.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "eodag/plugins/download/base.py",
+        "start_line": 242,
+        "end_line": 262
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nmodule = importlib.import_module('eodag.plugins.download.base')\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert str(actual).endswith('eodag/plugins/download/base.py'), actual\nfrom types import SimpleNamespace\nfrom eodag.plugins.download.base import Download\nfrom eodag.api.search_result import SearchResult\ndef make_product(i):\n    return SimpleNamespace(next_try=None, downloader=SimpleNamespace(config=SimpleNamespace()), downloader_auth=None, remote_location='http://example.com/x', properties={'title': 'p%d' % i})\nstub = SimpleNamespace(provider='stub', download=lambda product, **kw: '/tmp/stub-product.zip')\ncaller = SearchResult([make_product(i) for i in range(3)])\nn_before = len(caller)\nsnap = caller[:]\nprint('snapshot_is_not_caller', snap is not caller)\nassert snap is not caller\npaths = Download.download_all(stub, caller, wait=0, timeout=0)\nprint('caller_len_after', len(caller), 'paths', len(paths))\nassert len(paths) >= 1\nassert len(caller) == n_before, 'side effect: caller sequence consumed by download_all'\nprint('f2_download_isolation', True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "a459bd1304d338636f769d619272d41c61febe26fb244ed6d45588bfe718ea42"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "eodag/api/core.py",
+        "old_string": "    _deprecated,\n    get_geometry_from_various,\n    makedirs,\n)\nfrom eodag.utils.exceptions import (\n    NoMatchingProductType,\n",
+        "new_string": "    _deprecated,\n    get_geometry_from_various,\n    makedirs,\n    uri_to_path,\n)\nfrom eodag.utils.exceptions import (\n    NoMatchingProductType,\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "eodag/api/core.py",
+        "old_string": "                if results is None:\n                    results = searcher.search(query, limit=None)\n                else:\n                    results.upgrade_and_extend(searcher.search(query))\n            guesses = [r[\"ID\"] for r in results or []]\n        if guesses:\n            return guesses\n",
+        "new_string": "                if results is None:\n                    results = searcher.search(query, limit=None)\n                else:\n                    results.upgrade_and_extend(searcher.search(query, limit=None))\n            guesses = [r[\"ID\"] for r in results or []]\n        if guesses:\n            return guesses\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "eodag/api/core.py",
+        "old_string": "        if product_type is None:\n            try:\n                guesses = self.guess_product_type(**kwargs)\n                # By now, only use the best bet\n                product_type = guesses[0]\n            except NoMatchingProductType:\n",
+        "new_string": "        if product_type is None:\n            try:\n                guesses = self.guess_product_type(**kwargs)\n\n                # guess_product_type raises a NoMatchingProductType error if no product\n                # is found. Here, the supported search params are removed from the\n                # kwargs if present, not to propagate them to the query itself.\n                for param in (\n                    \"instrument\",\n                    \"platform\",\n                    \"platformSerialIdentifier\",\n                    \"processingLevel\",\n                    \"sensorType\",\n                ):\n                    kwargs.pop(param, None)\n\n                # By now, only use the best bet\n                product_type = guesses[0]\n            except NoMatchingProductType:\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "eodag/api/core.py",
+        "old_string": "        This is an alias to the method of the same name on\n        :class:`~eodag.api.product.EOProduct`, but it performs some additional\n        checks like verifying that a downloader and authenticator are registered\n        for the product before trying to download it. If the metadata mapping for\n        `downloadLink` is set to something that can be interpreted as a link on a\n        local filesystem, the download is skipped (by now, only a link starting\n        with `file://` is supported). Therefore, any user that knows how to extract\n        product location from product metadata on a provider can override the\n",
+        "new_string": "        This is an alias to the method of the same name on\n        :class:`~eodag.api.product.EOProduct`, but it performs some additional\n        checks like verifying that a downloader and authenticator are registered\n        for the product before trying to download it.\n\n        If the metadata mapping for `downloadLink` is set to something that can be\n        interpreted as a link on a\n        local filesystem, the download is skipped (by now, only a link starting\n        with `file://` is supported). Therefore, any user that knows how to extract\n        product location from product metadata on a provider can override the\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "eodag/api/core.py",
+        "old_string": "        :rtype: str\n        :raises: :class:`~eodag.utils.exceptions.PluginImplementationError`\n        :raises: :class:`RuntimeError`\n        \"\"\"\n        if product.location.startswith(\"file\"):\n            logger.info(\"Local product detected. Download skipped\")\n            return product.location\n        if product.downloader is None:\n            auth = product.downloader_auth\n            if auth is None:\n",
+        "new_string": "        :rtype: str\n        :raises: :class:`~eodag.utils.exceptions.PluginImplementationError`\n        :raises: :class:`RuntimeError`\n\n        .. versionchanged:: 2.3.0\n\n           Returns a file system path instead of a file URI ('/tmp' instead of\n           'file:///tmp').\n        \"\"\"\n        if product.location.startswith(\"file://\"):\n            logger.info(\"Local product detected. Download skipped\")\n            return uri_to_path(product.location)\n        if product.downloader is None:\n            auth = product.downloader_auth\n            if auth is None:\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "eodag/api/product/_product.py",
+        "old_string": "        :rtype: str\n        :raises: :class:`~eodag.utils.exceptions.PluginImplementationError`\n        :raises: :class:`RuntimeError`\n        \"\"\"\n        if progress_callback is None:\n            progress_callback = ProgressCallback()\n",
+        "new_string": "        :rtype: str\n        :raises: :class:`~eodag.utils.exceptions.PluginImplementationError`\n        :raises: :class:`RuntimeError`\n\n        .. versionchanged:: 2.3.0\n\n           Returns a file system path instead of a file URI ('/tmp' instead of\n           'file:///tmp').\n        \"\"\"\n        if progress_callback is None:\n            progress_callback = ProgressCallback()\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "eodag/api/product/_product.py",
+        "old_string": "            if self.downloader_auth is not None\n            else self.downloader_auth\n        )\n        fs_location = self.downloader.download(\n            self,\n            auth=auth,\n            progress_callback=progress_callback,\n",
+        "new_string": "            if self.downloader_auth is not None\n            else self.downloader_auth\n        )\n        fs_path = self.downloader.download(\n            self,\n            auth=auth,\n            progress_callback=progress_callback,\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "eodag/api/product/_product.py",
+        "old_string": "            timeout=timeout,\n            **kwargs\n        )\n        if fs_location is None:\n            raise DownloadError(\n                \"Invalid file location returned by download process: '{}'\".format(\n                    fs_location\n                )\n            )\n        self.location = \"file://{}\".format(fs_location)\n        logger.debug(\n            \"Product location updated from '%s' to '%s'\",\n            self.remote_location,\n",
+        "new_string": "            timeout=timeout,\n            **kwargs\n        )\n        if fs_path is None:\n            raise DownloadError(\"Missing file location returned by download process\")\n        logger.debug(\n            \"Product location updated from '%s' to '%s'\",\n            self.remote_location,\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "eodag/api/product/_product.py",
+        "old_string": "            \"'remote_location' property: %s\",\n            self.remote_location,\n        )\n        return self.location\n\n    def get_quicklook(self, filename=None, base_dir=None, progress_callback=None):\n        \"\"\"Download the quick look image of a given EOProduct from its provider if it\n",
+        "new_string": "            \"'remote_location' property: %s\",\n            self.remote_location,\n        )\n        return fs_path\n\n    def get_quicklook(self, filename=None, base_dir=None, progress_callback=None):\n        \"\"\"Download the quick look image of a given EOProduct from its provider if it\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "eodag/plugins/apis/base.py",
+        "old_string": "import logging\n\nfrom eodag.plugins.base import PluginTopic\n\nlogger = logging.getLogger(\"eodag.plugins.apis.base\")\n\n\nclass Api(PluginTopic):\n    \"\"\"Plugins API Base plugin\"\"\"\n\n    def query(self, *args, count=True, **kwargs):\n        \"\"\"Implementation of how the products must be searched goes here.\n",
+        "new_string": "import logging\n\nfrom eodag.plugins.base import PluginTopic\nfrom eodag.plugins.download.base import DEFAULT_DOWNLOAD_TIMEOUT, DEFAULT_DOWNLOAD_WAIT\n\nlogger = logging.getLogger(\"eodag.plugins.apis.base\")\n\n\nclass Api(PluginTopic):\n    \"\"\"Plugins API Base plugin\n\n    An Api plugin has three download methods that it must implement:\n    - ``query``: search for products\n    - ``download``: download a single ``EOProduct``\n    - ``download_all``: download multiple products from a ``SearchResult``\n\n    The download methods must:\n    - download data in the ``outputs_prefix`` folder defined in the plugin's\n      configuration or passed through kwargs\n    - extract products from their archive (if relevant) if ``extract`` is set to True\n      (True by default)\n    - save a product in an archive/directory (in ``outputs_prefix``) whose name must be\n      the product's ``title`` property\n    - update the product's ``location`` attribute once its data is downloaded (and\n      eventually after it's extracted) to the product's location given as a file URI\n      (e.g. 'file:///tmp/product_folder' on Linux or\n      'file:///C:/Users/username/AppData/LOcal/Temp' on Windows)\n    - save a *record* file in the directory ``outputs_prefix/.downloaded`` whose name\n      is built on the MD5 hash of the product's ``remote_location`` attribute\n      (``hashlib.md5(remote_location.encode(\"utf-8\")).hexdigest()``) and whose content is\n      the product's ``remote_location`` attribute itself.\n    - not try to download a product whose ``location`` attribute already points to an\n      existing file/directory\n    - not try to download a product if its *record* file exists as long as the expected\n      product's file/directory. If the *record* file only is found, it must be deleted\n      (it certainly indicates that the download didn't complete)\n    \"\"\"\n\n    def query(self, *args, count=True, **kwargs):\n        \"\"\"Implementation of how the products must be searched goes here.\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "eodag/plugins/apis/base.py",
+        "old_string": "        which will be processed by a Download plugin (2) and the total number of products matching\n        the search criteria. If ``count`` is False, the second element returned must be ``None``.\n\n        .. versionchanged::\n            2.1\n\n                * A new optional boolean parameter ``count`` which defaults to ``True``, it\n                allows to trigger or not a count query.\n        \"\"\"\n        raise NotImplementedError(\"A Api plugin must implement a method named query\")\n\n    def download(self, *args, **kwargs):\n        \"\"\"Implementation of how the products must be downloaded.\"\"\"\n        raise NotImplementedError(\"A Api plugin must implement a method named download\")\n",
+        "new_string": "        which will be processed by a Download plugin (2) and the total number of products matching\n        the search criteria. If ``count`` is False, the second element returned must be ``None``.\n\n        .. versionchanged:: 2.1\n\n           A new optional boolean parameter ``count`` which defaults to ``True``, it\n           allows to trigger or not a count query.\n        \"\"\"\n        raise NotImplementedError(\"A Api plugin must implement a method named query\")\n\n    def download(\n        self,\n        product,\n        auth=None,\n        progress_callback=None,\n        wait=DEFAULT_DOWNLOAD_WAIT,\n        timeout=DEFAULT_DOWNLOAD_TIMEOUT,\n        **kwargs,\n    ):\n        r\"\"\"\n        Base download method. Not available, it must be defined for each plugin.\n\n        :param product: EO product to download\n        :type product: :class:`~eodag.api.product.EOProduct`\n        :param progress_callback: A progress callback\n        :type progress_callback: :class:`~eodag.utils.ProgressCallback`, optional\n        :param wait: If download fails, wait time in minutes between two download tries\n        :type wait: int, optional\n        :param timeout: If download fails, maximum time in minutes before stop retrying\n            to download\n        :type timeout: int, optional\n        :param dict kwargs: ``outputs_prefix` (``str``), `extract` (``bool``) and\n            ``dl_url_params`` (``dict``) can be provided as additional kwargs and will\n            override any other values defined in a configuration file or with\n            environment variables.\n        :returns: The absolute path to the downloaded product in the local filesystem\n            (e.g. '/tmp/product.zip' on Linux or\n            'C:\\\\Users\\\\username\\\\AppData\\\\Local\\\\Temp\\\\product.zip' on Windows)\n        :rtype: str\n        \"\"\"\n        raise NotImplementedError(\n            \"An Api plugin must implement a method named download\"\n        )\n\n    def download_all(\n        self,\n        products,\n        auth=None,\n        progress_callback=None,\n        wait=DEFAULT_DOWNLOAD_WAIT,\n        timeout=DEFAULT_DOWNLOAD_TIMEOUT,\n        **kwargs,\n    ):\n        \"\"\"\n        Base download_all method.\n\n        :param products: Products to download\n        :type products: :class:`~eodag.api.search_result.SearchResult`\n        :param progress_callback: A progress callback\n        :type progress_callback: :class:`~eodag.utils.ProgressCallback`, optional\n        :param wait: If download fails, wait time in minutes between two download tries\n        :type wait: int, optional\n        :param timeout: If download fails, maximum time in minutes before stop retrying\n            to download\n        :type timeout: int, optional\n        :param dict kwargs: ``outputs_prefix` (``str``), `extract` (``bool``) and\n            ``dl_url_params`` (``dict``) can be provided as additional kwargs and will\n            override any other values defined in a configuration file or with\n            environment variables.\n        :returns: List of absolute paths to the downloaded products in the local\n            filesystem (e.g. ``['/tmp/product.zip']`` on Linux or\n            ``['C:\\\\Users\\\\username\\\\AppData\\\\Local\\\\Temp\\\\product.zip']`` on Windows)\n        :rtype: list\n        \"\"\"\n        raise NotImplementedError(\n            \"A Api plugin must implement a method named download_all\"\n        )\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "eodag/plugins/apis/usgs.py",
+        "old_string": "    DEFAULT_DOWNLOAD_WAIT,\n    Download,\n)\nfrom eodag.utils import GENERIC_PRODUCT_TYPE, format_dict_items, get_progress_callback\nfrom eodag.utils.exceptions import AuthenticationError, NotAvailableError\n\nlogger = logging.getLogger(\"eodag.plugins.apis.usgs\")\n",
+        "new_string": "    DEFAULT_DOWNLOAD_WAIT,\n    Download,\n)\nfrom eodag.utils import (\n    GENERIC_PRODUCT_TYPE,\n    format_dict_items,\n    get_progress_callback,\n    path_to_uri,\n)\nfrom eodag.utils.exceptions import AuthenticationError, NotAvailableError\n\nlogger = logging.getLogger(\"eodag.plugins.apis.usgs\")\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "eodag/plugins/apis/usgs.py",
+        "old_string": "            product, outputs_extension=\".tar.gz\", **kwargs\n        )\n        if not fs_path or not record_filename:\n            return fs_path\n\n        # progress bar init\n",
+        "new_string": "            product, outputs_extension=\".tar.gz\", **kwargs\n        )\n        if not fs_path or not record_filename:\n            if fs_path:\n                product.location = path_to_uri(fs_path)\n            return fs_path\n\n        # progress bar init\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "eodag/plugins/apis/usgs.py",
+        "old_string": "            )\n            new_fs_path = fs_path[: fs_path.index(\".tar.gz\")]\n            shutil.move(fs_path, new_fs_path)\n            return new_fs_path\n        return self._finalize(fs_path, outputs_extension=\".tar.gz\", **kwargs)\n\n    def download_all(\n        self,\n",
+        "new_string": "            )\n            new_fs_path = fs_path[: fs_path.index(\".tar.gz\")]\n            shutil.move(fs_path, new_fs_path)\n            product.location = path_to_uri(new_fs_path)\n            return new_fs_path\n        product_path = self._finalize(fs_path, outputs_extension=\".tar.gz\", **kwargs)\n        product.location = path_to_uri(product_path)\n        return product_path\n\n    def download_all(\n        self,\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "eodag/plugins/download/aws.py",
+        "old_string": "    properties_from_xml,\n)\nfrom eodag.plugins.download.base import Download\nfrom eodag.utils import get_progress_callback, urlparse\nfrom eodag.utils.exceptions import AuthenticationError, DownloadError\n\nlogger = logging.getLogger(\"eodag.plugins.download.aws\")\n",
+        "new_string": "    properties_from_xml,\n)\nfrom eodag.plugins.download.base import Download\nfrom eodag.utils import get_progress_callback, path_to_uri, urlparse\nfrom eodag.utils.exceptions import AuthenticationError, DownloadError\n\nlogger = logging.getLogger(\"eodag.plugins.download.aws\")\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "eodag/plugins/download/aws.py",
+        "old_string": "        # prepare download & create dirs (before updating metadata)\n        product_local_path, record_filename = self._prepare_download(product, **kwargs)\n        if not product_local_path or not record_filename:\n            return product_local_path\n        product_local_path = product_local_path.replace(\".zip\", \"\")\n        # remove existing incomplete file\n",
+        "new_string": "        # prepare download & create dirs (before updating metadata)\n        product_local_path, record_filename = self._prepare_download(product, **kwargs)\n        if not product_local_path or not record_filename:\n            if product_local_path:\n                product.location = path_to_uri(product_local_path)\n            return product_local_path\n        product_local_path = product_local_path.replace(\".zip\", \"\")\n        # remove existing incomplete file\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "eodag/plugins/download/aws.py",
+        "old_string": "            fh.write(product.remote_location)\n        logger.debug(\"Download recorded in %s\", record_filename)\n\n        return product_local_path\n\n    def get_authenticated_objects(self, bucket_name, prefix, auth_dict):\n",
+        "new_string": "            fh.write(product.remote_location)\n        logger.debug(\"Download recorded in %s\", record_filename)\n\n        product.location = path_to_uri(product_local_path)\n        return product_local_path\n\n    def get_authenticated_objects(self, bucket_name, prefix, auth_dict):\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "eodag/plugins/download/base.py",
+        "old_string": "from time import sleep\n\nfrom eodag.plugins.base import PluginTopic\nfrom eodag.utils import get_progress_callback, sanitize\nfrom eodag.utils.exceptions import (\n    AuthenticationError,\n    MisconfiguredError,\n",
+        "new_string": "from time import sleep\n\nfrom eodag.plugins.base import PluginTopic\nfrom eodag.utils import get_progress_callback, sanitize, uri_to_path\nfrom eodag.utils.exceptions import (\n    AuthenticationError,\n    MisconfiguredError,\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "eodag/plugins/download/base.py",
+        "old_string": "class Download(PluginTopic):\n    \"\"\"Base Download Plugin.\n\n    :param provider: An eodag providers configuration dictionary\n    :type provider: dict\n    :param config: Path to the user configuration file\n",
+        "new_string": "class Download(PluginTopic):\n    \"\"\"Base Download Plugin.\n\n    A Download plugin has two download methods that it must implement:\n    - ``download``: download a single ``EOProduct``\n    - ``download_all``: download multiple products from a ``SearchResult``\n\n    They must:\n    - download data in the ``outputs_prefix`` folder defined in the plugin's\n      configuration or passed through kwargs\n    - extract products from their archive (if relevant) if ``extract`` is set to True\n      (True by default)\n    - save a product in an archive/directory (in ``outputs_prefix``) whose name must be\n      the product's ``title`` property\n    - update the product's ``location`` attribute once its data is downloaded (and\n      eventually after it's extracted) to the product's location given as a file URI\n      (e.g. 'file:///tmp/product_folder' on Linux or\n      'file:///C:/Users/username/AppData/LOcal/Temp' on Windows)\n    - save a *record* file in the directory ``outputs_prefix/.downloaded`` whose name\n      is built on the MD5 hash of the product's ``remote_location`` attribute\n      (``hashlib.md5(remote_location.encode(\"utf-8\")).hexdigest()``) and whose content is\n      the product's ``remote_location`` attribute itself.\n    - not try to download a product whose ``location`` attribute already points to an\n      existing file/directory\n    - not try to download a product if its *record* file exists as long as the expected\n      product's file/directory. If the *record* file only is found, it must be deleted\n      (it certainly indicates that the download didn't complete)\n\n    :param provider: An eodag providers configuration dictionary\n    :type provider: dict\n    :param config: Path to the user configuration file\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "eodag/plugins/download/base.py",
+        "old_string": "        timeout=DEFAULT_DOWNLOAD_TIMEOUT,\n        **kwargs,\n    ):\n        \"\"\"\n        Base download method. Not available, should be defined for each plugin\n        \"\"\"\n        raise NotImplementedError(\n            \"A Download plugin must implement a method named download\"\n",
+        "new_string": "        timeout=DEFAULT_DOWNLOAD_TIMEOUT,\n        **kwargs,\n    ):\n        r\"\"\"\n        Base download method. Not available, it must be defined for each plugin.\n\n        :param product: EO product to download\n        :type product: :class:`~eodag.api.product.EOProduct`\n        :param progress_callback: A progress callback\n        :type progress_callback: :class:`~eodag.utils.ProgressCallback`, optional\n        :param wait: If download fails, wait time in minutes between two download tries\n        :type wait: int, optional\n        :param timeout: If download fails, maximum time in minutes before stop retrying\n            to download\n        :type timeout: int, optional\n        :param dict kwargs: ``outputs_prefix` (``str``), `extract` (``bool``) and\n            ``dl_url_params`` (``dict``) can be provided as additional kwargs and will\n            override any other values defined in a configuration file or with\n            environment variables.\n        :returns: The absolute path to the downloaded product in the local filesystem\n            (e.g. '/tmp/product.zip' on Linux or\n            'C:\\\\Users\\\\username\\\\AppData\\\\Local\\\\Temp\\\\product.zip' on Windows)\n        :rtype: str\n        \"\"\"\n        raise NotImplementedError(\n            \"A Download plugin must implement a method named download\"\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "eodag/plugins/download/base.py",
+        "old_string": "        :rtype: tuple\n        \"\"\"\n        if product.location != product.remote_location:\n            scheme_prefix_len = len(\"file://\")\n            fs_path = product.location[scheme_prefix_len:]\n            # The fs path of a product is either a file (if 'extract' config is False) or a directory\n            if os.path.isfile(fs_path) or os.path.isdir(fs_path):\n                logger.info(\n",
+        "new_string": "        :rtype: tuple\n        \"\"\"\n        if product.location != product.remote_location:\n            fs_path = uri_to_path(product.location)\n            # The fs path of a product is either a file (if 'extract' config is False) or a directory\n            if os.path.isfile(fs_path) or os.path.isdir(fs_path):\n                logger.info(\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "eodag/plugins/download/base.py",
+        "old_string": "        **kwargs,\n    ):\n        \"\"\"\n        A sequential download_all implementation\n        using download method for every products\n        \"\"\"\n        paths = []\n        # initiate retry loop\n        start_time = datetime.now()\n",
+        "new_string": "        **kwargs,\n    ):\n        \"\"\"\n        Base download_all method.\n\n        This specific implementation uses the ``download`` method implemented by\n        the plugin to **sequentially** attempt to download products.\n\n        :param products: Products to download\n        :type products: :class:`~eodag.api.search_result.SearchResult`\n        :param progress_callback: A progress callback\n        :type progress_callback: :class:`~eodag.utils.ProgressCallback`, optional\n        :param wait: If download fails, wait time in minutes between two download tries\n        :type wait: int, optional\n        :param timeout: If download fails, maximum time in minutes before stop retrying\n            to download\n        :type timeout: int, optional\n        :param dict kwargs: ``outputs_prefix` (``str``), `extract` (``bool``) and\n            ``dl_url_params`` (``dict``) can be provided as additional kwargs and will\n            override any other values defined in a configuration file or with\n            environment variables.\n        :returns: List of absolute paths to the downloaded products in the local\n            filesystem (e.g. ``['/tmp/product.zip']`` on Linux or\n            ``['C:\\\\Users\\\\username\\\\AppData\\\\Local\\\\Temp\\\\product.zip']`` on Windows)\n        :rtype: list\n        \"\"\"\n        # Products are going to be removed one by one from this sequence once\n        # downloaded.\n        products = products[:]\n        paths = []\n        # initiate retry loop\n        start_time = datetime.now()\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "eodag/plugins/download/http.py",
+        "old_string": "    DEFAULT_DOWNLOAD_WAIT,\n    Download,\n)\nfrom eodag.utils import get_progress_callback\nfrom eodag.utils.exceptions import (\n    AuthenticationError,\n    MisconfiguredError,\n",
+        "new_string": "    DEFAULT_DOWNLOAD_WAIT,\n    Download,\n)\nfrom eodag.utils import get_progress_callback, path_to_uri\nfrom eodag.utils.exceptions import (\n    AuthenticationError,\n    MisconfiguredError,\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "eodag/plugins/download/http.py",
+        "old_string": "        \"\"\"\n        fs_path, record_filename = self._prepare_download(product, **kwargs)\n        if not fs_path or not record_filename:\n            return fs_path\n\n        # progress bar init\n",
+        "new_string": "        \"\"\"\n        fs_path, record_filename = self._prepare_download(product, **kwargs)\n        if not fs_path or not record_filename:\n            if fs_path:\n                product.location = path_to_uri(fs_path)\n            return fs_path\n\n        # progress bar init\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "eodag/plugins/download/http.py",
+        "old_string": "\n        # download assets if exist instead of remote_location\n        try:\n            return self._download_assets(\n                product,\n                fs_path.replace(\".zip\", \"\"),\n                record_filename,\n",
+        "new_string": "\n        # download assets if exist instead of remote_location\n        try:\n            fs_path = self._download_assets(\n                product,\n                fs_path.replace(\".zip\", \"\"),\n                record_filename,\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "eodag/plugins/download/http.py",
+        "old_string": "                progress_callback,\n                **kwargs\n            )\n        except NotAvailableError:\n            pass\n\n",
+        "new_string": "                progress_callback,\n                **kwargs\n            )\n            product.location = path_to_uri(fs_path)\n            return fs_path\n        except NotAvailableError:\n            pass\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "eodag/plugins/download/http.py",
+        "old_string": "                                )\n                                new_fs_path = fs_path[: fs_path.index(\".zip\")]\n                                shutil.move(fs_path, new_fs_path)\n                                return new_fs_path\n                            return self._finalize(fs_path, **kwargs)\n\n                except NotAvailableError as e:\n                    if not getattr(self.config, \"order_enabled\", False):\n",
+        "new_string": "                                )\n                                new_fs_path = fs_path[: fs_path.index(\".zip\")]\n                                shutil.move(fs_path, new_fs_path)\n                                product.location = path_to_uri(new_fs_path)\n                                return new_fs_path\n                            product_path = self._finalize(fs_path, **kwargs)\n                            product.location = path_to_uri(product_path)\n                            return product_path\n\n                except NotAvailableError as e:\n                    if not getattr(self.config, \"order_enabled\", False):\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "eodag/plugins/download/s3rest.py",
+        "old_string": "from eodag.api.product.metadata_mapping import OFFLINE_STATUS\nfrom eodag.plugins.download.aws import AwsDownload\nfrom eodag.plugins.download.http import HTTPDownload\nfrom eodag.utils import get_progress_callback, urljoin\nfrom eodag.utils.exceptions import (\n    AuthenticationError,\n    DownloadError,\n",
+        "new_string": "from eodag.api.product.metadata_mapping import OFFLINE_STATUS\nfrom eodag.plugins.download.aws import AwsDownload\nfrom eodag.plugins.download.http import HTTPDownload\nfrom eodag.utils import get_progress_callback, path_to_uri, urljoin\nfrom eodag.utils.exceptions import (\n    AuthenticationError,\n    DownloadError,\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "eodag/plugins/download/s3rest.py",
+        "old_string": "        url_hash = hashlib.md5(product.remote_location.encode(\"utf-8\")).hexdigest()\n        record_filename = os.path.join(download_records_dir, url_hash)\n        if os.path.isfile(record_filename) and os.path.exists(product_local_path):\n            return product_local_path\n        # Remove the record file if product_local_path is absent (e.g. it was deleted while record wasn't)\n        elif os.path.isfile(record_filename):\n",
+        "new_string": "        url_hash = hashlib.md5(product.remote_location.encode(\"utf-8\")).hexdigest()\n        record_filename = os.path.join(download_records_dir, url_hash)\n        if os.path.isfile(record_filename) and os.path.exists(product_local_path):\n            product.location = path_to_uri(product_local_path)\n            return product_local_path\n        # Remove the record file if product_local_path is absent (e.g. it was deleted while record wasn't)\n        elif os.path.isfile(record_filename):\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "eodag/plugins/download/s3rest.py",
+        "old_string": "            fh.write(product.remote_location)\n        logger.debug(\"Download recorded in %s\", record_filename)\n\n        return product_local_path\n",
+        "new_string": "            fh.write(product.remote_location)\n        logger.debug(\"Download recorded in %s\", record_filename)\n\n        product.location = path_to_uri(product_local_path)\n        return product_local_path\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "eodag/rest/utils.py",
+        "old_string": "\n    product_path = eodag_api.download(product)\n\n    return product_path.replace(\"file://\", \"\")\n\n\ndef get_stac_catalogs(url, root=\"/\", catalogs=[], provider=None):\n",
+        "new_string": "\n    product_path = eodag_api.download(product)\n\n    return product_path\n\n\ndef get_stac_catalogs(url, root=\"/\", catalogs=[], provider=None):\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "eodag/utils/__init__.py",
+        "old_string": "from collections import defaultdict\nfrom datetime import datetime, timezone\nfrom itertools import repeat, starmap\n\n# All modules using these should import them from utils package\nfrom urllib.parse import (  # noqa; noqa\n",
+        "new_string": "from collections import defaultdict\nfrom datetime import datetime, timezone\nfrom itertools import repeat, starmap\nfrom pathlib import Path\n\n# All modules using these should import them from utils package\nfrom urllib.parse import (  # noqa; noqa\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "eodag/utils/__init__.py",
+        "old_string": "    urlencode,\n    urljoin,\n    urlparse,\n    urlunparse,\n)\n\nimport click\nimport shapefile\n",
+        "new_string": "    urlencode,\n    urljoin,\n    urlparse,\n    urlsplit,\n    urlunparse,\n)\nfrom urllib.request import url2pathname\n\nimport click\nimport shapefile\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "eodag/utils/__init__.py",
+        "old_string": "    )\n\n\ndef mutate_dict_in_place(func, mapping):\n    \"\"\"Apply func to values of mapping.\n\n",
+        "new_string": "    )\n\n\ndef uri_to_path(uri):\n    \"\"\"\n    Convert a file URI (e.g. 'file:///tmp') to a local path (e.g. '/tmp')\n    \"\"\"\n    if not uri.startswith(\"file\"):\n        raise ValueError(\"A file URI must be provided (e.g. 'file:///tmp'\")\n    _, _, path, _, _ = urlsplit(uri)\n    # On Windows urlsplit returns the path starting with a slash ('/C:/User)\n    path = url2pathname(path)\n    # url2pathname removes it\n    return path\n\n\ndef path_to_uri(path):\n    \"\"\"Convert a local absolute path to a file URI\"\"\"\n    return Path(path).as_uri()\n\n\ndef mutate_dict_in_place(func, mapping):\n    \"\"\"Apply func to values of mapping.\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "eodag/utils/__init__.py",
+        "old_string": "\n        @functools.wraps(callable)\n        def wrapper(*args, **kwargs):\n            warnings.simplefilter(\"always\", DeprecationWarning)\n            warnings.warn(\n                f\"Call to deprecated {ctype} {cname} {reason_}{version_}\",\n                category=DeprecationWarning,\n                stacklevel=2,\n            )\n            warnings.simplefilter(\"default\", DeprecationWarning)\n            return callable(*args, **kwargs)\n\n        return wrapper\n",
+        "new_string": "\n        @functools.wraps(callable)\n        def wrapper(*args, **kwargs):\n            with warnings.catch_warnings():\n                warnings.simplefilter(\"always\", DeprecationWarning)\n                warnings.warn(\n                    f\"Call to deprecated {ctype} {cname} {reason_}{version_}\",\n                    category=DeprecationWarning,\n                    stacklevel=2,\n                )\n            return callable(*args, **kwargs)\n\n        return wrapper\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nmodule = importlib.import_module('eodag.plugins.download.base')\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert str(actual).endswith('eodag/plugins/download/base.py'), actual\nfrom types import SimpleNamespace\nfrom eodag.plugins.download.base import Download\nfrom eodag.api.search_result import SearchResult\ndef make_product(i):\n    return SimpleNamespace(next_try=None, downloader=SimpleNamespace(config=SimpleNamespace()), downloader_auth=None, remote_location='http://example.com/x', properties={'title': 'p%d' % i})\nstub = SimpleNamespace(provider='stub', download=lambda product, **kw: '/tmp/stub-product.zip')\ncaller = SearchResult([make_product(i) for i in range(3)])\nn_before = len(caller)\nsnap = caller[:]\nprint('snapshot_is_not_caller', snap is not caller)\nassert snap is not caller\npaths = Download.download_all(stub, caller, wait=0, timeout=0)\nprint('caller_len_after', len(caller), 'paths', len(paths))\nassert len(paths) >= 1\nassert len(caller) == n_before, 'side effect: caller sequence consumed by download_all'\nprint('f2_download_isolation', True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "a459bd1304d338636f769d619272d41c61febe26fb244ed6d45588bfe718ea42"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Snapshot the products sequence at download_all entry so per-product consumption no longer empties the caller SearchResult. Source-bound inline observations now pass. Patch submitted."
+}

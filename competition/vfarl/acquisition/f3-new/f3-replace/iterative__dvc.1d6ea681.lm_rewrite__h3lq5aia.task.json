@@ -1,0 +1,34 @@
+{
+  "row": {
+    "instance_id": "iterative__dvc.1d6ea681.lm_rewrite__h3lq5aia",
+    "patch": "diff --git a/dvc/stage/cache.py b/dvc/stage/cache.py\nindex f97b471..971eab9 100644\n--- a/dvc/stage/cache.py\n+++ b/dvc/stage/cache.py\n@@ -141,19 +141,17 @@ class StageCache:\n             self.repo.cache.legacy.cache_types = legacy_cache_types\n \n     def _uncached_outs(self, stage, cache):\n-        # NOTE: using temporary stage to avoid accidentally modifying original\n-        # stage and to workaround `commit/checkout` not working for uncached\n-        # outputs.\n-        cached_stage = self._create_stage(cache, wdir=stage.wdir)\n-\n-        outs_no_cache = [out.def_path for out in stage.outs if not out.use_cache]\n-\n-        # NOTE: using copy link to make it look like a git-tracked file\n-        with self._cache_type_copy():\n-            for out in cached_stage.outs:\n-                if out.def_path in outs_no_cache and out.is_in_repo:\n-                    yield out\n-\n+        \"\"\"Return a list of outputs that need to be cached.\"\"\"\n+        # Get paths of all outputs from the cache\n+        cached_out_paths = {out[\"path\"] for out in cache.get(\"outs\", [])}\n+    \n+        # Find outputs that aren't in the cache or need updating\n+        uncached_outs = []\n+        for out in stage.outs:\n+            if (out.def_path not in cached_out_paths) or not out.is_cached:\n+                uncached_outs.append(out)\n+    \n+        return uncached_outs\n     def save(self, stage):\n         from .serialize import to_single_stage_lockfile\n \n",
+    "FAIL_TO_PASS": [
+      "tests/unit/stage/test_cache.py::test_stage_cache",
+      "tests/unit/stage/test_cache.py::test_stage_cache_params",
+      "tests/unit/stage/test_cache.py::test_stage_cache_wdir",
+      "tests/unit/stage/test_cache.py::test_shared_stage_cache"
+    ],
+    "PASS_TO_PASS": [
+      "tests/unit/stage/test_cache.py::test_unhashable[kwargs0]",
+      "tests/unit/stage/test_cache.py::test_unhashable[kwargs1]",
+      "tests/unit/stage/test_cache.py::test_unhashable[kwargs2]",
+      "tests/unit/stage/test_cache.py::test_unhashable[kwargs3]",
+      "tests/unit/stage/test_cache.py::test_unhashable[kwargs4]"
+    ],
+    "image_name": "swebench/swesmith.x86_64.iterative_1776_dvc.1d6ea681",
+    "repo": "swesmith/iterative__dvc.1d6ea681",
+    "problem_statement": "# Uncached outputs not being properly handled in StageCache\n\n### Bug description\n\nThe `_uncached_outs` method in `StageCache` class is not properly handling uncached outputs, causing failures when trying to run stages that were previously cached.\n\n### Steps to reproduce\n\n1. Create a simple DVC pipeline with outputs\n2. Run the pipeline once to cache it\n3. Remove the outputs\n4. Try to run the pipeline again\n\n### Code for reproduction\n\n```python\nimport os\nfrom dvc.repo import Repo\n\n# Setup\nos.makedirs(\"myproject\", exist_ok=True)\nos.chdir(\"myproject\")\n\n# Initialize DVC\nrepo = Repo.init()\n\n# Create a simple script\nwith open(\"script.py\", \"w\") as f:\n    f.write('open(\"out\", \"w+\").write(\"out\")')\n\n# Create a dependency file\nwith open(\"dep\", \"w\") as f:\n    f.write(\"dep\")\n\n# Create and run a stage\nstage = repo.stage.add(\n    cmd=\"python script.py\",\n    deps=[\"script.py\", \"dep\"],\n    outs=[\"out\"],\n    name=\"write-out\"\n)\n\n# Run the stage to cache it\nstage.run()\n\n# Remove the outputs\nstage.remove(remove_outs=True, force=True)\n\n# Try to run the stage again - this will fail\nstage.run()\n```\n\n### Actual behavior\n\nWhen trying to run a previously cached stage after removing its outputs, the following error occurs:\n\n```\nAttributeError: 'Output' object has no attribute 'is_cached'\n```\n\n### Expected behavior\n\nThe stage should run successfully from the cache without executing the command again, and the outputs should be restored correctly.\n\n### Environment information\n\n- DVC version: latest\n- Python version: 3.10\n- OS: Linux\n\n### Additional information\n\nThis issue appears to be related to how uncached outputs are handled in the `_uncached_outs` method. The method is trying to access an attribute `is_cached` that doesn't exist on the `Output` objects.\n\n<END WRITING>"
+  },
+  "source": {
+    "instance_id": "iterative__dvc.1d6ea681.lm_rewrite__h3lq5aia",
+    "repo": "swesmith/iterative__dvc.1d6ea681",
+    "source": "SWE-bench/SWE-smith-py",
+    "revision": "77cab9055d42ab4a5c25c89a8f937096db13558e",
+    "split": "train",
+    "row_idx": 32961,
+    "file": "data/train-00007-of-00011.parquet",
+    "file_row_idx": 565
+  },
+  "saved_page": "competition/vfarl/acquisition/f3-new/artifacts/pages/iterative__dvc.1d6ea681-32910.json",
+  "saved_page_sha256": "c9e6328c7819e3824cd510e5c1c4edc7e2c9ff237c0a2ce0d6e92484b1c86b6c"
+}

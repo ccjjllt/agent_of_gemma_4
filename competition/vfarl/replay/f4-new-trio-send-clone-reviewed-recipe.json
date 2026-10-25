@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Owner send-handle set; usage cloned handles share state; release rule clone() must raise ClosedResourceError once the channel is closed and must not mint usable handles after release. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/trio/_channel.py",
+        "start_line": 231,
+        "end_line": 250
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/trio/_channel.py').resolve()\ntry:\n module = importlib.import_module('trio._channel')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport trio\nsend, recv = trio.open_memory_channel(1)\nsend.clone()\nprint('clone_open_ok')\nsend.close()\ntry:\n    send.clone()\n    raise SystemExit('expected ClosedResourceError')\nexcept trio.ClosedResourceError:\n    print('clone_rejected_after_close')\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "1bcc2d5f089386e69dcd5a492801263c5ce36a9a66df20a1d12779d626729fb0"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/trio/_channel.py",
+        "old_string": "              `MemorySendChannel` object.\n\n        \"\"\"\n        if not self._closed:\n            raise trio.ClosedResourceError\n        return MemorySendChannel._create(self._state)\n\n",
+        "new_string": "              `MemorySendChannel` object.\n\n        \"\"\"\n        if self._closed:\n            raise trio.ClosedResourceError\n        return MemorySendChannel._create(self._state)\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/trio/_channel.py').resolve()\ntry:\n module = importlib.import_module('trio._channel')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport trio\nsend, recv = trio.open_memory_channel(1)\nsend.clone()\nprint('clone_open_ok')\nsend.close()\ntry:\n    send.clone()\n    raise SystemExit('expected ClosedResourceError')\nexcept trio.ClosedResourceError:\n    print('clone_rejected_after_close')\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "1bcc2d5f089386e69dcd5a492801263c5ce36a9a66df20a1d12779d626729fb0"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored trio.MemorySendChannel.clone release semantics (send_clone_raises_when_closed). Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

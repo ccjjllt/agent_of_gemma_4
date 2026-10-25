@@ -1,0 +1,30 @@
+{
+  "source_dataset": "SWE-bench/SWE-smith-py",
+  "revision": "77cab9055d42ab4a5c25c89a8f937096db13558e",
+  "split": "train",
+  "row_idx": 21106,
+  "row": {
+    "instance_id": "pexpect__ptyprocess.1067dbda.func_basic__6olomd3a",
+    "patch": "diff --git a/ptyprocess/ptyprocess.py b/ptyprocess/ptyprocess.py\nindex 0f05803..b30f851 100644\n--- a/ptyprocess/ptyprocess.py\n+++ b/ptyprocess/ptyprocess.py\n@@ -397,15 +397,15 @@ class PtyProcess(object):\n         the child is terminated (SIGKILL is sent if the child ignores SIGHUP\n         and SIGINT). '''\n         if not self.closed:\n-            self.flush()\n-            self.fileobj.close() # Closes the file descriptor\n-            # Give kernel time to update process status.\n+            self.fileobj.close()  # Closes the file descriptor\n             time.sleep(self.delayafterclose)\n             if self.isalive():\n                 if not self.terminate(force):\n-                    raise PtyProcessError('Could not terminate the child.')\n-            self.fd = -1\n+                    self.fd = -1  # Move this assignment inside the condition\n+            else:\n+                raise PtyProcessError('Could not terminate the child.')  # Move raise statement outside the condition\n             self.closed = True\n+        self.flush()  # Move flush() outside of closed check\n             #self.pid = None\n \n     def flush(self):\n",
+    "FAIL_TO_PASS": [
+      "tests/test_preexec_fn.py::PreexecFns::test_preexec"
+    ],
+    "PASS_TO_PASS": [
+      "tests/test_echo.py::PtyEchoTestCase::test_waitnoecho_forever",
+      "tests/test_echo.py::PtyEchoTestCase::test_waitnoecho_timeout",
+      "tests/test_invalid_binary.py::InvalidBinaryChars::test_invalid_binary",
+      "tests/test_preexec_fn.py::PreexecFns::test_preexec_error",
+      "tests/test_spawn.py::PtyTestCase::test_pass_fds",
+      "tests/test_spawn.py::PtyTestCase::test_quick_spawn",
+      "tests/test_spawn.py::PtyTestCase::test_spawn_sh",
+      "tests/test_spawn.py::PtyTestCase::test_spawn_sh_unicode",
+      "tests/test_wait.py::TestWaitAfterTermination::test_wait_false_shortproc",
+      "tests/test_wait.py::TestWaitAfterTermination::test_wait_true_shortproc",
+      "tests/test_wait.py::TestWaitAfterTermination::test_wait_twice_longproc"
+    ],
+    "image_name": "swebench/swesmith.x86_64.pexpect_1776_ptyprocess.1067dbda",
+    "repo": "swesmith/pexpect__ptyprocess.1067dbda",
+    "problem_statement": "Process close() method fails to execute preexec_fn correctly\n\nDescription\n\nI've found an issue with the PtyProcess.close() method where it doesn't properly handle the process termination logic. When a process is spawned with a preexec_fn and then closed, the preexec_fn doesn't get executed correctly.\n\nSteps to recreate:\n\n```python\nimport tempfile\nimport os\nimport shutil\nfrom ptyprocess import PtyProcess\n\ntd = tempfile.mkdtemp()\nfilepath = os.path.join(td, 'foo')\n\ndef pef():\n    with open(filepath, 'w') as f:\n        f.write('bar')\n\ntry:\n    child = PtyProcess.spawn(['ls'], preexec_fn=pef)\n    child.close()\n    with open(filepath, 'r') as f:\n        content = f.read()\n        print(f\"Expected: 'bar', Got: '{content}'\")\nexcept Exception as e:\n    print(f\"Error: {e}\")\nfinally:\n    shutil.rmtree(td)\n```\n\nThe issue appears to be related to the order of operations in the close() method. The file is not being created as expected when the preexec_fn should run, and the termination logic seems to be raising exceptions incorrectly.\n\nI think there's a problem with how flush() is called and where the error is raised in relation to the process termination check."
+  },
+  "source_page": "competition/vfarl/acquisition/expand-resource/pexpect__ptyprocess.1067dbda-train.json"
+}

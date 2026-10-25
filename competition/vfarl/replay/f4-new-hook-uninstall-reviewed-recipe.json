@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Owner hooked stdout/stderr and log handlers; usage progress display; uninstall release must flush buffers first, restore original streams, and restore handlers with originals. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "alive_progress/core/hook_manager.py",
+        "start_line": 98,
+        "end_line": 121
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'alive_progress/core/hook_manager.py').resolve()\ntry:\n module = importlib.import_module('alive_progress.core.hook_manager')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport sys\nfrom threading import Condition\nfrom unittest import mock\nfrom alive_progress.core.hook_manager import buffered_hook_manager\nfrom alive_progress.utils.terminal import get_term\norig_out, orig_err = sys.stdout, sys.stderr\nhm = buffered_hook_manager('nice {}! ', lambda: 35, 0, Condition(), get_term())\nhm.install()\nwith mock.patch('logging.StreamHandler.setStream'):\n    hm.uninstall()\nprint('restored', sys.stdout is orig_out, sys.stderr is orig_err)\nassert sys.stdout is orig_out and sys.stderr is orig_err, 'uninstall must restore original streams'\nprint('hook_uninstall_ok')\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "fd4f61070d92847dfe2383748306f5a0ce0754246d4d1f549e2213344c18deb3"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "alive_progress/core/hook_manager.py",
+        "old_string": "        sys.stdout, sys.stderr = (get_hook_for(SimpleNamespace(stream=x)) for x in base)\n\n    def uninstall():\n        buffers.clear()\n        flush_buffers()\n        sys.stderr, sys.stdout = base\n\n        [handler.setStream(original) for handler, original in before_handlers.items() if not original]\n        before_handlers.clear()\n\n        # did the number of logging handlers change??\n",
+        "new_string": "        sys.stdout, sys.stderr = (get_hook_for(SimpleNamespace(stream=x)) for x in base)\n\n    def uninstall():\n        flush_buffers()\n        buffers.clear()\n        sys.stdout, sys.stderr = base\n\n        [handler.setStream(original) for handler, original in before_handlers.items() if original]\n        before_handlers.clear()\n\n        # did the number of logging handlers change??\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'alive_progress/core/hook_manager.py').resolve()\ntry:\n module = importlib.import_module('alive_progress.core.hook_manager')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport sys\nfrom threading import Condition\nfrom unittest import mock\nfrom alive_progress.core.hook_manager import buffered_hook_manager\nfrom alive_progress.utils.terminal import get_term\norig_out, orig_err = sys.stdout, sys.stderr\nhm = buffered_hook_manager('nice {}! ', lambda: 35, 0, Condition(), get_term())\nhm.install()\nwith mock.patch('logging.StreamHandler.setStream'):\n    hm.uninstall()\nprint('restored', sys.stdout is orig_out, sys.stderr is orig_err)\nassert sys.stdout is orig_out and sys.stderr is orig_err, 'uninstall must restore original streams'\nprint('hook_uninstall_ok')\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "fd4f61070d92847dfe2383748306f5a0ce0754246d4d1f549e2213344c18deb3"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored alive_progress.hook_manager.uninstall release semantics (hook_uninstall_flushes_restores_streams_and_handlers). Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "Set an option through attribute access, then read it back. Prefix resolution must precede the key gate and the set. The bug sets through a prefix defined later so every set raises. The complete production-file delta is exactly the reviewed hunks inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "pandas/_config/config.py",
+        "start_line": 391,
+        "end_line": 409
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pandas._config.config')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pandas/_config/config.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport pandas as pd\nold = pd.options.display.max_rows\npd.options.display.max_rows = 111\nseq = [pd.options.display.max_rows]\npd.options.display.max_rows = old\nseq.append(pd.options.display.max_rows)\nprint('prefix_set_sequence', seq)\nassert seq == [111, old], seq\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "38911d1f36b386dcc3a4f0148fcf75ff1c9b5a4fb5fb04911cdca0d3b131e34d"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pandas/_config/config.py",
+        "old_string": "        object.__setattr__(self, \"prefix\", prefix)\n\n    def __setattr__(self, key: str, val: Any) -> None:\n        # you can't set new keys\n        # can you can't overwrite subtrees\n        if key in self.d and not isinstance(self.d[key], dict):\n            set_option(prefix, val)\n        else:\n            raise OptionError(\"You can only set the value of existing options\")\n        prefix = object.__getattribute__(self, \"prefix\")\n        prefix += key\n        if prefix:\n            prefix += \".\"\n    def __getattr__(self, key: str):\n        prefix = object.__getattribute__(self, \"prefix\")\n        if prefix:",
+        "new_string": "        object.__setattr__(self, \"prefix\", prefix)\n\n    def __setattr__(self, key: str, val: Any) -> None:\n        prefix = object.__getattribute__(self, \"prefix\")\n        if prefix:\n            prefix += \".\"\n        prefix += key\n        # you can't set new keys\n        # can you can't overwrite subtrees\n        if key in self.d and not isinstance(self.d[key], dict):\n            set_option(prefix, val)\n        else:\n            raise OptionError(\"You can only set the value of existing options\")\n\n    def __getattr__(self, key: str):\n        prefix = object.__getattribute__(self, \"prefix\")\n        if prefix:"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('pandas._config.config')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'pandas/_config/config.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport pandas as pd\nold = pd.options.display.max_rows\npd.options.display.max_rows = 111\nseq = [pd.options.display.max_rows]\npd.options.display.max_rows = old\nseq.append(pd.options.display.max_rows)\nprint('prefix_set_sequence', seq)\nassert seq == [111, old], seq\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "38911d1f36b386dcc3a4f0148fcf75ff1c9b5a4fb5fb04911cdca0d3b131e34d"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Set an option through attribute access, then read it back. Prefix resolution must precede the key gate and the set. The bug sets through a prefix defined later so every set raises. The source-bound reproduction passes after the repair. Patch submitted."
+}

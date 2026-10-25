@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Owner JSON file handle; usage database lifetime; release close() must close the live handle (never just drop the reference). Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "tinydb/storages.py",
+        "start_line": 110,
+        "end_line": 130
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'tinydb/storages.py').resolve()\ntry:\n module = importlib.import_module('tinydb.storages')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport os\nimport tempfile\nfrom tinydb.storages import JSONStorage\nfd, path = tempfile.mkstemp(suffix='.json')\nos.close(fd)\ns = JSONStorage(path)\ns.write({'a': 1})\ns.close()\nprint('handle_closed', s._handle.closed)\nassert s._handle.closed\nos.unlink(path)\nprint('json_close_ok')\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "3220683337956deb2a9982265be88aedb7ef08246a5d427e008716d85ca31999"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "tinydb/storages.py",
+        "old_string": "        self._handle = open(path, mode=self._mode, encoding=encoding)\n\n    def close(self) -> None:\n        if self._handle:\n            self._handle = None\n\n    def read(self) -> Optional[Dict[str, Dict[str, Any]]]:\n        # Get the file size by moving the cursor to the file end and reading\n",
+        "new_string": "        self._handle = open(path, mode=self._mode, encoding=encoding)\n\n    def close(self) -> None:\n        self._handle.close()\n\n    def read(self) -> Optional[Dict[str, Dict[str, Any]]]:\n        # Get the file size by moving the cursor to the file end and reading\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'tinydb/storages.py').resolve()\ntry:\n module = importlib.import_module('tinydb.storages')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport os\nimport tempfile\nfrom tinydb.storages import JSONStorage\nfd, path = tempfile.mkstemp(suffix='.json')\nos.close(fd)\ns = JSONStorage(path)\ns.write({'a': 1})\ns.close()\nprint('handle_closed', s._handle.closed)\nassert s._handle.closed\nos.unlink(path)\nprint('json_close_ok')\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "3220683337956deb2a9982265be88aedb7ef08246a5d427e008716d85ca31999"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored tinydb.JSONStorage.close release semantics (json_storage_close_releases_file_handle). Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

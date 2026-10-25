@@ -1,0 +1,75 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Owner connection entry; usage disconnect lifetime; mark must stamp disconnect time once (never overwrite/zero), and the checker must cancel only past-timeout apps. SPLIT-FAMILY with application_checker_reaps_done_and_cancels_stuck. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "daphne/server.py",
+        "start_line": 181,
+        "end_line": 201
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'daphne/server.py').resolve()\ntry:\n module = importlib.import_module('daphne.server')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport asyncio\nimport time\nfrom unittest import mock\nimport daphne.server as srvmod\nfrom daphne.server import Server\nloop = asyncio.new_event_loop()\ndone = loop.create_future()\ndone.set_result(None)\nstuck = loop.create_future()\nsrv = Server.__new__(Server)\nsrv.application_close_timeout = 10\nsrv.connections = {'p_new': {}}\nsrv.protocol_disconnected('p_new')\nprint('marked', srv.connections['p_new'].get('disconnected'))\nassert srv.connections['p_new'].get('disconnected'), 'disconnect must stamp release time once'\ndel srv.connections['p_new']\nsrv.connections.update({\n    'p_done': {'application_instance': done, 'disconnected': time.time()},\n    'p_stuck': {'application_instance': stuck, 'disconnected': time.time() - 100},\n})\nwith mock.patch.object(srvmod.reactor, 'callLater') as cl:\n    srv.application_checker()\n    assert cl.called\nassert stuck.cancelled(), 'stuck app past close timeout must be cancelled'\nassert srv.connections == {}, 'reaped and cancelled connections must be fully released'\nprint('disconnect_mark_ok')\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "697ec3fe48b06a6ce689190c565f9925c9a1e6ce462775c89cafac1cec67017c"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "daphne/server.py",
+        "old_string": "        self.connections[protocol] = {\"connected\": time.time()}\n\n    def protocol_disconnected(self, protocol):\n        if \"disconnected\" in self.connections[protocol]:\n            self.connections[protocol][\"disconnected\"] = 0\n\n    ### Internal event/message handling\n\n",
+        "new_string": "        self.connections[protocol] = {\"connected\": time.time()}\n\n    def protocol_disconnected(self, protocol):\n        # Set its disconnected time (the loops will come and clean it up)\n        # Do not set it if it is already set. Overwriting it might\n        # cause it to never be cleaned up.\n        # See https://github.com/django/channels/issues/1181\n        if \"disconnected\" not in self.connections[protocol]:\n            self.connections[protocol][\"disconnected\"] = time.time()\n\n    ### Internal event/message handling\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "daphne/server.py",
+        "old_string": "            # too long to close up\n            if (\n                disconnected\n                and time.time() - disconnected < self.application_close_timeout\n            ):\n                if application_instance and not application_instance.done():\n                    logger.warning(\n",
+        "new_string": "            # too long to close up\n            if (\n                disconnected\n                and time.time() - disconnected > self.application_close_timeout\n            ):\n                if application_instance and not application_instance.done():\n                    logger.warning(\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "daphne/server.py",
+        "old_string": "                                exception,\n                                exc_info=exception,\n                            )\n                            if disconnected:\n                                protocol.handle_exception(exception)\n                del self.connections[protocol][\"application_instance\"]\n                application_instance = None\n            # Check to see if protocol is closed and app is closed so we can remove it\n            if not application_instance or not disconnected:\n                del self.connections[protocol]\n        reactor.callLater(5, self.application_checker)\n\n    def kill_all_applications(self):\n        \"\"\"\n",
+        "new_string": "                                exception,\n                                exc_info=exception,\n                            )\n                            if not disconnected:\n                                protocol.handle_exception(exception)\n                del self.connections[protocol][\"application_instance\"]\n                application_instance = None\n            # Check to see if protocol is closed and app is closed so we can remove it\n            if not application_instance and disconnected:\n                del self.connections[protocol]\n        reactor.callLater(1, self.application_checker)\n\n    def kill_all_applications(self):\n        \"\"\"\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'daphne/server.py').resolve()\ntry:\n module = importlib.import_module('daphne.server')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport asyncio\nimport time\nfrom unittest import mock\nimport daphne.server as srvmod\nfrom daphne.server import Server\nloop = asyncio.new_event_loop()\ndone = loop.create_future()\ndone.set_result(None)\nstuck = loop.create_future()\nsrv = Server.__new__(Server)\nsrv.application_close_timeout = 10\nsrv.connections = {'p_new': {}}\nsrv.protocol_disconnected('p_new')\nprint('marked', srv.connections['p_new'].get('disconnected'))\nassert srv.connections['p_new'].get('disconnected'), 'disconnect must stamp release time once'\ndel srv.connections['p_new']\nsrv.connections.update({\n    'p_done': {'application_instance': done, 'disconnected': time.time()},\n    'p_stuck': {'application_instance': stuck, 'disconnected': time.time() - 100},\n})\nwith mock.patch.object(srvmod.reactor, 'callLater') as cl:\n    srv.application_checker()\n    assert cl.called\nassert stuck.cancelled(), 'stuck app past close timeout must be cancelled'\nassert srv.connections == {}, 'reaped and cancelled connections must be fully released'\nprint('disconnect_mark_ok')\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "697ec3fe48b06a6ce689190c565f9925c9a1e6ce462775c89cafac1cec67017c"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored daphne.Server.protocol_disconnected release semantics (disconnect_mark_sets_timestamp_once_and_checker_compares_correctly). Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

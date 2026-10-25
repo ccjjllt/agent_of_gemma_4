@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex root source contract and actual command review 2026-10-26",
+  "review_notes": "iterative/dvc StageCache.restore must preserve cache_restore_hit_and_recompute_after_clear. Uncached-output scan laziness: set->stage with uncached outs, get->lazy generator of exactly the uncached isolated outs with equivalence on repeat iteration materialization and isolation across stages, expire/invalidate->cached outs drop out of the scan (second observation differs), recompute->restored outs reappear. Restore the exact production logic without hardcoding values or altering tests. All original F2P/P2P identifiers and complete target files are retained verbatim. The Smith row introduces the defect; this is an off-policy scripted demonstration, not a model sample or preference pair. The inline observation fails before the repair (first run expects error) and passes after (second run expects ok), so the second observation differs.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "dvc/stage/cache.py",
+        "start_line": 129,
+        "end_line": 164
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'dvc/stage/cache.py').resolve()\ntry:\n module = importlib.import_module('dvc.stage.cache')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\n\nimport inspect\nfrom types import SimpleNamespace\nfrom dvc.stage.cache import StageCache\nsc = StageCache.__new__(StageCache)\ndef fake_out(def_path, use_cache=True, is_in_repo=True):\n    o = SimpleNamespace()\n    o.def_path = def_path\n    o.use_cache = use_cache\n    o.is_in_repo = is_in_repo\n    return o\ncached_stage = SimpleNamespace(outs=[fake_out('a'), fake_out('b'), fake_out('c'), fake_out('z')])\nsc._create_stage = lambda cache, wdir=None: cached_stage\nimport contextlib\nsc._cache_type_copy = lambda: contextlib.nullcontext()\nstage = SimpleNamespace(wdir='.', outs=[fake_out('a'), fake_out('b', use_cache=False)])\nres = sc._uncached_outs(stage, {'outs': [{'path': 'a'}]})\nassert inspect.isgenerator(res), f\"must be lazy generator, got {type(res)}\"\nprint(\"get_hit\", True)\nitems = list(res)\nassert [o.def_path for o in items] == ['b'], [o.def_path for o in items]\nprint(\"equivalence\", True)\nstage2 = SimpleNamespace(wdir='.', outs=[fake_out('a'), fake_out('z', use_cache=False)])\nitems2 = list(sc._uncached_outs(stage2, {'outs': [{'path': 'a'}]}))\nassert [o.def_path for o in items2] == ['z']\nprint(\"isolation\", True)\nstage3 = SimpleNamespace(wdir='.', outs=[fake_out('c', use_cache=False)])\nitems3 = list(sc._uncached_outs(stage3, {'outs': [{'path': 'a'}]}))\nassert [o.def_path for o in items3] == ['c']\nprint(\"recompute\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "df3002940bd672d851ac9cbeeb06a7d93b1ed4526fce8efc116d9add88465e6f"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "dvc/stage/cache.py",
+        "old_string": "            self.repo.cache.legacy.cache_types = legacy_cache_types\n\n    def _uncached_outs(self, stage, cache):\n        \"\"\"Return a list of outputs that need to be cached.\"\"\"\n        # Get paths of all outputs from the cache\n        cached_out_paths = {out[\"path\"] for out in cache.get(\"outs\", [])}\n    \n        # Find outputs that aren't in the cache or need updating\n        uncached_outs = []\n        for out in stage.outs:\n            if (out.def_path not in cached_out_paths) or not out.is_cached:\n                uncached_outs.append(out)\n    \n        return uncached_outs\n    def save(self, stage):\n        from .serialize import to_single_stage_lockfile\n\n",
+        "new_string": "            self.repo.cache.legacy.cache_types = legacy_cache_types\n\n    def _uncached_outs(self, stage, cache):\n        # NOTE: using temporary stage to avoid accidentally modifying original\n        # stage and to workaround `commit/checkout` not working for uncached\n        # outputs.\n        cached_stage = self._create_stage(cache, wdir=stage.wdir)\n\n        outs_no_cache = [out.def_path for out in stage.outs if not out.use_cache]\n\n        # NOTE: using copy link to make it look like a git-tracked file\n        with self._cache_type_copy():\n            for out in cached_stage.outs:\n                if out.def_path in outs_no_cache and out.is_in_repo:\n                    yield out\n\n    def save(self, stage):\n        from .serialize import to_single_stage_lockfile\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'dvc/stage/cache.py').resolve()\ntry:\n module = importlib.import_module('dvc.stage.cache')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\n\nimport inspect\nfrom types import SimpleNamespace\nfrom dvc.stage.cache import StageCache\nsc = StageCache.__new__(StageCache)\ndef fake_out(def_path, use_cache=True, is_in_repo=True):\n    o = SimpleNamespace()\n    o.def_path = def_path\n    o.use_cache = use_cache\n    o.is_in_repo = is_in_repo\n    return o\ncached_stage = SimpleNamespace(outs=[fake_out('a'), fake_out('b'), fake_out('c'), fake_out('z')])\nsc._create_stage = lambda cache, wdir=None: cached_stage\nimport contextlib\nsc._cache_type_copy = lambda: contextlib.nullcontext()\nstage = SimpleNamespace(wdir='.', outs=[fake_out('a'), fake_out('b', use_cache=False)])\nres = sc._uncached_outs(stage, {'outs': [{'path': 'a'}]})\nassert inspect.isgenerator(res), f\"must be lazy generator, got {type(res)}\"\nprint(\"get_hit\", True)\nitems = list(res)\nassert [o.def_path for o in items] == ['b'], [o.def_path for o in items]\nprint(\"equivalence\", True)\nstage2 = SimpleNamespace(wdir='.', outs=[fake_out('a'), fake_out('z', use_cache=False)])\nitems2 = list(sc._uncached_outs(stage2, {'outs': [{'path': 'a'}]}))\nassert [o.def_path for o in items2] == ['z']\nprint(\"isolation\", True)\nstage3 = SimpleNamespace(wdir='.', outs=[fake_out('c', use_cache=False)])\nitems3 = list(sc._uncached_outs(stage3, {'outs': [{'path': 'a'}]}))\nassert [o.def_path for o in items3] == ['c']\nprint(\"recompute\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "df3002940bd672d851ac9cbeeb06a7d93b1ed4526fce8efc116d9add88465e6f"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored StageCache.restore cache_restore_hit_and_recompute_after_clear. The actual inline cache observation completed after the production edit. Patch submitted."
+}

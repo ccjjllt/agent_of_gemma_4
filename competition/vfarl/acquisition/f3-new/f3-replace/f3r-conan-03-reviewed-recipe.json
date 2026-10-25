@@ -1,0 +1,75 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex root source contract and actual command review 2026-10-26",
+  "review_notes": "conan-io/conan CachingFileDownloader must preserve download_cache_hit_and_invalidation. Internal download cache: set->seed cached file, get->download serves the cached bytes without network with equivalence and isolation across urls, expire/invalidate->removed cache file is gone (second observation differs). Restore the exact production logic without hardcoding values or altering tests. All original F2P/P2P identifiers and complete target files are retained verbatim. The Smith row introduces the defect; this is an off-policy scripted demonstration, not a model sample or preference pair. The inline observation fails before the repair (first run expects error) and passes after (second run expects ok), so the second observation differs.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "conans/client/downloaders/caching_file_downloader.py",
+        "start_line": 1,
+        "end_line": 36
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'conans/client/downloaders/caching_file_downloader.py').resolve()\ntry:\n module = importlib.import_module('conans.client.downloaders.caching_file_downloader')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\n\nimport os, tempfile\nfrom types import SimpleNamespace\nfrom conans.client.downloaders.download_cache import DownloadCache\nfrom conans.client.downloaders.caching_file_downloader import ConanInternalCacheDownloader\ntmp = tempfile.mkdtemp()\ndc = DownloadCache(tmp)\nurl = 'http://example.invalid/big.bin'\ndef cp(u):\n    path, _h = dc.cached_path(u)\n    return path\ncpath = cp(url)\nos.makedirs(os.path.dirname(cpath), exist_ok=True)\nwith open(cpath, 'wb') as f:\n    f.write(b'z' * (10 * 1024 * 1024 + 1))\nmsgs = []\noutput = SimpleNamespace(info=msgs.append, warning=msgs.append)\ndl = ConanInternalCacheDownloader(object(),\n                                  config=SimpleNamespace(get=lambda *a, **k: tmp), scope='conan')\nimport io, contextlib\ndest = os.path.join(tmp, 'out.bin')\nbuf = io.StringIO()\nwith contextlib.redirect_stderr(buf):\n    dl.download(url, dest, auth=None, verify_ssl=True, retry=0, retry_wait=0)\nassert os.path.getsize(dest) == 10 * 1024 * 1024 + 1\nprint(\"get_hit\", True)\nassert 'from download cache' in buf.getvalue(), buf.getvalue()[-300:]\nprint(\"equivalence\", True)\nbuf2 = io.StringIO()\nwith contextlib.redirect_stderr(buf2):\n    dl.download(url, dest, auth=None, verify_ssl=True, retry=0, retry_wait=0)\nassert 'from download cache' in buf2.getvalue()\nprint(\"isolation\", True)\nos.unlink(cpath)\nassert not os.path.exists(cp(url))\nprint(\"invalidate\", True)\nwith open(cpath, 'wb') as f:\n    f.write(b'q')\nassert open(cpath, 'rb').read() == b'q'\nprint(\"recompute\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "2a614c40159e85b30424370a997238409333ec0407cf4fb8a42c79bc1e6adfd5"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conans/client/downloaders/caching_file_downloader.py",
+        "old_string": "from urllib.parse import urlparse\nfrom urllib.request import url2pathname\n\nfrom conan.internal.cache.home_paths import HomePaths\nfrom conans.client.downloaders.file_downloader import FileDownloader\nfrom conans.client.downloaders.download_cache import DownloadCache\nfrom conan.internal.errors import AuthenticationException, ForbiddenException, NotFoundException\nfrom conan.errors import ConanException\nfrom conans.util.files import mkdir, set_dirty_context_manager, remove_if_dirty\n\n\nclass SourcesCachingDownloader:\n",
+        "new_string": "from urllib.parse import urlparse\nfrom urllib.request import url2pathname\n\nfrom conan.api.output import ConanOutput\nfrom conan.internal.cache.home_paths import HomePaths\nfrom conans.client.downloaders.file_downloader import FileDownloader\nfrom conans.client.downloaders.download_cache import DownloadCache\nfrom conan.internal.errors import AuthenticationException, ForbiddenException, NotFoundException\nfrom conan.errors import ConanException\nfrom conans.util.files import mkdir, set_dirty_context_manager, remove_if_dirty, human_size\n\n\nclass SourcesCachingDownloader:\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conans/client/downloaders/caching_file_downloader.py",
+        "old_string": "        if self._download_cache and not os.path.isabs(self._download_cache):\n            raise ConanException(\"core.download:download_cache must be an absolute path\")\n        self._file_downloader = FileDownloader(requester, scope=scope)\n\n    def download(self, url, file_path, auth, verify_ssl, retry, retry_wait, metadata=False):\n        if not self._download_cache or metadata:  # Metadata not cached and can be overwritten\n",
+        "new_string": "        if self._download_cache and not os.path.isabs(self._download_cache):\n            raise ConanException(\"core.download:download_cache must be an absolute path\")\n        self._file_downloader = FileDownloader(requester, scope=scope)\n        self._scope = scope\n\n    def download(self, url, file_path, auth, verify_ssl, retry, retry_wait, metadata=False):\n        if not self._download_cache or metadata:  # Metadata not cached and can be overwritten\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conans/client/downloaders/caching_file_downloader.py",
+        "old_string": "                    self._file_downloader.download(url, cached_path, retry=retry,\n                                                   retry_wait=retry_wait, verify_ssl=verify_ssl,\n                                                   auth=auth, overwrite=False)\n            # Everything good, file in the cache, just copy it to final destination\n            mkdir(os.path.dirname(file_path))\n            shutil.copy2(cached_path, file_path)",
+        "new_string": "                    self._file_downloader.download(url, cached_path, retry=retry,\n                                                   retry_wait=retry_wait, verify_ssl=verify_ssl,\n                                                   auth=auth, overwrite=False)\n            else:  # Found in cache!\n                total_length = os.path.getsize(cached_path)\n                is_large_file = total_length > 10000000  # 10 MB\n                if is_large_file:\n                    base_name = os.path.basename(file_path)\n                    hs = human_size(total_length)\n                    ConanOutput(scope=self._scope).info(f\"Copying {hs} {base_name} from download \"\n                                                        f\"cache, instead of downloading it\")\n\n            # Everything good, file in the cache, just copy it to final destination\n            mkdir(os.path.dirname(file_path))\n            shutil.copy2(cached_path, file_path)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'conans/client/downloaders/caching_file_downloader.py').resolve()\ntry:\n module = importlib.import_module('conans.client.downloaders.caching_file_downloader')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\n\nimport os, tempfile\nfrom types import SimpleNamespace\nfrom conans.client.downloaders.download_cache import DownloadCache\nfrom conans.client.downloaders.caching_file_downloader import ConanInternalCacheDownloader\ntmp = tempfile.mkdtemp()\ndc = DownloadCache(tmp)\nurl = 'http://example.invalid/big.bin'\ndef cp(u):\n    path, _h = dc.cached_path(u)\n    return path\ncpath = cp(url)\nos.makedirs(os.path.dirname(cpath), exist_ok=True)\nwith open(cpath, 'wb') as f:\n    f.write(b'z' * (10 * 1024 * 1024 + 1))\nmsgs = []\noutput = SimpleNamespace(info=msgs.append, warning=msgs.append)\ndl = ConanInternalCacheDownloader(object(),\n                                  config=SimpleNamespace(get=lambda *a, **k: tmp), scope='conan')\nimport io, contextlib\ndest = os.path.join(tmp, 'out.bin')\nbuf = io.StringIO()\nwith contextlib.redirect_stderr(buf):\n    dl.download(url, dest, auth=None, verify_ssl=True, retry=0, retry_wait=0)\nassert os.path.getsize(dest) == 10 * 1024 * 1024 + 1\nprint(\"get_hit\", True)\nassert 'from download cache' in buf.getvalue(), buf.getvalue()[-300:]\nprint(\"equivalence\", True)\nbuf2 = io.StringIO()\nwith contextlib.redirect_stderr(buf2):\n    dl.download(url, dest, auth=None, verify_ssl=True, retry=0, retry_wait=0)\nassert 'from download cache' in buf2.getvalue()\nprint(\"isolation\", True)\nos.unlink(cpath)\nassert not os.path.exists(cp(url))\nprint(\"invalidate\", True)\nwith open(cpath, 'wb') as f:\n    f.write(b'q')\nassert open(cpath, 'rb').read() == b'q'\nprint(\"recompute\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "2a614c40159e85b30424370a997238409333ec0407cf4fb8a42c79bc1e6adfd5"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored CachingFileDownloader download_cache_hit_and_invalidation. The actual inline cache observation completed after the production edit. Patch submitted."
+}

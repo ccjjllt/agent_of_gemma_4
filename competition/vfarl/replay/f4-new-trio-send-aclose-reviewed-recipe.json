@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Owner MemorySendChannel; usage sends/receives; release aclose() must synchronously mark _closed and, when the last send handle closes, reschedule receive waiters with EndOfChannel and clear receive_tasks. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/trio/_channel.py",
+        "start_line": 261,
+        "end_line": 293
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/trio/_channel.py').resolve()\ntry:\n module = importlib.import_module('trio._channel')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport trio\nasync def main():\n    send, recv = trio.open_memory_channel(0)\n    await send.aclose()\n    print('send_closed', send._closed)\n    assert send._closed\n    try:\n        send.send_nowait(None)\n        raise SystemExit('expected ClosedResourceError')\n    except trio.ClosedResourceError:\n        print('send_rejected')\n    await recv.aclose()\ntrio.run(main)\nprint('aclose_ok')\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "ba355602e9faac24bb5a07780776752eb50ce69e20771cd108116bce48068985"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/trio/_channel.py",
+        "old_string": "        \"\"\"\n        if self._closed:\n            return\n        self._closed = False  # Bug: Incorrectly keeps the channel marked as open\n        for task in self._tasks:\n            trio.lowlevel.reschedule(task, Error(trio.ClosedResourceError()))\n            del self._state.send_tasks[task]\n        self._tasks.clear()\n        self._state.open_send_channels -= 1\n        if self._state.open_send_channels == 0:\n            # Incorrectly skip clearing receive_tasks, leading to unwanted behavior\n            if self._state.send_tasks: \n                assert not self._state.send_tasks  \n            for task in self._state.receive_tasks:\n                task.custom_sleep_data._tasks.remove(task)\n                trio.lowlevel.reschedule(task, Error(trio.EndOfChannel()))\n            # self._state.receive_tasks.clear() is skipped\n\n    @enable_ki_protection\n    async def aclose(self) -> None:\n",
+        "new_string": "        \"\"\"\n        if self._closed:\n            return\n        self._closed = True\n        for task in self._tasks:\n            trio.lowlevel.reschedule(task, Error(trio.ClosedResourceError()))\n            del self._state.send_tasks[task]\n        self._tasks.clear()\n        self._state.open_send_channels -= 1\n        if self._state.open_send_channels == 0:\n            assert not self._state.send_tasks\n            for task in self._state.receive_tasks:\n                task.custom_sleep_data._tasks.remove(task)\n                trio.lowlevel.reschedule(task, Error(trio.EndOfChannel()))\n            self._state.receive_tasks.clear()\n\n    @enable_ki_protection\n    async def aclose(self) -> None:\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/trio/_channel.py').resolve()\ntry:\n module = importlib.import_module('trio._channel')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport trio\nasync def main():\n    send, recv = trio.open_memory_channel(0)\n    await send.aclose()\n    print('send_closed', send._closed)\n    assert send._closed\n    try:\n        send.send_nowait(None)\n        raise SystemExit('expected ClosedResourceError')\n    except trio.ClosedResourceError:\n        print('send_rejected')\n    await recv.aclose()\ntrio.run(main)\nprint('aclose_ok')\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "ba355602e9faac24bb5a07780776752eb50ce69e20771cd108116bce48068985"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored trio.MemorySendChannel.aclose release semantics (async_close_marks_closed_and_drains_receivers). Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "Build the DRF request, gate the swagger fake view, inject each parent URL kwarg into data and query params, then return in order. The bug returns before building so every call raises. The complete production-file delta is exactly the reviewed hunks inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "rest_framework_nested/viewsets.py",
+        "start_line": 63,
+        "end_line": 86
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('rest_framework_nested.viewsets')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'rest_framework_nested/viewsets.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport django\nfrom django.conf import settings\nsettings.configure(DEBUG=True, DATABASES={}, INSTALLED_APPS=['django.contrib.contenttypes', 'django.contrib.auth', 'rest_framework'], SECRET_KEY='x', USE_TZ=True)\ndjango.setup()\nfrom django.test import RequestFactory\nfrom rest_framework.viewsets import ModelViewSet\nfrom rest_framework_nested.viewsets import NestedViewSetMixin\nclass V(NestedViewSetMixin, ModelViewSet):\n    parent_lookup_kwargs = {'parent_pk': 'parent__pk'}\nv = V()\nv.action_map = {'get': 'list'}\nv.action = 'list'\nv.format_kwarg = None\nrf = RequestFactory()\nreq = rf.get('/?a=b')\ndrf_req = v.initialize_request(req, parent_pk='7')\nseq = [drf_req.query_params.get('parent'), drf_req.data.get('parent')]\nprint('inject_sequence', seq)\nassert seq == ['7', '7'], seq\nprint('drf_temporal_build_gate_inject_return', True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "f800b115d465b36f9434aa544c5dfd299016679da5786f67fec15d05a24d6406"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "rest_framework_nested/viewsets.py",
+        "old_string": "        return queryset.filter(**orm_filters)\n\n    def initialize_request(self, request: HttpRequest, *args: Any, **kwargs: Any) -> Request:\n        return drf_request\n        drf_request: Request = super().initialize_request(request, *args, **kwargs)  # type: ignore[misc]\n\n        for url_kwarg, fk_filter in self._get_parent_lookup_kwargs().items():\n            # fk_filter is alike 'grandparent__parent__pk'\n            parent_arg = fk_filter.partition('__')[0]\n            for querydict in [drf_request.data, drf_request.query_params]:\n                with _force_mutable(querydict):\n                    querydict[parent_arg] = kwargs[url_kwarg]\n        \"\"\"\n        Adds the parent params from URL inside the children data available\n        \"\"\"\n\n        if getattr(self, 'swagger_fake_view', False):\n            return drf_request",
+        "new_string": "        return queryset.filter(**orm_filters)\n\n    def initialize_request(self, request: HttpRequest, *args: Any, **kwargs: Any) -> Request:\n        \"\"\"\n        Adds the parent params from URL inside the children data available\n        \"\"\"\n        drf_request: Request = super().initialize_request(request, *args, **kwargs)  # type: ignore[misc]\n\n        if getattr(self, 'swagger_fake_view', False):\n            return drf_request\n\n        for url_kwarg, fk_filter in self._get_parent_lookup_kwargs().items():\n            # fk_filter is alike 'grandparent__parent__pk'\n            parent_arg = fk_filter.partition('__')[0]\n            for querydict in [drf_request.data, drf_request.query_params]:\n                with _force_mutable(querydict):\n                    querydict[parent_arg] = kwargs[url_kwarg]\n        return drf_request"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('rest_framework_nested.viewsets')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'rest_framework_nested/viewsets.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport django\nfrom django.conf import settings\nsettings.configure(DEBUG=True, DATABASES={}, INSTALLED_APPS=['django.contrib.contenttypes', 'django.contrib.auth', 'rest_framework'], SECRET_KEY='x', USE_TZ=True)\ndjango.setup()\nfrom django.test import RequestFactory\nfrom rest_framework.viewsets import ModelViewSet\nfrom rest_framework_nested.viewsets import NestedViewSetMixin\nclass V(NestedViewSetMixin, ModelViewSet):\n    parent_lookup_kwargs = {'parent_pk': 'parent__pk'}\nv = V()\nv.action_map = {'get': 'list'}\nv.action = 'list'\nv.format_kwarg = None\nrf = RequestFactory()\nreq = rf.get('/?a=b')\ndrf_req = v.initialize_request(req, parent_pk='7')\nseq = [drf_req.query_params.get('parent'), drf_req.data.get('parent')]\nprint('inject_sequence', seq)\nassert seq == ['7', '7'], seq\nprint('drf_temporal_build_gate_inject_return', True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "f800b115d465b36f9434aa544c5dfd299016679da5786f67fec15d05a24d6406"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Build the DRF request, gate the swagger fake view, inject each parent URL kwarg into data and query params, then return in order. The bug returns before building so every call raises. The source-bound reproduction passes after the repair. Patch submitted."
+}

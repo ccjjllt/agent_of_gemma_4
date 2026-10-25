@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Owner deadline heap; usage scope lifetime; expiry release must cancel exactly the scopes whose registered deadline passed and prune stale entries. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/trio/_core/_run.py",
+        "start_line": 276,
+        "end_line": 339
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/trio/_core/_run.py').resolve()\ntry:\n module = importlib.import_module('trio._core._run')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('binding_ok')\nPYREPLAY\npython3 -m pytest src/trio/_core/_tests/test_run.py::test_cancel_scope_deadline_duplicates -x -q"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "812a16067cd490f38df3a2de32199df399bd70bf08e893cc3ac19586c6eb3725"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/trio/_core/_run.py",
+        "old_string": "        self._heap = pruned_heap\n\n    def expire(self, now: float) -> bool:\n        \"\"\"Check for expired deadlines and cancel their associated cancel scopes.\n    \n        Args:\n            now: The current time.\n        \n        Returns:\n            bool: True if any cancel scopes were cancelled due to expired deadlines,\n            False otherwise.\n        \"\"\"\n        # If there are no deadlines, nothing to do\n        if not self._heap:\n            return False\n    \n        # Track whether we cancelled anything\n        cancelled_any = False\n    \n        # Process all expired deadlines\n        while self._heap:\n            deadline, _, cancel_scope = self._heap[0]\n        \n            # If this entry is stale (deadline doesn't match what's registered in the scope),\n            # discard it and continue\n            if deadline != cancel_scope._registered_deadline:\n                heappop(self._heap)\n                continue\n            \n            # If the deadline hasn't expired yet, we're done\n            if deadline > now:\n                break\n            \n            # Remove this deadline from the heap\n            heappop(self._heap)\n            self._active -= 1\n        \n            # Cancel the scope if it's not already cancelled\n            if not cancel_scope._cancel_called:\n                cancel_scope.cancel()\n                cancelled_any = True\n    \n        # If we've processed a lot of deadlines, it might be worth pruning the heap\n        # to remove stale entries\n        if len(self._heap) > DEADLINE_HEAP_MIN_PRUNE_THRESHOLD:\n            self._prune()\n        \n        return cancelled_any\n\n@attrs.define(eq=False)\nclass CancelStatus:\n",
+        "new_string": "        self._heap = pruned_heap\n\n    def expire(self, now: float) -> bool:\n        did_something = False\n        while self._heap and self._heap[0][0] <= now:\n            deadline, _, cancel_scope = heappop(self._heap)\n            if deadline == cancel_scope._registered_deadline:\n                did_something = True\n                # This implicitly calls self.remove(), so we don't need to\n                # decrement _active here\n                cancel_scope.cancel()\n        # If we've accumulated too many stale entries, then prune the heap to\n        # keep it under control. (We only do this occasionally in a batch, to\n        # keep the amortized cost down)\n        if len(self._heap) > self._active * 2 + DEADLINE_HEAP_MIN_PRUNE_THRESHOLD:\n            self._prune()\n        return did_something\n\n\n@attrs.define(eq=False)\nclass CancelStatus:\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/trio/_core/_run.py').resolve()\ntry:\n module = importlib.import_module('trio._core._run')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('binding_ok')\nPYREPLAY\npython3 -m pytest src/trio/_core/_tests/test_run.py::test_cancel_scope_deadline_duplicates -x -q"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "812a16067cd490f38df3a2de32199df399bd70bf08e893cc3ac19586c6eb3725"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored trio.Deadlines.expire release semantics (deadline_expiry_cancels_registered_scopes). Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

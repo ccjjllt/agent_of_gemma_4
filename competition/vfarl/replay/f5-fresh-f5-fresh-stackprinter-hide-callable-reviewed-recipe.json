@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "Format frames carrying a plain variable then a callable, in order. Visibility filtering must fetch the value, gate callability, then classify. The bug gates on a value fetched later so any callable variable raises. The complete production-file delta is exactly the reviewed hunks inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "stackprinter/frame_formatting.py",
+        "start_line": 236,
+        "end_line": 252
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('stackprinter.frame_formatting')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'stackprinter/frame_formatting.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport os, subprocess, sys, tempfile, textwrap\nprobe = textwrap.dedent('''\n    import sys\n    import stackprinter\n    def inner(cb):\n        raise ValueError('callable-var')\n    def outer():\n        plain = 1\n        inner(len)\n    try:\n        outer()\n    except ValueError:\n        out = stackprinter.format(sys.exc_info())\n    has_plain = 'plain' in out\n    has_len = 'len' in out\n    print('visibility', has_plain, has_len)\n    assert has_plain and has_len, out[-1500:]\n''')\nfd, p = tempfile.mkstemp(suffix='.py')\nos.write(fd, probe.encode())\nos.close(fd)\nr = subprocess.run([sys.executable, p], capture_output=True, text=True)\nos.unlink(p)\nprint(r.stdout.strip().splitlines()[-1] if r.stdout.strip() else 'no-probe-output')\nassert r.returncode == 0, r.stderr[-1000:]\nassert 'visibility True True' in r.stdout, r.stdout[-500:]\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "15b79e97c8d3439d014d1548acf70bb93788177057b1fa7dfe44bef5b67be9a5"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "stackprinter/frame_formatting.py",
+        "old_string": "            # TODO refactor the whole blacklistling mechanism below:\n\n            def hide(name):\n                if callable(value):\n                    qualified_name, path, *_ = inspect_callable(value)\n                    is_builtin = value.__class__.__name__ == 'builtin_function_or_method'\n                    is_boring = is_builtin or (qualified_name == name) or (path is None)\n                    is_suppressed = match(path, self.suppressed_paths)\n                    return is_boring or is_suppressed\n                value = fi.assignments[name]\n                return False\n            visible_vars = (name for ln in val_lines\n                            for name in fi.line2names[ln]\n                            if name in fi.assignments)",
+        "new_string": "            # TODO refactor the whole blacklistling mechanism below:\n\n            def hide(name):\n                value = fi.assignments[name]\n                if callable(value):\n                    qualified_name, path, *_ = inspect_callable(value)\n                    is_builtin = value.__class__.__name__ == 'builtin_function_or_method'\n                    is_boring = is_builtin or (qualified_name == name) or (path is None)\n                    is_suppressed = match(path, self.suppressed_paths)\n                    return is_boring or is_suppressed\n                return False\n\n            visible_vars = (name for ln in val_lines\n                            for name in fi.line2names[ln]\n                            if name in fi.assignments)"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('stackprinter.frame_formatting')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'stackprinter/frame_formatting.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport os, subprocess, sys, tempfile, textwrap\nprobe = textwrap.dedent('''\n    import sys\n    import stackprinter\n    def inner(cb):\n        raise ValueError('callable-var')\n    def outer():\n        plain = 1\n        inner(len)\n    try:\n        outer()\n    except ValueError:\n        out = stackprinter.format(sys.exc_info())\n    has_plain = 'plain' in out\n    has_len = 'len' in out\n    print('visibility', has_plain, has_len)\n    assert has_plain and has_len, out[-1500:]\n''')\nfd, p = tempfile.mkstemp(suffix='.py')\nos.write(fd, probe.encode())\nos.close(fd)\nr = subprocess.run([sys.executable, p], capture_output=True, text=True)\nos.unlink(p)\nprint(r.stdout.strip().splitlines()[-1] if r.stdout.strip() else 'no-probe-output')\nassert r.returncode == 0, r.stderr[-1000:]\nassert 'visibility True True' in r.stdout, r.stdout[-500:]\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "15b79e97c8d3439d014d1548acf70bb93788177057b1fa7dfe44bef5b67be9a5"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Format frames carrying a plain variable then a callable, in order. Visibility filtering must fetch the value, gate callability, then classify. The bug gates on a value fetched later so any callable variable raises. The source-bound reproduction passes after the repair. Patch submitted."
+}

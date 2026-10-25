@@ -1,0 +1,44 @@
+{
+  "row": {
+    "instance_id": "researchobject__ro-crate-py-193",
+    "repo": "ResearchObject/ro-crate-py",
+    "base_commit": "1419ddc3b6a95a24577ac5a5ee3635204021608b",
+    "problem_statement": "Setting/Accessing nested properties on entities without @id\nRO-Crates aim to write the metadata file as flattend and compacted JSON-LD. I have noticed some inconsistencies with enforcing this behavior in this library. \r\n\r\nCurrently, it is possible to write nested properties to an entity, even if this property is a dictionary that does not contain an `@id`. Here is an example:\r\n\r\n```python\r\nfrom rocrate.rocrate import ROCrate\r\n\r\ncrate = ROCrate()\r\n\r\n# setting a nested property throws no error\r\ncrate.root_dataset[\"license\"] = {\r\n    \"@type\": \"CreativeWork\",\r\n    \"name\": \"CC-O\",\r\n    \"url\": \"https://spdx.org/licenses/CC0-1.0\"\r\n}\r\n\r\ncrate.write(\"mycrate\")\r\n```\r\n\r\nWhile the crate is written to disk without errors, attempting to access such a nested property once set from an ROCrate object raises an exception:\r\n```python\r\ncrate.root_dataset[\"license\"]\r\n```\r\nraises:\r\n```bash\r\n---------------------------------------------------------------------------\r\nKeyError                                  Traceback (most recent call last)\r\nFile ~/projects/playground/venv/lib/python3.12/site-packages/rocrate/model/entity.py:91, in Entity.__getitem__(self, key)\r\n     90 try:\r\n---> 91     id_ = entry[\"@id\"]\r\n     92 except KeyError:\r\n\r\nKeyError: '@id'\r\n\r\nDuring handling of the above exception, another exception occurred:\r\n\r\nValueError                                Traceback (most recent call last)\r\nCell In[32], line 1\r\n----> 1 crate.root_dataset[\"license\"]\r\n\r\nFile ~/projects/playground/venv/lib/python3.12/site-packages/rocrate/model/entity.py:93, in Entity.__getitem__(self, key)\r\n     91     id_ = entry[\"@id\"]\r\n     92 except KeyError:\r\n---> 93     raise ValueError(f\"no @id in {entry}\")\r\n     94 else:\r\n     95     deref_values.append(self.crate.get(id_, id_))\r\n\r\nValueError: no @id in {'@type': 'CreativeWork', 'name': 'CC-O', 'url': 'https://spdx.org/licenses/CC0-1.0'}\r\n```\r\n\r\nTo enforce consistency and adhere to the intended behaviour, I suggest to implement a check when assigning a property that makes sure that the `@id` key is present when the property value is a dictionary. It could even be considered to check if the id corresponds to an entity present in the crate.\r\nWhen accessing values from an RO Crate, it might make sense to be more forgiving and return the property if it has no id or the id does not correspond to an entity.\r\n\r\nThese changes would prevent the library from creating RO-Crates that cannot be accessed with the very same library afterwards.",
+    "patch": "diff --git a/rocrate/model/entity.py b/rocrate/model/entity.py\nindex 22e69a5..fc23ead 100644\n--- a/rocrate/model/entity.py\n+++ b/rocrate/model/entity.py\n@@ -102,6 +102,9 @@ class Entity(MutableMapping):\n         if key.startswith(\"@\"):\n             raise KeyError(f\"cannot set '{key}'\")\n         values = value if isinstance(value, list) else [value]\n+        for v in values:\n+            if isinstance(v, dict) and \"@id\" not in v:\n+                raise ValueError(f\"no @id in {v}\")\n         ref_values = [{\"@id\": _.id} if isinstance(_, Entity) else _ for _ in values]\n         self._jsonld[key] = ref_values if isinstance(value, list) else ref_values[0]\n \n",
+    "test_patch": "diff --git a/test/test_model.py b/test/test_model.py\nindex 4465ece..c452e21 100644\n--- a/test/test_model.py\n+++ b/test/test_model.py\n@@ -363,6 +363,11 @@ def test_entity_as_mapping(tmpdir, helpers):\n     }\n     crate_dir = tmpdir / \"in_crate\"\n     crate_dir.mkdir()\n+    with open(crate_dir / helpers.METADATA_FILE_NAME, \"wt\") as f:\n+        json.dump(metadata, f, indent=4)\n+    with pytest.raises(ValueError):  # due to \"badProp\", which has no \"@id\"\n+        crate = ROCrate(crate_dir)\n+    del metadata[\"@graph\"][2][\"badProp\"]\n     with open(crate_dir / helpers.METADATA_FILE_NAME, \"wt\") as f:\n         json.dump(metadata, f, indent=4)\n     crate = ROCrate(crate_dir)\n@@ -411,6 +416,9 @@ def test_entity_as_mapping(tmpdir, helpers):\n         \"application/json\",\n         \"https://www.json.org\",\n     }\n+    with pytest.raises(ValueError):\n+        correction[\"badProp\"] = {\"k\": \"v\"}  # value has no \"@id\"\n+    correction._jsonld[\"badProp\"] = {\"k\": \"v\"}  # force set using _jsonld\n     with pytest.raises(ValueError):\n         correction[\"badProp\"]\n \n",
+    "FAIL_TO_PASS": [
+      "test/test_model.py::test_entity_as_mapping"
+    ],
+    "PASS_TO_PASS": [
+      "test/test_model.py::test_dereferencing",
+      "test/test_model.py::test_dereferencing_equivalent_id[.foo]",
+      "test/test_model.py::test_dereferencing_equivalent_id[foo.]",
+      "test/test_model.py::test_dereferencing_equivalent_id[.foo/]",
+      "test/test_model.py::test_dereferencing_equivalent_id[foo./]",
+      "test/test_model.py::test_data_entities",
+      "test/test_model.py::test_data_entities_perf",
+      "test/test_model.py::test_remote_data_entities",
+      "test/test_model.py::test_bad_data_entities",
+      "test/test_model.py::test_contextual_entities",
+      "test/test_model.py::test_contextual_entities_hash",
+      "test/test_model.py::test_properties",
+      "test/test_model.py::test_uuid",
+      "test/test_model.py::test_update",
+      "test/test_model.py::test_delete",
+      "test/test_model.py::test_delete_refs",
+      "test/test_model.py::test_delete_by_id",
+      "test/test_model.py::test_self_delete",
+      "test/test_model.py::test_wf_types",
+      "test/test_model.py::test_append_to[False]",
+      "test/test_model.py::test_append_to[True]",
+      "test/test_model.py::test_get_by_type",
+      "test/test_model.py::test_context",
+      "test/test_model.py::test_add_no_duplicates",
+      "test/test_model.py::test_immutable_id",
+      "test/test_model.py::test_entity_in_properties"
+    ]
+  },
+  "row_idx": 159,
+  "source_page": "parquet nebius/SWE-rebench-V2 train rows",
+  "revision": "10483de0f50fe5da545942705a76c6150171af7f"
+}

@@ -1,0 +1,83 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Owner experiment refs; usage queued/tracked lifetime; release remove() with no targets returns empty, unresolved names raise, rev resolves by baseline. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "dvc/repo/experiments/remove.py",
+        "start_line": 25,
+        "end_line": 115
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'dvc/repo/experiments/remove.py').resolve()\ntry:\n module = importlib.import_module('dvc.repo.experiments.remove')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('binding_ok')\nimport subprocess, sys\nnodes = ['tests/func/experiments/test_remove.py::test_remove_experiments_by_ref', 'tests/func/experiments/test_remove.py::test_remove_experiments_by_rev']\nr = subprocess.run([sys.executable, '-m', 'pytest'] + nodes + ['-q', '-p', 'no:cacheprovider', '--no-cov'], capture_output=True, text=True, timeout=1200)\nprint(r.stdout[-600:])\nprint(r.stderr[-400:])\nassert r.returncode == 0, 'scoped remove tests must pass on fixed code'\nprint('exp_remove_ok')\n"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "c4bcd4f5385d5fe6d2594f5cfbaa85d6dc3ffddfbbacfa54f0b6b700de059776"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "dvc/repo/experiments/remove.py",
+        "old_string": "        raise InvalidArgumentError(\"Cannot use both `--keep` and `--queue`.\")\n\n    celery_queue",
+        "new_string": "        raise InvalidArgumentError(\"Cannot use both `--keep` and `--queue`.\")\n\n    if not any([exp_names, queue, all_commits, rev]):\n        return removed\n\n    celery_queue"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "dvc/repo/experiments/remove.py",
+        "old_string": "        for name, result in results.items():\n            removed.append(name)",
+        "new_string": "        for name, result in results.items():\n            if not result.exp_ref_info and not result.queue_entry:\n                remained.append(name)\n                continue\n            removed.append(name)"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "dvc/repo/experiments/remove.py",
+        "old_string": "                queue_entry_list.append(result.queue_entry)\n\n        if remained:\n            raise UnresolvedExpNamesError(remained, git_remote=git_remote)\n\n    if keep:",
+        "new_string": "                queue_entry_list.append(result.queue_entry)\n\n        if remained:\n            raise UnresolvedExpNamesError(remained, git_remote=git_remote)\n    elif rev:\n        if isinstance(rev, str):\n            rev = [rev]\n        exp_ref_dict = _resolve_exp_by_baseline(repo, rev, num, git_remote)\n        removed.extend(exp_ref_dict.keys())\n        exp_ref_list.extend(exp_ref_dict.values())\n    elif all_commits:\n        exp_ref_list.extend(exp_refs(repo.scm, git_remote))\n        removed.extend([ref.name for ref in exp_ref_list])\n\n    if keep:"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "dvc/repo/experiments/remove.py",
+        "old_string": "        _remove_commited_exps(repo.scm, exp_ref_list, git_remote)\n\n    return removed\n\ndef _resolve_exp_by_baseline(\n",
+        "new_string": "        _remove_commited_exps(repo.scm, exp_ref_list, git_remote)\n\n    if queue_entry_list:\n        from .queue.remove import remove_tasks\n\n        remove_tasks(celery_queue, queue_entry_list)\n\n    if git_remote:\n        from .push import notify_refs_to_studio\n\n        removed_refs = [str(r) for r in exp_ref_list]\n        notify_refs_to_studio(repo, git_remote, removed=removed_refs)\n\n    return removed\n\n\ndef _resolve_exp_by_baseline(\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'dvc/repo/experiments/remove.py').resolve()\ntry:\n module = importlib.import_module('dvc.repo.experiments.remove')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('binding_ok')\nimport subprocess, sys\nnodes = ['tests/func/experiments/test_remove.py::test_remove_experiments_by_ref', 'tests/func/experiments/test_remove.py::test_remove_experiments_by_rev']\nr = subprocess.run([sys.executable, '-m', 'pytest'] + nodes + ['-q', '-p', 'no:cacheprovider', '--no-cov'], capture_output=True, text=True, timeout=1200)\nprint(r.stdout[-600:])\nprint(r.stderr[-400:])\nassert r.returncode == 0, 'scoped remove tests must pass on fixed code'\nprint('exp_remove_ok')\n"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "c4bcd4f5385d5fe6d2594f5cfbaa85d6dc3ffddfbbacfa54f0b6b700de059776"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ]
+}

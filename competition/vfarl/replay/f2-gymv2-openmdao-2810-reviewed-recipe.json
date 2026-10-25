@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "root research agent: causal source read (real-PR repair adds identity-preserving copy protocol), pinned tests, command review 2026-10-25",
+  "review_notes": "_ReprClass constants must preserve identity across copy/deepcopy so existing is/is-not comparisons keep working. Copy-time identity (copy is the singleton), shared singleton visibility, and copy-call timepoint are asserted source-bound before and after the repair. Original F2P/P2P unchanged (P2P empty in source). Baseline diagnostic failure is expected task reproduction, not a policy error. Off-policy scripted demonstration, not a Gemma sample.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "openmdao/core/constants.py",
+        "start_line": 80,
+        "end_line": 100
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'openmdao/core/constants.py').resolve()\nmodule = importlib.import_module('openmdao.core.constants')\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport copy\nfrom openmdao.core.constants import _UNDEFINED\ncp = copy.copy(_UNDEFINED)\nprint('copy_identity', cp is _UNDEFINED)\nassert cp is _UNDEFINED, 'copy broke singleton identity'\nclass Foo:\n    def __init__(self):\n        self.bar = _UNDEFINED\ncpf = copy.deepcopy(Foo())\nprint('deepcopy_identity', cpf.bar is _UNDEFINED)\nassert cpf.bar is _UNDEFINED, 'deepcopy broke singleton identity'\nprint('f2_singleton_identity', True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "cbfd699ea111cb4fe70c78ec2511ffebba881b5573b63ac6cb944f19484d9fd7"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "openmdao/core/constants.py",
+        "old_string": "    def __hash__(self):\n        return hash(self._repr_string)\n\n\n# unique object",
+        "new_string": "    def __hash__(self):\n        return hash(self._repr_string)\n\n    def __copy__(self):\n        \"\"\"\n        Return self instead of a copy.\n\n        This ensures that 'is' and 'is not' comparisons to copies of this object don't break.\n\n        Returns\n        -------\n        _ReprClass instance\n            Return self instead of a copy.\n        \"\"\"\n        return self\n\n    def __deepcopy__(self, memo):\n        \"\"\"\n        Return self instead of a copy.\n\n        This ensures that 'is' and 'is not' comparisons to deep copies of this object don't break.\n\n        Parameters\n        ----------\n        memo : dict\n            Keeps track of already copied objects.\n\n        Returns\n        -------\n        _ReprClass instance\n            Return self instead of a copy.\n        \"\"\"\n        memo[id(self)] = self\n        return self\n\n\n# unique object"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'openmdao/core/constants.py').resolve()\nmodule = importlib.import_module('openmdao.core.constants')\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport copy\nfrom openmdao.core.constants import _UNDEFINED\ncp = copy.copy(_UNDEFINED)\nprint('copy_identity', cp is _UNDEFINED)\nassert cp is _UNDEFINED, 'copy broke singleton identity'\nclass Foo:\n    def __init__(self):\n        self.bar = _UNDEFINED\ncpf = copy.deepcopy(Foo())\nprint('deepcopy_identity', cpf.bar is _UNDEFINED)\nassert cpf.bar is _UNDEFINED, 'deepcopy broke singleton identity'\nprint('f2_singleton_identity', True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "cbfd699ea111cb4fe70c78ec2511ffebba881b5573b63ac6cb944f19484d9fd7"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Return self from __copy__/__deepcopy__ so _ReprClass singletons keep their identity. Source-bound inline observations now pass. Patch submitted."
+}

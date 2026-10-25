@@ -1,0 +1,57 @@
+{
+ "evidence_kind": "human_reviewed_off_policy_demonstration",
+ "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+ "review_notes": "Owner DTLS channel replacement flag; usage handshake lifetime; release _set_replaced() must mark _replaced True. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair. Second-round revision (resource time-point assertion, v2c): inline diagnostics force workspace-src import precedence (installed trio in harness interpreter otherwise shadows src-layout code); the release-time state assertion runs LAST so the command exit reflects it (diagnostic pytest outcome varies by env: skipped in sandbox, failed locally - both fine pre-repair). After _set_replaced(), the flag must read True at that point: fails on buggy logic, passes after repair. F2P node retained unchanged.",
+ "actions": [
+  {
+   "tool": "get_status",
+   "arguments": {},
+   "expected_status": "ok"
+  },
+  {
+   "tool": "read_file",
+   "arguments": {
+    "filepath": "src/trio/_dtls.py",
+    "start_line": 867,
+    "end_line": 889
+   },
+   "expected_status": "ok"
+  },
+  {
+   "tool": "run_command",
+   "arguments": {
+    "command": "python3 - <<'PYREPLAY'\nimport sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path.cwd() / 'src'))\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/trio/_dtls.py').resolve()\ntry:\n module = importlib.import_module('trio._dtls')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('binding_ok')\nPYREPLAY\nPYTHONPATH=src python3 -m pytest src/trio/_tests/test_dtls.py::test_association_replaced_before_handshake_starts -x -q\npython3 - <<'PYREPLAY'\nimport sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path.cwd() / 'src'))\nfrom unittest import mock\nfrom trio._dtls import DTLSChannel\nchannel = object.__new__(DTLSChannel)\nchannel._q = mock.Mock()\nDTLSChannel._set_replaced(channel)\nassert channel._replaced is True, 'replacement flag must be set at release time'\nprint('dtls_replaced_ok')\nPYREPLAY"
+   },
+   "expected_status": "error",
+   "reviewed_command_sha256": "cd84f123beee3809ea00d0c7f8c14245eef1a9f3da4b299461aae7cdc875a4c2"
+  },
+  {
+   "tool": "edit_file",
+   "arguments": {
+    "filepath": "src/trio/_dtls.py",
+    "old_string": "        self._final_volley: list[_AnyHandshakeMessage] = []\n\n    def _set_replaced(self) -> None:\n        self._replaced = False\n        self._q.s.close()\n        # Any packets we already received could maybe possibly still be processed, but\n        # there are no more coming. So we close this on the sender side.\n\n    def _check_replaced(self) -> None:\n        if self._replaced:\n",
+    "new_string": "        self._final_volley: list[_AnyHandshakeMessage] = []\n\n    def _set_replaced(self) -> None:\n        self._replaced = True\n        # Any packets we already received could maybe possibly still be processed, but\n        # there are no more coming. So we close this on the sender side.\n        self._q.s.close()\n\n    def _check_replaced(self) -> None:\n        if self._replaced:\n"
+   },
+   "expected_status": "ok"
+  },
+  {
+   "tool": "run_command",
+   "arguments": {
+    "command": "python3 - <<'PYREPLAY'\nimport sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path.cwd() / 'src'))\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/trio/_dtls.py').resolve()\ntry:\n module = importlib.import_module('trio._dtls')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('binding_ok')\nPYREPLAY\nPYTHONPATH=src python3 -m pytest src/trio/_tests/test_dtls.py::test_association_replaced_before_handshake_starts -x -q\npython3 - <<'PYREPLAY'\nimport sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path.cwd() / 'src'))\nfrom unittest import mock\nfrom trio._dtls import DTLSChannel\nchannel = object.__new__(DTLSChannel)\nchannel._q = mock.Mock()\nDTLSChannel._set_replaced(channel)\nassert channel._replaced is True, 'replacement flag must be set at release time'\nprint('dtls_replaced_ok')\nPYREPLAY"
+   },
+   "expected_status": "ok",
+   "reviewed_command_sha256": "cd84f123beee3809ea00d0c7f8c14245eef1a9f3da4b299461aae7cdc875a4c2"
+  },
+  {
+   "tool": "get_status",
+   "arguments": {},
+   "expected_status": "ok"
+  },
+  {
+   "tool": "submit_patch",
+   "arguments": {},
+   "expected_status": "ok"
+  }
+ ],
+ "final_response": "Restored trio.DTLSChannel._set_replaced release semantics (dtls_replaced_marks_flag). Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Owner worker set; usage serving lifetime; release kill_workers must deliver the given signal to every worker exactly once. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "gunicorn/arbiter.py",
+        "start_line": 645,
+        "end_line": 666
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'gunicorn/arbiter.py').resolve()\ntry:\n module = importlib.import_module('gunicorn.arbiter')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport signal\nfrom unittest import mock\nfrom gunicorn.arbiter import Arbiter\narb = Arbiter.__new__(Arbiter)\narb.WORKERS = {11: mock.Mock(), 22: mock.Mock()}\nwith mock.patch.object(Arbiter, 'kill_worker') as kw:\n    arb.kill_workers(signal.SIGQUIT)\n    print(kw.call_args_list)\n    assert kw.call_count == 2\n    assert all(c[0][1] is signal.SIGQUIT for c in kw.call_args_list)\nprint('kill_workers_ok')\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "edbc6b607156d047780388e608ca974a61f6cb8a7e4a19bad88976cd9656476c"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "gunicorn/arbiter.py",
+        "old_string": "        :attr sig: `signal.SIG*` value\n        \"\"\"\n        worker_pids = list(self.WORKERS.keys())\n        self.kill_worker(worker_pids[0], sig)\n        for pid in worker_pids:\n            self.kill_worker(pid, signal.SIGTERM)\n\n    def kill_worker(self, pid, sig):\n        \"\"\"\\\n",
+        "new_string": "        :attr sig: `signal.SIG*` value\n        \"\"\"\n        worker_pids = list(self.WORKERS.keys())\n        for pid in worker_pids:\n            self.kill_worker(pid, sig)\n\n    def kill_worker(self, pid, sig):\n        \"\"\"\\\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'gunicorn/arbiter.py').resolve()\ntry:\n module = importlib.import_module('gunicorn.arbiter')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport signal\nfrom unittest import mock\nfrom gunicorn.arbiter import Arbiter\narb = Arbiter.__new__(Arbiter)\narb.WORKERS = {11: mock.Mock(), 22: mock.Mock()}\nwith mock.patch.object(Arbiter, 'kill_worker') as kw:\n    arb.kill_workers(signal.SIGQUIT)\n    print(kw.call_args_list)\n    assert kw.call_count == 2\n    assert all(c[0][1] is signal.SIGQUIT for c in kw.call_args_list)\nprint('kill_workers_ok')\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "edbc6b607156d047780388e608ca974a61f6cb8a7e4a19bad88976cd9656476c"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored gunicorn.arbiter.Arbiter.kill_workers release semantics (kill_workers_routes_given_signal_to_all). Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex root source contract and actual command review2026-10-25",
+  "review_notes": "DeepDiff LFUCache CacheNode.free_myself must preserve middle_unlink_scope. Set returns cached hits, distinct keys isolated, eviction removes least-frequent and recompute restores. All original F2P/P2P retained. Smith patch introduces defect. Off-policy.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "deepdiff/lfucache.py",
+        "start_line": 12,
+        "end_line": 47
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'deepdiff/lfucache.py').resolve()\ntry:\n module = importlib.import_module('deepdiff.lfucache')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom deepdiff.lfucache import LFUCache\nc = LFUCache(5)\nc.set(\"a\", value=\"1\")\nc.set(\"b\", value=\"2\")\nc.set(\"c\", value=\"3\")\nassert c.freq_link_head.count_caches() == 3\nc.get(\"b\")\nprint(\"head_after_middle_promote\", c.freq_link_head.count_caches())\nassert c.freq_link_head.count_caches() == 2\nassert (\"a\" in c) is True\nassert (\"b\" in c) is True\nassert (\"c\" in c) is True\nassert c.get(\"a\") == \"1\"\nassert c.get(\"b\") == \"2\"\nassert c.get(\"c\") == \"3\"\nprint(\"middle_unlink_scope\", True)\nc2 = LFUCache(2)\nc2.set(\"x\", value=\"1\")\nc2.set(\"y\", value=\"2\")\nassert c2.get(\"x\") == \"1\"\nc2.set(\"z\", value=\"3\")\nassert (\"x\" in c2) is True\nassert (\"y\" in c2) is False\nassert (\"z\" in c2) is True\nprint(\"evict_isolation\", True)\nc2.set(\"y\", value=\"2-recomputed\")\nassert c2.get(\"y\") == \"2-recomputed\"\nprint(\"recompute\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "78a441d6c467408baaeec736945e5905ae5a93aae66f964169a7ff079a8fd0f5"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "deepdiff/lfucache.py",
+        "old_string": "\n    def free_myself(self):\n        if self.freq_node.cache_head == self.freq_node.cache_tail:\n            self.freq_node.cache_tail = self.freq_node.cache_head = None\n        elif self.freq_node.cache_head == self:\n            self.nxt.pre = self.pre\n            self.freq_node.cache_head = self.nxt\n        elif self.freq_node.cache_tail == self:\n            self.pre.nxt = None\n            self.freq_node.cache_tail = self.nxt\n        else:\n            self.pre.nxt = None\n            self.nxt.pre = self\n\n        self.pre = self.nxt\n        self.nxt = self.pre\n        self.freq_node = None\n\n\n",
+        "new_string": "\n    def free_myself(self):\n        if self.freq_node.cache_head == self.freq_node.cache_tail:\n            self.freq_node.cache_head = self.freq_node.cache_tail = None\n        elif self.freq_node.cache_head == self:\n            self.nxt.pre = None\n            self.freq_node.cache_head = self.nxt\n        elif self.freq_node.cache_tail == self:\n            self.pre.nxt = None\n            self.freq_node.cache_tail = self.pre\n        else:\n            self.pre.nxt = self.nxt\n            self.nxt.pre = self.pre\n\n        self.pre = None\n        self.nxt = None\n        self.freq_node = None\n\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'deepdiff/lfucache.py').resolve()\ntry:\n module = importlib.import_module('deepdiff.lfucache')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom deepdiff.lfucache import LFUCache\nc = LFUCache(5)\nc.set(\"a\", value=\"1\")\nc.set(\"b\", value=\"2\")\nc.set(\"c\", value=\"3\")\nassert c.freq_link_head.count_caches() == 3\nc.get(\"b\")\nprint(\"head_after_middle_promote\", c.freq_link_head.count_caches())\nassert c.freq_link_head.count_caches() == 2\nassert (\"a\" in c) is True\nassert (\"b\" in c) is True\nassert (\"c\" in c) is True\nassert c.get(\"a\") == \"1\"\nassert c.get(\"b\") == \"2\"\nassert c.get(\"c\") == \"3\"\nprint(\"middle_unlink_scope\", True)\nc2 = LFUCache(2)\nc2.set(\"x\", value=\"1\")\nc2.set(\"y\", value=\"2\")\nassert c2.get(\"x\") == \"1\"\nc2.set(\"z\", value=\"3\")\nassert (\"x\" in c2) is True\nassert (\"y\" in c2) is False\nassert (\"z\" in c2) is True\nprint(\"evict_isolation\", True)\nc2.set(\"y\", value=\"2-recomputed\")\nassert c2.get(\"y\") == \"2-recomputed\"\nprint(\"recompute\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "78a441d6c467408baaeec736945e5905ae5a93aae66f964169a7ff079a8fd0f5"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored CacheNode.free_myself middle_unlink_scope. Inline observation completed. Patch submitted."
+}

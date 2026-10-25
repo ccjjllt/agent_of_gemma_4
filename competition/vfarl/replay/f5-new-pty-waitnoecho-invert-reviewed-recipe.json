@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "waitnoecho must report true once echo clears and false on timeout expiry; inverting both outcomes breaks the spawn-poll-detect chain for password prompts. The complete production-file delta is exactly the reviewed hunks inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "ptyprocess/ptyprocess.py",
+        "start_line": 424,
+        "end_line": 458
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('ptyprocess.ptyprocess')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'ptyprocess/ptyprocess.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom ptyprocess import PtyProcess\nproc=PtyProcess.spawn(['sleep','5'])\ntry:\n    proc.setecho(False)\n    first=proc.waitnoecho(timeout=5)\n    proc.setecho(True)\n    second=proc.waitnoecho(timeout=1)\n    proc.setecho(False)\n    third=proc.waitnoecho(timeout=5)\n    print('waitnoecho_invert_sequence',[first,second,third])\n    assert [first,second,third]==[True,False,True]\nfinally:\n    try: proc.terminate(force=True)\n    except Exception: pass\n    try: proc.wait()\n    except Exception: pass\n    try: proc.close()\n    except Exception: pass\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "d7a8c5f28b28922ba6190c6208ad3723aba6e0fee9ae8d15a76fd0e821ba0a5d"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "ptyprocess/ptyprocess.py",
+        "old_string": "        If ``timeout=None`` then this method to block until ECHO flag is False.\n        '''\n\n        if timeout is None:\n            end_time = time.time() - timeout\n        while True:\n            if not self.getecho():\n                return False\n            if timeout > 0 and timeout is not None:\n                return True\n            if timeout is not None:\n                timeout = end_time + time.time()\n            time.sleep(0.1)\n\n    def getecho(self):",
+        "new_string": "        If ``timeout=None`` then this method to block until ECHO flag is False.\n        '''\n\n        if timeout is not None:\n            end_time = time.time() + timeout\n        while True:\n            if not self.getecho():\n                return True\n            if timeout < 0 and timeout is not None:\n                return False\n            if timeout is not None:\n                timeout = end_time - time.time()\n            time.sleep(0.1)\n\n    def getecho(self):"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('ptyprocess.ptyprocess')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'ptyprocess/ptyprocess.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom ptyprocess import PtyProcess\nproc=PtyProcess.spawn(['sleep','5'])\ntry:\n    proc.setecho(False)\n    first=proc.waitnoecho(timeout=5)\n    proc.setecho(True)\n    second=proc.waitnoecho(timeout=1)\n    proc.setecho(False)\n    third=proc.waitnoecho(timeout=5)\n    print('waitnoecho_invert_sequence',[first,second,third])\n    assert [first,second,third]==[True,False,True]\nfinally:\n    try: proc.terminate(force=True)\n    except Exception: pass\n    try: proc.wait()\n    except Exception: pass\n    try: proc.close()\n    except Exception: pass\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "d7a8c5f28b28922ba6190c6208ad3723aba6e0fee9ae8d15a76fd0e821ba0a5d"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "waitnoecho must report true once echo clears and false on timeout expiry; inverting both outcomes breaks the spawn-poll-detect chain for password prompts. The source-bound reproduction passes after the repair. Patch submitted."
+}

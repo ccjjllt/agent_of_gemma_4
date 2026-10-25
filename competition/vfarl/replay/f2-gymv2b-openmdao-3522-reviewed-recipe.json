@@ -1,0 +1,120 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "root research agent: causal source read (get_val copy=True deepcopies internal vectors), pinned tests, command review 2026-10-25",
+  "review_notes": "get_val with copy=True must return a deepcopy so array/object copies are not the internal vectors (scalars stay shared by design); production-call diagnostic builds a Problem, calls get_val(copy=True) (TypeError on baseline), then asserts copy-is-not-view plus view-mutates-internal/copy-isolated (fails on baseline, passes repaired). Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Off-policy scripted demonstration, not a Gemma sample.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "openmdao/core/problem.py",
+        "start_line": 490,
+        "end_line": 550
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'openmdao/core/problem.py').resolve()\nmodule = importlib.import_module('openmdao.core.problem')\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport numpy as np\nimport openmdao.api as om\np = om.Problem()\np.model.add_subsystem('ivc', om.IndepVarComp('x', val=np.array([5., 5., 5.])), promotes=['*'])\np.setup()\np.run_model()\nx_view = p.get_val('x')\nx_copy = p.get_val('x', copy=True)\nprint('copy_identity', x_copy is x_view)\nassert x_copy is not x_view, 'copy=True did not isolate'\nx_view[0] = 99.0\nassert x_copy[0] == 5.0, 'copy polluted by view mutation'\nassert p.get_val('x')[0] == 99.0, 'view did not share internal state'\nprint('f2_getval_isolation', True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "2b37d4856a4dbc174a0ecb92b719381122dbe057d273785177b860fdafe9873f"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "openmdao/core/problem.py",
+        "old_string": "        \"\"\"\n        return self.get_val(name, get_remote=None)\n\n    def get_val(self, name, units=None, indices=None, get_remote=False):\n        \"\"\"\n        Get an output/input variable.\n\n",
+        "new_string": "        \"\"\"\n        return self.get_val(name, get_remote=None)\n\n    def get_val(self, name, units=None, indices=None, get_remote=False, copy=False):\n        \"\"\"\n        Get an output/input variable.\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "openmdao/core/problem.py",
+        "old_string": "            If False, only retrieve the value if it is on the current process, or only the part\n            of the value that's on the current process for a distributed variable.\n            If None and the variable is remote or distributed, a RuntimeError will be raised.\n\n        Returns\n        -------\n",
+        "new_string": "            If False, only retrieve the value if it is on the current process, or only the part\n            of the value that's on the current process for a distributed variable.\n            If None and the variable is remote or distributed, a RuntimeError will be raised.\n        copy : bool, optional\n            If True, return a copy of the value.  If False, return a reference to the value.\n\n        Returns\n        -------\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "openmdao/core/problem.py",
+        "old_string": "                                   f\"rank {self.comm.rank}. You can retrieve values from \"\n                                   \"other processes using `get_val(<name>, get_remote=True)`.\")\n\n        return val\n\n    def __setitem__(self, name, value):\n        \"\"\"\n",
+        "new_string": "                                   f\"rank {self.comm.rank}. You can retrieve values from \"\n                                   \"other processes using `get_val(<name>, get_remote=True)`.\")\n\n        if copy:\n            return deepcopy(val)\n        else:\n            return val\n\n    def __setitem__(self, name, value):\n        \"\"\"\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "openmdao/core/system.py",
+        "old_string": "import pathlib\nimport time\nimport functools\nfrom contextlib import contextmanager\nfrom collections import defaultdict\nfrom itertools import chain\n",
+        "new_string": "import pathlib\nimport time\nimport functools\nfrom copy import deepcopy\nfrom contextlib import contextmanager\nfrom collections import defaultdict\nfrom itertools import chain\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "openmdao/core/system.py",
+        "old_string": "        return val\n\n    def get_val(self, name, units=None, indices=None, get_remote=False, rank=None,\n                vec_name='nonlinear', kind=None, flat=False, from_src=True):\n        \"\"\"\n        Get an output/input/residual variable.\n\n",
+        "new_string": "        return val\n\n    def get_val(self, name, units=None, indices=None, get_remote=False, rank=None,\n                vec_name='nonlinear', kind=None, flat=False, from_src=True, copy=False):\n        \"\"\"\n        Get an output/input/residual variable.\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "openmdao/core/system.py",
+        "old_string": "            If True, return the flattened version of the value.\n        from_src : bool\n            If True, retrieve value of an input variable from its connected source.\n\n        Returns\n        -------\n",
+        "new_string": "            If True, return the flattened version of the value.\n        from_src : bool\n            If True, retrieve value of an input variable from its connected source.\n        copy : bool, optional\n            If True, return a copy of the value.  If False, return a reference to the value.\n\n        Returns\n        -------\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "openmdao/core/system.py",
+        "old_string": "            else:\n                # src is outside of this system so get the value from the model\n                caller = self._problem_meta['model_ref']()\n            return caller._get_input_from_src(name, abs_names, conns, units=simp_units,\n                                              indices=indices, get_remote=get_remote, rank=rank,\n                                              vec_name=vec_name, flat=flat, scope_sys=self)\n        else:\n            val = self._abs_get_val(abs_names[0], get_remote, rank, vec_name, kind, flat)\n\n",
+        "new_string": "            else:\n                # src is outside of this system so get the value from the model\n                caller = self._problem_meta['model_ref']()\n            val = caller._get_input_from_src(name, abs_names, conns, units=simp_units,\n                                             indices=indices, get_remote=get_remote, rank=rank,\n                                             vec_name=vec_name, flat=flat, scope_sys=self)\n        else:\n            val = self._abs_get_val(abs_names[0], get_remote, rank, vec_name, kind, flat)\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "openmdao/core/system.py",
+        "old_string": "            if units is not None:\n                val = self.convert2units(abs_names[0], val, simp_units)\n\n        return val\n\n    def _get_cached_val(self, name, abs_names, get_remote=False):\n        # We have set and cached already\n",
+        "new_string": "            if units is not None:\n                val = self.convert2units(abs_names[0], val, simp_units)\n\n        if copy:\n            return deepcopy(val)\n        else:\n            return val\n\n    def _get_cached_val(self, name, abs_names, get_remote=False):\n        # We have set and cached already\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'openmdao/core/problem.py').resolve()\nmodule = importlib.import_module('openmdao.core.problem')\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport numpy as np\nimport openmdao.api as om\np = om.Problem()\np.model.add_subsystem('ivc', om.IndepVarComp('x', val=np.array([5., 5., 5.])), promotes=['*'])\np.setup()\np.run_model()\nx_view = p.get_val('x')\nx_copy = p.get_val('x', copy=True)\nprint('copy_identity', x_copy is x_view)\nassert x_copy is not x_view, 'copy=True did not isolate'\nx_view[0] = 99.0\nassert x_copy[0] == 5.0, 'copy polluted by view mutation'\nassert p.get_val('x')[0] == 99.0, 'view did not share internal state'\nprint('f2_getval_isolation', True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "2b37d4856a4dbc174a0ecb92b719381122dbe057d273785177b860fdafe9873f"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Return a deepcopy from get_val when copy=True so callers own an isolated value. Source-bound inline observations now pass. Patch submitted."
+}

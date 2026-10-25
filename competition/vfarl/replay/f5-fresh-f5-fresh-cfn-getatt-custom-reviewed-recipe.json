@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "Extract the GetAtt reference, fetch the referenced resource type, gate custom-resource types, then emit. The bug falls through to the additional-properties error so valid custom-resource GetAtt values always fail. The complete production-file delta is exactly the reviewed repair edit inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/cfnlint/rules/resources/properties/Properties.py",
+        "start_line": 283,
+        "end_line": 407
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('cfnlint.rules.resources.properties.Properties')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'src/cfnlint/rules/resources/properties/Properties.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport tempfile, os\nfrom cfnlint.decode import cfn_yaml\nfrom cfnlint.rules import RulesCollection\nfrom cfnlint.rules.resources.properties.Properties import Properties\nfrom cfnlint.runner import Runner\nTMPL_A = 'AWSTemplateFormatVersion: \"2010-09-09\"\\nResources:\\n  Custom:\\n    Type: AWS::CloudFormation::CustomResource\\n    Properties:\\n      ServiceToken: arn.example\\n  Helper:\\n    Type: AWS::Lambda::Function\\n    Properties:\\n      Handler: helper.lambda_handler\\n      Role: arn:aws:iam::123456789012:role/role-name-with-path\\n      Code: !GetAtt Custom.Code\\n'\nTMPL_B = 'AWSTemplateFormatVersion: \"2010-09-09\"\\nResources:\\n  MyBucket:\\n    Type: AWS::S3::Bucket\\n  Helper:\\n    Type: AWS::Lambda::Function\\n    Properties:\\n      Handler: helper.lambda_handler\\n      Role: arn:aws:iam::123456789012:role/role-name-with-path\\n      Code: !GetAtt MyBucket.Arn\\n'\ndef run_props(text):\n    fd, path = tempfile.mkstemp(suffix='.yaml')\n    try:\n        with os.fdopen(fd, 'w') as f:\n            f.write(text)\n        template = cfn_yaml.load(path)\n        col = RulesCollection()\n        col.register(Properties())\n        r = Runner(col, path, template, ['us-east-1'], [])\n        r.transform()\n        return [str(m) for m in r.run()]\n    finally:\n        os.unlink(path)\nma = run_props(TMPL_A)\nmb = run_props(TMPL_B)\nprint('getatt_sequence', [len(ma), len(mb)])\nprint('getatt_b_detail', mb[:1])\nassert len(ma) == 0, ma\nassert len(mb) == 1 and 'custom resource' in mb[0], mb\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "fd054c2c491857d5249c4efd78cd55c49fbfbdec6eb55ebae2ef946fd4562779"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/cfnlint/rules/resources/properties/Properties.py",
+        "old_string": "                    and text.get(prop) == \"AWS::NoValue\"\n                ):\n                    pass\n                elif not supports_additional_properties:\n                    close_match = False\n                    for key in resourcespec.keys():\n",
+        "new_string": "                    and text.get(prop) == \"AWS::NoValue\"\n                ):\n                    pass\n                elif len(text) == 1 and prop in \"Fn::GetAtt\":\n                    getatt = text.get(prop)\n                    getatt_type = (\n                        self.cfn.template.get(\"Resources\", {})\n                        .get(getatt[0], {})\n                        .get(\"Type\", \"\")\n                    )\n                    if (\n                        getatt_type == \"AWS::CloudFormation::CustomResource\"\n                        or getatt_type.startswith(\"Custom::\")\n                    ):\n                        pass\n                    else:\n                        message = f'GetAtt must refer to a custom resource {\"/\".join(map(str, proppath))}'\n                        matches.append(RuleMatch(proppath, message))\n                elif not supports_additional_properties:\n                    close_match = False\n                    for key in resourcespec.keys():\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('cfnlint.rules.resources.properties.Properties')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'src/cfnlint/rules/resources/properties/Properties.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport tempfile, os\nfrom cfnlint.decode import cfn_yaml\nfrom cfnlint.rules import RulesCollection\nfrom cfnlint.rules.resources.properties.Properties import Properties\nfrom cfnlint.runner import Runner\nTMPL_A = 'AWSTemplateFormatVersion: \"2010-09-09\"\\nResources:\\n  Custom:\\n    Type: AWS::CloudFormation::CustomResource\\n    Properties:\\n      ServiceToken: arn.example\\n  Helper:\\n    Type: AWS::Lambda::Function\\n    Properties:\\n      Handler: helper.lambda_handler\\n      Role: arn:aws:iam::123456789012:role/role-name-with-path\\n      Code: !GetAtt Custom.Code\\n'\nTMPL_B = 'AWSTemplateFormatVersion: \"2010-09-09\"\\nResources:\\n  MyBucket:\\n    Type: AWS::S3::Bucket\\n  Helper:\\n    Type: AWS::Lambda::Function\\n    Properties:\\n      Handler: helper.lambda_handler\\n      Role: arn:aws:iam::123456789012:role/role-name-with-path\\n      Code: !GetAtt MyBucket.Arn\\n'\ndef run_props(text):\n    fd, path = tempfile.mkstemp(suffix='.yaml')\n    try:\n        with os.fdopen(fd, 'w') as f:\n            f.write(text)\n        template = cfn_yaml.load(path)\n        col = RulesCollection()\n        col.register(Properties())\n        r = Runner(col, path, template, ['us-east-1'], [])\n        r.transform()\n        return [str(m) for m in r.run()]\n    finally:\n        os.unlink(path)\nma = run_props(TMPL_A)\nmb = run_props(TMPL_B)\nprint('getatt_sequence', [len(ma), len(mb)])\nprint('getatt_b_detail', mb[:1])\nassert len(ma) == 0, ma\nassert len(mb) == 1 and 'custom resource' in mb[0], mb\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "fd054c2c491857d5249c4efd78cd55c49fbfbdec6eb55ebae2ef946fd4562779"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Extract the GetAtt reference, fetch the referenced resource type, gate custom-resource types, then emit. The bug falls through to the additional-properties error so valid custom-resource GetAtt values always fail. The source-bound reproduction passes after the repair. Patch submitted."
+}

@@ -1,0 +1,27 @@
+{
+  "row": {
+    "instance_id": "tobymao__sqlglot.036601ba.func_pm_ctrl_shuffle__25pli4wm",
+    "patch": "diff --git a/sqlglot/dialects/hive.py b/sqlglot/dialects/hive.py\nindex 6084d44..131c9e2 100644\n--- a/sqlglot/dialects/hive.py\n+++ b/sqlglot/dialects/hive.py\n@@ -84,28 +84,27 @@ def _add_date_sql(self: Hive.Generator, expression: DATE_ADD_OR_SUB) -> str:\n \n \n def _date_diff_sql(self: Hive.Generator, expression: exp.DateDiff | exp.TsOrDsDiff) -> str:\n-    unit = expression.text(\"unit\").upper()\n-\n-    factor = TIME_DIFF_FACTOR.get(unit)\n+    _, multiplier = DATE_DELTA_INTERVAL.get(unit, (\"\", 1))\n+    multiplier_sql = f\" / {multiplier}\" if multiplier > 1 else \"\"\n+    sql_func = \"MONTHS_BETWEEN\" if months_between else \"DATEDIFF\"\n     if factor is not None:\n         left = self.sql(expression, \"this\")\n         right = self.sql(expression, \"expression\")\n         sec_diff = f\"UNIX_TIMESTAMP({left}) - UNIX_TIMESTAMP({right})\"\n         return f\"({sec_diff}){factor}\" if factor else sec_diff\n \n-    months_between = unit in DIFF_MONTH_SWITCH\n-    sql_func = \"MONTHS_BETWEEN\" if months_between else \"DATEDIFF\"\n-    _, multiplier = DATE_DELTA_INTERVAL.get(unit, (\"\", 1))\n-    multiplier_sql = f\" / {multiplier}\" if multiplier > 1 else \"\"\n-    diff_sql = f\"{sql_func}({self.format_args(expression.this, expression.expression)})\"\n+    return diff_sql\n \n     if months_between or multiplier_sql:\n         # MONTHS_BETWEEN returns a float, so we need to truncate the fractional part.\n         # For the same reason, we want to truncate if there's a divisor present.\n         diff_sql = f\"CAST({diff_sql}{multiplier_sql} AS INT)\"\n+    diff_sql = f\"{sql_func}({self.format_args(expression.this, expression.expression)})\"\n \n-    return diff_sql\n+    factor = TIME_DIFF_FACTOR.get(unit)\n \n+    months_between = unit in DIFF_MONTH_SWITCH\n+    unit = expression.text(\"unit\").upper()\n \n def _json_format_sql(self: Hive.Generator, expression: exp.JSONFormat) -> str:\n     this = expression.this\n",
+    "FAIL_TO_PASS": [
+      "tests/dialects/test_hive.py::TestHive::test_time"
+    ],
+    "PASS_TO_PASS": [
+      "tests/dialects/test_hive.py::TestHive::test_bits",
+      "tests/dialects/test_hive.py::TestHive::test_cast",
+      "tests/dialects/test_hive.py::TestHive::test_data_type",
+      "tests/dialects/test_hive.py::TestHive::test_ddl",
+      "tests/dialects/test_hive.py::TestHive::test_escapes",
+      "tests/dialects/test_hive.py::TestHive::test_hive",
+      "tests/dialects/test_hive.py::TestHive::test_lateral_view",
+      "tests/dialects/test_hive.py::TestHive::test_order_by",
+      "tests/dialects/test_hive.py::TestHive::test_quotes",
+      "tests/dialects/test_hive.py::TestHive::test_regex"
+    ],
+    "image_name": "swebench/swesmith.x86_64.tobymao_1776_sqlglot.036601ba",
+    "repo": "swesmith/tobymao__sqlglot.036601ba",
+    "problem_statement": "Hive dialect date diff function generates invalid SQL with UnboundLocalError\n\n#### Description\n\nWhen using date difference functions in Hive dialect, the SQL generation fails with an UnboundLocalError for the `unit` variable. This appears to happen when the code tries to access the `unit` variable before it's defined in the function.\n\n#### Steps/Code to Reproduce\n\n```python\nimport sqlglot as sg\n\n# This should work but throws UnboundLocalError\nsql = \"DATE_DIFF('second', x, y)\"\nresult = sg.transpile(sql, read=\"presto\", write=\"hive\")\nprint(result)\n```\n\nThe error occurs when trying to convert date difference expressions to Hive SQL format. The function attempts to use a `unit` variable that hasn't been properly initialized at the point where it's referenced.\n\n#### Expected Behavior\n\nThe code should successfully transpile date difference functions to valid Hive SQL without throwing UnboundLocalError.\n\n#### Actual Behavior\n\n```\nUnboundLocalError: cannot access local variable 'unit' where it is not defined\n```\n\nThis affects various date/time unit conversions when transpiling to Hive dialect."
+  },
+  "row_idx": 20079,
+  "source_page": "acquisition/f1-new/pages/train-20000.json",
+  "revision": "77cab9055d42ab4a5c25c89a8f937096db13558e"
+}

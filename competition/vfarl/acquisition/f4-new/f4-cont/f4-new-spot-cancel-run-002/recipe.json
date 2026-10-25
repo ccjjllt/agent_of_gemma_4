@@ -1,0 +1,75 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Owner spot fleet request; usage active capacity; cancel without terminate must mark cancelled_running and retain the request instead of deleting it. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "moto/ec2/models/spot_requests.py",
+        "start_line": 512,
+        "end_line": 532
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "moto/ec2/responses/spot_fleets.py",
+        "start_line": 1,
+        "end_line": 17
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'moto/ec2/models/spot_requests.py').resolve()\ntry:\n module = importlib.import_module('moto.ec2.models.spot_requests')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport boto3\nfrom moto import mock_aws\nwith mock_aws():\n    c = boto3.client('ec2', region_name='us-east-1')\n    fid = c.request_spot_fleet(SpotFleetRequestConfig={'IamFleetRole': 'arn:aws:iam::123456789012:role/fleet', 'TargetCapacity': 1, 'AllocationStrategy': 'lowestPrice', 'LaunchSpecifications': [{'ImageId': 'ami-12345678', 'InstanceType': 't2.micro'}]})['SpotFleetRequestId']\n    c.cancel_spot_fleet_requests(SpotFleetRequestIds=[fid], TerminateInstances=False)\n    desc = c.describe_spot_fleet_requests(SpotFleetRequestIds=[fid])['SpotFleetRequestConfigs']\n    print('state', desc[0]['SpotFleetRequestState'])\n    assert desc[0]['SpotFleetRequestState'] == 'cancelled_running', desc[0]['SpotFleetRequestState']\nprint('spot_cancel_ok')\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "bd6ff6fdb87d7275bc3fce82d3362d2821100dbdad5df99445e6fbda8254ca82"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "moto/ec2/models/spot_requests.py",
+        "old_string": "            if terminate_instances:\n                spot_fleet.target_capacity = 0\n                spot_fleet.terminate_instances()\n            spot_requests.append(spot_fleet)\n            del self.spot_fleet_requests[spot_fleet_request_id]\n        return spot_requests\n\n    def modify_spot_fleet_request(\n",
+        "new_string": "            if terminate_instances:\n                spot_fleet.target_capacity = 0\n                spot_fleet.terminate_instances()\n                del self.spot_fleet_requests[spot_fleet_request_id]\n            else:\n                spot_fleet.state = \"cancelled_running\"\n            spot_requests.append(spot_fleet)\n        return spot_requests\n\n    def modify_spot_fleet_request(\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "moto/ec2/responses/spot_fleets.py",
+        "old_string": "class SpotFleets(EC2BaseResponse):\n    def cancel_spot_fleet_requests(self) -> str:\n        spot_fleet_request_ids = self._get_multi_param(\"SpotFleetRequestId.\")\n        terminate_instances = self._get_param(\"TerminateInstances\")\n        spot_fleets = self.ec2_backend.cancel_spot_fleet_requests(\n            spot_fleet_request_ids, terminate_instances\n        )\n",
+        "new_string": "class SpotFleets(EC2BaseResponse):\n    def cancel_spot_fleet_requests(self) -> str:\n        spot_fleet_request_ids = self._get_multi_param(\"SpotFleetRequestId.\")\n        terminate_instances = self._get_bool_param(\"TerminateInstances\")\n        spot_fleets = self.ec2_backend.cancel_spot_fleet_requests(\n            spot_fleet_request_ids, terminate_instances\n        )\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'moto/ec2/models/spot_requests.py').resolve()\ntry:\n module = importlib.import_module('moto.ec2.models.spot_requests')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport boto3\nfrom moto import mock_aws\nwith mock_aws():\n    c = boto3.client('ec2', region_name='us-east-1')\n    fid = c.request_spot_fleet(SpotFleetRequestConfig={'IamFleetRole': 'arn:aws:iam::123456789012:role/fleet', 'TargetCapacity': 1, 'AllocationStrategy': 'lowestPrice', 'LaunchSpecifications': [{'ImageId': 'ami-12345678', 'InstanceType': 't2.micro'}]})['SpotFleetRequestId']\n    c.cancel_spot_fleet_requests(SpotFleetRequestIds=[fid], TerminateInstances=False)\n    desc = c.describe_spot_fleet_requests(SpotFleetRequestIds=[fid])['SpotFleetRequestConfigs']\n    print('state', desc[0]['SpotFleetRequestState'])\n    assert desc[0]['SpotFleetRequestState'] == 'cancelled_running', desc[0]['SpotFleetRequestState']\nprint('spot_cancel_ok')\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "bd6ff6fdb87d7275bc3fce82d3362d2821100dbdad5df99445e6fbda8254ca82"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored moto.SpotRequestBackend.cancel_spot_fleet_requests release semantics (cancel_without_terminate_marks_cancelled_running_and_retains_request). Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

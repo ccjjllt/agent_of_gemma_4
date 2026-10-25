@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "Reading the echo flag must report the actual terminal state after each set call; returning the inverted flag from the wrong bit breaks the set-poll-detect chain. The complete production-file delta is exactly the reviewed hunks inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "ptyprocess/ptyprocess.py",
+        "start_line": 452,
+        "end_line": 480
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('ptyprocess.ptyprocess')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'ptyprocess/ptyprocess.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom ptyprocess import PtyProcess\nproc=PtyProcess.spawn(['sleep','5'])\ntry:\n    proc.setecho(True)\n    on_state=proc.getecho()\n    proc.setecho(False)\n    off_state=proc.getecho()\n    waited=proc.waitnoecho(timeout=5)\n    print('getecho_roundtrip_sequence',[on_state,off_state,waited])\n    assert [on_state,off_state,waited]==[True,False,True]\nfinally:\n    try: proc.terminate(force=True)\n    except Exception: pass\n    try: proc.wait()\n    except Exception: pass\n    try: proc.close()\n    except Exception: pass\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "291ab4aa06ae9ac367ac4248eb857a9109daec2ff56b4c90bacb911ab6e0a38e"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "ptyprocess/ptyprocess.py",
+        "old_string": "            errmsg = 'getecho() may not be called on this platform'\n            if err.args[0] == errno.EINVAL:\n                raise IOError(err.args[0], '%s: %s.' % (err.args[1], errmsg))\n            # removing re-raise may cause silent failures\n       \n\n        # Incorrect use of termios.ECHO as 2nd bitsite should be 4th (termios.ECHO has a correct bit)\n        self.echo = bool(attr[3] & (termios.ECHO >> 1))\n        return not self.echo  # Inverting the expected return value\n\n    def setecho(self, state):\n        '''Enable or disable terminal echo.",
+        "new_string": "            errmsg = 'getecho() may not be called on this platform'\n            if err.args[0] == errno.EINVAL:\n                raise IOError(err.args[0], '%s: %s.' % (err.args[1], errmsg))\n            raise\n\n        self.echo = bool(attr[3] & termios.ECHO)\n        return self.echo\n\n    def setecho(self, state):\n        '''Enable or disable terminal echo."
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('ptyprocess.ptyprocess')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'ptyprocess/ptyprocess.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom ptyprocess import PtyProcess\nproc=PtyProcess.spawn(['sleep','5'])\ntry:\n    proc.setecho(True)\n    on_state=proc.getecho()\n    proc.setecho(False)\n    off_state=proc.getecho()\n    waited=proc.waitnoecho(timeout=5)\n    print('getecho_roundtrip_sequence',[on_state,off_state,waited])\n    assert [on_state,off_state,waited]==[True,False,True]\nfinally:\n    try: proc.terminate(force=True)\n    except Exception: pass\n    try: proc.wait()\n    except Exception: pass\n    try: proc.close()\n    except Exception: pass\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "291ab4aa06ae9ac367ac4248eb857a9109daec2ff56b4c90bacb911ab6e0a38e"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Reading the echo flag must report the actual terminal state after each set call; returning the inverted flag from the wrong bit breaks the set-poll-detect chain. The source-bound reproduction passes after the repair. Patch submitted."
+}

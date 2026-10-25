@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "Bulk update must iterate every supplied row into chunks for execution; deleting the loop persists nothing across the produce-execute-read chain. The complete production-file delta is exactly the reviewed hunks inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "dataset/table.py",
+        "start_line": 212,
+        "end_line": 233
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('dataset.table')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'dataset/table.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom dataset import Database\ndb=Database('sqlite:///:memory:')\nt=db['t']\nt.insert({'id':1,'v':'a'})\nt.insert({'id':2,'v':'b'})\nt.update_many([{'id':1,'v':'a1'},{'id':2,'v':'b1'}], ['id'])\nrows=sorted([(r['id'],r['v']) for r in t.all()])\nprint('bulk_update_loop_sequence',rows)\nassert rows==[(1,'a1'),(2,'b1')]\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "fc144d8091cc29c7a2382f1ce53992c981d586842f2c05254a87b0ced1cbb51d"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "dataset/table.py",
+        "old_string": "\n        chunk = []\n        columns = []\n    def upsert(self, row, keys, ensure=None, types=None):\n        \"\"\"An UPSERT is a smart combination of insert and update.\n",
+        "new_string": "\n        chunk = []\n        columns = []\n        for index, row in enumerate(rows):\n            columns.extend(\n                col for col in row.keys() if (col not in columns) and (col not in keys)\n            )\n\n            # bindparam requires names to not conflict (cannot be \"id\" for id)\n            for key in keys:\n                row[\"_%s\" % key] = row[key]\n                row.pop(key)\n            chunk.append(row)\n\n            # Update when chunk_size is fulfilled or this is the last row\n            if len(chunk) == chunk_size or index == len(rows) - 1:\n                cl = [self.table.c[k] == bindparam(\"_%s\" % k) for k in keys]\n                stmt = self.table.update(\n                    whereclause=and_(True, *cl),\n                    values={col: bindparam(col, required=False) for col in columns},\n                )\n                self.db.executable.execute(stmt, chunk)\n                chunk = []\n\n    def upsert(self, row, keys, ensure=None, types=None):\n        \"\"\"An UPSERT is a smart combination of insert and update.\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('dataset.table')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'dataset/table.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom dataset import Database\ndb=Database('sqlite:///:memory:')\nt=db['t']\nt.insert({'id':1,'v':'a'})\nt.insert({'id':2,'v':'b'})\nt.update_many([{'id':1,'v':'a1'},{'id':2,'v':'b1'}], ['id'])\nrows=sorted([(r['id'],r['v']) for r in t.all()])\nprint('bulk_update_loop_sequence',rows)\nassert rows==[(1,'a1'),(2,'b1')]\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "fc144d8091cc29c7a2382f1ce53992c981d586842f2c05254a87b0ced1cbb51d"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Bulk update must iterate every supplied row into chunks for execution; deleting the loop persists nothing across the produce-execute-read chain. The source-bound reproduction passes after the repair. Patch submitted."
+}

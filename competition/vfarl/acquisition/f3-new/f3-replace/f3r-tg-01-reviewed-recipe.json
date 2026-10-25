@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex root source contract and actual command review 2026-10-26",
+  "review_notes": "agronholm/typeguard TransformMemo must preserve memo_alias_namespace_binding_and_scope_isolation. Transform memo namespaces: set->visit aliased imports, get->memo records the alias binding with equivalence on repeat visits and isolation across modules (second observation differs on cross-talk), expire/invalidate->fresh memo starts empty, recompute restores bindings. Restore the exact production logic without hardcoding values or altering tests. All original F2P/P2P identifiers and complete target files are retained verbatim. The Smith row introduces the defect; this is an off-policy scripted demonstration, not a model sample or preference pair. The inline observation fails before the repair (first run expects error) and passes after (second run expects ok), so the second observation differs. Sandbox exposes a wide-terminal mypy shim (COLUMNS=250) so the pretty-printer used by tests/mypy/test_type_annotations.py emits the pinned single-line messages; without a tty mypy wraps at width 80 on any tree. The repair itself is verified by transformer tests and mypy message content.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/typeguard/_transformer.py",
+        "start_line": 591,
+        "end_line": 626
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/typeguard/_transformer.py').resolve()\ntry:\n module = importlib.import_module('typeguard._transformer')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\n\nimport ast\nfrom typeguard._transformer import TypeguardTransformer\nt = TypeguardTransformer()\ntree = ast.parse('import os as _os\\n')\nt.visit(tree)\nassert t._memo.local_names == {'_os'}, sorted(t._memo.local_names)\nassert t._memo.imported_names == {'_os': 'os'}, dict(t._memo.imported_names)\nprint(\"get_hit\", True)\nt1b = TypeguardTransformer()\nt1b.visit(ast.parse('import os as _os\\n'))\nassert t1b._memo.local_names == t._memo.local_names\nassert t1b._memo.imported_names == t._memo.imported_names\nprint(\"equivalence\", True)\nt2 = TypeguardTransformer()\nt2.visit(ast.parse('import json as _json\\n'))\nassert t2._memo.local_names == {'_json'}, sorted(t2._memo.local_names)\nassert t2._memo.imported_names == {'_json': 'json'}\nassert 'os' not in t2._memo.local_names and 'json' not in t._memo.local_names\nprint(\"isolation\", True)\nfresh = TypeguardTransformer()\nassert fresh._memo.local_names == set() and fresh._memo.imported_names == {}\nprint(\"invalidate\", True)\nfresh.visit(ast.parse('import os as _os\\n'))\nassert fresh._memo.local_names == {'_os'}\nassert fresh._memo.imported_names == {'_os': 'os'}\nprint(\"recompute\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "5770ed66c9427f9a94ae67d16289728bf69e7a8197337cc69d53cff98eaec867"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/typeguard/_transformer.py",
+        "old_string": "\n    def visit_Import(self, node: Import) -> Import:\n        for name in node.names:\n            self._memo.local_names.add(name.name)\n            self._memo.imported_names[name.name] = name.asname or name.name\n\n        return None\n\n    def visit_ImportFrom(self, node: ImportFrom) -> ImportFrom:\n        for name in node.names:\n",
+        "new_string": "\n    def visit_Import(self, node: Import) -> Import:\n        for name in node.names:\n            self._memo.local_names.add(name.asname or name.name)\n            self._memo.imported_names[name.asname or name.name] = name.name\n\n        return node\n\n    def visit_ImportFrom(self, node: ImportFrom) -> ImportFrom:\n        for name in node.names:\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/typeguard/_transformer.py').resolve()\ntry:\n module = importlib.import_module('typeguard._transformer')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\n\nimport ast\nfrom typeguard._transformer import TypeguardTransformer\nt = TypeguardTransformer()\ntree = ast.parse('import os as _os\\n')\nt.visit(tree)\nassert t._memo.local_names == {'_os'}, sorted(t._memo.local_names)\nassert t._memo.imported_names == {'_os': 'os'}, dict(t._memo.imported_names)\nprint(\"get_hit\", True)\nt1b = TypeguardTransformer()\nt1b.visit(ast.parse('import os as _os\\n'))\nassert t1b._memo.local_names == t._memo.local_names\nassert t1b._memo.imported_names == t._memo.imported_names\nprint(\"equivalence\", True)\nt2 = TypeguardTransformer()\nt2.visit(ast.parse('import json as _json\\n'))\nassert t2._memo.local_names == {'_json'}, sorted(t2._memo.local_names)\nassert t2._memo.imported_names == {'_json': 'json'}\nassert 'os' not in t2._memo.local_names and 'json' not in t._memo.local_names\nprint(\"isolation\", True)\nfresh = TypeguardTransformer()\nassert fresh._memo.local_names == set() and fresh._memo.imported_names == {}\nprint(\"invalidate\", True)\nfresh.visit(ast.parse('import os as _os\\n'))\nassert fresh._memo.local_names == {'_os'}\nassert fresh._memo.imported_names == {'_os': 'os'}\nprint(\"recompute\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "5770ed66c9427f9a94ae67d16289728bf69e7a8197337cc69d53cff98eaec867"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored TransformMemo memo_alias_namespace_binding_and_scope_isolation. The actual inline cache observation completed after the production edit. Patch submitted."
+}

@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Owner receive channel; usage message exchange; context exit must always close the handle and propagate exceptions (never swallow by returning True on clean exit). Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/trio/_channel.py",
+        "start_line": 395,
+        "end_line": 418
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/trio/_channel.py').resolve()\ntry:\n module = importlib.import_module('trio._channel')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport trio\nsend, recv = trio.open_memory_channel(1)\nwith recv:\n    pass\nprint('exit_closed', recv._closed)\nassert recv._closed, 'context exit must release the channel even on the clean path'\nprint('recv_exit_ok')\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "1fd689657d2bccebb9042d15f9e8c8b158b1cee72076e27aa25e798e23b8e2b7"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/trio/_channel.py",
+        "old_string": "        exc_type: type[BaseException] | None,\n        exc_value: BaseException | None,\n        traceback: TracebackType | None,\n    ) -> bool:\n        if exc_type is None:\n            return True\n        self.close()\n        return False\n\n    @enable_ki_protection\n    def close(self) -> None:\n",
+        "new_string": "        exc_type: type[BaseException] | None,\n        exc_value: BaseException | None,\n        traceback: TracebackType | None,\n    ) -> None:\n        self.close()\n\n    @enable_ki_protection\n    def close(self) -> None:\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/trio/_channel.py').resolve()\ntry:\n module = importlib.import_module('trio._channel')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport trio\nsend, recv = trio.open_memory_channel(1)\nwith recv:\n    pass\nprint('exit_closed', recv._closed)\nassert recv._closed, 'context exit must release the channel even on the clean path'\nprint('recv_exit_ok')\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "1fd689657d2bccebb9042d15f9e8c8b158b1cee72076e27aa25e798e23b8e2b7"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored trio.MemoryReceiveChannel.__exit__ release semantics (recv_exit_closes_and_propagates). Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

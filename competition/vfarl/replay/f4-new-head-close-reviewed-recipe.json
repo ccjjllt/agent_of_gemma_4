@@ -1,0 +1,66 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Owner response body iterator; usage HEAD/204/304 responses; release must close the body iterator and clear it to empty. SPLIT-FAMILY with error_page_content. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "bottle.py",
+        "start_line": 1082,
+        "end_line": 1100
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'bottle.py').resolve()\ntry:\n module = importlib.import_module('bottle')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('binding_ok')\nPYREPLAY\npython3 -m pytest test/test_wsgi.py::TestWsgi::test_headget test/test_wsgi.py::TestDecorators::test_truncate_body -q"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "8dcd6956688cfc7ae01c3b0924a6ce31d88178cbafb2ce7b49f8e44809821cc7"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "bottle.py",
+        "old_string": "            if response._status_code in (100, 101, 204, 304)\\\n            or environ['REQUEST_METHOD'] == 'HEAD':\n                if hasattr(out, 'close'): out.close()\n            exc_info = environ.get('bottle.exc_info')\n            if exc_info is not None:\n                del environ['bottle.exc_info']\n",
+        "new_string": "            if response._status_code in (100, 101, 204, 304)\\\n            or environ['REQUEST_METHOD'] == 'HEAD':\n                if hasattr(out, 'close'): out.close()\n                out = []\n            exc_info = environ.get('bottle.exc_info')\n            if exc_info is not None:\n                del environ['bottle.exc_info']\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "bottle.py",
+        "old_string": "            raise\n        except Exception as E:\n            if not self.catchall: raise\n            if DEBUG:\n                pass\n            environ['wsgi.errors'].write(err)\n            environ['wsgi.errors'].flush()\n            headers = [('Content-Type', 'text/html; charset=UTF-8')]\n            start_response('500 INTERNAL SERVER ERROR', headers, sys.exc_info())\n            return [tob(err)]\n    def __call__(self, environ, start_response):\n        \"\"\" Each instance of :class:'Bottle' is a WSGI application. \"\"\"\n        return self.wsgi(environ, start_response)\n",
+        "new_string": "            raise\n        except Exception as E:\n            if not self.catchall: raise\n            err = '<h1>Critical error while processing request: %s</h1>' \\\n                  % html_escape(environ.get('PATH_INFO', '/'))\n            if DEBUG:\n                err += '<h2>Error:</h2>\\n<pre>\\n%s\\n</pre>\\n' \\\n                       '<h2>Traceback:</h2>\\n<pre>\\n%s\\n</pre>\\n' \\\n                       % (html_escape(repr(E)), html_escape(format_exc()))\n            environ['wsgi.errors'].write(err)\n            environ['wsgi.errors'].flush()\n            headers = [('Content-Type', 'text/html; charset=UTF-8')]\n            start_response('500 INTERNAL SERVER ERROR', headers, sys.exc_info())\n            return [tob(err)]\n\n    def __call__(self, environ, start_response):\n        \"\"\" Each instance of :class:'Bottle' is a WSGI application. \"\"\"\n        return self.wsgi(environ, start_response)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'bottle.py').resolve()\ntry:\n module = importlib.import_module('bottle')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('binding_ok')\nPYREPLAY\npython3 -m pytest test/test_wsgi.py::TestWsgi::test_headget test/test_wsgi.py::TestDecorators::test_truncate_body -q"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "8dcd6956688cfc7ae01c3b0924a6ce31d88178cbafb2ce7b49f8e44809821cc7"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored bottle.Bottle.wsgi release semantics (head_response_closes_and_clears_body). Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

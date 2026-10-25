@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "Raise through outer->inner calls, then format. Frames must be collected walking f_back, reversed to call order, then formatted. The bug uses the list before creating it so every format raises. The complete production-file delta is exactly the reviewed hunks inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "stackprinter/formatting.py",
+        "start_line": 94,
+        "end_line": 116
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('stackprinter.formatting')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'stackprinter/formatting.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport sys\nfrom stackprinter.formatting import format_stack_from_frame\ndef inner():\n    return sys._getframe(0)\ndef outer():\n    return inner()\nfr = outer()\nout = format_stack_from_frame(fr)\nprint('frame_sequence', 'outer' in out and 'inner' in out)\nassert out.index('outer') < out.index('inner'), out[-1500:]\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "c1b4de6c40f2049ec98116184325a680d36cf18edba0f97d5006c2483d3c8a1d"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "stackprinter/formatting.py",
+        "old_string": "    keyword args like stackprinter.format()\n\n    \"\"\"\n    while fr is not None:\n        stack.append(fr)\n        fr = fr.f_back\n    stack = []\n\n    return format_stack(stack, **kwargs)\n    stack = reversed(stack)\n\ndef format_exc_info(etype, evalue, tb, style='plaintext', add_summary='auto',\n                    reverse=False, suppressed_exceptions=[KeyboardInterrupt],",
+        "new_string": "    keyword args like stackprinter.format()\n\n    \"\"\"\n    stack = []\n    while fr is not None:\n        stack.append(fr)\n        fr = fr.f_back\n    stack = reversed(stack)\n\n    return format_stack(stack, **kwargs)\n\n\ndef format_exc_info(etype, evalue, tb, style='plaintext', add_summary='auto',\n                    reverse=False, suppressed_exceptions=[KeyboardInterrupt],"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('stackprinter.formatting')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'stackprinter/formatting.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport sys\nfrom stackprinter.formatting import format_stack_from_frame\ndef inner():\n    return sys._getframe(0)\ndef outer():\n    return inner()\nfr = outer()\nout = format_stack_from_frame(fr)\nprint('frame_sequence', 'outer' in out and 'inner' in out)\nassert out.index('outer') < out.index('inner'), out[-1500:]\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "c1b4de6c40f2049ec98116184325a680d36cf18edba0f97d5006c2483d3c8a1d"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Raise through outer->inner calls, then format. Frames must be collected walking f_back, reversed to call order, then formatted. The bug uses the list before creating it so every format raises. The source-bound reproduction passes after the repair. Patch submitted."
+}

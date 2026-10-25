@@ -1,0 +1,61 @@
+You are evaluating a software engineering task for repository swesmith/python-hyper__h11.bed0dd4a.
+
+Problem Statement:
+Connection.trailing_data returns incorrect buffer data after protocol switch
+
+#### Description
+
+When using `Connection.trailing_data` after a protocol switch, the returned buffer data is truncated and the closed status is inverted. This affects protocol switching scenarios where you need to access the remaining data in the receive buffer.
+
+#### Steps/Code to Reproduce
+
+```python
+import h11
+
+# Create a server connection
+conn = h11.Connection(h11.SERVER)
+
+# Simulate receiving a CONNECT request with trailing data
+conn.receive_data(b'CONNECT example.com:443 HTTP/1.1\r\nHost: foo\r\nContent-Length: 1\r\n\r\n1')
+
+# Process the request
+request = conn.next_event()
+body = conn.next_event()
+end = conn.next_event()
+
+# Send acceptance response to switch protocols
+conn.send(h11.Response(status_code=200, headers=[]))
+
+# Add some trailing data after protocol switch
+conn.receive_data(b'123456')
+
+# Check trailing data - this should return the full buffer
+buffer, closed = conn.trailing_data
+print(f"Buffer: {buffer}")
+print(f"Closed: {closed}")
+
+# Expected: Buffer should be b'123456', closed should be False
+# Actual: Buffer is truncated and closed status is wrong
+```
+
+The `trailing_data` property should return the complete buffer contents and correct closed status, but currently returns truncated data with inverted closed flag.
+
+## Task Budget (Session terminates when any budget is exhausted)
+- Time allowance: 60 minutes
+- Tool calls allowance: 100 calls
+- Max loop iterations: 500 turns
+
+## Execution Environment Rules
+- Single command timeout: 300 seconds (commands exceeding this fail without ending the session)
+- Command output limit: 5000 characters
+- File view limit: 150 lines per read_file call
+- File character limit: 10000 characters per read_file call
+- Environment is offline (no network/PyPI access). All repository and test dependencies are ALREADY pre-installed. Do NOT attempt to run pip install or download packages.
+
+## Instructions:
+0. All source code is under `/workspace`. Do NOT search outside `/workspace` (e.g. `/usr/`, `/wheels/`, system site-packages). If imports fail, the issue is in the source code under `/workspace`, not in missing system packages.
+1. Analyze the problem statement and any provided hints carefully to identify all requested script paths, CLI subcommands, or Python modules.
+2. Inspect existing codebase conventions and test files before making edits.
+3. Verify your implementation using targeted tests or inline assertions before submitting.
+4. Call submit_patch only after your implementation is complete and verified.
+5. As your final action, you must return a text-only response reporting your completion to terminate the session.

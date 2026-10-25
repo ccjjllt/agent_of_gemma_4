@@ -1,0 +1,84 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "root research agent: causal source read (real-PR repair formats a private Row.copy), pinned tests, command review 2026-10-25",
+  "review_notes": "Export must format a private Row.copy() so formatted rows are not the internal rows; repeated exports never mutate internal data, captured at the export() call timepoint; asserted source-bound before and after the repair. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Off-policy scripted demonstration, not a Gemma sample.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/tablib/core.py",
+        "start_line": 265,
+        "end_line": 300
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/tablib/core.py').resolve()\nmodule = importlib.import_module('tablib.core')\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport tablib\nds = tablib.Dataset()\nds.headers = ['text']\nds.append(['aAbBcC'])\nds.add_formatter('text', lambda s: s[2:])\nfirst = ds.export('csv')\nsecond = ds.export('csv')\nprint('export_stable', first == second)\nassert first == second, 'export mutated internal data'\nassert ds['text'][0] == 'aAbBcC', 'stored data corrupted'\nprint('f2_export_isolation', True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "2e98acaa01eca035c89ec518480239168c930a112763763433b6133461925402"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/tablib/core.py",
+        "old_string": "    def insert(self, index, value):\n        self._row.insert(index, value)\n\n    def __contains__(self, item):\n        return item in self._row\n\n",
+        "new_string": "    def insert(self, index, value):\n        self._row.insert(index, value)\n\n    def copy(self):\n        return Row(self._row.copy(), self.tags.copy())\n\n    def __contains__(self, item):\n        return item in self._row\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/tablib/core.py",
+        "old_string": "\n        _data = list(self._data)\n\n        # Execute formatters\n        if self._formatters:\n            for row_i, row in enumerate(_data):\n                for col, callback in self._formatters:\n                    try:\n                        if col is None:\n                            for j, c in enumerate(row):\n                                _data[row_i][j] = callback(c)\n                        else:\n                            _data[row_i][col] = callback(row[col])\n                    except IndexError:\n                        raise InvalidDatasetIndex\n\n        if self.headers:\n            if dicts:\n                data = [dict(list(zip(self.headers, data_row))) for data_row in _data]\n            else:\n                data = [list(self.headers)] + list(_data)\n        else:\n            data = [list(row) for row in _data]\n\n        return data\n\n    def _get_headers(self):\n",
+        "new_string": "\n        _data = list(self._data)\n\n        def format_row(row):\n            # Execute formatters\n            if self._formatters:\n                row = row.copy()  # To not mutate internal data structure\n                for col, callback in self._formatters:\n                    if col is None:\n                        # Apply formatter to all cells\n                        row = [callback(cell) for cell in row]\n                    else:\n                        row[col] = callback(row[col])\n            return list(row)\n\n        if self.headers:\n            if dicts:\n                data = [dict(list(zip(self.headers, format_row(row)))) for row in _data]\n            else:\n                data = [list(self.headers)] + [format_row(row) for row in _data]\n        else:\n            data = [format_row(row) for row in _data]\n        return data\n\n    def _get_headers(self):\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/tablib/core.py",
+        "old_string": "    def add_formatter(self, col, handler):\n        \"\"\"Adds a formatter to the :class:`Dataset`.\n\n        :param col: column to. Accepts index int or header str.\n        :param handler: reference to callback function to execute against\n                        each cell value.\n        \"\"\"\n",
+        "new_string": "    def add_formatter(self, col, handler):\n        \"\"\"Adds a formatter to the :class:`Dataset`.\n\n        :param col: column to. Accepts index int, header str, or None to apply\n                    the formatter to all columns.\n        :param handler: reference to callback function to execute against\n                        each cell value.\n        \"\"\"\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/tablib/core.py",
+        "old_string": "            else:\n                raise KeyError\n\n        if not col > self.width:\n            self._formatters.append((col, handler))\n        else:\n            raise InvalidDatasetIndex\n",
+        "new_string": "            else:\n                raise KeyError\n\n        if col is None or col <= self.width:\n            self._formatters.append((col, handler))\n        else:\n            raise InvalidDatasetIndex\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/tablib/core.py').resolve()\nmodule = importlib.import_module('tablib.core')\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport tablib\nds = tablib.Dataset()\nds.headers = ['text']\nds.append(['aAbBcC'])\nds.add_formatter('text', lambda s: s[2:])\nfirst = ds.export('csv')\nsecond = ds.export('csv')\nprint('export_stable', first == second)\nassert first == second, 'export mutated internal data'\nassert ds['text'][0] == 'aAbBcC', 'stored data corrupted'\nprint('f2_export_isolation', True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "2e98acaa01eca035c89ec518480239168c930a112763763433b6133461925402"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Format a private Row.copy() during export so internal data is never mutated. Source-bound inline observations now pass. Patch submitted."
+}

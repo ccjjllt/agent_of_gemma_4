@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "Trim a block comment then a line comment in order. Each must be trimmed, stripped of block markers, located, parsed, then attached in that order. The bug parses before stripping and locating so the block probe never yields a directive. The complete production-file delta is exactly the reviewed hunks inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/sqlfluff/core/rules/noqa.py",
+        "start_line": 139,
+        "end_line": 169
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('sqlfluff.core.rules.noqa')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'src/sqlfluff/core/rules/noqa.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom sqlfluff.core import Lexer\nfrom sqlfluff.core.rules.noqa import IgnoreMask\nlexer = Lexer(dialect='ansi')\nsegs_block, _ = lexer.lex('SELECT 1 /* noqa: disable=all */')\nsegs_line, _ = lexer.lex('SELECT 2 -- noqa: LT01')\ndef first_comment(segs):\n    for s in segs:\n        if s.is_type('block_comment', 'inline_comment'):\n            return s\n    raise AssertionError('no comment found')\nref = {'LT01': {'LT01'}, 'PRS': {'PRS'}, 'LXR': {'LXR'}, 'TMP': {'TMP'}}\nr1 = IgnoreMask._extract_ignore_from_comment(first_comment(segs_block), ref)\nr2 = IgnoreMask._extract_ignore_from_comment(first_comment(segs_line), ref)\nseq = [type(r1).__name__, getattr(r1, 'action', None), type(r2).__name__, getattr(r2, 'rules', None)]\nprint('noqa_sequence', seq)\nassert seq[0] == 'NoQaDirective' and seq[1] == 'disable', seq\nassert seq[2] == 'NoQaDirective' and seq[3] == ('LT01',), seq\nprint('sqlfluff_temporal_trim_strip_locate_parse_attach', True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "5e072d3378ec71d86c089cf67fb70f755fa55b4bd48422b5117c06d32dfb5db8"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/sqlfluff/core/rules/noqa.py",
+        "old_string": "        comment: RawSegment,\n        reference_map: Dict[str, Set[str]],\n    ) -> Union[NoQaDirective, SQLParseError, None]:\n        # Also trim any whitespace\n        comment_content = comment.raw_trimmed().strip()\n        result = cls._parse_noqa(\n            comment_content, comment_line, comment_pos, reference_map\n        )\n        \"\"\"Extract ignore mask entries from a comment segment.\"\"\"\n        if comment_content.startswith(\"/*\"):\n            comment_content = comment_content[2:].lstrip()\n        comment_line, comment_pos = comment.pos_marker.source_position()\n        if isinstance(result, SQLParseError):\n            result.segment = comment\n        # If we have leading or trailing block comment markers, also strip them.\n        # NOTE: We need to strip block comment markers from the start\n        # to ensure that noqa directives in the following form are followed:\n        # /* noqa: disable=all */\n        if comment_content.endswith(\"*/\"):\n            comment_content = comment_content[:-2].rstrip()\n        return result\n    @classmethod\n    def from_tree(\n        cls,",
+        "new_string": "        comment: RawSegment,\n        reference_map: Dict[str, Set[str]],\n    ) -> Union[NoQaDirective, SQLParseError, None]:\n        \"\"\"Extract ignore mask entries from a comment segment.\"\"\"\n        # Also trim any whitespace\n        comment_content = comment.raw_trimmed().strip()\n        # If we have leading or trailing block comment markers, also strip them.\n        # NOTE: We need to strip block comment markers from the start\n        # to ensure that noqa directives in the following form are followed:\n        # /* noqa: disable=all */\n        if comment_content.endswith(\"*/\"):\n            comment_content = comment_content[:-2].rstrip()\n        if comment_content.startswith(\"/*\"):\n            comment_content = comment_content[2:].lstrip()\n        comment_line, comment_pos = comment.pos_marker.source_position()\n        result = cls._parse_noqa(\n            comment_content, comment_line, comment_pos, reference_map\n        )\n        if isinstance(result, SQLParseError):\n            result.segment = comment\n        return result\n\n    @classmethod\n    def from_tree(\n        cls,"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('sqlfluff.core.rules.noqa')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'src/sqlfluff/core/rules/noqa.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom sqlfluff.core import Lexer\nfrom sqlfluff.core.rules.noqa import IgnoreMask\nlexer = Lexer(dialect='ansi')\nsegs_block, _ = lexer.lex('SELECT 1 /* noqa: disable=all */')\nsegs_line, _ = lexer.lex('SELECT 2 -- noqa: LT01')\ndef first_comment(segs):\n    for s in segs:\n        if s.is_type('block_comment', 'inline_comment'):\n            return s\n    raise AssertionError('no comment found')\nref = {'LT01': {'LT01'}, 'PRS': {'PRS'}, 'LXR': {'LXR'}, 'TMP': {'TMP'}}\nr1 = IgnoreMask._extract_ignore_from_comment(first_comment(segs_block), ref)\nr2 = IgnoreMask._extract_ignore_from_comment(first_comment(segs_line), ref)\nseq = [type(r1).__name__, getattr(r1, 'action', None), type(r2).__name__, getattr(r2, 'rules', None)]\nprint('noqa_sequence', seq)\nassert seq[0] == 'NoQaDirective' and seq[1] == 'disable', seq\nassert seq[2] == 'NoQaDirective' and seq[3] == ('LT01',), seq\nprint('sqlfluff_temporal_trim_strip_locate_parse_attach', True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "5e072d3378ec71d86c089cf67fb70f755fa55b4bd48422b5117c06d32dfb5db8"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Trim a block comment then a line comment in order. Each must be trimmed, stripped of block markers, located, parsed, then attached in that order. The bug parses before stripping and locating so the block probe never yields a directive. The source-bound reproduction passes after the repair. Patch submitted."
+}

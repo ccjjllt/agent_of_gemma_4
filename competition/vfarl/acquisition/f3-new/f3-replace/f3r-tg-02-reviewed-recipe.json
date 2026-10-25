@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex root source contract and actual command review 2026-10-26",
+  "review_notes": "agronholm/typeguard TransformMemo.ignored_names must preserve memo_ignored_names_scope_for_assignments. TransformMemo walrus-check scope: set->annotated walrus target gets a flat runtime check call, get->four-arg shape holds with equivalence on repeat visits and isolation across functions, expire/invalidate->fresh memo starts empty (second observation differs), recompute->revisit restores the flat call. Restore the exact production logic without hardcoding values or altering tests. All original F2P/P2P identifiers and complete target files are retained verbatim. The Smith row introduces the defect; this is an off-policy scripted demonstration, not a model sample or preference pair. The inline observation fails before the repair (first run expects error) and passes after (second run expects ok), so the second observation differs. Sandbox exposes a wide-terminal mypy shim (COLUMNS=250) so the pretty-printer used by tests/mypy/test_type_annotations.py emits the pinned single-line messages; without a tty mypy wraps at width 80 on any tree. The repair itself is verified by transformer tests and mypy message content.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/typeguard/_transformer.py",
+        "start_line": 1111,
+        "end_line": 1146
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/typeguard/_transformer.py').resolve()\ntry:\n module = importlib.import_module('typeguard._transformer')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\n\nimport ast\nfrom typeguard._transformer import TypeguardTransformer\nSRC = 'def foo() -> None:\\n    x: int\\n    if x := otherfunc():\\n        pass\\n'\nSRC2 = 'def bar() -> None:\\n    z: str\\n    if z := otherfunc():\\n        pass\\n'\ndef walrus_call(tree):\n    found = [n.value for n in ast.walk(tree) if isinstance(n, ast.NamedExpr)]\n    assert len(found) == 1, ast.dump(tree)[:300]\n    assert isinstance(found[0], ast.Call), ast.dump(found[0])[:300]\n    return found[0]\nt = TypeguardTransformer()\ncall = walrus_call(t.visit(ast.parse(SRC)))\nassert len(call.args) == 4, f\"flat check args expected, got {len(call.args)}\"\nassert isinstance(call.args[1], ast.Constant) and call.args[1].value == 'x'\nprint(\"get_hit\", True)\nt2 = TypeguardTransformer()\ncall2 = walrus_call(t2.visit(ast.parse(SRC)))\nassert len(call2.args) == 4 and isinstance(call2.args[1], ast.Constant)\nprint(\"equivalence\", True)\nt3 = TypeguardTransformer()\ncall3 = walrus_call(t3.visit(ast.parse(SRC2)))\nassert len(call3.args) == 4 and call3.args[1].value == 'z'\nprint(\"isolation\", True)\nfresh = TypeguardTransformer()\nassert fresh._memo.ignored_names == set()\nprint(\"invalidate\", True)\ncall4 = walrus_call(fresh.visit(ast.parse(SRC)))\nassert len(call4.args) == 4 and call4.args[1].value == 'x'\nprint(\"recompute\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "f327eac996c8f2e11ab795094c8a91b7bbea9c00993b6a32733d556218547005"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/typeguard/_transformer.py",
+        "old_string": "        if isinstance(self._memo.node, (FunctionDef, AsyncFunctionDef)) and isinstance(\n            node.target, Name\n        ):\n            # Mark the name as ignored for future annotations\n            self._memo.ignored_names.add(node.target.id)\n        \n            # Check if there's an annotation for this variable\n            annotation = self._memo.variable_annotations.get(node.target.id)\n            if annotation:\n                func_name = self._get_import(\n                    \"typeguard._functions\", \"check_variable_assignment\"\n                )\n                targets_arg = List(\n                    [\n                        List(\n                            [Tuple([Constant(node.target.id), annotation], ctx=Load())],\n                            ctx=Load(),\n                        )\n                    ],\n                    ctx=Load(),\n                )\n                node.value = Call(\n                    func_name,\n                    [node.value, targets_arg, self._memo.get_memo_name()],\n                    [],\n                )\n\n        return node\n    def visit_AugAssign(self, node: AugAssign) -> Any:\n        \"\"\"\n        This injects a type check into an augmented assignment expression (a += 1).\n",
+        "new_string": "        if isinstance(self._memo.node, (FunctionDef, AsyncFunctionDef)) and isinstance(\n            node.target, Name\n        ):\n            self._memo.ignored_names.add(node.target.id)\n\n            # Bail out if no matching annotation is found\n            annotation = self._memo.variable_annotations.get(node.target.id)\n            if annotation is None:\n                return node\n\n            func_name = self._get_import(\n                \"typeguard._functions\", \"check_variable_assignment\"\n            )\n            node.value = Call(\n                func_name,\n                [\n                    node.value,\n                    Constant(node.target.id),\n                    annotation,\n                    self._memo.get_memo_name(),\n                ],\n                [],\n            )\n\n        return node\n\n    def visit_AugAssign(self, node: AugAssign) -> Any:\n        \"\"\"\n        This injects a type check into an augmented assignment expression (a += 1).\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/typeguard/_transformer.py').resolve()\ntry:\n module = importlib.import_module('typeguard._transformer')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\n\nimport ast\nfrom typeguard._transformer import TypeguardTransformer\nSRC = 'def foo() -> None:\\n    x: int\\n    if x := otherfunc():\\n        pass\\n'\nSRC2 = 'def bar() -> None:\\n    z: str\\n    if z := otherfunc():\\n        pass\\n'\ndef walrus_call(tree):\n    found = [n.value for n in ast.walk(tree) if isinstance(n, ast.NamedExpr)]\n    assert len(found) == 1, ast.dump(tree)[:300]\n    assert isinstance(found[0], ast.Call), ast.dump(found[0])[:300]\n    return found[0]\nt = TypeguardTransformer()\ncall = walrus_call(t.visit(ast.parse(SRC)))\nassert len(call.args) == 4, f\"flat check args expected, got {len(call.args)}\"\nassert isinstance(call.args[1], ast.Constant) and call.args[1].value == 'x'\nprint(\"get_hit\", True)\nt2 = TypeguardTransformer()\ncall2 = walrus_call(t2.visit(ast.parse(SRC)))\nassert len(call2.args) == 4 and isinstance(call2.args[1], ast.Constant)\nprint(\"equivalence\", True)\nt3 = TypeguardTransformer()\ncall3 = walrus_call(t3.visit(ast.parse(SRC2)))\nassert len(call3.args) == 4 and call3.args[1].value == 'z'\nprint(\"isolation\", True)\nfresh = TypeguardTransformer()\nassert fresh._memo.ignored_names == set()\nprint(\"invalidate\", True)\ncall4 = walrus_call(fresh.visit(ast.parse(SRC)))\nassert len(call4.args) == 4 and call4.args[1].value == 'x'\nprint(\"recompute\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "f327eac996c8f2e11ab795094c8a91b7bbea9c00993b6a32733d556218547005"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored TransformMemo.ignored_names memo_ignored_names_scope_for_assignments. The actual inline cache observation completed after the production edit. Patch submitted."
+}

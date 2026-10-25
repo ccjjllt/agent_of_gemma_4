@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "Format one record with reset on, then one with reset off, in order. The formatter must append the reset code after the message before returning when reset is set. The bug returns before the append so the reset never lands. The complete production-file delta is exactly the reviewed hunks inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "colorlog/formatter.py",
+        "start_line": 165,
+        "end_line": 180
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('colorlog.formatter')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'colorlog/formatter.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport colorlog.escape_codes\nfrom colorlog.formatter import ColoredFormatter\nesc = colorlog.escape_codes.escape_codes\nfmt_on = ColoredFormatter('%(message)s', reset=True)\nfmt_off = ColoredFormatter('%(message)s', reset=False)\nout1 = fmt_on._append_reset('hello', esc)\nout2 = fmt_off._append_reset('hello', esc)\nseq = [out1.endswith('\\x1b[0m'), out2.endswith('\\x1b[0m')]\nprint('reset_sequence', seq)\nassert seq == [True, False], seq\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "c749ed656ece225d79f163cf56c8e98e17edaf359481a848066df7dd0e7ad625"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "colorlog/formatter.py",
+        "old_string": "        return colorlog.escape_codes.parse_colors(log_colors.get(item, \"\"))\n\n    def _append_reset(self, message: str, escapes: EscapeCodes) -> str:\n        reset_escape_code = escapes[\"reset\"]\n        \"\"\"Add a reset code to the end of the message, if it's not already there.\"\"\"\n\n        return message\n\n        if self.reset and not message.endswith(reset_escape_code):\n            message += reset_escape_code\n\nclass LevelFormatter:\n    \"\"\"An extension of ColoredFormatter that uses per-level format strings.\"\"\"",
+        "new_string": "        return colorlog.escape_codes.parse_colors(log_colors.get(item, \"\"))\n\n    def _append_reset(self, message: str, escapes: EscapeCodes) -> str:\n        \"\"\"Add a reset code to the end of the message, if it's not already there.\"\"\"\n        reset_escape_code = escapes[\"reset\"]\n\n        if self.reset and not message.endswith(reset_escape_code):\n            message += reset_escape_code\n\n        return message\n\n\nclass LevelFormatter:\n    \"\"\"An extension of ColoredFormatter that uses per-level format strings.\"\"\""
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('colorlog.formatter')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'colorlog/formatter.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport colorlog.escape_codes\nfrom colorlog.formatter import ColoredFormatter\nesc = colorlog.escape_codes.escape_codes\nfmt_on = ColoredFormatter('%(message)s', reset=True)\nfmt_off = ColoredFormatter('%(message)s', reset=False)\nout1 = fmt_on._append_reset('hello', esc)\nout2 = fmt_off._append_reset('hello', esc)\nseq = [out1.endswith('\\x1b[0m'), out2.endswith('\\x1b[0m')]\nprint('reset_sequence', seq)\nassert seq == [True, False], seq\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "c749ed656ece225d79f163cf56c8e98e17edaf359481a848066df7dd0e7ad625"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Format one record with reset on, then one with reset off, in order. The formatter must append the reset code after the message before returning when reset is set. The bug returns before the append so the reset never lands. The source-bound reproduction passes after the repair. Patch submitted."
+}

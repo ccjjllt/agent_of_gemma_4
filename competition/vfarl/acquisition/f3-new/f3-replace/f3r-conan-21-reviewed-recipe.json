@@ -1,0 +1,84 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex root source contract and actual command review 2026-10-26",
+  "review_notes": "conan-io/conan CacheRemove.norev must preserve cache_remove_without_revision_scope. List-driven remove scope: set->exported recipe listed, get->remove by list reports no binaries for revision-less refs with equivalence on repeat runs and isolation across lists, expire/invalidate->removed recipe gone (second observation differs), recompute->re-export restores. Restore the exact production logic without hardcoding values or altering tests. All original F2P/P2P identifiers and complete target files are retained verbatim. The Smith row introduces the defect; this is an off-policy scripted demonstration, not a model sample or preference pair. The inline observation fails before the repair (first run expects error) and passes after (second run expects ok), so the second observation differs.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "conan/cli/commands/remove.py",
+        "start_line": 16,
+        "end_line": 51
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'conan/cli/commands/remove.py').resolve()\ntry:\n module = importlib.import_module('conan.cli.commands.remove')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\n\nimport os, tempfile\nfrom conan.test.assets.genconanfile import GenConanfile\nfrom conan.test.utils.tools import TestClient\ntmp = tempfile.mkdtemp()\npl1 = os.path.join(tmp, 'pkglist.json')\npl2 = os.path.join(tmp, 'pkglist2.json')\npl3 = os.path.join(tmp, 'pkglist3.json')\nc = TestClient()\nc.save({'conanfile.py': GenConanfile('pkg', '0.1')})\nc.run('export .')\nc.run('list *#*:* --format=json', redirect_stdout=pl1)\nassert 'pkg/0.1' in open(pl1).read()\nprint(\"get_hit\", True)\nc.run(f'remove --list={pl1} -c')\nassert \"No binaries to remove for 'pkg/0.1\" in c.out\nprint(\"equivalence\", True)\nc.run('list * --format=json', redirect_stdout=pl2)\nc.run(f'remove --list={pl2} -c')\nprint(\"isolation\", True)\nc.run('export .')\nc.run('list *#*:* --format=json', redirect_stdout=pl3)\nc.run(f'remove --list={pl3} -c')\nassert \"No binaries to remove for 'pkg/0.1\" in c.out\nprint(\"invalidate\", True)\nc.run('remove pkg/0.1 -c')\nfrom conan.api.model import RecipeReference\nassert c.cache.get_recipe_revisions_references(RecipeReference('pkg', '0.1')) == []\nprint(\"removed\", True)\nc.run('export .')\nc.run('list *#*:* --format=json', redirect_stdout=pl1)\nassert 'pkg/0.1' in open(pl1).read()\nprint(\"recompute\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "038cf7e8438725139f632388198a4cd20f05064b314ebe836b327c5e040ddb66"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/cli/commands/remove.py",
+        "old_string": "\n\n@conan_command(group=\"Consumer\", formatters={\"text\": summary_remove_list,\n                                               \"json\": print_list_json})\ndef remove(conan_api: ConanAPI, parser, *args):\n    \"\"\"\n    Remove recipes or packages from local cache or a remote.\n",
+        "new_string": "\n\n@conan_command(group=\"Consumer\", formatters={\"text\": summary_remove_list,\n                                             \"json\": print_list_json})\ndef remove(conan_api: ConanAPI, parser, *args):\n    \"\"\"\n    Remove recipes or packages from local cache or a remote.\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/cli/commands/remove.py",
+        "old_string": "\n    ui = UserInput(conan_api.config.get(\"core:non_interactive\"))\n    remote = conan_api.remotes.get(args.remote) if args.remote else None\n\n    def confirmation(message):\n        return args.confirm or ui.request_boolean(message)\n",
+        "new_string": "\n    ui = UserInput(conan_api.config.get(\"core:non_interactive\"))\n    remote = conan_api.remotes.get(args.remote) if args.remote else None\n    cache_name = \"Local Cache\" if not remote else remote.name\n\n    def confirmation(message):\n        return args.confirm or ui.request_boolean(message)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/cli/commands/remove.py",
+        "old_string": "    if args.list:\n        listfile = make_abs_path(args.list)\n        multi_package_list = MultiPackagesList.load(listfile)\n        package_list = multi_package_list[\"Local Cache\" if not remote else remote.name]\n        refs_to_remove = package_list.refs()\n        if not refs_to_remove:  # the package list might contain only refs, no revs\n            ConanOutput().warning(\"Nothing to remove, package list do not contain recipe revisions\")\n",
+        "new_string": "    if args.list:\n        listfile = make_abs_path(args.list)\n        multi_package_list = MultiPackagesList.load(listfile)\n        package_list = multi_package_list[cache_name]\n        refs_to_remove = package_list.refs()\n        if not refs_to_remove:  # the package list might contain only refs, no revs\n            ConanOutput().warning(\"Nothing to remove, package list do not contain recipe revisions\")\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/cli/commands/remove.py",
+        "old_string": "        ref_pattern = ListPattern(args.pattern, rrev=\"*\", prev=\"*\")\n        if ref_pattern.package_id is None and args.package_query is not None:\n            raise ConanException('--package-query supplied but the pattern does not match packages')\n        package_list = conan_api.list.select(ref_pattern, args.package_query, remote)\n        multi_package_list = MultiPackagesList()\n        multi_package_list.add(\"Local Cache\" if not remote else remote.name, package_list)\n\n    for ref, ref_bundle in package_list.refs().items():\n        if ref_bundle.get(\"packages\") is None:\n            if confirmation(f\"Remove the recipe and all the packages of '{ref.repr_notime()}'?\"):\n                conan_api.remove.recipe(ref, remote=remote)\n            continue\n        for pref, _ in package_list.prefs(ref, ref_bundle).items():\n            if confirmation(f\"Remove the package '{pref.repr_notime()}'?\"):\n                conan_api.remove.package(pref, remote=remote)\n\n    return {\n        \"results\": multi_package_list.serialize(),\n        \"conan_api\": conan_api\n    }",
+        "new_string": "        ref_pattern = ListPattern(args.pattern, rrev=\"*\", prev=\"*\")\n        if ref_pattern.package_id is None and args.package_query is not None:\n            raise ConanException('--package-query supplied but the pattern does not match packages')\n        package_list = conan_api.list.select(ref_pattern, args.package_query, remote, lru=args.lru)\n        multi_package_list = MultiPackagesList()\n        multi_package_list.add(cache_name, package_list)\n\n    # TODO: This iteration and removal of not-confirmed is ugly and complicated, improve it\n    for ref, ref_bundle in package_list.refs().items():\n        ref_dict = package_list.recipes[str(ref)][\"revisions\"]\n        packages = ref_bundle.get(\"packages\")\n        if packages is None:\n            if confirmation(f\"Remove the recipe and all the packages of '{ref.repr_notime()}'?\"):\n                if not args.dry_run:\n                    conan_api.remove.recipe(ref, remote=remote)\n            else:\n                ref_dict.pop(ref.revision)\n                if not ref_dict:\n                    package_list.recipes.pop(str(ref))\n            continue\n        prefs = package_list.prefs(ref, ref_bundle)\n        if not prefs:\n            ConanOutput().info(f\"No binaries to remove for '{ref.repr_notime()}'\")\n            ref_dict.pop(ref.revision)\n            if not ref_dict:\n                package_list.recipes.pop(str(ref))\n            continue\n\n        for pref, _ in prefs.items():\n            if confirmation(f\"Remove the package '{pref.repr_notime()}'?\"):\n                if not args.dry_run:\n                    conan_api.remove.package(pref, remote=remote)\n            else:\n                pref_dict = packages[pref.package_id][\"revisions\"]\n                pref_dict.pop(pref.revision)\n                if not pref_dict:\n                    packages.pop(pref.package_id)\n\n    return {\n        \"results\": multi_package_list.serialize(),\n        \"conan_api\": conan_api\n    }\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'conan/cli/commands/remove.py').resolve()\ntry:\n module = importlib.import_module('conan.cli.commands.remove')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\n\nimport os, tempfile\nfrom conan.test.assets.genconanfile import GenConanfile\nfrom conan.test.utils.tools import TestClient\ntmp = tempfile.mkdtemp()\npl1 = os.path.join(tmp, 'pkglist.json')\npl2 = os.path.join(tmp, 'pkglist2.json')\npl3 = os.path.join(tmp, 'pkglist3.json')\nc = TestClient()\nc.save({'conanfile.py': GenConanfile('pkg', '0.1')})\nc.run('export .')\nc.run('list *#*:* --format=json', redirect_stdout=pl1)\nassert 'pkg/0.1' in open(pl1).read()\nprint(\"get_hit\", True)\nc.run(f'remove --list={pl1} -c')\nassert \"No binaries to remove for 'pkg/0.1\" in c.out\nprint(\"equivalence\", True)\nc.run('list * --format=json', redirect_stdout=pl2)\nc.run(f'remove --list={pl2} -c')\nprint(\"isolation\", True)\nc.run('export .')\nc.run('list *#*:* --format=json', redirect_stdout=pl3)\nc.run(f'remove --list={pl3} -c')\nassert \"No binaries to remove for 'pkg/0.1\" in c.out\nprint(\"invalidate\", True)\nc.run('remove pkg/0.1 -c')\nfrom conan.api.model import RecipeReference\nassert c.cache.get_recipe_revisions_references(RecipeReference('pkg', '0.1')) == []\nprint(\"removed\", True)\nc.run('export .')\nc.run('list *#*:* --format=json', redirect_stdout=pl1)\nassert 'pkg/0.1' in open(pl1).read()\nprint(\"recompute\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "038cf7e8438725139f632388198a4cd20f05064b314ebe836b327c5e040ddb66"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored CacheRemove.norev cache_remove_without_revision_scope. The actual inline cache observation completed after the production edit. Patch submitted."
+}

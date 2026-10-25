@@ -1,0 +1,20 @@
+{
+  "row": {
+    "instance_id": "scrapy__scrapy.35212ec5.func_pm_ctrl_shuffle__a7yw65j4",
+    "patch": "diff --git a/scrapy/extensions/closespider.py b/scrapy/extensions/closespider.py\nindex dff8bc9..30a30b0 100644\n--- a/scrapy/extensions/closespider.py\n+++ b/scrapy/extensions/closespider.py\n@@ -109,14 +109,13 @@ class CloseSpider:\n             self.crawler.engine.close_spider(spider, \"closespider_itemcount\")\n \n     def spider_closed(self, spider: Spider) -> None:\n+        if task_no_item and task_no_item.running:\n+            task_no_item.stop()\n         task = getattr(self, \"task\", None)\n         if task and task.active():\n             task.cancel()\n \n         task_no_item = getattr(self, \"task_no_item\", None)\n-        if task_no_item and task_no_item.running:\n-            task_no_item.stop()\n-\n     def spider_opened_no_item(self, spider: Spider) -> None:\n         from twisted.internet import task\n \n",
+    "FAIL_TO_PASS": [
+      "tests/test_closespider.py::TestCloseSpider::test_closespider_timeout_no_item"
+    ],
+    "PASS_TO_PASS": [
+      "tests/test_closespider.py::TestCloseSpider::test_closespider_errorcount",
+      "tests/test_closespider.py::TestCloseSpider::test_closespider_itemcount",
+      "tests/test_closespider.py::TestCloseSpider::test_closespider_pagecount",
+      "tests/test_closespider.py::TestCloseSpider::test_closespider_pagecount_no_item",
+      "tests/test_closespider.py::TestCloseSpider::test_closespider_pagecount_no_item_with_pagecount",
+      "tests/test_closespider.py::TestCloseSpider::test_closespider_timeout"
+    ],
+    "image_name": "swebench/swesmith.x86_64.scrapy_1776_scrapy.35212ec5",
+    "repo": "swesmith/scrapy__scrapy.35212ec5",
+    "problem_statement": "NameError in CloseSpider extension when using timeout_no_item\n\n#### Description\n\nWhen using the `CLOSESPIDER_TIMEOUT_NO_ITEM` setting, the spider crashes with a `NameError` because `task_no_item` is referenced before it's defined in the `spider_closed` method.\n\n#### Steps/Code to Reproduce\n\n```python\nfrom scrapy import Spider, Request\nfrom scrapy.crawler import CrawlerProcess\n\nclass TestSpider(Spider):\n    name = 'test'\n    \n    def start_requests(self):\n        yield Request('http://httpbin.org/delay/2')\n    \n    def parse(self, response):\n        # Don't yield any items to trigger timeout_no_item\n        pass\n\n# This will crash with NameError\nprocess = CrawlerProcess({\n    'CLOSESPIDER_TIMEOUT_NO_ITEM': 1\n})\nprocess.crawl(TestSpider)\nprocess.start()\n```\n\nThe error occurs because in the `spider_closed` method, `task_no_item` is being accessed before the line where it gets assigned from `getattr(self, \"task_no_item\", None)`."
+  }
+}

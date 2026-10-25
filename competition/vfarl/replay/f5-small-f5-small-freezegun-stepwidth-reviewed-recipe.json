@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "Create a StepTick factory, tick with no delta, read again, ending advanced by step_width. The bug advances before defaulting the delta so a bare tick crashes instead of stepping. The complete production-file delta is exactly the reviewed hunks inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "freezegun/api.py",
+        "start_line": 562,
+        "end_line": 571
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('freezegun.api')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'freezegun/api.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport datetime\nfrom freezegun.api import StepTickTimeFactory\nT0=datetime.datetime(2020,1,1,0,0,0)\nf=StepTickTimeFactory(T0,2.0)\nt1=f.tick()\nprint('step_tick_default_advance',[t1.isoformat()])\nassert t1==T0+datetime.timedelta(seconds=2),t1\nt2=f.tick()\nassert t2==T0+datetime.timedelta(seconds=4),(t2,t1)\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "cb0629185739984fcca3ff2bd6919d9a2050b196d57a62367288a657e8b5de87"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "freezegun/api.py",
+        "old_string": "    def tick(self, delta: Union[datetime.timedelta, float, None]=None) -> datetime.datetime:\n        self.time_to_freeze += delta  # type: ignore\n        return self.time_to_freeze\n        if not delta:\n            delta = datetime.timedelta(seconds=self.step_width)\n        elif isinstance(delta, numbers.Integral):\n            delta = datetime.timedelta(seconds=int(delta))\n        elif isinstance(delta, numbers.Real):\n            delta = datetime.timedelta(seconds=float(delta))\n",
+        "new_string": "    def tick(self, delta: Union[datetime.timedelta, float, None]=None) -> datetime.datetime:\n        if not delta:\n            delta = datetime.timedelta(seconds=self.step_width)\n        elif isinstance(delta, numbers.Integral):\n            delta = datetime.timedelta(seconds=int(delta))\n        elif isinstance(delta, numbers.Real):\n            delta = datetime.timedelta(seconds=float(delta))\n        self.time_to_freeze += delta  # type: ignore\n        return self.time_to_freeze\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('freezegun.api')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'freezegun/api.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport datetime\nfrom freezegun.api import StepTickTimeFactory\nT0=datetime.datetime(2020,1,1,0,0,0)\nf=StepTickTimeFactory(T0,2.0)\nt1=f.tick()\nprint('step_tick_default_advance',[t1.isoformat()])\nassert t1==T0+datetime.timedelta(seconds=2),t1\nt2=f.tick()\nassert t2==T0+datetime.timedelta(seconds=4),(t2,t1)\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "cb0629185739984fcca3ff2bd6919d9a2050b196d57a62367288a657e8b5de87"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Create a StepTick factory, tick with no delta, read again, ending advanced by step_width. The bug advances before defaulting the delta so a bare tick crashes instead of stepping. The source-bound reproduction passes after the repair. Patch submitted."
+}

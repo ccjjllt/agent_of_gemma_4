@@ -1,0 +1,56 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Owner batch delete response; usage bulk removal; release each requested id must resolve exactly once (removed or failure-recorded), never duplicated or dropped. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "moto/ecr/models.py",
+        "start_line": 775,
+        "end_line": 815
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'moto/ecr/models.py').resolve()\ntry:\n module = importlib.import_module('moto.ecr.models')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('binding_ok')\nimport hashlib as _hl, json, random\nimport boto3\nfrom moto import mock_aws\ndef _manifest():\n    layers = []\n    for _ in range(3):\n        layers.append({\"mediaType\": \"application/vnd.docker.image.rootfs.diff.tar.gzip\", \"size\": random.randint(100, 1000), \"digest\": \"sha256:\" + _hl.sha256(str(random.randint(0, 1000000)).encode()).hexdigest()})\n    cfg = \"sha256:\" + _hl.sha256((\"\".join([x[\"digest\"] for x in layers])).encode()).hexdigest()\n    return json.dumps({\"schemaVersion\": 2, \"mediaType\": \"application/vnd.docker.distribution.manifest.v2+json\", \"config\": {\"mediaType\": \"application/vnd.docker.container.image.v1+json\", \"size\": 7023, \"digest\": cfg}, \"layers\": layers})\n@mock_aws\ndef main():\n    c = boto3.client('ecr', region_name='us-east-1')\n    c.create_repository(repositoryName='repo')\n    for i in range(4):\n        c.put_image(repositoryName='repo', imageManifest=_manifest(), imageTag='tag%d' % i)\n    digests = [{\"imageDigest\": img[\"imageDigest\"]} for img in c.describe_images(repositoryName='repo')[\"imageDetails\"]]\n    assert len(digests) == 4, digests\n    resp = c.batch_delete_image(repositoryName='repo', imageIds=digests[1:3])\n    assert len(resp.get('imageIds', [])) == 2, 'both requested images must be deleted, got %r' % (resp.get('imageIds'),)\n    assert resp.get('failures', []) == [], 'no spurious failures allowed, got %r' % (resp.get('failures'),)\n    rest = sorted([t for img in c.describe_images(repositoryName='repo')['imageDetails'] for t in img.get('imageTags', [])])\n    assert rest == ['tag0', 'tag3'], rest\n    print('batch_delete_ok')\nmain()\n"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "be7c009f7655d79193e0f97570a7dc642cd9fdae94420f7287a991edbaf8f819"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "moto/ecr/models.py",
+        "old_string": "                if not image_found:\n                    failure_response = {\n                        \"imageId\": {},\n                        \"failureCode\": \"ImageNotFound\",\n                        \"failureReason\": \"Requested image not found\",\n                    }\n\n                    if \"imageDigest\" in image_id:\n                        failure_response[\"imageId\"][\"imageDigest\"] = image_id.get(\n                            \"imageDigest\", \"null\"\n                        )\n\n                    if \"imageTag\" in image_id:\n                        failure_response[\"imageId\"][\"imageTag\"] = image_id.get(\n                            \"imageTag\", \"null\"\n                        )\n\n                    response[\"failures\"].append(failure_response)\n",
+        "new_string": "            if not image_found:\n                failure_response: Dict[str, Any] = {\n                    \"imageId\": {},\n                    \"failureCode\": \"ImageNotFound\",\n                    \"failureReason\": \"Requested image not found\",\n                }\n\n                if \"imageDigest\" in image_id:\n                    failure_response[\"imageId\"][\"imageDigest\"] = image_id.get(\n                        \"imageDigest\", \"null\"\n                    )\n\n                if \"imageTag\" in image_id:\n                    failure_response[\"imageId\"][\"imageTag\"] = image_id.get(\n                        \"imageTag\", \"null\"\n                    )\n\n                response[\"failures\"].append(failure_response)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'moto/ecr/models.py').resolve()\ntry:\n module = importlib.import_module('moto.ecr.models')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('binding_ok')\nimport hashlib as _hl, json, random\nimport boto3\nfrom moto import mock_aws\ndef _manifest():\n    layers = []\n    for _ in range(3):\n        layers.append({\"mediaType\": \"application/vnd.docker.image.rootfs.diff.tar.gzip\", \"size\": random.randint(100, 1000), \"digest\": \"sha256:\" + _hl.sha256(str(random.randint(0, 1000000)).encode()).hexdigest()})\n    cfg = \"sha256:\" + _hl.sha256((\"\".join([x[\"digest\"] for x in layers])).encode()).hexdigest()\n    return json.dumps({\"schemaVersion\": 2, \"mediaType\": \"application/vnd.docker.distribution.manifest.v2+json\", \"config\": {\"mediaType\": \"application/vnd.docker.container.image.v1+json\", \"size\": 7023, \"digest\": cfg}, \"layers\": layers})\n@mock_aws\ndef main():\n    c = boto3.client('ecr', region_name='us-east-1')\n    c.create_repository(repositoryName='repo')\n    for i in range(4):\n        c.put_image(repositoryName='repo', imageManifest=_manifest(), imageTag='tag%d' % i)\n    digests = [{\"imageDigest\": img[\"imageDigest\"]} for img in c.describe_images(repositoryName='repo')[\"imageDetails\"]]\n    assert len(digests) == 4, digests\n    resp = c.batch_delete_image(repositoryName='repo', imageIds=digests[1:3])\n    assert len(resp.get('imageIds', [])) == 2, 'both requested images must be deleted, got %r' % (resp.get('imageIds'),)\n    assert resp.get('failures', []) == [], 'no spurious failures allowed, got %r' % (resp.get('failures'),)\n    rest = sorted([t for img in c.describe_images(repositoryName='repo')['imageDetails'] for t in img.get('imageTags', [])])\n    assert rest == ['tag0', 'tag3'], rest\n    print('batch_delete_ok')\nmain()\n"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "be7c009f7655d79193e0f97570a7dc642cd9fdae94420f7287a991edbaf8f819"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ]
+}

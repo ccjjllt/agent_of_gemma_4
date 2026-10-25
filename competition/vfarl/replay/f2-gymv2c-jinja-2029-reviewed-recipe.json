@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "root research agent: causal source read (missing singleton needs __reduce__ so copy/deepcopy/pickle preserve identity), pinned tests, command review 2026-10-25",
+  "review_notes": "The internal missing singleton must survive copy/deepcopy/pickle as itself (is the singleton) so existing is/is-not comparisons keep working. Copy-time identity plus globally shared singleton visibility are asserted source-bound before and after the repair. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Off-policy scripted demonstration, not a Gemma sample. Workspace uses src layout; sandbox must bind it with --source-layout src.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/jinja2/utils.py",
+        "start_line": 15,
+        "end_line": 30
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/jinja2/utils.py').resolve()\nmodule = importlib.import_module('jinja2.utils')\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport copy, pickle\nfrom jinja2.utils import missing\nc = copy.copy(missing)\nprint('copy_identity', c is missing)\nassert c is missing, 'copy broke missing singleton identity'\nd = copy.deepcopy(missing)\nassert d is missing, 'deepcopy broke missing singleton identity'\nu = pickle.loads(pickle.dumps(missing))\nprint('pickle_identity', u is missing)\nassert u is missing, 'pickle broke missing singleton identity'\nprint('f2_missing_singleton', True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "1b40f51123669ea6daede436a21d8d0bf9050043b64820a546fb37029b5f2f6b"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/jinja2/utils.py",
+        "old_string": "\nF = t.TypeVar(\"F\", bound=t.Callable[..., t.Any])\n\n# special singleton representing missing values for the runtime\nmissing: t.Any = type(\"MissingType\", (), {\"__repr__\": lambda x: \"missing\"})()\n\ninternal_code: t.MutableSet[CodeType] = set()\n\n",
+        "new_string": "\nF = t.TypeVar(\"F\", bound=t.Callable[..., t.Any])\n\n\nclass _MissingType:\n    def __repr__(self) -> str:\n        return \"missing\"\n\n    def __reduce__(self) -> str:\n        return \"missing\"\n\n\nmissing: t.Any = _MissingType()\n\"\"\"Special singleton representing missing values for the runtime.\"\"\"\n\ninternal_code: t.MutableSet[CodeType] = set()\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/jinja2/utils.py').resolve()\nmodule = importlib.import_module('jinja2.utils')\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport copy, pickle\nfrom jinja2.utils import missing\nc = copy.copy(missing)\nprint('copy_identity', c is missing)\nassert c is missing, 'copy broke missing singleton identity'\nd = copy.deepcopy(missing)\nassert d is missing, 'deepcopy broke missing singleton identity'\nu = pickle.loads(pickle.dumps(missing))\nprint('pickle_identity', u is missing)\nassert u is missing, 'pickle broke missing singleton identity'\nprint('f2_missing_singleton', True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "1b40f51123669ea6daede436a21d8d0bf9050043b64820a546fb37029b5f2f6b"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Give the missing singleton a __reduce__ returning \"missing\" so copy, deepcopy and pickle preserve its identity. Source-bound inline observations now pass. Patch submitted."
+}

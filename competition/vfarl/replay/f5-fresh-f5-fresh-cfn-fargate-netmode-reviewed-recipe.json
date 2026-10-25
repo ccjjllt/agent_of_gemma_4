@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "Fetch required compatibilities, then fetch the task network mode, gate awsvpc/object modes, then emit capabilities. The bug emits without the network-mode gate so awsvpc services always fail. The complete production-file delta is exactly the reviewed repair edit inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/cfnlint/rules/resources/ecs/ServiceFargate.py",
+        "start_line": 68,
+        "end_line": 103
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('cfnlint.rules.resources.ecs.ServiceFargate')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'src/cfnlint/rules/resources/ecs/ServiceFargate.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom collections import deque\nfrom cfnlint.context import create_context_for_template\nfrom cfnlint.decode import convert_dict\nfrom cfnlint.jsonschema import CfnTemplateValidator\nfrom cfnlint.template import Template\ndef make_validator(tmpl):\n    cfn = Template('', convert_dict(tmpl), ['us-east-1'])\n    ctx = create_context_for_template(cfn)\n    return CfnTemplateValidator(context=ctx, cfn=cfn, schema={})\nfrom cfnlint.rules.resources.ecs.ServiceFargate import ServiceFargate\nrule = ServiceFargate()\ndef props(netmode):\n    td = {'Type': 'AWS::ECS::TaskDefinition', 'Properties': {'RequiresCompatibilities': ['EC2']}}\n    if netmode is not None:\n        td['Properties']['NetworkMode'] = netmode\n    v = make_validator({'Resources': {'TaskDefinition': td}})\n    return [c for c, _ in rule._get_task_definition_properties(v, 'TaskDefinition')]\na = props('awsvpc')\nb = props('bridge')\nprint('fargate_sequence', [len(a), len(b)])\nassert [len(a), len(b)] == [0, 1], [len(a), len(b)]\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "8934f138ab70ff711a077064bc5ef68f411aa7ca7cf00b76bb37608a53316966"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/cfnlint/rules/resources/ecs/ServiceFargate.py",
+        "old_string": "        )\n        if not task_definition:\n            return\n\n        for capabilities, capabilities_validator in get_value_from_path(\n            task_definition_validator,\n            task_definition,\n            path=deque([\"Properties\", \"RequiresCompatibilities\"]),\n        ):\n            if capabilities is None:\n                yield capabilities, capabilities_validator\n                continue\n            if not isinstance(capabilities, list):\n                continue\n            for capibility, _ in get_value_from_path(\n                capabilities_validator,\n                capabilities,\n                path=deque([\"*\"]),\n            ):\n                if isinstance(capibility, dict) or capibility == \"FARGATE\":\n                    break\n            else:\n                yield capabilities, capabilities_validator\n\n    def validate(\n        self, validator: Validator, _: Any, instance: Any, schema: dict[str, Any]\n",
+        "new_string": "        )\n        if not task_definition:\n            return\n        for capabilities, capabilities_validator in get_value_from_path(\n            task_definition_validator,\n            task_definition,\n            path=deque([\"Properties\", \"RequiresCompatibilities\"]),\n        ):\n            for network_mode, network_mode_validator in get_value_from_path(\n                capabilities_validator,\n                task_definition,\n                path=deque([\"Properties\", \"NetworkMode\"]),\n            ):\n\n                if network_mode == \"awsvpc\" or network_mode_validator.is_type(\n                    network_mode, \"object\"\n                ):\n                    continue\n                if capabilities is None:\n                    yield capabilities, capabilities_validator\n                    continue\n                if not isinstance(capabilities, list):\n                    continue\n                for capibility, _ in get_value_from_path(\n                    network_mode_validator,\n                    capabilities,\n                    path=deque([\"*\"]),\n                ):\n                    if isinstance(capibility, dict) or capibility == \"FARGATE\":\n                        break\n                else:\n                    yield capabilities, capabilities_validator\n\n    def validate(\n        self, validator: Validator, _: Any, instance: Any, schema: dict[str, Any]\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('cfnlint.rules.resources.ecs.ServiceFargate')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'src/cfnlint/rules/resources/ecs/ServiceFargate.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom collections import deque\nfrom cfnlint.context import create_context_for_template\nfrom cfnlint.decode import convert_dict\nfrom cfnlint.jsonschema import CfnTemplateValidator\nfrom cfnlint.template import Template\ndef make_validator(tmpl):\n    cfn = Template('', convert_dict(tmpl), ['us-east-1'])\n    ctx = create_context_for_template(cfn)\n    return CfnTemplateValidator(context=ctx, cfn=cfn, schema={})\nfrom cfnlint.rules.resources.ecs.ServiceFargate import ServiceFargate\nrule = ServiceFargate()\ndef props(netmode):\n    td = {'Type': 'AWS::ECS::TaskDefinition', 'Properties': {'RequiresCompatibilities': ['EC2']}}\n    if netmode is not None:\n        td['Properties']['NetworkMode'] = netmode\n    v = make_validator({'Resources': {'TaskDefinition': td}})\n    return [c for c, _ in rule._get_task_definition_properties(v, 'TaskDefinition')]\na = props('awsvpc')\nb = props('bridge')\nprint('fargate_sequence', [len(a), len(b)])\nassert [len(a), len(b)] == [0, 1], [len(a), len(b)]\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "8934f138ab70ff711a077064bc5ef68f411aa7ca7cf00b76bb37608a53316966"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Fetch required compatibilities, then fetch the task network mode, gate awsvpc/object modes, then emit capabilities. The bug emits without the network-mode gate so awsvpc services always fail. The source-bound reproduction passes after the repair. Patch submitted."
+}

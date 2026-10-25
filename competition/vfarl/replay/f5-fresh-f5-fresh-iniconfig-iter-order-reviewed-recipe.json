@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "Parse sections gamma, alpha, beta in file order then iterate. Iteration must yield sections in file-appearance order. The bug negates the lineof sort key so every iteration yields reverse order. The complete production-file delta is exactly the reviewed hunks inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/iniconfig/__init__.py",
+        "start_line": 207,
+        "end_line": 217
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('iniconfig.__init__')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'src/iniconfig/__init__.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom textwrap import dedent\nfrom iniconfig import IniConfig\ncfg=IniConfig('x.ini',data=dedent('''\n  [gamma]\n  value=1\n  [alpha]\n  value=2\n  [beta]\n  value=3\n'''))\nseq=[s.name for s in cfg]\nprint('section_sequence',seq)\nassert seq==['gamma','alpha','beta'],seq\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "4cf6fee254768df32843bb26a121ece6a542d6dd8c919e349d14e2d2035c185b"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/iniconfig/__init__.py",
+        "old_string": "        return SectionWrapper(self, name)\n\n    def __iter__(self) -> Iterator[SectionWrapper]:\n        for name in sorted(self.sections, key=lambda x: -self.lineof(x)):  # type: ignore\n            yield SectionWrapper(self, name)\n\n    def __contains__(self, arg: str) -> bool:",
+        "new_string": "        return SectionWrapper(self, name)\n\n    def __iter__(self) -> Iterator[SectionWrapper]:\n        for name in sorted(self.sections, key=self.lineof):  # type: ignore\n            yield SectionWrapper(self, name)\n\n    def __contains__(self, arg: str) -> bool:"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('iniconfig.__init__')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'src/iniconfig/__init__.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom textwrap import dedent\nfrom iniconfig import IniConfig\ncfg=IniConfig('x.ini',data=dedent('''\n  [gamma]\n  value=1\n  [alpha]\n  value=2\n  [beta]\n  value=3\n'''))\nseq=[s.name for s in cfg]\nprint('section_sequence',seq)\nassert seq==['gamma','alpha','beta'],seq\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "4cf6fee254768df32843bb26a121ece6a542d6dd8c919e349d14e2d2035c185b"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Parse sections gamma, alpha, beta in file order then iterate. Iteration must yield sections in file-appearance order. The bug negates the lineof sort key so every iteration yields reverse order. The source-bound reproduction passes after the repair. Patch submitted."
+}

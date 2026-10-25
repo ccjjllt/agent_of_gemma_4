@@ -1,0 +1,66 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Owner streaming response; usage body streaming; release on client disconnect must surface ClientDisconnect (spec>=2.4 OSError path) and still run background tasks. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "starlette/responses.py",
+        "start_line": 15,
+        "end_line": 33
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'starlette/responses.py').resolve()\ntry:\n module = importlib.import_module('starlette.responses')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom typing import AsyncGenerator\nimport anyio\nimport pytest\nfrom starlette.responses import StreamingResponse\nfrom starlette.requests import ClientDisconnect\nfrom starlette.types import Message\nasync def main():\n    chunks = bytearray()\n    streamed = False\n    async def receive_disconnect() -> Message:\n        raise NotImplementedError\n    async def send(message: Message) -> None:\n        nonlocal streamed\n        if message['type'] == 'http.response.body':\n            if not streamed:\n                chunks.extend(message.get('body', b''))\n                streamed = True\n            else:\n                raise OSError\n    async def stream_indefinitely() -> AsyncGenerator[bytes, None]:\n        while True:\n            await anyio.sleep(0)\n            yield b'chunk'\n    stream = stream_indefinitely()\n    response = StreamingResponse(content=stream)\n    with anyio.move_on_after(1) as cancel_scope:\n        with pytest.raises(ClientDisconnect):\n            await response({'asgi': {'spec_version': '2.4'}}, receive_disconnect, send)\n    assert not cancel_scope.cancel_called, 'streaming should stop itself on release'\n    assert chunks == b'chunk'\n    await stream.aclose()\n    print('streaming_disconnect_ok')\nanyio.run(main)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "e1a640a0091814803f93c0ede8d6c8bc00e23bf06e674411ac24cafaacdb7c71"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "starlette/responses.py",
+        "old_string": "from starlette.background import BackgroundTask\nfrom starlette.concurrency import iterate_in_threadpool\nfrom starlette.datastructures import URL, Headers, MutableHeaders\nfrom starlette.types import Receive, Scope, Send\n\n\n",
+        "new_string": "from starlette.background import BackgroundTask\nfrom starlette.concurrency import iterate_in_threadpool\nfrom starlette.datastructures import URL, Headers, MutableHeaders\nfrom starlette.requests import ClientDisconnect\nfrom starlette.types import Receive, Scope, Send\n\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "starlette/responses.py",
+        "old_string": "        await send({\"type\": \"http.response.body\", \"body\": b\"\", \"more_body\": False})\n\n    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:\n        async with anyio.create_task_group() as task_group:\n\n            async def wrap(func: typing.Callable[[], typing.Awaitable[None]]) -> None:\n                await func()\n                task_group.cancel_scope.cancel()\n\n            task_group.start_soon(wrap, partial(self.stream_response, send))\n            await wrap(partial(self.listen_for_disconnect, receive))\n\n        if self.background is not None:\n            await self.background()\n",
+        "new_string": "        await send({\"type\": \"http.response.body\", \"body\": b\"\", \"more_body\": False})\n\n    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:\n        spec_version = tuple(map(int, scope.get(\"asgi\", {}).get(\"spec_version\", \"2.0\").split(\".\")))\n\n        if spec_version >= (2, 4):\n            try:\n                await self.stream_response(send)\n            except OSError:\n                raise ClientDisconnect()\n        else:\n            async with anyio.create_task_group() as task_group:\n\n                async def wrap(func: typing.Callable[[], typing.Awaitable[None]]) -> None:\n                    await func()\n                    task_group.cancel_scope.cancel()\n\n                task_group.start_soon(wrap, partial(self.stream_response, send))\n                await wrap(partial(self.listen_for_disconnect, receive))\n\n        if self.background is not None:\n            await self.background()\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'starlette/responses.py').resolve()\ntry:\n module = importlib.import_module('starlette.responses')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom typing import AsyncGenerator\nimport anyio\nimport pytest\nfrom starlette.responses import StreamingResponse\nfrom starlette.requests import ClientDisconnect\nfrom starlette.types import Message\nasync def main():\n    chunks = bytearray()\n    streamed = False\n    async def receive_disconnect() -> Message:\n        raise NotImplementedError\n    async def send(message: Message) -> None:\n        nonlocal streamed\n        if message['type'] == 'http.response.body':\n            if not streamed:\n                chunks.extend(message.get('body', b''))\n                streamed = True\n            else:\n                raise OSError\n    async def stream_indefinitely() -> AsyncGenerator[bytes, None]:\n        while True:\n            await anyio.sleep(0)\n            yield b'chunk'\n    stream = stream_indefinitely()\n    response = StreamingResponse(content=stream)\n    with anyio.move_on_after(1) as cancel_scope:\n        with pytest.raises(ClientDisconnect):\n            await response({'asgi': {'spec_version': '2.4'}}, receive_disconnect, send)\n    assert not cancel_scope.cancel_called, 'streaming should stop itself on release'\n    assert chunks == b'chunk'\n    await stream.aclose()\n    print('streaming_disconnect_ok')\nanyio.run(main)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "e1a640a0091814803f93c0ede8d6c8bc00e23bf06e674411ac24cafaacdb7c71"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored starlette.StreamingResponse.__call__ release semantics (streaming_disconnect_raises_client_disconnect). Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

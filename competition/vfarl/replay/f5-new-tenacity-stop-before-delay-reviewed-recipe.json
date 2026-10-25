@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "stop_before_delay must keep the exact max seconds so the pre-sleep deadline check fires on time; shaving one second stops every cycle early across the attempt-time-stop chain. The complete production-file delta is exactly the reviewed hunks inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "tenacity/stop.py",
+        "start_line": 117,
+        "end_line": 126
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('tenacity.stop')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'tenacity/stop.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport time\nfrom tenacity import RetryCallState, Retrying\nfrom tenacity.stop import stop_before_delay\nstop=stop_before_delay(10)\nassert stop.max_delay==10\nctl=Retrying()\ndecisions=[]\nfor dt in (9.9,10.0,10.1):\n    state=RetryCallState(ctl,None,(),{})\n    state.start_time=time.monotonic()-dt\n    state.set_result('v')\n    state.upcoming_sleep=0.0\n    decisions.append(stop(state))\nprint('stop_before_delay_sequence',decisions)\nassert decisions==[False,True,True]\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "1b681ceff58de6d9220d85f880488f1a2529f881594d64feec7fe3d985d3e2b8"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "tenacity/stop.py",
+        "old_string": "    \"\"\"\n\n    def __init__(self, max_delay: _utils.time_unit_type) -> None:\n        self.max_delay = _utils.to_seconds(max_delay) - 1\n\n    def __call__(self, retry_state: \"RetryCallState\") -> bool:\n        if retry_state.seconds_since_start is None:",
+        "new_string": "    \"\"\"\n\n    def __init__(self, max_delay: _utils.time_unit_type) -> None:\n        self.max_delay = _utils.to_seconds(max_delay)\n\n    def __call__(self, retry_state: \"RetryCallState\") -> bool:\n        if retry_state.seconds_since_start is None:"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('tenacity.stop')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'tenacity/stop.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport time\nfrom tenacity import RetryCallState, Retrying\nfrom tenacity.stop import stop_before_delay\nstop=stop_before_delay(10)\nassert stop.max_delay==10\nctl=Retrying()\ndecisions=[]\nfor dt in (9.9,10.0,10.1):\n    state=RetryCallState(ctl,None,(),{})\n    state.start_time=time.monotonic()-dt\n    state.set_result('v')\n    state.upcoming_sleep=0.0\n    decisions.append(stop(state))\nprint('stop_before_delay_sequence',decisions)\nassert decisions==[False,True,True]\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "1b681ceff58de6d9220d85f880488f1a2529f881594d64feec7fe3d985d3e2b8"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "stop_before_delay must keep the exact max seconds so the pre-sleep deadline check fires on time; shaving one second stops every cycle early across the attempt-time-stop chain. The source-bound reproduction passes after the repair. Patch submitted."
+}

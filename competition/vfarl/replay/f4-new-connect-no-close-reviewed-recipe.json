@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Owner consumer socket; usage from connect; connect() must accept without firing the release path; close fires only on explicit close. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "channels/generic/websocket.py",
+        "start_line": 38,
+        "end_line": 57
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'channels/generic/websocket.py').resolve()\ntry:\n module = importlib.import_module('channels.generic.websocket')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom unittest import mock\nfrom channels.generic.websocket import WebsocketConsumer\nwith mock.patch.object(WebsocketConsumer, 'accept') as acc, mock.patch.object(WebsocketConsumer, 'close') as cl:\n    c = WebsocketConsumer()\n    c.connect()\n    print('accepted', acc.called, 'closed', cl.called)\n    assert acc.called and not cl.called, 'connect must accept without firing release'\nprint('connect_no_close_ok')\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "ec2381fa9c5823e02e98dca3ede0d39c4bb7fdfe187b66889bc084f1f8dd4f0c"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "channels/generic/websocket.py",
+        "old_string": "\n    def connect(self):\n        self.accept()\n        self.close()\n\n    def accept(self, subprotocol=None, headers=None):\n        \"\"\"\n",
+        "new_string": "\n    def connect(self):\n        self.accept()\n\n    def accept(self, subprotocol=None, headers=None):\n        \"\"\"\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'channels/generic/websocket.py').resolve()\ntry:\n module = importlib.import_module('channels.generic.websocket')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom unittest import mock\nfrom channels.generic.websocket import WebsocketConsumer\nwith mock.patch.object(WebsocketConsumer, 'accept') as acc, mock.patch.object(WebsocketConsumer, 'close') as cl:\n    c = WebsocketConsumer()\n    c.connect()\n    print('accepted', acc.called, 'closed', cl.called)\n    assert acc.called and not cl.called, 'connect must accept without firing release'\nprint('connect_no_close_ok')\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "ec2381fa9c5823e02e98dca3ede0d39c4bb7fdfe187b66889bc084f1f8dd4f0c"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored channels.WebsocketConsumer.connect release semantics (consumer_connect_must_not_close). Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

@@ -1,0 +1,61 @@
+You are evaluating a software engineering task for repository swesmith/python-hyper__h11.bed0dd4a.
+
+Problem Statement:
+ChunkedReader.read_eof() returns None instead of raising RemoteProtocolError
+
+#### Description
+
+When a chunked transfer encoding connection is closed prematurely by the peer, the ChunkedReader should raise a RemoteProtocolError indicating an incomplete chunked read. However, it currently returns None instead of raising the expected exception.
+
+#### Steps/Code to Reproduce
+
+```python
+import h11
+from h11 import Connection, SERVER, NEED_DATA
+
+# Create a server connection and start receiving a chunked request
+c = Connection(SERVER)
+c.receive_data(b'POST / HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\n\r\n')
+
+# Get the request event
+request = c.next_event()
+assert c.next_event() is NEED_DATA
+
+# Receive partial chunk data
+c.receive_data(b'8\r\n012345')
+data_event = c.next_event()
+print(f"Received data: {data_event.data}")
+
+# Simulate connection close (empty bytes)
+c.receive_data(b'')
+
+# This should raise RemoteProtocolError but doesn't
+try:
+    next_event = c.next_event()
+    print(f"Unexpected: got {next_event} instead of exception")
+except Exception as e:
+    print(f"Expected exception: {e}")
+```
+
+Expected behavior: Should raise `RemoteProtocolError` with message about incomplete chunked read.
+Actual behavior: Returns None or some other value instead of raising the exception.
+
+## Task Budget (Session terminates when any budget is exhausted)
+- Time allowance: 60 minutes
+- Tool calls allowance: 100 calls
+- Max loop iterations: 500 turns
+
+## Execution Environment Rules
+- Single command timeout: 300 seconds (commands exceeding this fail without ending the session)
+- Command output limit: 5000 characters
+- File view limit: 150 lines per read_file call
+- File character limit: 10000 characters per read_file call
+- Environment is offline (no network/PyPI access). All repository and test dependencies are ALREADY pre-installed. Do NOT attempt to run pip install or download packages.
+
+## Instructions:
+0. All source code is under `/workspace`. Do NOT search outside `/workspace` (e.g. `/usr/`, `/wheels/`, system site-packages). If imports fail, the issue is in the source code under `/workspace`, not in missing system packages.
+1. Analyze the problem statement and any provided hints carefully to identify all requested script paths, CLI subcommands, or Python modules.
+2. Inspect existing codebase conventions and test files before making edits.
+3. Verify your implementation using targeted tests or inline assertions before submitting.
+4. Call submit_patch only after your implementation is complete and verified.
+5. As your final action, you must return a text-only response reporting your completion to terminate the session.

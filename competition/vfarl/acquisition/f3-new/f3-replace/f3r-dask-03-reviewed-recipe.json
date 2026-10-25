@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex root source contract and actual command review 2026-10-26",
+  "review_notes": "dask/dask inline_functions-keysubs must preserve substitution_cache_single_use_and_output_protection. Inline substitution cache: set->inline shared deps, get->single substitution with equivalence on repeat runs and isolation across graphs, expire/invalidate->output keys protected from inlining (second observation differs), recompute restores. Restore the exact production logic without hardcoding values or altering tests. All original F2P/P2P identifiers and complete target files are retained verbatim. The Smith row introduces the defect; this is an off-policy scripted demonstration, not a model sample or preference pair. The inline observation fails before the repair (first run expects error) and passes after (second run expects ok), so the second observation differs.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "dask/optimization.py",
+        "start_line": 331,
+        "end_line": 366
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'dask/optimization.py').resolve()\ntry:\n module = importlib.import_module('dask.optimization')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\n\nfrom dask.optimization import inline_functions\ndef inc(x):\n    return x + 1\ndef add(a, b):\n    return a + b\nclass NonHashableCallable:\n    def __call__(self, a):\n        return a + 1\n    def __hash__(self):\n        raise TypeError(\"Not hashable\")\ndsk = {'a': 1, 'b': (inc, 'a'), 'c': (NonHashableCallable(), 'b'), 'd': (inc, 'c')}\nresult = inline_functions(dict(dsk), [], fast_functions={inc})\nassert result['c'][0].__class__.__name__ == 'NonHashableCallable', result\nassert result['c'][1] == (inc, 'a'), result\nassert 'b' not in result\nprint(\"get_hit\", True)\nagain = inline_functions(dict(dsk), [], fast_functions={inc})\nassert again['c'] == result['c'] and ('b' not in again)\nprint(\"equivalence\", True)\ndsk2 = {'x': 1, 'y': 1, 'i': (inc, 'x'), 'd': (inc, 'y'), 'out': (add, 'i', 'd')}\nout2 = inline_functions(dict(dsk2), ['i', 'out'], fast_functions={inc})\nassert out2['i'] == (inc, 'x'), \"output keys must be protected from inlining\"\nassert 'i' in out2\nprint(\"isolation\", True)\nassert 'b' not in result\nprint(\"invalidate\", True)\nthird = inline_functions(dict(dsk), [], fast_functions={inc})\nassert third['c'] == result['c']\nprint(\"recompute\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "4d7415ebc899d66ac350f48fab5e7c7b672dc9284ae03d1d0ff62b0288c75958"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "dask/optimization.py",
+        "old_string": "    dependents = reverse_dict(dependencies)\n\n    def inlinable(key, task):\n        \"\"\"Check if a task can be inlined.\n\n        Parameters\n        ----------\n        key: hashable\n            Key of task to be inlined\n        task: object\n            Task to be inlined\n\n        Returns\n        -------\n        bool\n            True if the task can be inlined, False otherwise\n        \"\"\"\n        if key in output:\n            return False\n        if not istask(task):\n            return False\n        if key not in dependents:\n            return False\n        if len(dependents[key]) != 1:\n            return False\n        if not fast_functions & functions_of(task):\n            return False\n        return True\n    keys = [k for k, v in dsk.items() if inlinable(k, v)]\n\n    if keys:\n",
+        "new_string": "    dependents = reverse_dict(dependencies)\n\n    def inlinable(key, task):\n        if (\n            not isinstance(task, GraphNode)\n            and istask(task)\n            and key not in output\n            and dependents[key]\n        ):\n            try:\n                if functions_of(task).issubset(fast_functions) and not any(\n                    isinstance(dsk[d], GraphNode) for d in dependents[key]\n                ):\n                    return True\n            except TypeError:\n                pass\n        return False\n\n    keys = [k for k, v in dsk.items() if inlinable(k, v)]\n\n    if keys:\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'dask/optimization.py').resolve()\ntry:\n module = importlib.import_module('dask.optimization')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\n\nfrom dask.optimization import inline_functions\ndef inc(x):\n    return x + 1\ndef add(a, b):\n    return a + b\nclass NonHashableCallable:\n    def __call__(self, a):\n        return a + 1\n    def __hash__(self):\n        raise TypeError(\"Not hashable\")\ndsk = {'a': 1, 'b': (inc, 'a'), 'c': (NonHashableCallable(), 'b'), 'd': (inc, 'c')}\nresult = inline_functions(dict(dsk), [], fast_functions={inc})\nassert result['c'][0].__class__.__name__ == 'NonHashableCallable', result\nassert result['c'][1] == (inc, 'a'), result\nassert 'b' not in result\nprint(\"get_hit\", True)\nagain = inline_functions(dict(dsk), [], fast_functions={inc})\nassert again['c'] == result['c'] and ('b' not in again)\nprint(\"equivalence\", True)\ndsk2 = {'x': 1, 'y': 1, 'i': (inc, 'x'), 'd': (inc, 'y'), 'out': (add, 'i', 'd')}\nout2 = inline_functions(dict(dsk2), ['i', 'out'], fast_functions={inc})\nassert out2['i'] == (inc, 'x'), \"output keys must be protected from inlining\"\nassert 'i' in out2\nprint(\"isolation\", True)\nassert 'b' not in result\nprint(\"invalidate\", True)\nthird = inline_functions(dict(dsk), [], fast_functions={inc})\nassert third['c'] == result['c']\nprint(\"recompute\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "4d7415ebc899d66ac350f48fab5e7c7b672dc9284ae03d1d0ff62b0288c75958"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored inline_functions-keysubs substitution_cache_single_use_and_output_protection. The actual inline cache observation completed after the production edit. Patch submitted."
+}

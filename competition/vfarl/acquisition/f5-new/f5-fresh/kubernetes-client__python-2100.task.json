@@ -1,0 +1,116 @@
+{
+  "row": {
+    "base_commit": "76ec6f5ce5572f66d82717e296480dc42584f0b7",
+    "created_at": "2023-08-07 19:05:23",
+    "image_name": "docker.io/swerebenchv2/kubernetes-client-python:2100-76ec6f5",
+    "instance_id": "kubernetes-client__python-2100",
+    "interface": "No new interfaces are introduced.",
+    "language": "python",
+    "license": "Apache-2.0",
+    "patch": "diff --git a/kubernetes/base/watch/watch.py b/kubernetes/base/watch/watch.py\nindex 71fd45919..f78ab11d6 100644\n--- a/kubernetes/base/watch/watch.py\n+++ b/kubernetes/base/watch/watch.py\n@@ -52,20 +52,33 @@ def _find_return_type(func):\n \n \n def iter_resp_lines(resp):\n-    prev = \"\"\n-    for seg in resp.stream(amt=None, decode_content=False):\n-        if isinstance(seg, bytes):\n-            seg = seg.decode('utf8')\n-        seg = prev + seg\n-        lines = seg.split(\"\\n\")\n-        if not seg.endswith(\"\\n\"):\n-            prev = lines[-1]\n-            lines = lines[:-1]\n+    buffer = bytearray()\n+    for segment in resp.stream(amt=None, decode_content=False):\n+\n+        # Append the segment (chunk) to the buffer\n+        #\n+        # Performance note: depending on contents of buffer and the type+value of segment,\n+        # encoding segment into the buffer could be a wasteful step. The approach used here\n+        # simplifies the logic farther down, but in the future it may be reasonable to\n+        # sacrifice readability for performance.\n+        if isinstance(segment, bytes):\n+            buffer.extend(segment)\n+        elif isinstance(segment, str):\n+            buffer.extend(segment.encode(\"utf-8\"))\n         else:\n-            prev = \"\"\n-        for line in lines:\n+            raise TypeError(\n+                f\"Received invalid segment type, {type(segment)}, from stream. Accepts only 'str' or 'bytes'.\")\n+\n+        # Split by newline (safe for utf-8 because multi-byte sequences cannot contain the newline byte)\n+        next_newline = buffer.find(b'\\n')\n+        while next_newline != -1:\n+            # Convert bytes to a valid utf-8 string, replacing any invalid utf-8 with the '�' character\n+            line = buffer[:next_newline].decode(\n+                \"utf-8\", errors=\"replace\")\n+            buffer = buffer[next_newline+1:]\n             if line:\n                 yield line\n+            next_newline = buffer.find(b'\\n')\n \n \n class Watch(object):\n",
+    "pr_description": "Fix UTF-8 failures in Watch\n<!--  Thanks for sending a pull request!  Here are some tips for you:\r\n\r\n1. If this is your first time, please read our contributor guidelines: https://git.k8s.io/community/contributors/guide/first-contribution.md#your-first-contribution and developer guide https://git.k8s.io/community/contributors/devel/development.md#development-guide\r\n2. Please label this pull request according to what type of issue you are addressing, especially if this is a release targeted pull request. For reference on required PR/issue labels, read here:\r\nhttps://git.k8s.io/community/contributors/devel/sig-release/release.md#issuepr-kind-label\r\n3. Ensure you have added or ran the appropriate tests for your PR: https://git.k8s.io/community/contributors/devel/sig-testing/testing.md\r\n4. If you want *faster* PR reviews, read how: https://git.k8s.io/community/contributors/guide/pull-requests.md#best-practices-for-faster-reviews\r\n5. If the PR is unfinished, see how to mark it: https://git.k8s.io/community/contributors/guide/pull-requests.md#marking-unfinished-pull-requests\r\n-->\r\n\r\n#### What type of PR is this?\r\n\r\n/kind bug\r\n\r\n<!--\r\nAdd one of the following kinds:\r\n/kind bug\r\n\r\nOptionally add one or more of the following kinds if applicable:\r\n/kind failing-test\r\n/kind flake\r\n-->\r\n\r\n#### What this PR does / why we need it:\r\n\r\nWith the old implementation of `kubernetes.watch.Watch.stream()`, users may experience intermittent crashes when subscribed to resources that include multi-byte UTF-8 characters (for example, `ConfigMap`s with non-ASCII characters in the `.data.*` fields). The bug lies in `kubernetes.watch.iter_resp_lines`, which decodes each `bytes` segment to a UTF-8 string without waiting for the rest of the event to be received. When that `bytes` segment ends with only part of a multi-byte sequence, the `.decode` step will fail. Here's how this symptom presents:\r\n\r\n```\r\nUnicodeDecodeError: 'utf-8' codec can't decode bytes in position 2046-2047: unexpected end of data\r\n```\r\n\r\nThe new implementation of `iter_resp_lines` buffers partial events in a `bytearray` rather than a `str`, decoding only after a complete event has been received. Furthermore, the call to `.decode` now includes the argument, `errors=\"replace\"`, which uses the canonical UTF-8 fallback character, �, when encountering invalid UTF-8.\r\n\r\nTo confirm the fix, I added three new tests, two of which failed using the old implementation.\r\n\r\n#### Which issue(s) this PR fixes:\r\n<!--\r\n*Automatically closes linked issue when PR is merged.\r\nUsage: `Fixes #<issue number>`, or `Fixes (paste link of issue)`.\r\n_If PR is about `failing-tests or flakes`, please post the related issues/tests in a comment and do not use `Fixes`_*\r\n-->\r\nFixes #2087\r\n\r\n#### Special notes for your reviewer:\r\n\r\n`iter_resp_lines` is only called by `Watch.stream`, and the interface did not change.\r\n\r\nThe old code implicitly assumed that only `bytes` and `str` were valid segment types, and that assumption has now been made explicit with a `TypeError`.\r\n\r\nI only tested with python 3.11. I assume that CI will test the code against each of the officially supported python versions. If that's not the case, my code should be reviewed with an eye for any new features I unknowingly relied upon.\r\n\r\n#### Does this PR introduce a user-facing change?\r\n<!--\r\nIf no, just write \"NONE\" in the release-note block below.\r\nIf yes, a release note is required:\r\nEnter your extended release note in the block below. If the PR requires additional action from users switching to the new release, include the string \"action required\".\r\n\r\nFor more information on release notes see: https://git.k8s.io/community/contributors/guide/release-notes.md\r\n-->\r\n```release-note\r\nFix UTF-8 failures in Watch\r\n```\r\n\r\n#### Additional documentation e.g., KEPs (Kubernetes Enhancement Proposals), usage docs, etc.:\r\n\r\n<!--\r\nThis section can be blank if this pull request does not require a release note.\r\n\r\nWhen adding links which point to resources within git repositories, like\r\nKEPs or supporting documentation, please reference a specific commit and avoid\r\nlinking directly to the master branch. This ensures that links reference a\r\nspecific point in time, rather than a document that may change over time.\r\n\r\nSee here for guidance on getting permanent links to files: https://help.github.com/en/articles/getting-permanent-links-to-files\r\n\r\nPlease use the following format for linking documentation:\r\n- [KEP]: <link>\r\n- [Usage]: <link>\r\n- [Other doc]: <link>\r\n-->\r\n```docs\r\nN/A\r\n```\r\n",
+    "problem_statement": "Crash when streaming event with non-UTF-8 data\n**What happened (please include outputs or screenshots)**:\r\n```\r\n72 [00000]   File \"/root/.pyenv/versions/3.10.11/lib/python3.10/site-packages/kubernetes/watch/watch.py\", line 165, in stream\r\n72 [00000]     for line in iter_resp_lines(resp):\r\n72 [00000]   File \"/root/.pyenv/versions/3.10.11/lib/python3.10/site-packages/kubernetes/watch/watch.py\", line 58, in iter_resp_lines\r\n72 [00000]     seg = seg.decode('utf8')\r\n72 [00000] UnicodeDecodeError: 'utf-8' codec can't decode bytes in position 2046-2047: unexpected end of data\r\n```\r\n\r\n**What you expected to happen**:\r\nIf there's invalid data in an event, it should at least be _possible_ to discard that data or event and continue. I'm not sure what the default behavior should be; it's possible that something which is currently `str` should be `bytes`, or that we should use the unicode replacement character �, or something else.\r\n\r\n**How to reproduce it (as minimally and precisely as possible)**:\r\nI'm afraid I don't currently have a minimal reproducer with real Kubernetes but it should be possible to reproduce with a test by adding a `bytes` object with invalid UTF-8 to https://github.com/kubernetes-client/python/blob/dbe83efe0a631a591a0a5a3fc883ef0e646a293a/kubernetes/watch/watch_test.py#L38-L39\r\n\r\n**Anything else we need to know?**:\r\nI suspect this is the same issue as https://github.com/kubernetes-client/python-base/issues/245\r\n\r\n**Environment**:\r\n- Kubernetes version (`kubectl version`): 1.23\r\n- OS (e.g., MacOS 10.13.6): Linux\r\n- Python version (`python --version`): 3.10.10\r\n- Python client version (`pip list | grep kubernetes`): 26.1.0\r\n",
+    "repo": "kubernetes-client/python",
+    "test_patch": "diff --git a/kubernetes/base/watch/watch_test.py b/kubernetes/base/watch/watch_test.py\nindex 8164e7b5d..c5bc5c378 100644\n--- a/kubernetes/base/watch/watch_test.py\n+++ b/kubernetes/base/watch/watch_test.py\n@@ -61,6 +61,9 @@ class WatchTests(unittest.TestCase):\n             if count == 4:\n                 w.stop()\n \n+        # make sure that all three records were consumed by the stream\n+        self.assertEqual(4, count)\n+\n         fake_api.get_namespaces.assert_called_once_with(\n             _preload_content=False, watch=True)\n         fake_resp.stream.assert_called_once_with(\n@@ -68,6 +71,123 @@ class WatchTests(unittest.TestCase):\n         fake_resp.close.assert_called_once()\n         fake_resp.release_conn.assert_called_once()\n \n+    def test_watch_with_interspersed_newlines(self):\n+        fake_resp = Mock()\n+        fake_resp.close = Mock()\n+        fake_resp.release_conn = Mock()\n+        fake_resp.stream = Mock(\n+            return_value=[\n+                '\\n',\n+                '{\"type\": \"ADDED\", \"object\": {\"metadata\":',\n+                '{\"name\": \"test1\",\"resourceVersion\": \"1\"}}}\\n{\"type\": \"ADDED\", ',\n+                '\"object\": {\"metadata\": {\"name\": \"test2\", \"resourceVersion\": \"2\"}}}\\n',\n+                '\\n',\n+                '',\n+                '{\"type\": \"ADDED\", \"object\": {\"metadata\": {\"name\": \"test3\", \"resourceVersion\": \"3\"}}}\\n',\n+                '\\n\\n\\n',\n+                '\\n',\n+            ])\n+\n+        fake_api = Mock()\n+        fake_api.get_namespaces = Mock(return_value=fake_resp)\n+        fake_api.get_namespaces.__doc__ = ':return: V1NamespaceList'\n+\n+        w = Watch()\n+        count = 0\n+\n+        # Consume all test events from the mock service, stopping when no more data is available.\n+        # Note that \"timeout_seconds\" below is not a timeout; rather, it disables retries and is\n+        # the only way to do so. Without that, the stream will re-read the test data forever.\n+        for e in w.stream(fake_api.get_namespaces, timeout_seconds=1):\n+            count += 1\n+            self.assertEqual(\"test%d\" % count, e['object'].metadata.name)\n+        self.assertEqual(3, count)\n+\n+    def test_watch_with_multibyte_utf8(self):\n+        fake_resp = Mock()\n+        fake_resp.close = Mock()\n+        fake_resp.release_conn = Mock()\n+        fake_resp.stream = Mock(\n+            return_value=[\n+                # two-byte utf-8 character\n+                '{\"type\":\"MODIFIED\",\"object\":{\"data\":{\"utf-8\":\"© 1\"},\"metadata\":{\"name\":\"test1\",\"resourceVersion\":\"1\"}}}\\n',\n+                # same copyright character expressed as bytes\n+                b'{\"type\":\"MODIFIED\",\"object\":{\"data\":{\"utf-8\":\"\\xC2\\xA9 2\"},\"metadata\":{\"name\":\"test2\",\"resourceVersion\":\"2\"}}}\\n'\n+                # same copyright character with bytes split across two stream chunks\n+                b'{\"type\":\"MODIFIED\",\"object\":{\"data\":{\"utf-8\":\"\\xC2',\n+                b'\\xA9 3\"},\"metadata\":{\"n',\n+                # more chunks of the same event, sent as a mix of bytes and strings\n+                'ame\":\"test3\",\"resourceVersion\":\"3\"',\n+                '}}}',\n+                b'\\n'\n+            ])\n+\n+        fake_api = Mock()\n+        fake_api.get_configmaps = Mock(return_value=fake_resp)\n+        fake_api.get_configmaps.__doc__ = ':return: V1ConfigMapList'\n+\n+        w = Watch()\n+        count = 0\n+\n+        # Consume all test events from the mock service, stopping when no more data is available.\n+        # Note that \"timeout_seconds\" below is not a timeout; rather, it disables retries and is\n+        # the only way to do so. Without that, the stream will re-read the test data forever.\n+        for event in w.stream(fake_api.get_configmaps, timeout_seconds=1):\n+            count += 1\n+            self.assertEqual(\"MODIFIED\", event['type'])\n+            self.assertEqual(\"test%d\" % count, event['object'].metadata.name)\n+            self.assertEqual(\"© %d\" % count, event['object'].data[\"utf-8\"])\n+            self.assertEqual(\n+                \"%d\" % count, event['object'].metadata.resource_version)\n+            self.assertEqual(\"%d\" % count, w.resource_version)\n+        self.assertEqual(3, count)\n+\n+    def test_watch_with_invalid_utf8(self):\n+        fake_resp = Mock()\n+        fake_resp.close = Mock()\n+        fake_resp.release_conn = Mock()\n+        fake_resp.stream = Mock(\n+            # test 1 uses 1 invalid utf-8 byte\n+            # test 2 uses a sequence of 2 invalid utf-8 bytes\n+            # test 3 uses a sequence of 3 invalid utf-8 bytes\n+            return_value=[\n+                # utf-8 sequence for 😄 is \\xF0\\x9F\\x98\\x84\n+                # all other sequences below are invalid\n+                # ref: https://www.w3.org/2001/06/utf-8-wrong/UTF-8-test.html\n+                b'{\"type\":\"MODIFIED\",\"object\":{\"data\":{\"utf-8\":\"\\xF0\\x9F\\x98\\x84 1\",\"invalid\":\"\\x80 1\"},\"metadata\":{\"name\":\"test1\"}}}\\n',\n+                b'{\"type\":\"MODIFIED\",\"object\":{\"data\":{\"utf-8\":\"\\xF0\\x9F\\x98\\x84 2\",\"invalid\":\"\\xC0\\xAF 2\"},\"metadata\":{\"name\":\"test2\"}}}\\n',\n+                # mix bytes/strings and split byte sequences across chunks\n+                b'{\"type\":\"MODIFIED\",\"object\":{\"data\":{\"utf-8\":\"\\xF0\\x9F\\x98',\n+                b'\\x84 ',\n+                b'',\n+                b'3\",\"invalid\":\"\\xE0\\x80',\n+                b'\\xAF ',\n+                '3\"},\"metadata\":{\"n',\n+                'ame\":\"test3\"',\n+                '}}}',\n+                b'\\n'\n+            ])\n+\n+        fake_api = Mock()\n+        fake_api.get_configmaps = Mock(return_value=fake_resp)\n+        fake_api.get_configmaps.__doc__ = ':return: V1ConfigMapList'\n+\n+        w = Watch()\n+        count = 0\n+\n+        # Consume all test events from the mock service, stopping when no more data is available.\n+        # Note that \"timeout_seconds\" below is not a timeout; rather, it disables retries and is\n+        # the only way to do so. Without that, the stream will re-read the test data forever.\n+        for event in w.stream(fake_api.get_configmaps, timeout_seconds=1):\n+            count += 1\n+            self.assertEqual(\"MODIFIED\", event['type'])\n+            self.assertEqual(\"test%d\" % count, event['object'].metadata.name)\n+            self.assertEqual(\"😄 %d\" % count, event['object'].data[\"utf-8\"])\n+            # expect N replacement characters in test N\n+            self.assertEqual(\"� %d\".replace('�', '�'*count) %\n+                             count, event['object'].data[\"invalid\"])\n+        self.assertEqual(3, count)\n+\n     def test_watch_for_follow(self):\n         fake_resp = Mock()\n         fake_resp.close = Mock()\n",
+    "FAIL_TO_PASS": [
+      "kubernetes/base/watch/watch_test.py::WatchTests::test_watch_with_invalid_utf8",
+      "kubernetes/base/watch/watch_test.py::WatchTests::test_watch_with_multibyte_utf8"
+    ],
+    "PASS_TO_PASS": [
+      "kubernetes/base/watch/watch_test.py::WatchTests::test_unmarshal_with_bookmark",
+      "kubernetes/base/watch/watch_test.py::WatchTests::test_unmarshal_with_custom_object",
+      "kubernetes/base/watch/watch_test.py::WatchTests::test_unmarshal_with_float_object",
+      "kubernetes/base/watch/watch_test.py::WatchTests::test_unmarshal_with_no_return_type",
+      "kubernetes/base/watch/watch_test.py::WatchTests::test_watch_for_follow",
+      "kubernetes/base/watch/watch_test.py::WatchTests::test_watch_resource_version_set",
+      "kubernetes/base/watch/watch_test.py::WatchTests::test_watch_retries_on_error_event",
+      "kubernetes/base/watch/watch_test.py::WatchTests::test_watch_stream_loop",
+      "kubernetes/base/watch/watch_test.py::WatchTests::test_watch_stream_twice",
+      "kubernetes/base/watch/watch_test.py::WatchTests::test_watch_with_decode",
+      "kubernetes/base/watch/watch_test.py::WatchTests::test_watch_with_error_event",
+      "kubernetes/base/watch/watch_test.py::WatchTests::test_watch_with_error_event_and_timeout_param",
+      "kubernetes/base/watch/watch_test.py::WatchTests::test_watch_with_exception",
+      "kubernetes/base/watch/watch_test.py::WatchTests::test_watch_with_interspersed_newlines"
+    ],
+    "install_config": {
+      "base_image_name": "python_base_310",
+      "docker_specs": {
+        "_variant": null,
+        "bazel_version": null,
+        "bun_version": null,
+        "cargo_version": null,
+        "deno_version": null,
+        "docker_version": null,
+        "erlang_version": null,
+        "gcc_version": null,
+        "go_version": null,
+        "helm_version": null,
+        "java_version": null,
+        "jdk_version": null,
+        "llvm_version": null,
+        "lua_version": null,
+        "luajit_version": null,
+        "neovim_version": null,
+        "node_version": null,
+        "npm_version": null,
+        "nvim_version": null,
+        "pnpm_version": null,
+        "python_image": "python_base_310",
+        "python_version": null,
+        "redis_version": null,
+        "ruby_version": null,
+        "rust_version": null,
+        "rustc_version": null,
+        "solana_version": null,
+        "sqlite_version": null
+      },
+      "install": [
+        "pip install -q -r requirements.txt",
+        "pip install -q -r test-requirements.txt",
+        "pip install -q -e ."
+      ],
+      "log_parser": "parse_log_pytest",
+      "test_cmd": "pytest --no-header -rA --tb=line --color=no -p no:cacheprovider -W ignore::DeprecationWarning kubernetes/base/watch/watch_test.py"
+    },
+    "meta": {
+      "llm_metadata": {
+        "code": "A",
+        "confidence": 0.97,
+        "detected_issues": {
+          "B1": false,
+          "B2": false,
+          "B3": false,
+          "B4": false,
+          "B5": false,
+          "B6": false
+        },
+        "difficulty": "medium",
+        "external_urls": [
+          "https://github.com/kubernetes-client/python-base/issues/245",
+          "https://github.com/kubernetes-client/python/blob/dbe83efe0a631a591a0a5a3fc883ef0e646a293a/kubernetes/watch/watch_test.py#L38-L39"
+        ],
+        "intent_completeness": "complete",
+        "pr_categories": [
+          "regression_bug"
+        ],
+        "reasoning": "The issue reports a UnicodeDecodeError when the watch stream receives non‑UTF‑8 bytes and expects the client to tolerate such data, either by discarding or using replacement characters. The supplied test patch adds cases for interspersed newlines, multibyte UTF‑8, and invalid UTF‑8, asserting that the stream continues and that replacement characters appear, which aligns with the described expectation. No signals of missing specs, external requirements, or unrelated test coupling are present, so the problem is clearly defined and solvable.",
+        "test_alignment_issues": []
+      },
+      "num_modified_files": 1,
+      "num_modified_lines": 24,
+      "pr_author": "davidopic",
+      "pr_labels": [
+        "kind/bug: Categorizes issue or PR as related to a bug.",
+        "lgtm: \"Looks good to me\", indicates that a PR is ready to be merged.",
+        "cncf-cla: yes: Indicates the PR's author has signed the CNCF CLA.",
+        "size/L: Denotes a PR that changes 100-499 lines, ignoring generated files.",
+        "release-note: Denotes a PR that will be considered when it comes time to generate release notes.",
+        "approved: Indicates a PR has been approved by an approver from all required OWNERS files."
+      ],
+      "pr_url": null
+    }
+  },
+  "row_idx": 23,
+  "source_page": "parquet nebius/SWE-rebench-V2 train rows",
+  "revision": "10483de0f50fe5da545942705a76c6150171af7f"
+}

@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Owner spooled stream; usage proxied reads/writes; release state query closed must mirror the backing buffer exactly (True only after close), never inverted. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "boltons/ioutils.py",
+        "start_line": 147,
+        "end_line": 166
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'boltons/ioutils.py').resolve()\ntry:\n module = importlib.import_module('boltons.ioutils')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom boltons.ioutils import SpooledBytesIO\nf = SpooledBytesIO()\nprint('open_closed', f.closed)\nassert f.closed is False\nf.write(b'x')\nf.close()\nprint('after_closed', f.closed)\nassert f.closed is True\nprint('closed_prop_ok')\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "bedb57de8e381e100122b72ea43bdddd912581a2a2adf26639c33157da29c52b"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "boltons/ioutils.py",
+        "old_string": "\n    @property\n    def closed(self):\n        return not self.buffer.closed\n\n    @property\n    def pos(self):\n",
+        "new_string": "\n    @property\n    def closed(self):\n        return self.buffer.closed\n\n    @property\n    def pos(self):\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'boltons/ioutils.py').resolve()\ntry:\n module = importlib.import_module('boltons.ioutils')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom boltons.ioutils import SpooledBytesIO\nf = SpooledBytesIO()\nprint('open_closed', f.closed)\nassert f.closed is False\nf.write(b'x')\nf.close()\nprint('after_closed', f.closed)\nassert f.closed is True\nprint('closed_prop_ok')\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "bedb57de8e381e100122b72ea43bdddd912581a2a2adf26639c33157da29c52b"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored boltons.SpooledIOBase.closed release semantics (closed_property_reflects_backing_buffer). Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

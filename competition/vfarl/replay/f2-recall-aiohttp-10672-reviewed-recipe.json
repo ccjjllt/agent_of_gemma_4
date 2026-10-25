@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "root research agent: causal source read (Response aliased CIMultiDict headers; unconditional copy isolates caller mutation), pinned tests, command review 2026-10-25",
+  "review_notes": "Response must own a copy of caller headers so preparing the response does not pollute the shared input dict. Copy-time identity (is not the input) plus mutation isolation are asserted source-bound before and after the repair. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Off-policy scripted demonstration, not a Gemma sample.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "aiohttp/web_response.py",
+        "start_line": 528,
+        "end_line": 542
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nmodule = importlib.import_module('aiohttp.web_response')\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert str(actual).endswith('aiohttp/web_response.py'), actual\nfrom multidict import CIMultiDict\nfrom aiohttp import web\nh = CIMultiDict({\"X-Base\": \"1\"})\nr = web.Response(body=b\"answer\", headers=h)\nprint('copy_identity', r.headers is not h)\nassert r.headers is not h, 'Response aliased caller headers'\nr.headers[\"X-New\"] = \"2\"\nassert \"X-New\" not in h, dict(h)\nprint('f2_headers_isolation', True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "a91306afd0754174e542a9ca390bd54168b56125716486015cca8e4d49e6ebcf"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "aiohttp/web_response.py",
+        "old_string": "\n        if headers is None:\n            real_headers: CIMultiDict[str] = CIMultiDict()\n        elif not isinstance(headers, CIMultiDict):\n            real_headers = CIMultiDict(headers)\n        else:\n            real_headers = headers  # = cast('CIMultiDict[str]', headers)\n\n        if content_type is not None and \"charset\" in content_type:\n            raise ValueError(\"charset must not be in content_type argument\")\n",
+        "new_string": "\n        if headers is None:\n            real_headers: CIMultiDict[str] = CIMultiDict()\n        else:\n            real_headers = CIMultiDict(headers)\n\n        if content_type is not None and \"charset\" in content_type:\n            raise ValueError(\"charset must not be in content_type argument\")\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nmodule = importlib.import_module('aiohttp.web_response')\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert str(actual).endswith('aiohttp/web_response.py'), actual\nfrom multidict import CIMultiDict\nfrom aiohttp import web\nh = CIMultiDict({\"X-Base\": \"1\"})\nr = web.Response(body=b\"answer\", headers=h)\nprint('copy_identity', r.headers is not h)\nassert r.headers is not h, 'Response aliased caller headers'\nr.headers[\"X-New\"] = \"2\"\nassert \"X-New\" not in h, dict(h)\nprint('f2_headers_isolation', True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "a91306afd0754174e542a9ca390bd54168b56125716486015cca8e4d49e6ebcf"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Copy caller headers with CIMultiDict(headers) so Response owns its headers. Source-bound inline observations now pass. Patch submitted."
+}

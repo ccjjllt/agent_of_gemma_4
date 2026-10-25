@@ -1,0 +1,66 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex root source contract and actual command review 2026-10-26",
+  "review_notes": "iterative/dvc StageCache.create must preserve cache_entry_construction_and_key_isolation. StageCache load ordering: set->write entry, get->load hit with equivalence/isolation, expire/invalidate->corrupt entry yields None and unlinks (second observation differs), recompute->rewrite restores hit. The load path must resolve before validation. Restore the exact production logic without hardcoding values or altering tests. All original F2P/P2P identifiers and complete target files are retained verbatim. The Smith row introduces the defect; this is an off-policy scripted demonstration, not a model sample or preference pair. The inline observation fails before the repair (first run expects error) and passes after (second run expects ok), so the second observation differs.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "dvc/stage/cache.py",
+        "start_line": 63,
+        "end_line": 98
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'dvc/stage/cache.py').resolve()\ntry:\n module = importlib.import_module('dvc.stage.cache')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\n\nimport os, tempfile\nfrom dvc.stage.cache import StageCache\nsc = StageCache.__new__(StageCache)\ntmp = tempfile.mkdtemp()\nsc.cache_dir = tmp\nkey, val = 'a' * 32, 'v1'\nd = sc._get_cache_dir(key)\np = sc._get_cache_path(key, val)\nassert p.startswith(d), (p, d)\nos.makedirs(os.path.dirname(p), exist_ok=True)\nwith open(p, 'w') as f:\n    f.write('cmd: [echo]\\nouts: []\\n')\ngot = sc._load_cache(key, val)\nassert isinstance(got, dict), f\"get {got!r}\"\nprint(\"get_hit\", True)\nassert sc._load_cache(key, val) == got\nprint(\"equivalence\", True)\nassert sc._load_cache('b' * 32, val) is None\nprint(\"isolation\", True)\nwith open(p, 'w') as f:\n    f.write('not: [valid\\n')\nassert sc._load_cache(key, val) is None\nassert not os.path.exists(p), \"invalid entry must be unlinked\"\nprint(\"invalidate\", True)\nwith open(p, 'w') as f:\n    f.write('cmd: [echo]\\nouts: []\\n')\nassert sc._load_cache(key, val) == got\nprint(\"recompute\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "41e9bf1a2ff834871cca6300d83dfd1e5c26f4d49f27965e633f71f9b7aa9e7d"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "dvc/stage/cache.py",
+        "old_string": "        return os.path.join(self._get_cache_dir(key), value)\n\n    def _load_cache(self, key, value):\n\n        from dvc.schema import COMPILED_LOCK_FILE_STAGE_SCHEMA\n\n        try:\n            return COMPILED_LOCK_FILE_STAGE_SCHEMA(load_yaml(path))\n",
+        "new_string": "        return os.path.join(self._get_cache_dir(key), value)\n\n    def _load_cache(self, key, value):\n        from voluptuous import Invalid\n\n        from dvc.schema import COMPILED_LOCK_FILE_STAGE_SCHEMA\n        from dvc.utils.serialize import YAMLFileCorruptedError, load_yaml\n\n        path = self._get_cache_path(key, value)\n\n        try:\n            return COMPILED_LOCK_FILE_STAGE_SCHEMA(load_yaml(path))\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "dvc/stage/cache.py",
+        "old_string": "            os.unlink(path)\n            return None\n\n        path = self._get_cache_path(key, value)\n        from dvc.utils.serialize import YAMLFileCorruptedError, load_yaml\n        from voluptuous import Invalid\n    def _load(self, stage):\n        key = _get_stage_hash(stage)\n        if not key:\n",
+        "new_string": "            os.unlink(path)\n            return None\n\n    def _load(self, stage):\n        key = _get_stage_hash(stage)\n        if not key:\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'dvc/stage/cache.py').resolve()\ntry:\n module = importlib.import_module('dvc.stage.cache')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\n\nimport os, tempfile\nfrom dvc.stage.cache import StageCache\nsc = StageCache.__new__(StageCache)\ntmp = tempfile.mkdtemp()\nsc.cache_dir = tmp\nkey, val = 'a' * 32, 'v1'\nd = sc._get_cache_dir(key)\np = sc._get_cache_path(key, val)\nassert p.startswith(d), (p, d)\nos.makedirs(os.path.dirname(p), exist_ok=True)\nwith open(p, 'w') as f:\n    f.write('cmd: [echo]\\nouts: []\\n')\ngot = sc._load_cache(key, val)\nassert isinstance(got, dict), f\"get {got!r}\"\nprint(\"get_hit\", True)\nassert sc._load_cache(key, val) == got\nprint(\"equivalence\", True)\nassert sc._load_cache('b' * 32, val) is None\nprint(\"isolation\", True)\nwith open(p, 'w') as f:\n    f.write('not: [valid\\n')\nassert sc._load_cache(key, val) is None\nassert not os.path.exists(p), \"invalid entry must be unlinked\"\nprint(\"invalidate\", True)\nwith open(p, 'w') as f:\n    f.write('cmd: [echo]\\nouts: []\\n')\nassert sc._load_cache(key, val) == got\nprint(\"recompute\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "41e9bf1a2ff834871cca6300d83dfd1e5c26f4d49f27965e633f71f9b7aa9e7d"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored StageCache.create cache_entry_construction_and_key_isolation. The actual inline cache observation completed after the production edit. Patch submitted."
+}

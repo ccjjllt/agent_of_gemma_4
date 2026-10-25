@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Owner MemorySendChannel; usage period from _create until close; release close() must mark _closed, reschedule blocked senders with ClosedResourceError and wake receivers with EndOfChannel exactly once (idempotent second close). Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/trio/_channel.py",
+        "start_line": 246,
+        "end_line": 264
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/trio/_channel.py').resolve()\ntry:\n module = importlib.import_module('trio._channel')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport trio\nsend, recv = trio.open_memory_channel(1)\nsend.close()\nprint('send_closed', send._closed)\nassert send._closed\ntry:\n    trio.run(recv.receive)\n    raise SystemExit('expected EndOfChannel')\nexcept trio.EndOfChannel:\n    print('receiver_end')\nsend.close()\nprint('idempotent_close_ok')\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "e48c402fdfeb41018e00bc7e91d90f0801686059c03aeadca07c24571305e516"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/trio/_channel.py",
+        "old_string": "    ) -> None:\n        self.close()\n\n    @enable_ki_protection\n    async def aclose(self) -> None:\n        \"\"\"Close this send channel object asynchronously.\n",
+        "new_string": "    ) -> None:\n        self.close()\n\n    @enable_ki_protection\n    def close(self) -> None:\n        \"\"\"Close this send channel object synchronously.\n\n        All channel objects have an asynchronous `~.AsyncResource.aclose` method.\n        Memory channels can also be closed synchronously. This has the same\n        effect on the channel and other tasks using it, but `close` is not a\n        trio checkpoint. This simplifies cleaning up in cancelled tasks.\n\n        Using ``with send_channel:`` will close the channel object on leaving\n        the with block.\n\n        \"\"\"\n        if self._closed:\n            return\n        self._closed = True\n        for task in self._tasks:\n            trio.lowlevel.reschedule(task, Error(trio.ClosedResourceError()))\n            del self._state.send_tasks[task]\n        self._tasks.clear()\n        self._state.open_send_channels -= 1\n        if self._state.open_send_channels == 0:\n            assert not self._state.send_tasks\n            for task in self._state.receive_tasks:\n                task.custom_sleep_data._tasks.remove(task)\n                trio.lowlevel.reschedule(task, Error(trio.EndOfChannel()))\n            self._state.receive_tasks.clear()\n\n    @enable_ki_protection\n    async def aclose(self) -> None:\n        \"\"\"Close this send channel object asynchronously.\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/trio/_channel.py').resolve()\ntry:\n module = importlib.import_module('trio._channel')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport trio\nsend, recv = trio.open_memory_channel(1)\nsend.close()\nprint('send_closed', send._closed)\nassert send._closed\ntry:\n    trio.run(recv.receive)\n    raise SystemExit('expected EndOfChannel')\nexcept trio.EndOfChannel:\n    print('receiver_end')\nsend.close()\nprint('idempotent_close_ok')\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "e48c402fdfeb41018e00bc7e91d90f0801686059c03aeadca07c24571305e516"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored trio.MemorySendChannel.close release semantics (send_close_marks_closed_and_wakes_waiters). Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

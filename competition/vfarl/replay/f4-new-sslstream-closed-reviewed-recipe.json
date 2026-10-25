@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Owner TLS stream; usage encrypted I/O; state guard must raise ClosedResourceError exactly in CLOSED state and BrokenResourceError in BROKEN state. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/trio/_ssl.py",
+        "start_line": 444,
+        "end_line": 466
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/trio/_ssl.py').resolve()\ntry:\n module = importlib.import_module('trio._ssl')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport trio\nfrom trio._ssl import SSLStream, _State\ns = SSLStream.__new__(SSLStream)\ns._state = _State.CLOSED\ntry:\n    s._check_status()\n    raise SystemExit('expected ClosedResourceError')\nexcept trio.ClosedResourceError:\n    print('closed_guarded')\ns._state = _State.BROKEN\ntry:\n    s._check_status()\n    raise SystemExit('expected BrokenResourceError')\nexcept trio.BrokenResourceError:\n    print('broken_guarded')\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "e93b41cccb272aacfb0a74d64e2701c3c850f22f8b7018f49ff24522f8b19cd1"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/trio/_ssl.py",
+        "old_string": "            return\n        elif self._state is _State.BROKEN:\n            raise trio.BrokenResourceError\n        elif self._state is _State.CLOSED:  # pragma: no cover\n            raise AssertionError()\n        else:\n            raise trio.ClosedResourceError\n    # This is probably the single trickiest function in Trio. It has lots of\n    # comments, though, just make sure to think carefully if you ever have to\n    # touch it. The big comment at the top of this file will help explain\n",
+        "new_string": "            return\n        elif self._state is _State.BROKEN:\n            raise trio.BrokenResourceError\n        elif self._state is _State.CLOSED:\n            raise trio.ClosedResourceError\n        else:  # pragma: no cover\n            raise AssertionError()\n\n    # This is probably the single trickiest function in Trio. It has lots of\n    # comments, though, just make sure to think carefully if you ever have to\n    # touch it. The big comment at the top of this file will help explain\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/trio/_ssl.py').resolve()\ntry:\n module = importlib.import_module('trio._ssl')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport trio\nfrom trio._ssl import SSLStream, _State\ns = SSLStream.__new__(SSLStream)\ns._state = _State.CLOSED\ntry:\n    s._check_status()\n    raise SystemExit('expected ClosedResourceError')\nexcept trio.ClosedResourceError:\n    print('closed_guarded')\ns._state = _State.BROKEN\ntry:\n    s._check_status()\n    raise SystemExit('expected BrokenResourceError')\nexcept trio.BrokenResourceError:\n    print('broken_guarded')\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "e93b41cccb272aacfb0a74d64e2701c3c850f22f8b7018f49ff24522f8b19cd1"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored trio.SSLStream._check_status release semantics (closed_ssl_stream_raises_closed_resource). Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

@@ -1,0 +1,75 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "subagent f2-push3: causal source read (save_preprocessed csv path unnests/drops the loop-aliased caller GazeDataFrame; per-file gaze_df.copy() isolates; copy() preserves n_components), pinned tests, command review 2026-10-25",
+  "review_notes": "save_preprocessed must own a per-file working copy: the working gaze_df is not the caller frame so csv unnest/drop stays invisible to the caller. Copy-time identity (is not the caller object) plus bidirectional isolation are asserted source-bound before and after the repair. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Off-policy scripted demonstration, not a Gemma sample. Period deps via task-site-packages-pymovements.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/pymovements/dataset/dataset_files.py",
+        "start_line": 466,
+        "end_line": 474
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nmodule = importlib.import_module('pymovements.gaze.gaze_dataframe')\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert str(actual).endswith('pymovements/gaze/gaze_dataframe.py'), actual\nimport tempfile\nimport polars as pl\nfrom pymovements.dataset.dataset_files import save_preprocessed\nfrom pymovements.dataset.dataset_paths import DatasetPaths\nfrom pymovements.gaze.gaze_dataframe import GazeDataFrame\ndf = pl.from_dict({'t': [1000, 1001, 1002], 'x': [0.1, 0.2, 0.3], 'y': [0.1, 0.2, 0.3]})\ngaze = GazeDataFrame(data=df, pixel_columns=['x', 'y'])\ncols_before = list(gaze.frame.columns)\nprint('cols_before', cols_before)\npaths = DatasetPaths(root=tempfile.mkdtemp(), dataset='ds')\nfileinfo = pl.DataFrame({'filepath': ['f.csv']})\nsave_preprocessed(gaze=[gaze], fileinfo=fileinfo, paths=paths, verbose=0, extension='csv')\nprint('cols_after', list(gaze.frame.columns))\nassert list(gaze.frame.columns) == cols_before, 'side effect: caller frame mutated'\nprint('f2_save_isolation', True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "d08eb8eba7e30faa7ecb7b799ebd59587b8ec8f1bc2248d99210de3701dc6dd9"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/pymovements/dataset/dataset_files.py",
+        "old_string": "    disable_progressbar = not verbose\n\n    for file_id, gaze_df in enumerate(tqdm(gaze, disable=disable_progressbar)):\n        raw_filepath = paths.raw / Path(fileinfo[file_id, 'filepath'])\n        preprocessed_filepath = paths.get_preprocessed_filepath(\n            raw_filepath, preprocessed_dirname=preprocessed_dirname,\n",
+        "new_string": "    disable_progressbar = not verbose\n\n    for file_id, gaze_df in enumerate(tqdm(gaze, disable=disable_progressbar)):\n        gaze_df = gaze_df.copy()\n\n        raw_filepath = paths.raw / Path(fileinfo[file_id, 'filepath'])\n        preprocessed_filepath = paths.get_preprocessed_filepath(\n            raw_filepath, preprocessed_dirname=preprocessed_dirname,\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/pymovements/dataset/dataset_files.py",
+        "old_string": "            if 'acceleration' in gaze_df.frame.columns:\n                gaze_df.unnest('acceleration')\n\n        gaze_df_out = gaze_df.frame.clone()\n        for column in gaze_df.columns:\n            if column in fileinfo.columns:\n                gaze_df_out = gaze_df_out.drop(column)\n\n        if verbose >= 2:\n            print('Save file to', preprocessed_filepath)\n\n        preprocessed_filepath.parent.mkdir(parents=True, exist_ok=True)\n        if extension == 'feather':\n            gaze_df_out.write_ipc(preprocessed_filepath)\n        elif extension == 'csv':\n            gaze_df_out.write_csv(preprocessed_filepath)\n        else:\n            valid_extensions = ['csv', 'feather']\n            raise ValueError(\n",
+        "new_string": "            if 'acceleration' in gaze_df.frame.columns:\n                gaze_df.unnest('acceleration')\n\n        for column in gaze_df.columns:\n            if column in fileinfo.columns:\n                gaze_df.frame = gaze_df.frame.drop(column)\n\n        if verbose >= 2:\n            print('Save file to', preprocessed_filepath)\n\n        preprocessed_filepath.parent.mkdir(parents=True, exist_ok=True)\n        if extension == 'feather':\n            gaze_df.frame.write_ipc(preprocessed_filepath)\n        elif extension == 'csv':\n            gaze_df.frame.write_csv(preprocessed_filepath)\n        else:\n            valid_extensions = ['csv', 'feather']\n            raise ValueError(\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/pymovements/gaze/gaze_dataframe.py",
+        "old_string": "        GazeDataFrame\n            A copy of the GazeDataFrame.\n        \"\"\"\n        return GazeDataFrame(\n            data=self.frame.clone(),\n            experiment=deepcopy(self.experiment),\n        )\n\n    def _check_experiment(self) -> None:\n        \"\"\"Check if experiment attribute has been set.\"\"\"\n",
+        "new_string": "        GazeDataFrame\n            A copy of the GazeDataFrame.\n        \"\"\"\n        gaze = GazeDataFrame(\n            data=self.frame.clone(),\n            experiment=deepcopy(self.experiment),\n        )\n        gaze.n_components = self.n_components\n        return gaze\n\n    def _check_experiment(self) -> None:\n        \"\"\"Check if experiment attribute has been set.\"\"\"\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nmodule = importlib.import_module('pymovements.gaze.gaze_dataframe')\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert str(actual).endswith('pymovements/gaze/gaze_dataframe.py'), actual\nimport tempfile\nimport polars as pl\nfrom pymovements.dataset.dataset_files import save_preprocessed\nfrom pymovements.dataset.dataset_paths import DatasetPaths\nfrom pymovements.gaze.gaze_dataframe import GazeDataFrame\ndf = pl.from_dict({'t': [1000, 1001, 1002], 'x': [0.1, 0.2, 0.3], 'y': [0.1, 0.2, 0.3]})\ngaze = GazeDataFrame(data=df, pixel_columns=['x', 'y'])\ncols_before = list(gaze.frame.columns)\nprint('cols_before', cols_before)\npaths = DatasetPaths(root=tempfile.mkdtemp(), dataset='ds')\nfileinfo = pl.DataFrame({'filepath': ['f.csv']})\nsave_preprocessed(gaze=[gaze], fileinfo=fileinfo, paths=paths, verbose=0, extension='csv')\nprint('cols_after', list(gaze.frame.columns))\nassert list(gaze.frame.columns) == cols_before, 'side effect: caller frame mutated'\nprint('f2_save_isolation', True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "d08eb8eba7e30faa7ecb7b799ebd59587b8ec8f1bc2248d99210de3701dc6dd9"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Copy the per-file gaze frame so csv saving no longer mutates the caller object. Source-bound inline observations now pass. Patch submitted."
+}

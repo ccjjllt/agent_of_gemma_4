@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "Closing must flush, close the fd, wait for kernel status, terminate only if alive, then mark fd -1 and closed. Moving flush outside and gating fd assignment on aliveness raises on clean exits instead of closing. The complete production-file delta is exactly the reviewed hunks inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "ptyprocess/ptyprocess.py",
+        "start_line": 389,
+        "end_line": 412
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('ptyprocess.ptyprocess')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'ptyprocess/ptyprocess.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom ptyprocess import PtyProcess\nproc=PtyProcess.spawn(['true'])\nproc.wait()\nalive_after_wait=proc.isalive()\nproc.close()\nevents=[alive_after_wait, proc.closed, proc.fd, proc.exitstatus]\nprint('close_sequence',events)\nassert events==[False,True,-1,0]\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "9e29f93a7798bbd0ba9931c9036aa1225ef5805b1c547efc20153ea122f0ed35"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "ptyprocess/ptyprocess.py",
+        "old_string": "        the child is terminated (SIGKILL is sent if the child ignores SIGHUP\n        and SIGINT). '''\n        if not self.closed:\n            self.fileobj.close()  # Closes the file descriptor\n            time.sleep(self.delayafterclose)\n            if self.isalive():\n                if not self.terminate(force):\n                    self.fd = -1  # Move this assignment inside the condition\n            else:\n                raise PtyProcessError('Could not terminate the child.')  # Move raise statement outside the condition\n            self.closed = True\n        self.flush()  # Move flush() outside of closed check\n            #self.pid = None\n\n    def flush(self):",
+        "new_string": "        the child is terminated (SIGKILL is sent if the child ignores SIGHUP\n        and SIGINT). '''\n        if not self.closed:\n            self.flush()\n            self.fileobj.close() # Closes the file descriptor\n            # Give kernel time to update process status.\n            time.sleep(self.delayafterclose)\n            if self.isalive():\n                if not self.terminate(force):\n                    raise PtyProcessError('Could not terminate the child.')\n            self.fd = -1\n            self.closed = True\n            #self.pid = None\n\n    def flush(self):"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('ptyprocess.ptyprocess')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'ptyprocess/ptyprocess.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom ptyprocess import PtyProcess\nproc=PtyProcess.spawn(['true'])\nproc.wait()\nalive_after_wait=proc.isalive()\nproc.close()\nevents=[alive_after_wait, proc.closed, proc.fd, proc.exitstatus]\nprint('close_sequence',events)\nassert events==[False,True,-1,0]\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "9e29f93a7798bbd0ba9931c9036aa1225ef5805b1c547efc20153ea122f0ed35"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Closing must flush, close the fd, wait for kernel status, terminate only if alive, then mark fd -1 and closed. Moving flush outside and gating fd assignment on aliveness raises on clean exits instead of closing. The source-bound reproduction passes after the repair. Patch submitted."
+}

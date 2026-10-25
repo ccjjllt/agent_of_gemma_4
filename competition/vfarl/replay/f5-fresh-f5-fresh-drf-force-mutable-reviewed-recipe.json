@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "Capture the initial mutability, force the querydict mutable, yield it for parent injection, then restore the captured state in order. The bug consumes the capture before reading it so every entry raises. The complete production-file delta is exactly the reviewed hunks inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "rest_framework_nested/viewsets.py",
+        "start_line": 12,
+        "end_line": 30
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('rest_framework_nested.viewsets')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'rest_framework_nested/viewsets.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport django\nfrom django.conf import settings\nsettings.configure(SECRET_KEY='x', DEFAULT_CHARSET='utf-8')\nfrom django.http import QueryDict\nfrom rest_framework_nested.viewsets import _force_mutable\nqd = QueryDict('', mutable=False)\nseq = []\nwith _force_mutable(qd):\n    seq.append(qd._mutable)\n    qd['parent'] = '1'\nseq.append(qd._mutable)\nseq.append(qd.get('parent'))\nprint('mutable_sequence', seq)\nassert seq == [True, False, '1'], seq\nprint('drf_temporal_capture_mutate_restore', True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "586b0cbc00306b1a0c6f1777667805a7c771e32be74fd52b42d1cc9b9b141253"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "rest_framework_nested/viewsets.py",
+        "old_string": "\n@contextlib.contextmanager\ndef _force_mutable(querydict: QueryDict | dict[str, Any]) -> Iterator[QueryDict | dict[str, Any]]:\n    if initial_mutability is not None:\n        querydict._mutable = initial_mutability\n    \"\"\"\n    Takes a HttpRequest querydict from Django and forces it to be mutable.\n    Reverts the initial state back on exit, if any.\n    \"\"\"\n    yield querydict\n    if initial_mutability is not None:\n        querydict._mutable = True  # type: ignore[union-attr]\n    initial_mutability = getattr(querydict, '_mutable', None)\n\nclass NestedViewSetMixin(Generic[T_Model]):\n    def _get_parent_lookup_kwargs(self) -> dict[str, str]:",
+        "new_string": "\n@contextlib.contextmanager\ndef _force_mutable(querydict: QueryDict | dict[str, Any]) -> Iterator[QueryDict | dict[str, Any]]:\n    \"\"\"\n    Takes a HttpRequest querydict from Django and forces it to be mutable.\n    Reverts the initial state back on exit, if any.\n    \"\"\"\n    initial_mutability = getattr(querydict, '_mutable', None)\n    if initial_mutability is not None:\n        querydict._mutable = True  # type: ignore[union-attr]\n    yield querydict\n    if initial_mutability is not None:\n        querydict._mutable = initial_mutability  # type: ignore[union-attr]\n\n\nclass NestedViewSetMixin(Generic[T_Model]):\n    def _get_parent_lookup_kwargs(self) -> dict[str, str]:"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('rest_framework_nested.viewsets')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'rest_framework_nested/viewsets.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport django\nfrom django.conf import settings\nsettings.configure(SECRET_KEY='x', DEFAULT_CHARSET='utf-8')\nfrom django.http import QueryDict\nfrom rest_framework_nested.viewsets import _force_mutable\nqd = QueryDict('', mutable=False)\nseq = []\nwith _force_mutable(qd):\n    seq.append(qd._mutable)\n    qd['parent'] = '1'\nseq.append(qd._mutable)\nseq.append(qd.get('parent'))\nprint('mutable_sequence', seq)\nassert seq == [True, False, '1'], seq\nprint('drf_temporal_capture_mutate_restore', True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "586b0cbc00306b1a0c6f1777667805a7c771e32be74fd52b42d1cc9b9b141253"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Capture the initial mutability, force the querydict mutable, yield it for parent injection, then restore the captured state in order. The bug consumes the capture before reading it so every entry raises. The source-bound reproduction passes after the repair. Patch submitted."
+}

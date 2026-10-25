@@ -1,0 +1,57 @@
+You are evaluating a software engineering task for repository swesmith/paramiko__paramiko.23f92003.
+
+Problem Statement:
+BufferedPipe event state incorrect when buffer is empty but not closed
+
+#### Description
+
+When using `select()` on a channel that has been closed by the remote end but still has an empty buffer, the event state is incorrectly set to `clear` instead of `set`, causing `select()` to not detect the channel as ready for reading even though it should be readable (to detect the EOF condition).
+
+#### Steps/Code to Reproduce
+
+```python
+import paramiko
+import select
+import time
+
+# Setup SSH connection and channel
+client = paramiko.SSHClient()
+client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+# ... connect to server ...
+
+# Open a channel and invoke shell
+chan = client.get_transport().open_session()
+chan.invoke_shell()
+
+# Server closes the channel
+# ... server-side close happens ...
+
+time.sleep(0.1)  # Allow close to propagate
+
+# This should return the channel as ready for reading (to detect EOF)
+# but it doesn't due to incorrect event state
+r, w, e = select.select([chan], [], [], 0.1)
+print(f"Ready for reading: {r}")  # Expected: [chan], Actual: []
+```
+
+The issue occurs when the buffer is empty (`len(self._buffer) == 0`) but the pipe is closed. In this case, the event should be set to indicate that the channel is ready for reading (so that EOF can be detected), but instead it gets cleared.
+
+## Task Budget (Session terminates when any budget is exhausted)
+- Time allowance: 60 minutes
+- Tool calls allowance: 100 calls
+- Max loop iterations: 500 turns
+
+## Execution Environment Rules
+- Single command timeout: 300 seconds (commands exceeding this fail without ending the session)
+- Command output limit: 5000 characters
+- File view limit: 150 lines per read_file call
+- File character limit: 10000 characters per read_file call
+- Environment is offline (no network/PyPI access). All repository and test dependencies are ALREADY pre-installed. Do NOT attempt to run pip install or download packages.
+
+## Instructions:
+0. All source code is under `/workspace`. Do NOT search outside `/workspace` (e.g. `/usr/`, `/wheels/`, system site-packages). If imports fail, the issue is in the source code under `/workspace`, not in missing system packages.
+1. Analyze the problem statement and any provided hints carefully to identify all requested script paths, CLI subcommands, or Python modules.
+2. Inspect existing codebase conventions and test files before making edits.
+3. Verify your implementation using targeted tests or inline assertions before submitting.
+4. Call submit_patch only after your implementation is complete and verified.
+5. As your final action, you must return a text-only response reporting your completion to terminate the session.

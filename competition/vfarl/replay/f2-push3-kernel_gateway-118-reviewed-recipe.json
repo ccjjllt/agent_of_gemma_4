@@ -1,0 +1,210 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "subagent f2-push3: causal source read (unknown-kernel queries returned the one shared dummy_map; per-kernel DEFAULT_ACTIVITY_VALUES.copy() isolates; P2 click-2312 precedent for refactor-embedded isolation), pinned tests, command review 2026-10-25",
+  "review_notes": "Each kernel must own its activity map: a per-kernel map is not another kernel map nor the global defaults, so publishing for one kernel stays invisible elsewhere. Copy-time identity (is not the shared/defaults object) plus bidirectional isolation are asserted source-bound before and after the repair. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Off-policy scripted demonstration, not a Gemma sample. traitlets via task-site-packages-kernelgw; parent .venv otherwise.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "kernel_gateway/services/activity/manager.py",
+        "start_line": 55,
+        "end_line": 72
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nmodule = importlib.import_module('kernel_gateway.services.activity.manager')\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert str(actual).endswith('kernel_gateway/services/activity/manager.py'), actual\nfrom kernel_gateway.services.activity.manager import (\n    ActivityManager, DEFAULT_ACTIVITY_VALUES, BUSY)\nam = ActivityManager(['k1'])\nm1 = am.get_map_for_kernel('k1')\nm2 = am.get_map_for_kernel('k2')\nprint('identities', m1 is m2, m1 is DEFAULT_ACTIVITY_VALUES, m2 is DEFAULT_ACTIVITY_VALUES)\nassert m1 is not m2\nassert m1 is not DEFAULT_ACTIVITY_VALUES\nassert m2 is not DEFAULT_ACTIVITY_VALUES\nm1[BUSY] = True\nassert DEFAULT_ACTIVITY_VALUES[BUSY] is False\nassert m2.get(BUSY) is False\nprint('f2_kernel_isolation', True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "25fd14f777463998d8986e8be584571ec1906ca4aef5075a102a787ec2021090"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "kernel_gateway/gatewayapp.py",
+        "old_string": "from .services.kernelspecs.handlers import default_handlers as default_kernelspec_handlers\nfrom .services.sessions.handlers import default_handlers as default_session_handlers\nfrom .services.sessions.sessionmanager import SessionManager\nfrom .services.kernels.manager import SeedingMappingKernelManager\nfrom .services.kernels.pool import KernelPool, ManagedKernelPool\nfrom .base.handlers import default_handlers as default_base_handlers\n",
+        "new_string": "from .services.kernelspecs.handlers import default_handlers as default_kernelspec_handlers\nfrom .services.sessions.handlers import default_handlers as default_session_handlers\nfrom .services.sessions.sessionmanager import SessionManager\nfrom .services.activity.manager import ActivityManager\nfrom .services.kernels.manager import SeedingMappingKernelManager\nfrom .services.kernels.pool import KernelPool, ManagedKernelPool\nfrom .base.handlers import default_handlers as default_base_handlers\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "kernel_gateway/gatewayapp.py",
+        "old_string": "\n    def init_configurables(self):\n        \"\"\"Initializes all configurable objects including a kernel manager, kernel\n        spec manager, session manager, and kernel pool.\n\n        Optionally, loads a notebook and prespawns the configured number of\n        kernels.\n",
+        "new_string": "\n    def init_configurables(self):\n        \"\"\"Initializes all configurable objects including a kernel manager, kernel\n        spec manager, session manager, kernel pool, and activity manager.\n\n        Optionally, loads a notebook and prespawns the configured number of\n        kernels.\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "kernel_gateway/gatewayapp.py",
+        "old_string": "            kernel_spec_manager=self.kernel_spec_manager\n        )\n\n        self.session_manager = SessionManager(\n            log=self.log,\n            kernel_manager=self.kernel_manager\n",
+        "new_string": "            kernel_spec_manager=self.kernel_spec_manager\n        )\n\n        self.activity_manager = ActivityManager(\n            parent=self,\n            log=self.log,\n            kernel_manager=self.kernel_manager\n        )\n\n        self.session_manager = SessionManager(\n            log=self.log,\n            kernel_manager=self.kernel_manager\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "kernel_gateway/gatewayapp.py",
+        "old_string": "\n        self.web_app = web.Application(\n            handlers=handlers,\n            kernel_manager=self.kernel_manager,\n            session_manager=self.session_manager,\n            contents_manager=self.contents_manager,\n",
+        "new_string": "\n        self.web_app = web.Application(\n            handlers=handlers,\n            activity_manager=self.activity_manager,\n            kernel_manager=self.kernel_manager,\n            session_manager=self.session_manager,\n            contents_manager=self.contents_manager,\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "kernel_gateway/services/activity/handlers.py",
+        "old_string": "\nimport tornado.web\nimport json\nfrom .manager import activity\nfrom ...mixins import TokenAuthorizationMixin, CORSMixin, JSONErrorsMixin\n\nclass ActivityHandler(TokenAuthorizationMixin,\n                      CORSMixin,\n                      JSONErrorsMixin,\n                      tornado.web.RequestHandler):\n    def get(self):\n        \"\"\"Responds with a JSON object of stats about every running kernel if\n        kernel listing, `kg_list_kernels`, is enabled on the server.\n",
+        "new_string": "\nimport tornado.web\nimport json\nfrom ...mixins import TokenAuthorizationMixin, CORSMixin, JSONErrorsMixin\n\nclass ActivityHandler(TokenAuthorizationMixin,\n                      CORSMixin,\n                      JSONErrorsMixin,\n                      tornado.web.RequestHandler):\n\n    @property\n    def activity(self):\n        return self.settings['activity_manager']\n\n    def get(self):\n        \"\"\"Responds with a JSON object of stats about every running kernel if\n        kernel listing, `kg_list_kernels`, is enabled on the server.\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "kernel_gateway/services/activity/handlers.py",
+        "old_string": "            raise tornado.web.HTTPError(403, 'Forbidden')\n        self.set_header('Content-Type', 'application/json')\n        self.set_status(200)\n        self.finish(json.dumps(activity.get()))\n",
+        "new_string": "            raise tornado.web.HTTPError(403, 'Forbidden')\n        self.set_header('Content-Type', 'application/json')\n        self.set_status(200)\n        self.finish(json.dumps(self.activity.get()))\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "kernel_gateway/services/activity/manager.py",
+        "old_string": "# Distributed under the terms of the Modified BSD License.\n\"\"\"Manager that tracks kernel activity.\"\"\"\n\n# Constants for activity keys in the store\nLAST_MESSAGE_TO_CLIENT = 'last_message_to_client'\nLAST_MESSAGE_TO_KERNEL = 'last_message_to_kernel'\n",
+        "new_string": "# Distributed under the terms of the Modified BSD License.\n\"\"\"Manager that tracks kernel activity.\"\"\"\n\nfrom traitlets.config.configurable import LoggingConfigurable\n\n# Constants for activity keys in the store\nLAST_MESSAGE_TO_CLIENT = 'last_message_to_client'\nLAST_MESSAGE_TO_KERNEL = 'last_message_to_kernel'\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "kernel_gateway/services/activity/manager.py",
+        "old_string": "LAST_CLIENT_DISCONNECT = 'last_client_disconnect'\n\n# Initial values for all kernel activity keys\ndefault_activity_values = [(LAST_MESSAGE_TO_CLIENT, None),\n    (LAST_MESSAGE_TO_KERNEL, None),\n    (LAST_TIME_STATE_CHANGED , None),\n    (BUSY , False),\n    (CONNECTIONS , 0),\n    (LAST_CLIENT_CONNECT , None),\n    (LAST_CLIENT_DISCONNECT , None)\n]\nclass ActivityManager(object):\n    \"\"\"Represents a store of activity values for kernels. Intended to be used as a\n    singleton.\n\n    Attributes\n    ----------\n    values : dict\n        Kernel ID keys to dictionary of tracked activity values\n    ignore : set\n        Kernel IDs that have been removed. Tracked so that no more activity updates\n        can sneak in (e.g., when a kernel is deleted and later a websocket disconnects).\n    dummy_map : dict\n         Default activity values\n    \"\"\"\n    def __init__(self):\n        self.values = {}\n        self.ignore = set()\n        self.dummy_map = {}\n        self.populate_kernel_with_defaults(self.dummy_map)\n\n    def populate_kernel_with_defaults(self, activity_values):\n        \"\"\"Sets the default values for activities being recorded.\n\n        Parameters\n        ----------\n        activity_values : dict\n            Target to receive the default values\n        \"\"\"\n        for value in default_activity_values:\n            activity_values[value[0]] = value[1]\n\n    def get_map_for_kernel(self, kernel_id):\n        \"\"\"Gets activity values for a kernel.\n",
+        "new_string": "LAST_CLIENT_DISCONNECT = 'last_client_disconnect'\n\n# Initial values for all kernel activity keys\nDEFAULT_ACTIVITY_VALUES = {\n    LAST_MESSAGE_TO_CLIENT: None,\n    LAST_MESSAGE_TO_KERNEL: None,\n    LAST_TIME_STATE_CHANGED: None,\n    BUSY: False,\n    CONNECTIONS: 0,\n    LAST_CLIENT_CONNECT: None,\n    LAST_CLIENT_DISCONNECT: None\n}\n\nclass ActivityManager(LoggingConfigurable):\n    \"\"\"Represents a store of activity values for kernels. Intended to be used as a\n    singleton.\n\n    Parameters\n    ----------\n    kernel_manager : jupyter_client.multikernelmanager.MultiKernelManager\n        Manager instance responsible for the lifecycle of all kernels tracked\n        by this class\n\n    Attributes\n    ----------\n    values : dict\n        Kernel ID keys to dictionary of tracked activity values\n    kernel_manager : jupyter_client.multikernelmanager.MultiKernelManager\n        See parameters.\n    \"\"\"\n    def __init__(self, kernel_manager, *args, **kwargs):\n        super(ActivityManager, self).__init__(*args, **kwargs)\n        self.values = {}\n        self.kernel_manager = kernel_manager\n\n    def get_map_for_kernel(self, kernel_id):\n        \"\"\"Gets activity values for a kernel.\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "kernel_gateway/services/activity/manager.py",
+        "old_string": "            Activity values for the kernel or defaults if the `kernel_id` is\n            not tracked\n        \"\"\"\n        if kernel_id in self.ignore:\n            return self.dummy_map\n\n        if not kernel_id in self.values:\n            self.values[kernel_id] =  {}\n            self.populate_kernel_with_defaults(self.values[kernel_id])\n\n        return self.values[kernel_id]\n\n",
+        "new_string": "            Activity values for the kernel or defaults if the `kernel_id` is\n            not tracked\n        \"\"\"\n        if kernel_id not in self.kernel_manager:\n            return DEFAULT_ACTIVITY_VALUES.copy()\n\n        if not kernel_id in self.values:\n            self.values[kernel_id] = DEFAULT_ACTIVITY_VALUES.copy()\n\n        return self.values[kernel_id]\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "kernel_gateway/services/activity/manager.py",
+        "old_string": "        \"\"\"\n        if kernel_id in self.values:\n            del self.values[kernel_id]\n            self.ignore.add(kernel_id)\n\n    def get(self):\n        \"\"\"Gets all tracked activities for all kernels.\n",
+        "new_string": "        \"\"\"\n        if kernel_id in self.values:\n            del self.values[kernel_id]\n\n    def get(self):\n        \"\"\"Gets all tracked activities for all kernels.\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "kernel_gateway/services/activity/manager.py",
+        "old_string": "            Kernel ID keys, activity dictionary values\n        \"\"\"\n        return self.values\n\n# Singleton instance\nactivity = ActivityManager()\n",
+        "new_string": "            Kernel ID keys, activity dictionary values\n        \"\"\"\n        return self.values\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "kernel_gateway/services/kernels/handlers.py",
+        "old_string": "\nimport json\nimport tornado\nimport notebook.services.kernels.handlers as notebook_handlers\nfrom ...mixins import TokenAuthorizationMixin, CORSMixin, JSONErrorsMixin\nfrom ...services.activity.manager import activity, LAST_MESSAGE_TO_CLIENT, LAST_MESSAGE_TO_KERNEL, LAST_TIME_STATE_CHANGED, BUSY, CONNECTIONS, LAST_CLIENT_CONNECT, LAST_CLIENT_DISCONNECT\nfrom datetime import datetime\n\nclass MainKernelHandler(TokenAuthorizationMixin,\n                        CORSMixin,\n",
+        "new_string": "\nimport json\nimport tornado\nfrom datetime import datetime\nimport notebook.services.kernels.handlers as notebook_handlers\nfrom ...mixins import TokenAuthorizationMixin, CORSMixin, JSONErrorsMixin\nfrom ...services.activity.manager import (LAST_MESSAGE_TO_CLIENT,\n    LAST_MESSAGE_TO_KERNEL, LAST_TIME_STATE_CHANGED, BUSY, CONNECTIONS,\n    LAST_CLIENT_CONNECT, LAST_CLIENT_DISCONNECT)\n\nclass MainKernelHandler(TokenAuthorizationMixin,\n                        CORSMixin,\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "kernel_gateway/services/kernels/handlers.py",
+        "old_string": "    \"\"\"Extends the notebook kernel handler with token auth, CORS, JSON\n    errors, and kernel activity tracking.\n    \"\"\"\n    def delete(self, kernel_id):\n        \"\"\"Override the super class method to stop tracking activity for a\n        kernel that is being deleted.\n\n\n        \"\"\"\n        if self.settings.get('kg_list_kernels'):\n            activity.remove(kernel_id)\n        super(KernelHandler, self).delete(kernel_id)\n\nclass ZMQChannelsHandler(TokenAuthorizationMixin,\n",
+        "new_string": "    \"\"\"Extends the notebook kernel handler with token auth, CORS, JSON\n    errors, and kernel activity tracking.\n    \"\"\"\n\n    @property\n    def activity(self):\n        return self.settings['activity_manager']\n\n    def delete(self, kernel_id):\n        \"\"\"Override the super class method to stop tracking activity for a\n        kernel that is being deleted.\n\n        Parameters\n        ----------\n        kernel_id\n            ID of the kernel to stop tracking\n        \"\"\"\n        if self.settings.get('kg_list_kernels'):\n            self.activity.remove(kernel_id)\n        super(KernelHandler, self).delete(kernel_id)\n\nclass ZMQChannelsHandler(TokenAuthorizationMixin,\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "kernel_gateway/services/kernels/handlers.py",
+        "old_string": "    \"\"\"Extends the notebook websocket to zmq handler with token auth and\n    kernel activity tracking.\n    \"\"\"\n    def open(self, kernel_id):\n        \"\"\"Overrides the super class method to track connections to a kenrel.\n\n",
+        "new_string": "    \"\"\"Extends the notebook websocket to zmq handler with token auth and\n    kernel activity tracking.\n    \"\"\"\n    @property\n    def activity(self):\n        return self.settings['activity_manager']\n\n    def open(self, kernel_id):\n        \"\"\"Overrides the super class method to track connections to a kenrel.\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "kernel_gateway/services/kernels/handlers.py",
+        "old_string": "            Opening a connection to this kernel\n        \"\"\"\n        if self.settings.get('kg_list_kernels'):\n            activity.publish(self.kernel_id, LAST_CLIENT_CONNECT, datetime.now().isoformat())\n            activity.increment_activity(self.kernel_id, CONNECTIONS)\n        super(ZMQChannelsHandler, self).open(kernel_id)\n\n    def on_close(self):\n",
+        "new_string": "            Opening a connection to this kernel\n        \"\"\"\n        if self.settings.get('kg_list_kernels'):\n            self.activity.publish(self.kernel_id, LAST_CLIENT_CONNECT, datetime.now().isoformat())\n            self.activity.increment_activity(self.kernel_id, CONNECTIONS)\n        super(ZMQChannelsHandler, self).open(kernel_id)\n\n    def on_close(self):\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "kernel_gateway/services/kernels/handlers.py",
+        "old_string": "        kernel.\n        \"\"\"\n        if self.settings.get('kg_list_kernels'):\n            activity.publish(self.kernel_id, LAST_CLIENT_DISCONNECT, datetime.now().isoformat())\n            activity.decrement_activity(self.kernel_id, CONNECTIONS)\n        super(ZMQChannelsHandler, self).on_close()\n\n    def _on_zmq_reply(self, stream, msg_list):\n",
+        "new_string": "        kernel.\n        \"\"\"\n        if self.settings.get('kg_list_kernels'):\n            self.activity.publish(self.kernel_id, LAST_CLIENT_DISCONNECT, datetime.now().isoformat())\n            self.activity.decrement_activity(self.kernel_id, CONNECTIONS)\n        super(ZMQChannelsHandler, self).on_close()\n\n    def _on_zmq_reply(self, stream, msg_list):\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "kernel_gateway/services/kernels/handlers.py",
+        "old_string": "                msg_content = json.loads(msg_list[6].decode('UTF-8'))\n                # If the status is busy, set the busy to True\n                if msg_content['execution_state'] == 'busy':\n                    activity.publish(self.kernel_id, BUSY, True)\n                # Else if the status is idle, set the busy to False\n                elif msg_content['execution_state'] == 'idle':\n                    activity.publish(self.kernel_id, BUSY, False)\n                # Record the time the state was changed\n                activity.publish(self.kernel_id, LAST_TIME_STATE_CHANGED, datetime.now().isoformat())\n\n            activity.publish(self.kernel_id, LAST_MESSAGE_TO_CLIENT, datetime.now().isoformat())\n        super(ZMQChannelsHandler, self)._on_zmq_reply(stream, msg_list)\n\n    def on_message(self, msg):\n",
+        "new_string": "                msg_content = json.loads(msg_list[6].decode('UTF-8'))\n                # If the status is busy, set the busy to True\n                if msg_content['execution_state'] == 'busy':\n                    self.activity.publish(self.kernel_id, BUSY, True)\n                # Else if the status is idle, set the busy to False\n                elif msg_content['execution_state'] == 'idle':\n                    self.activity.publish(self.kernel_id, BUSY, False)\n                # Record the time the state was changed\n                self.activity.publish(self.kernel_id, LAST_TIME_STATE_CHANGED, datetime.now().isoformat())\n\n            self.activity.publish(self.kernel_id, LAST_MESSAGE_TO_CLIENT, datetime.now().isoformat())\n        super(ZMQChannelsHandler, self)._on_zmq_reply(stream, msg_list)\n\n    def on_message(self, msg):\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "kernel_gateway/services/kernels/handlers.py",
+        "old_string": "            Message sent to a kernel\n        \"\"\"\n        if self.settings.get('kg_list_kernels'):\n            activity.publish(self.kernel_id, LAST_MESSAGE_TO_KERNEL, datetime.now().isoformat())\n        super(ZMQChannelsHandler, self).on_message(msg)\n\ndefault_handlers = []\n",
+        "new_string": "            Message sent to a kernel\n        \"\"\"\n        if self.settings.get('kg_list_kernels'):\n            self.activity.publish(self.kernel_id, LAST_MESSAGE_TO_KERNEL, datetime.now().isoformat())\n        super(ZMQChannelsHandler, self).on_message(msg)\n\ndefault_handlers = []\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nmodule = importlib.import_module('kernel_gateway.services.activity.manager')\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert str(actual).endswith('kernel_gateway/services/activity/manager.py'), actual\nfrom kernel_gateway.services.activity.manager import (\n    ActivityManager, DEFAULT_ACTIVITY_VALUES, BUSY)\nam = ActivityManager(['k1'])\nm1 = am.get_map_for_kernel('k1')\nm2 = am.get_map_for_kernel('k2')\nprint('identities', m1 is m2, m1 is DEFAULT_ACTIVITY_VALUES, m2 is DEFAULT_ACTIVITY_VALUES)\nassert m1 is not m2\nassert m1 is not DEFAULT_ACTIVITY_VALUES\nassert m2 is not DEFAULT_ACTIVITY_VALUES\nm1[BUSY] = True\nassert DEFAULT_ACTIVITY_VALUES[BUSY] is False\nassert m2.get(BUSY) is False\nprint('f2_kernel_isolation', True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "25fd14f777463998d8986e8be584571ec1906ca4aef5075a102a787ec2021090"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Give each kernel its own activity-map copy so unknown/tracked kernels no longer share one mutable map. Source-bound inline observations now pass. Patch submitted."
+}

@@ -1,0 +1,68 @@
+You are evaluating a software engineering task for repository swesmith/iterative__dvc.1d6ea681.
+
+Problem Statement:
+# ThreadPoolExecutor's cancel_on_error parameter not working
+
+I noticed that the `cancel_on_error` parameter in the `ThreadPoolExecutor` class doesn't seem to be working properly. When using the executor as a context manager and an error occurs, it should cancel pending futures if `cancel_on_error=True` was specified.
+
+## Reproduction
+
+Here's a simple example that demonstrates the issue:
+
+```python
+from dvc.utils.threadpool import ThreadPoolExecutor
+import time
+
+def raise_error():
+    raise RuntimeError("This is an error")
+
+# This should cancel pending futures when an error occurs
+executor = ThreadPoolExecutor(max_workers=2, cancel_on_error=True)
+
+with executor:
+    # Submit some work
+    future1 = executor.submit(lambda x: x * 2, 21)  # This completes quickly
+    future2 = executor.submit(time.sleep, 0.5)      # This takes longer
+    
+    # Submit a task that will raise an error
+    future3 = executor.submit(raise_error)
+    
+    # Submit more tasks that should be cancelled when future3 fails
+    futures = [executor.submit(time.sleep, 0.2) for _ in range(10)]
+    
+    # This will complete successfully
+    print(f"Result of future1: {future1.result()}")
+    
+    try:
+        # This will raise an error
+        future3.result()
+    except RuntimeError:
+        # Check if the other futures were cancelled
+        print(f"Number of cancelled futures: {sum(1 for f in futures if f.cancelled())}")
+```
+
+Expected behavior: When the error occurs in `future3`, the remaining futures should be cancelled because we set `cancel_on_error=True`.
+
+Actual behavior: The futures are not being cancelled when an error occurs.
+
+I think there might be an issue with how the `cancel_on_error` parameter is being handled in the context manager.
+
+## Task Budget (Session terminates when any budget is exhausted)
+- Time allowance: 60 minutes
+- Tool calls allowance: 100 calls
+- Max loop iterations: 500 turns
+
+## Execution Environment Rules
+- Single command timeout: 300 seconds (commands exceeding this fail without ending the session)
+- Command output limit: 5000 characters
+- File view limit: 150 lines per read_file call
+- File character limit: 10000 characters per read_file call
+- Environment is offline (no network/PyPI access). All repository and test dependencies are ALREADY pre-installed. Do NOT attempt to run pip install or download packages.
+
+## Instructions:
+0. All source code is under `/workspace`. Do NOT search outside `/workspace` (e.g. `/usr/`, `/wheels/`, system site-packages). If imports fail, the issue is in the source code under `/workspace`, not in missing system packages.
+1. Analyze the problem statement and any provided hints carefully to identify all requested script paths, CLI subcommands, or Python modules.
+2. Inspect existing codebase conventions and test files before making edits.
+3. Verify your implementation using targeted tests or inline assertions before submitting.
+4. Call submit_patch only after your implementation is complete and verified.
+5. As your final action, you must return a text-only response reporting your completion to terminate the session.

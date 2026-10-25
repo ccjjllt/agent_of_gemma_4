@@ -1,0 +1,150 @@
+[
+  {
+    "role": "user",
+    "content": "You are evaluating a software engineering task for repository swesmith/django__daphne.32ac73e1.\n\nProblem Statement:\nWebSocket connections are not timing out correctly\n\nI've noticed an issue with the WebSocket timeout logic in Daphne. The conditions for timing out WebSocket connections seem to be inverted, causing connections to behave incorrectly.\n\n### Steps to reproduce\n\n1. Create a WebSocket server with Daphne with a timeout configured\n2. Connect to the WebSocket server\n3. Wait longer than the configured timeout\n4. Try to send a message\n\n### Expected behavior\n\nThe WebSocket connection should close after the configured timeout period.\n\n### Actual behavior\n\nThe WebSocket connection remains open indefinitely, even after the timeout period has passed. Additionally, the auto-ping mechanism doesn't seem to be working correctly.\n\nHere's a simple reproduction script:\n\n```python\nimport asyncio\nimport websockets\nimport time\n\nasync def test_websocket_timeout():\n    # Connect to a Daphne server with timeout=1\n    async with websockets.connect('ws://localhost:8000/ws/') as websocket:\n        # Wait longer than the timeout\n        print(\"Connected, waiting 2 seconds...\")\n        await asyncio.sleep(2)\n        \n        # This should fail if timeout is working correctly\n        print(\"Sending message after timeout...\")\n        await websocket.send(\"still alive?\")\n        \n        # We shouldn't receive this response if timeout is working\n        response = await websocket.recv()\n        print(f\"Received: {response}\")\n        print(\"Connection is still alive when it should have timed out!\")\n\nasyncio.run(test_websocket_timeout())\n```\n\nThe issue appears to be in the timeout checking logic in the WebSocketProtocol class. The conditions for determining when to close a connection seem to be reversed.\n\n## Task Budget (Session terminates when any budget is exhausted)\n- Time allowance: 60 minutes\n- Tool calls allowance: 100 calls\n- Max loop iterations: 500 turns\n\n## Execution Environment Rules\n- Single command timeout: 300 seconds (commands exceeding this fail without ending the session)\n- Command output limit: 5000 characters\n- File view limit: 150 lines per read_file call\n- File character limit: 10000 characters per read_file call\n- Environment is offline (no network/PyPI access). All repository and test dependencies are ALREADY pre-installed. Do NOT attempt to run pip install or download packages.\n\n## Instructions:\n0. All source code is under `/workspace`. Do NOT search outside `/workspace` (e.g. `/usr/`, `/wheels/`, system site-packages). If imports fail, the issue is in the source code under `/workspace`, not in missing system packages.\n1. Analyze the problem statement and any provided hints carefully to identify all requested script paths, CLI subcommands, or Python modules.\n2. Inspect existing codebase conventions and test files before making edits.\n3. Verify your implementation using targeted tests or inline assertions before submitting.\n4. Call submit_patch only after your implementation is complete and verified.\n5. As your final action, you must return a text-only response reporting your completion to terminate the session."
+  },
+  {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+      {
+        "id": "replay_0000",
+        "type": "function",
+        "function": {
+          "name": "get_status",
+          "arguments": "{}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "replay_0000",
+    "name": "get_status",
+    "content": "{\"status\": \"ok\", \"tool_calls_used\": 0, \"patch_submitted\": false, \"patch_size\": 0, \"tool_calls_remaining\": 100, \"max_tool_calls\": 100, \"time_seconds_remaining\": 3599.9998436250025, \"max_time_minutes\": 60, \"agent_elapsed_seconds\": 0.00015720806550234556, \"max_turns\": 500, \"command_timeout_seconds\": 300}"
+  },
+  {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+      {
+        "id": "replay_0001",
+        "type": "function",
+        "function": {
+          "name": "read_file",
+          "arguments": "{\"filepath\": \"daphne/ws_protocol.py\", \"start_line\": 275, \"end_line\": 304}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "replay_0001",
+    "name": "read_file",
+    "content": "{\"status\": \"ok\", \"filepath\": \"daphne/ws_protocol.py\", \"content\": \"        \\\"\\\"\\\"\\n        return time.time() - self.socket_opened\\n\\n    def check_timeouts(self):\\n        \\\"\\\"\\\"\\n        Called periodically to see if we should timeout something\\n        \\\"\\\"\\\"\\n        # Web timeout checking\\n        if (\\n            self.duration() < self.server.websocket_timeout\\n            and self.server.websocket_timeout <= 0\\n        ):\\n            self.serverClose()\\n        # Ping check\\n        # If we're still connecting, deny the connection\\n        if self.state == self.STATE_CONNECTING:\\n            if self.duration() < self.server.websocket_connect_timeout:\\n                self.serverReject()\\n        elif self.state == self.STATE_OPEN:\\n            if (time.time() - self.last_ping) < self.server.ping_interval:\\n                self._sendAutoPing()\\n                self.last_ping = time.time()\\n\\n    def __hash__(self):\\n        return hash(id(self))\\n\\n    def __eq__(self, other):\\n        return id(self) == id(other)\\n\\n    def __repr__(self):\", \"start_line\": 275, \"end_line\": 304, \"total_lines\": 331, \"is_truncated\": false}"
+  },
+  {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+      {
+        "id": "replay_0002",
+        "type": "function",
+        "function": {
+          "name": "run_command",
+          "arguments": "{\"command\": \"python3 - <<'PYREPLAY'\\nfrom pathlib import Path\\nimport hashlib, importlib\\nexpected=(Path.cwd() / 'daphne/ws_protocol.py').resolve()\\ntry:\\n module = importlib.import_module('daphne.ws_protocol')\\nexcept Exception as import_error:\\n traceback=import_error.__traceback__\\n while traceback is not None:\\n  file=traceback.tb_frame.f_globals.get('__file__')\\n  if file and Path(file).resolve()==expected:\\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\\n  traceback=traceback.tb_next\\n raise\\nactual=Path(module.__file__).resolve()\\nprint(\\\"source_binding\\\", str(actual), \\\"sha256\\\", hashlib.sha256(actual.read_bytes()).hexdigest())\\nassert actual == expected, (actual, expected)\\nimport time\\nfrom unittest import mock\\nfrom daphne.ws_protocol import WebSocketProtocol\\np = WebSocketProtocol.__new__(WebSocketProtocol)\\np.state = WebSocketProtocol.STATE_CONNECTING\\np.server = mock.Mock()\\np.server.websocket_connect_timeout = 10\\np.server.websocket_timeout = 10\\np.duration = mock.Mock(return_value=100)\\nwith mock.patch.object(WebSocketProtocol, 'serverReject') as rej, mock.patch.object(WebSocketProtocol, 'serverClose') as clo:\\n    p.check_timeouts()\\n    print('rejected', rej.called, 'closed', clo.called)\\n    assert rej.called, 'stale connecting socket must be rejected on timeout release'\\nprint('ws_timeout_ok')\\n\\nPYREPLAY\"}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "replay_0002",
+    "name": "run_command",
+    "content": "{\"status\": \"error\", \"error_type\": \"CommandError\", \"error_message\": \"Traceback (most recent call last):\\n  File \\\"<stdin>\\\", line 29, in <module>\\nAssertionError: stale connecting socket must be rejected on timeout release\\n\", \"details\": {\"stdout\": \"source_binding /Users/zhaohuaxiang/ccjjllt/agent_of_gemma_4/competition/vfarl/acquisition/f4-new/f4-cont/f4-new-ws-timeout-run-002/sandboxes/swegemma_sandbox_da99fe10-61a/workspace/daphne/ws_protocol.py sha256 d7e486471b1448667b8b0fd3b61dd4c4977b11107967329d841705024cff5c70\\nrejected False closed False\\n\", \"stderr\": \"Traceback (most recent call last):\\n  File \\\"<stdin>\\\", line 29, in <module>\\nAssertionError: stale connecting socket must be rejected on timeout release\\n\", \"exit_code\": 1}}"
+  },
+  {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+      {
+        "id": "replay_0003",
+        "type": "function",
+        "function": {
+          "name": "edit_file",
+          "arguments": "{\"filepath\": \"daphne/ws_protocol.py\", \"old_string\": \"        \\\"\\\"\\\"\\n        # Web timeout checking\\n        if (\\n            self.duration() < self.server.websocket_timeout\\n            and self.server.websocket_timeout <= 0\\n        ):\\n            self.serverClose()\\n        # Ping check\\n        # If we're still connecting, deny the connection\\n        if self.state == self.STATE_CONNECTING:\\n            if self.duration() < self.server.websocket_connect_timeout:\\n                self.serverReject()\\n        elif self.state == self.STATE_OPEN:\\n            if (time.time() - self.last_ping) < self.server.ping_interval:\\n                self._sendAutoPing()\\n                self.last_ping = time.time()\\n\\n\", \"new_string\": \"        \\\"\\\"\\\"\\n        # Web timeout checking\\n        if (\\n            self.duration() > self.server.websocket_timeout\\n            and self.server.websocket_timeout >= 0\\n        ):\\n            self.serverClose()\\n        # Ping check\\n        # If we're still connecting, deny the connection\\n        if self.state == self.STATE_CONNECTING:\\n            if self.duration() > self.server.websocket_connect_timeout:\\n                self.serverReject()\\n        elif self.state == self.STATE_OPEN:\\n            if (time.time() - self.last_ping) > self.server.ping_interval:\\n                self._sendAutoPing()\\n                self.last_ping = time.time()\\n\\n\"}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "replay_0003",
+    "name": "edit_file",
+    "content": "{\"status\": \"ok\", \"filepath\": \"daphne/ws_protocol.py\", \"occurrences\": 1, \"strategy\": \"exact\", \"diff\": \"--- a/daphne/ws_protocol.py\\n+++ b/daphne/ws_protocol.py\\n@@ -281,17 +281,17 @@\\n         \\\"\\\"\\\"\\n         # Web timeout checking\\n         if (\\n-            self.duration() < self.server.websocket_timeout\\n-            and self.server.websocket_timeout <= 0\\n+            self.duration() > self.server.websocket_timeout\\n+            and self.server.websocket_timeout >= 0\\n         ):\\n             self.serverClose()\\n         # Ping check\\n         # If we're still connecting, deny the connection\\n         if self.state == self.STATE_CONNECTING:\\n-            if self.duration() < self.server.websocket_connect_timeout:\\n+            if self.duration() > self.server.websocket_connect_timeout:\\n                 self.serverReject()\\n         elif self.state == self.STATE_OPEN:\\n-            if (time.time() - self.last_ping) < self.server.ping_interval:\\n+            if (time.time() - self.last_ping) > self.server.ping_interval:\\n                 self._sendAutoPing()\\n                 self.last_ping = time.time()\\n \\n\", \"is_truncated\": false}"
+  },
+  {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+      {
+        "id": "replay_0004",
+        "type": "function",
+        "function": {
+          "name": "run_command",
+          "arguments": "{\"command\": \"python3 - <<'PYREPLAY'\\nfrom pathlib import Path\\nimport hashlib, importlib\\nexpected=(Path.cwd() / 'daphne/ws_protocol.py').resolve()\\ntry:\\n module = importlib.import_module('daphne.ws_protocol')\\nexcept Exception as import_error:\\n traceback=import_error.__traceback__\\n while traceback is not None:\\n  file=traceback.tb_frame.f_globals.get('__file__')\\n  if file and Path(file).resolve()==expected:\\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\\n  traceback=traceback.tb_next\\n raise\\nactual=Path(module.__file__).resolve()\\nprint(\\\"source_binding\\\", str(actual), \\\"sha256\\\", hashlib.sha256(actual.read_bytes()).hexdigest())\\nassert actual == expected, (actual, expected)\\nimport time\\nfrom unittest import mock\\nfrom daphne.ws_protocol import WebSocketProtocol\\np = WebSocketProtocol.__new__(WebSocketProtocol)\\np.state = WebSocketProtocol.STATE_CONNECTING\\np.server = mock.Mock()\\np.server.websocket_connect_timeout = 10\\np.server.websocket_timeout = 10\\np.duration = mock.Mock(return_value=100)\\nwith mock.patch.object(WebSocketProtocol, 'serverReject') as rej, mock.patch.object(WebSocketProtocol, 'serverClose') as clo:\\n    p.check_timeouts()\\n    print('rejected', rej.called, 'closed', clo.called)\\n    assert rej.called, 'stale connecting socket must be rejected on timeout release'\\nprint('ws_timeout_ok')\\n\\nPYREPLAY\"}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "replay_0004",
+    "name": "run_command",
+    "content": "{\"status\": \"ok\", \"stdout\": \"source_binding /Users/zhaohuaxiang/ccjjllt/agent_of_gemma_4/competition/vfarl/acquisition/f4-new/f4-cont/f4-new-ws-timeout-run-002/sandboxes/swegemma_sandbox_da99fe10-61a/workspace/daphne/ws_protocol.py sha256 e952d61a80d89ba85b2245c91052fb93decdbf4ffff55385eb172ba3c9b21874\\nrejected True closed True\\nws_timeout_ok\\n\", \"stderr\": \"\", \"exit_code\": 0}"
+  },
+  {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+      {
+        "id": "replay_0005",
+        "type": "function",
+        "function": {
+          "name": "get_status",
+          "arguments": "{}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "replay_0005",
+    "name": "get_status",
+    "content": "{\"status\": \"ok\", \"tool_calls_used\": 4, \"patch_submitted\": false, \"patch_size\": 0, \"tool_calls_remaining\": 96, \"max_tool_calls\": 100, \"time_seconds_remaining\": 3599.396122874925, \"max_time_minutes\": 60, \"agent_elapsed_seconds\": 0.6038776249624789, \"max_turns\": 500, \"command_timeout_seconds\": 300}"
+  },
+  {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+      {
+        "id": "replay_0006",
+        "type": "function",
+        "function": {
+          "name": "submit_patch",
+          "arguments": "{}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "replay_0006",
+    "name": "submit_patch",
+    "content": "{\"status\": \"ok\", \"patch_size\": 1141, \"files_changed\": 1}"
+  },
+  {
+    "role": "assistant",
+    "content": "Restored daphne.WebSocketProtocol.check_timeouts release semantics (ws_timeout_closes_stale_and_unresponsive). Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+  }
+]

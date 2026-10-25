@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "Format colored frames with variables in order. Color picking must init the map, walk source lines, then return it. The bug returns before the walk so every colored format raises. The complete production-file delta is exactly the reviewed hunks inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "stackprinter/frame_formatting.py",
+        "start_line": 347,
+        "end_line": 367
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('stackprinter.frame_formatting')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'stackprinter/frame_formatting.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport os, subprocess, sys, tempfile, textwrap\nprobe = textwrap.dedent('''\n    import sys\n    import stackprinter\n    def inner():\n        marker = 7\n        raise ValueError('colormark')\n    def outer():\n        inner()\n    try:\n        outer()\n    except ValueError:\n        out = stackprinter.format(sys.exc_info(), style='darkbg')\n    has_marker = 'marker' in out\n    has_msg = 'colormark' in out\n    print('color', has_marker, has_msg)\n    assert has_marker and has_msg, out[-1500:]\n''')\nfd, p = tempfile.mkstemp(suffix='.py')\nos.write(fd, probe.encode())\nos.close(fd)\nr = subprocess.run([sys.executable, p], capture_output=True, text=True)\nos.unlink(p)\nprint(r.stdout.strip().splitlines()[-1] if r.stdout.strip() else 'no-probe-output')\nassert r.returncode == 0, r.stderr[-1000:]\nassert 'color True True' in r.stdout, r.stdout[-500:]\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "21ff00bbb92ebe3862aa45bbae8c77282674fc5ec00d1e2601190fcdfe778878"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "stackprinter/frame_formatting.py",
+        "old_string": "            return ''\n\n    def _pick_colors(self, source_map, name2lines, assignments, lineno):\n        return colormap\n        for line in source_map.values():\n            for name, ttype in line:\n                if name not in colormap and ttype == sc.VAR and name in assignments:\n                    value = assignments[name]\n                    highlight = lineno in name2lines[name]\n                    colormap[name] = self._pick_color(name, value, highlight)\n        # TODO refactor: pick a hash for each name across frames, _then_ color.\n        # Currently, colors are consistent across frames purely because there's\n        # a fixed map from hashes to colors. It's not bijective though. If colors\n        # were picked after hashing across all frames, that could be fixed.\n        colormap = {}\n    def _pick_color(self, name, val, highlight=False, method='id'):\n        if method == 'formatted':\n            seed = format_value(val)",
+        "new_string": "            return ''\n\n    def _pick_colors(self, source_map, name2lines, assignments, lineno):\n        # TODO refactor: pick a hash for each name across frames, _then_ color.\n        # Currently, colors are consistent across frames purely because there's\n        # a fixed map from hashes to colors. It's not bijective though. If colors\n        # were picked after hashing across all frames, that could be fixed.\n        colormap = {}\n        for line in source_map.values():\n            for name, ttype in line:\n                if name not in colormap and ttype == sc.VAR and name in assignments:\n                    value = assignments[name]\n                    highlight = lineno in name2lines[name]\n                    colormap[name] = self._pick_color(name, value, highlight)\n        return colormap\n\n    def _pick_color(self, name, val, highlight=False, method='id'):\n        if method == 'formatted':\n            seed = format_value(val)"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('stackprinter.frame_formatting')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'stackprinter/frame_formatting.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport os, subprocess, sys, tempfile, textwrap\nprobe = textwrap.dedent('''\n    import sys\n    import stackprinter\n    def inner():\n        marker = 7\n        raise ValueError('colormark')\n    def outer():\n        inner()\n    try:\n        outer()\n    except ValueError:\n        out = stackprinter.format(sys.exc_info(), style='darkbg')\n    has_marker = 'marker' in out\n    has_msg = 'colormark' in out\n    print('color', has_marker, has_msg)\n    assert has_marker and has_msg, out[-1500:]\n''')\nfd, p = tempfile.mkstemp(suffix='.py')\nos.write(fd, probe.encode())\nos.close(fd)\nr = subprocess.run([sys.executable, p], capture_output=True, text=True)\nos.unlink(p)\nprint(r.stdout.strip().splitlines()[-1] if r.stdout.strip() else 'no-probe-output')\nassert r.returncode == 0, r.stderr[-1000:]\nassert 'color True True' in r.stdout, r.stdout[-500:]\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "21ff00bbb92ebe3862aa45bbae8c77282674fc5ec00d1e2601190fcdfe778878"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Format colored frames with variables in order. Color picking must init the map, walk source lines, then return it. The bug returns before the walk so every colored format raises. The source-bound reproduction passes after the repair. Patch submitted."
+}

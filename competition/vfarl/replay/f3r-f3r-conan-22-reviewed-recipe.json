@@ -1,0 +1,201 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex root source contract and actual command review 2026-10-26",
+  "review_notes": "conan-io/conan DownloadAPI.sources must preserve download_sources_scope_and_cache_store. Download sources scope: set->server timestamp adopted, get->recipe fetched then sources fetched with equivalence on repeat downloads and isolation across refs, expire/invalidate->removed row misses (second observation differs), recompute->re-download restores. Restore the exact production logic without hardcoding values or altering tests. All original F2P/P2P identifiers and complete target files are retained verbatim. The Smith row introduces the defect; this is an off-policy scripted demonstration, not a model sample or preference pair. The inline observation fails before the repair (first run expects error) and passes after (second run expects ok), so the second observation differs.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "conan/api/subapi/download.py",
+        "start_line": 1,
+        "end_line": 36
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "conans/client/installer.py",
+        "start_line": 247,
+        "end_line": 282
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "conans/client/remote_manager.py",
+        "start_line": 34,
+        "end_line": 69
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "conans/client/rest/rest_client_v2.py",
+        "start_line": 227,
+        "end_line": 262
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'conan/api/subapi/download.py').resolve()\ntry:\n module = importlib.import_module('conan.api.subapi.download')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('edited_file', 'conans/client/installer.py', 'sha256', hashlib.sha256(Path('conans/client/installer.py').read_bytes()).hexdigest())\nprint('edited_file', 'conans/client/remote_manager.py', 'sha256', hashlib.sha256(Path('conans/client/remote_manager.py').read_bytes()).hexdigest())\nprint('edited_file', 'conans/client/rest/rest_client_v2.py', 'sha256', hashlib.sha256(Path('conans/client/rest/rest_client_v2.py').read_bytes()).hexdigest())\n\nimport os, tempfile\nfrom types import SimpleNamespace\nfrom conan.api.model import RecipeReference\nfrom conan.internal.cache.cache import PkgCache\nimport conan.api.subapi.download as dlmod\ntmp = tempfile.mkdtemp()\ncache = PkgCache(tmp, {})\ncalls = []\nserver_ref = RecipeReference('pkg', '0.1', revision='r1', timestamp=9.0)\ndef fake_get_recipe(ref, remote, metadata):\n    calls.append('get_recipe')\n    cache.create_ref_layout(ref)\nrm = SimpleNamespace(\n    get_recipe_revision_reference=lambda ref, remote: server_ref,\n    get_recipe=fake_get_recipe,\n    get_recipe_sources=lambda *a, **k: calls.append('get_recipe_sources'))\nloader = SimpleNamespace(load_basic=lambda *a, **k: (_ for _ in ()).throw(AssertionError('must not load')))\napp = SimpleNamespace(cache=cache, remote_manager=rm, loader=loader)\ndlmod.ConanBasicApp = lambda api: app\nfrom conan.api.subapi.download import DownloadAPI\napi = DownloadAPI(SimpleNamespace())\nref = RecipeReference('pkg', '0.1', revision='r1')\nremote = SimpleNamespace(name='myremote')\nassert api.recipe(ref, remote) is True\nassert ref.timestamp == 9.0, ref.timestamp\nprint(\"get_hit\", True)\nassert 'get_recipe_sources' in calls, calls\nprint(\"equivalence\", True)\ncalls.clear()\nref2 = RecipeReference('other', '0.2', revision='r2')\nserver_ref2 = RecipeReference('other', '0.2', revision='r2', timestamp=7.0)\nrm.get_recipe_revision_reference = lambda ref, remote: server_ref2\nassert api.recipe(ref2, remote) is True\nassert 'get_recipe_sources' in calls\nprint(\"isolation\", True)\nfrom conan.errors import ConanException as _CE\ncache._db.remove_recipe(ref2)\ntry:\n    cache.recipe_layout(ref2)\nexcept _CE:\n    print(\"invalidate\", True)\nelse:\n    raise AssertionError(\"removed recipe must miss\")\ncalls.clear()\nassert api.recipe(ref2, remote) is True\nassert 'get_recipe_sources' in calls\nprint(\"recompute\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "2aaeecd28b4b568684efff20628453b1de17630e079010eb59cecbd00ded70d8"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/api/subapi/download.py",
+        "old_string": "from conan.api.model import Remote, PackagesList\nfrom conan.api.output import ConanOutput\nfrom conan.internal.conan_app import ConanBasicApp\nfrom conans.client.source import retrieve_exports_sources\nfrom conan.errors import ConanException\nfrom conan.api.model import PkgReference\nfrom conan.api.model import RecipeReference\n",
+        "new_string": "from conan.api.model import Remote, PackagesList\nfrom conan.api.output import ConanOutput\nfrom conan.internal.conan_app import ConanBasicApp\nfrom conan.errors import ConanException\nfrom conan.api.model import PkgReference\nfrom conan.api.model import RecipeReference\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/api/subapi/download.py",
+        "old_string": "            ref.timestamp = server_ref.timestamp\n        app.remote_manager.get_recipe(ref, remote, metadata)\n\n        layout = app.cache.recipe_layout(ref)\n        conan_file_path = layout.conanfile()\n        conanfile = app.loader.load_basic(conan_file_path, display=ref, remotes=[remote])\n        # Download the sources too, don't be lazy\n        output.info(f\"Downloading '{str(ref)}' sources\")\n        retrieve_exports_sources(app.remote_manager, layout, conanfile, ref, [remote])\n        return True\n\n    def package(self, pref: PkgReference, remote: Remote, metadata: Optional[List[str]] = None):\n",
+        "new_string": "            ref.timestamp = server_ref.timestamp\n        app.remote_manager.get_recipe(ref, remote, metadata)\n\n        # Download the sources too, don't be lazy\n        output.info(f\"Downloading '{str(ref)}' sources\")\n        recipe_layout = app.cache.recipe_layout(ref)\n        app.remote_manager.get_recipe_sources(ref, recipe_layout, remote)\n        return True\n\n    def package(self, pref: PkgReference, remote: Remote, metadata: Optional[List[str]] = None):\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/api/subapi/download.py",
+        "old_string": "            assert server_pref == pref\n            pref.timestamp = server_pref.timestamp\n\n        layout = app.cache.recipe_layout(pref.ref)\n        conan_file_path = layout.conanfile()\n        conanfile = app.loader.load_basic(conan_file_path, display=pref.ref)\n        output.info(f\"Downloading package '{pref.repr_notime()}'\")\n        app.remote_manager.get_package(conanfile, pref, remote)\n        return True\n\n    def download_full(self, package_list: PackagesList, remote: Remote,\n",
+        "new_string": "            assert server_pref == pref\n            pref.timestamp = server_pref.timestamp\n\n        output.info(f\"Downloading package '{pref.repr_notime()}'\")\n        app.remote_manager.get_package(pref, remote, metadata)\n        return True\n\n    def download_full(self, package_list: PackagesList, remote: Remote,\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/api/subapi/download.py",
+        "old_string": "        ConanOutput().success(f\"Download completed in {int(elapsed)}s\\n\")",
+        "new_string": "        ConanOutput().success(f\"Download completed in {int(elapsed)}s\\n\")\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conans/client/installer.py",
+        "old_string": "            for install_reference in level:\n                for package in install_reference.packages.values():\n                    self._install_source(package.nodes[0], remotes)\n                    self._handle_package(package, install_reference, None, handled_count, package_count)\n                    handled_count += 1\n\n        MockInfoProperty.message()\n",
+        "new_string": "            for install_reference in level:\n                for package in install_reference.packages.values():\n                    self._install_source(package.nodes[0], remotes)\n                    self._handle_package(package, install_reference, handled_count, package_count)\n                    handled_count += 1\n\n        MockInfoProperty.message()\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conans/client/installer.py",
+        "old_string": "        node = package.nodes[0]\n        assert node.pref.revision is not None\n        assert node.pref.timestamp is not None\n        self._remote_manager.get_package(node.conanfile, node.pref, node.binary_remote)\n\n    def _handle_package(self, package, install_reference, remotes, handled_count, total_count):\n        if package.binary == BINARY_EDITABLE or package.binary == BINARY_EDITABLE_BUILD:\n            self._handle_node_editable(package)\n            return\n\n",
+        "new_string": "        node = package.nodes[0]\n        assert node.pref.revision is not None\n        assert node.pref.timestamp is not None\n        self._remote_manager.get_package(node.pref, node.binary_remote)\n\n    def _handle_package(self, package, install_reference, handled_count, total_count):\n        if package.binary in (BINARY_EDITABLE, BINARY_EDITABLE_BUILD):\n            self._handle_node_editable(package)\n            return\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conans/client/installer.py",
+        "old_string": "            conanfile.output.success(f\"Finalized folder {finalize_folder}\")",
+        "new_string": "            conanfile.output.success(f\"Finalized folder {finalize_folder}\")\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conans/client/remote_manager.py",
+        "old_string": "        self._call_remote(remote, \"upload_package\", pref, files_to_upload)\n\n    def get_recipe(self, ref, remote, metadata=None):\n        \"\"\"\n        Read the conans from remotes\n        Will iterate the remotes to find the conans unless remote was specified\n\n        returns (dict relative_filepath:abs_path , remote_name)\"\"\"\n        assert ref.revision, \"get_recipe without revision specified\"\n\n        layout = self._cache.get_or_create_ref_layout(ref)\n\n        export_folder = layout.export()\n        local_folder_remote = self._local_folder_remote(remote)\n",
+        "new_string": "        self._call_remote(remote, \"upload_package\", pref, files_to_upload)\n\n    def get_recipe(self, ref, remote, metadata=None):\n        assert ref.revision, \"get_recipe without revision specified\"\n        assert ref.timestamp, \"get_recipe without ref.timestamp specified\"\n\n        layout = self._cache.create_ref_layout(ref)\n\n        export_folder = layout.export()\n        local_folder_remote = self._local_folder_remote(remote)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conans/client/remote_manager.py",
+        "old_string": "                                     f\"no conanmanifest.txt\")\n            self._signer.verify(ref, download_export, files=zipped_files)\n        except BaseException:  # So KeyboardInterrupt also cleans things\n           \n            ConanOutput(scope=str(ref)).error(f\"Error downloading from remote '{remote.name}'\", error_type=\"exception\")\n            self._cache.remove_recipe_layout(layout)\n            raise\n",
+        "new_string": "                                     f\"no conanmanifest.txt\")\n            self._signer.verify(ref, download_export, files=zipped_files)\n        except BaseException:  # So KeyboardInterrupt also cleans things\n            ConanOutput(scope=str(ref)).error(f\"Error downloading from remote '{remote.name}'\", error_type=\"exception\")\n            self._cache.remove_recipe_layout(layout)\n            raise\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conans/client/remote_manager.py",
+        "old_string": "            self._call_remote(remote, \"get_recipe\", ref, download_export, metadata,\n                              only_metadata=True)\n        except BaseException:  # So KeyboardInterrupt also cleans things\n           \n            output.error(f\"Error downloading metadata from remote '{remote.name}'\", error_type=\"exception\")\n            raise\n\n",
+        "new_string": "            self._call_remote(remote, \"get_recipe\", ref, download_export, metadata,\n                              only_metadata=True)\n        except BaseException:  # So KeyboardInterrupt also cleans things\n            output.error(f\"Error downloading metadata from remote '{remote.name}'\", error_type=\"exception\")\n            raise\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conans/client/remote_manager.py",
+        "old_string": "        tgz_file = zipped_files[EXPORT_SOURCES_TGZ_NAME]\n        uncompress_file(tgz_file, export_sources_folder, scope=str(ref))\n\n    def get_package(self, conanfile, pref, remote, metadata=None):\n        conanfile.output.info(\"Retrieving package %s from remote '%s' \" % (pref.package_id,\n                                                                           remote.name))\n\n        assert pref.revision is not None\n\n        pkg_layout = self._cache.create_pkg_layout(pref)\n        pkg_layout.package_remove()  # Remove first the destination folder\n        with pkg_layout.set_dirty_context_manager():\n            self._get_package(pkg_layout, pref, remote, conanfile.output, metadata)\n\n    def get_package_metadata(self, pref, remote, metadata):\n        \"\"\"\n",
+        "new_string": "        tgz_file = zipped_files[EXPORT_SOURCES_TGZ_NAME]\n        uncompress_file(tgz_file, export_sources_folder, scope=str(ref))\n\n    def get_package(self, pref, remote, metadata=None):\n        output = ConanOutput(scope=str(pref.ref))\n        output.info(\"Retrieving package %s from remote '%s' \" % (pref.package_id, remote.name))\n\n        assert pref.revision is not None\n\n        pkg_layout = self._cache.create_pkg_layout(pref)\n        with pkg_layout.set_dirty_context_manager():\n            self._get_package(pkg_layout, pref, remote, output, metadata)\n\n    def get_package_metadata(self, pref, remote, metadata):\n        \"\"\"\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conans/client/remote_manager.py",
+        "old_string": "        raise ConanException(error_msg)",
+        "new_string": "        raise ConanException(error_msg)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conans/client/rest/rest_client_v2.py",
+        "old_string": "\n    def get_recipe_sources(self, ref, dest_folder):\n        # If revision not specified, check latest\n        if not ref.revision:\n            ref, _ = self.get_latest_recipe_reference(ref)\n        url = self.router.recipe_snapshot(ref)\n        data = self._get_file_list_json(url)\n        files = data[\"files\"]\n",
+        "new_string": "\n    def get_recipe_sources(self, ref, dest_folder):\n        # If revision not specified, check latest\n        assert ref.revision, f\"get_recipe_sources() called without revision {ref}\"\n        url = self.router.recipe_snapshot(ref)\n        data = self._get_file_list_json(url)\n        files = data[\"files\"]\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conans/client/rest/rest_client_v2.py",
+        "old_string": "        remote_pref.timestamp = from_iso8601_to_timestamp(data.get(\"time\"))\n        return remote_pref",
+        "new_string": "        remote_pref.timestamp = from_iso8601_to_timestamp(data.get(\"time\"))\n        return remote_pref\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'conan/api/subapi/download.py').resolve()\ntry:\n module = importlib.import_module('conan.api.subapi.download')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('edited_file', 'conans/client/installer.py', 'sha256', hashlib.sha256(Path('conans/client/installer.py').read_bytes()).hexdigest())\nprint('edited_file', 'conans/client/remote_manager.py', 'sha256', hashlib.sha256(Path('conans/client/remote_manager.py').read_bytes()).hexdigest())\nprint('edited_file', 'conans/client/rest/rest_client_v2.py', 'sha256', hashlib.sha256(Path('conans/client/rest/rest_client_v2.py').read_bytes()).hexdigest())\n\nimport os, tempfile\nfrom types import SimpleNamespace\nfrom conan.api.model import RecipeReference\nfrom conan.internal.cache.cache import PkgCache\nimport conan.api.subapi.download as dlmod\ntmp = tempfile.mkdtemp()\ncache = PkgCache(tmp, {})\ncalls = []\nserver_ref = RecipeReference('pkg', '0.1', revision='r1', timestamp=9.0)\ndef fake_get_recipe(ref, remote, metadata):\n    calls.append('get_recipe')\n    cache.create_ref_layout(ref)\nrm = SimpleNamespace(\n    get_recipe_revision_reference=lambda ref, remote: server_ref,\n    get_recipe=fake_get_recipe,\n    get_recipe_sources=lambda *a, **k: calls.append('get_recipe_sources'))\nloader = SimpleNamespace(load_basic=lambda *a, **k: (_ for _ in ()).throw(AssertionError('must not load')))\napp = SimpleNamespace(cache=cache, remote_manager=rm, loader=loader)\ndlmod.ConanBasicApp = lambda api: app\nfrom conan.api.subapi.download import DownloadAPI\napi = DownloadAPI(SimpleNamespace())\nref = RecipeReference('pkg', '0.1', revision='r1')\nremote = SimpleNamespace(name='myremote')\nassert api.recipe(ref, remote) is True\nassert ref.timestamp == 9.0, ref.timestamp\nprint(\"get_hit\", True)\nassert 'get_recipe_sources' in calls, calls\nprint(\"equivalence\", True)\ncalls.clear()\nref2 = RecipeReference('other', '0.2', revision='r2')\nserver_ref2 = RecipeReference('other', '0.2', revision='r2', timestamp=7.0)\nrm.get_recipe_revision_reference = lambda ref, remote: server_ref2\nassert api.recipe(ref2, remote) is True\nassert 'get_recipe_sources' in calls\nprint(\"isolation\", True)\nfrom conan.errors import ConanException as _CE\ncache._db.remove_recipe(ref2)\ntry:\n    cache.recipe_layout(ref2)\nexcept _CE:\n    print(\"invalidate\", True)\nelse:\n    raise AssertionError(\"removed recipe must miss\")\ncalls.clear()\nassert api.recipe(ref2, remote) is True\nassert 'get_recipe_sources' in calls\nprint(\"recompute\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "2aaeecd28b4b568684efff20628453b1de17630e079010eb59cecbd00ded70d8"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored DownloadAPI.sources download_sources_scope_and_cache_store. The actual inline cache observation completed after the production edit. Patch submitted."
+}

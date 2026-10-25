@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "Locate the trailer, gate a zero Prev pointer, then gate strict mode to raise or warn-and-end. The bug scans for nearby tables instead so zero-Prev files always raise the wrong error or crash. The complete production-file delta is exactly the reviewed repair edit inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "PyPDF2/pdf.py",
+        "start_line": 1775,
+        "end_line": 1899
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('PyPDF2.pdf')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'PyPDF2/pdf.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport io\nimport PyPDF2\nBASE = b'%%PDF-1.7\\n' \\\n    b'1 0 obj << /Count 1 /Kids [4 0 R] /Type /Pages >> endobj\\n' \\\n    b'2 0 obj << >> endobj\\n' \\\n    b'3 0 obj << >> endobj\\n' \\\n    b'4 0 obj << /Contents 3 0 R /CropBox [0.0 0.0 2550.0 3508.0]' \\\n    b' /MediaBox [0.0 0.0 2550.0 3508.0] /Parent 1 0 R' \\\n    b' /Resources << /Font << >> >>' \\\n    b' /Rotate 0 /Type /Page >> endobj\\n' \\\n    b'5 0 obj << /Pages 1 0 R /Type /Catalog >> endobj\\n' \\\n    b'xref 1 5\\n' \\\n    b'%010d 00000 n\\n' \\\n    b'%010d 00000 n\\n' \\\n    b'%010d 00000 n\\n' \\\n    b'%010d 00000 n\\n' \\\n    b'%010d 00000 n\\n' \\\n    b'trailer << %s/Root 5 0 R /Size 6 >>\\n' \\\n    b'startxref %d\\n' \\\n    b'%%%%EOF'\ndef build(with_prev):\n    data = BASE % (BASE.find(b'1 0 obj'), BASE.find(b'2 0 obj'), BASE.find(b'3 0 obj'), BASE.find(b'4 0 obj'), BASE.find(b'5 0 obj'), b'/Prev 0 ' if with_prev else b'', BASE.find(b'xref'))\n    return io.BytesIO(data)\nr_nonstrict_prev = PyPDF2.PdfFileReader(build(True), strict=False)\nr_plain = PyPDF2.PdfFileReader(build(False), strict=False)\nprint('pdf_sequence', [type(r_nonstrict_prev).__name__, type(r_plain).__name__])\nassert type(r_nonstrict_prev).__name__ == 'PdfFileReader'\nassert type(r_plain).__name__ == 'PdfFileReader'\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "70b12aba2fe110f4cab9b7d7f260f0b2b5c850d9898259b4b217b46c4966a4c7"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "PyPDF2/pdf.py",
+        "old_string": "                else:\n                    break\n            else:\n                # bad xref character at startxref.  Let's see if we can find\n                # the xref table nearby, as we've observed this error with an\n                # off-by-one before.\n",
+        "new_string": "                else:\n                    break\n            else:\n                # some PDFs have /Prev=0 in the trailer, instead of no /Prev\n                if startxref == 0:\n                    if self.strict:\n                        raise utils.PdfReadError(\"/Prev=0 in the trailer (try\"\n                                                 \" opening with strict=False)\")\n                    else:\n                        warnings.warn(\"/Prev=0 in the trailer - assuming there\"\n                                      \" is no previous xref table\")\n                        break\n                # bad xref character at startxref.  Let's see if we can find\n                # the xref table nearby, as we've observed this error with an\n                # off-by-one before.\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('PyPDF2.pdf')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'PyPDF2/pdf.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport io\nimport PyPDF2\nBASE = b'%%PDF-1.7\\n' \\\n    b'1 0 obj << /Count 1 /Kids [4 0 R] /Type /Pages >> endobj\\n' \\\n    b'2 0 obj << >> endobj\\n' \\\n    b'3 0 obj << >> endobj\\n' \\\n    b'4 0 obj << /Contents 3 0 R /CropBox [0.0 0.0 2550.0 3508.0]' \\\n    b' /MediaBox [0.0 0.0 2550.0 3508.0] /Parent 1 0 R' \\\n    b' /Resources << /Font << >> >>' \\\n    b' /Rotate 0 /Type /Page >> endobj\\n' \\\n    b'5 0 obj << /Pages 1 0 R /Type /Catalog >> endobj\\n' \\\n    b'xref 1 5\\n' \\\n    b'%010d 00000 n\\n' \\\n    b'%010d 00000 n\\n' \\\n    b'%010d 00000 n\\n' \\\n    b'%010d 00000 n\\n' \\\n    b'%010d 00000 n\\n' \\\n    b'trailer << %s/Root 5 0 R /Size 6 >>\\n' \\\n    b'startxref %d\\n' \\\n    b'%%%%EOF'\ndef build(with_prev):\n    data = BASE % (BASE.find(b'1 0 obj'), BASE.find(b'2 0 obj'), BASE.find(b'3 0 obj'), BASE.find(b'4 0 obj'), BASE.find(b'5 0 obj'), b'/Prev 0 ' if with_prev else b'', BASE.find(b'xref'))\n    return io.BytesIO(data)\nr_nonstrict_prev = PyPDF2.PdfFileReader(build(True), strict=False)\nr_plain = PyPDF2.PdfFileReader(build(False), strict=False)\nprint('pdf_sequence', [type(r_nonstrict_prev).__name__, type(r_plain).__name__])\nassert type(r_nonstrict_prev).__name__ == 'PdfFileReader'\nassert type(r_plain).__name__ == 'PdfFileReader'\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "70b12aba2fe110f4cab9b7d7f260f0b2b5c850d9898259b4b217b46c4966a4c7"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Locate the trailer, gate a zero Prev pointer, then gate strict mode to raise or warn-and-end. The bug scans for nearby tables instead so zero-Prev files always raise the wrong error or crash. The source-bound reproduction passes after the repair. Patch submitted."
+}

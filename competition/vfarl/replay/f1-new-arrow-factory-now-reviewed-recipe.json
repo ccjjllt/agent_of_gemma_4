@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "F1-new curator source-contract and explicit command review 2026-10-25",
+  "review_notes": "F1 config-propagation: entry absent tz -> middle ArrowFactory.now defaulting -> consumer Arrow construction. The bug corrupts both the default source and the dispatch target as one local-now contract. Distinct production function from the api.py forwarders. Hunk restored; requirements unchanged. Original F2P/P2P/full files unchanged; Smith patch is bug-introducing. No sampled policy or preference pair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "arrow/factory.py",
+        "start_line": 335,
+        "end_line": 347
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,importlib\nm=importlib.import_module('arrow.factory')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'arrow/factory.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom arrow.factory import ArrowFactory\nfrom dateutil import tz\na = ArrowFactory().now()\nprint('now tz', a.tzinfo)\nassert type(a.tzinfo) is tz.tzlocal\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "6d6982e6e9a082f435cb2216b23a3cb8500f8c29f05970683002a67dcd26bf35"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "arrow/factory.py",
+        "old_string": "        if tz is None:\n            tz = dateutil_tz.tzutc()  # Changed from tzlocal to tzutc\n        elif not isinstance(tz, dt_tzinfo):\n            tz = parser.TzinfoParser.parse(tz)\n\n        return self.type.utcnow()  # Changed now to utcnow\n",
+        "new_string": "        if tz is None:\n            tz = dateutil_tz.tzlocal()\n        elif not isinstance(tz, dt_tzinfo):\n            tz = parser.TzinfoParser.parse(tz)\n\n        return self.type.now(tz)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,importlib\nm=importlib.import_module('arrow.factory')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'arrow/factory.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom arrow.factory import ArrowFactory\nfrom dateutil import tz\na = ArrowFactory().now()\nprint('now tz', a.tzinfo)\nassert type(a.tzinfo) is tz.tzlocal\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "6d6982e6e9a082f435cb2216b23a3cb8500f8c29f05970683002a67dcd26bf35"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Local-now defaulting and dispatch are restored; the actual source-bound observation completed and the patch was submitted."
+}

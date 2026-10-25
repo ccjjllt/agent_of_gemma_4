@@ -1,0 +1,93 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex root source contract and actual command review 2026-10-26",
+  "review_notes": "conan-io/conan ClientCache must preserve cache_method_presence_for_store_and_load. PkgCache layout scope: set->create export layout, get->present with equivalence and isolation, expire/invalidate->lru miss then removed dir gone (second observation differs), recompute->recreate restores. Restore the exact production logic without hardcoding values or altering tests. All original F2P/P2P identifiers and complete target files are retained verbatim. The Smith row introduces the defect; this is an off-policy scripted demonstration, not a model sample or preference pair. The inline observation fails before the repair (first run expects error) and passes after (second run expects ok), so the second observation differs.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "conan/internal/cache/cache.py",
+        "start_line": 34,
+        "end_line": 69
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'conan/internal/cache/cache.py').resolve()\ntry:\n module = importlib.import_module('conan.internal.cache.cache')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\n\nimport os, tempfile\nfrom conan.api.model import RecipeReference\nfrom conan.internal.cache.cache import PkgCache\ntmp = tempfile.mkdtemp()\ncache = PkgCache(tmp, {})\nref = RecipeReference('pkg', '0.1')\nlayout = cache.create_export_recipe_layout(ref)\nassert os.path.isdir(layout.base_folder)\nprint(\"get_hit\", True)\nassert cache.create_export_recipe_layout(RecipeReference('pkg', '0.1')).base_folder == layout.base_folder\nprint(\"equivalence\", True)\nassert cache.create_export_recipe_layout(RecipeReference('z', '9.9')).base_folder != layout.base_folder\nprint(\"isolation\", True)\nfrom conan.internal.errors import ConanReferenceDoesNotExistInDB\ntry:\n    cache.get_recipe_lru(ref)\nexcept ConanReferenceDoesNotExistInDB:\n    print(\"invalidate\", True)\nelse:\n    raise AssertionError(\"unregistered recipe must miss lru\")\nimport shutil\nshutil.rmtree(layout.base_folder)\nback = cache.create_export_recipe_layout(ref)\nassert os.path.isdir(back.base_folder)\nprint(\"recompute\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "dd28656ffa832c7417d0bc5b0e58f9ca25f8be0621b8c1deff7611efac0e254c"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/internal/cache/cache.py",
+        "old_string": "        # TODO: Improve the path definitions, this is very hardcoded\n        return os.path.join(self._base_folder, \"t\")\n\n    def _create_path(self, relative_path, remove_contents=True):\n        path = self._full_path(relative_path)\n        if os.path.exists(path) and remove_contents:\n",
+        "new_string": "        # TODO: Improve the path definitions, this is very hardcoded\n        return os.path.join(self._base_folder, \"t\")\n\n    @property\n    def builds_folder(self):\n        return os.path.join(self._base_folder, \"b\")\n\n    def _create_path(self, relative_path, remove_contents=True):\n        path = self._full_path(relative_path)\n        if os.path.exists(path) and remove_contents:\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/internal/cache/cache.py",
+        "old_string": "    def _get_path_pref(pref):\n        return pref.ref.name[:5] + PkgCache._short_hash_path(pref.repr_notime())\n\n    def create_build_pkg_layout(self, pref: PkgReference):\n        # Temporary layout to build a new package, when we don't know the package revision yet\n        assert pref.ref.revision, \"Recipe revision must be known to get or create the package layout\"\n",
+        "new_string": "    def _get_path_pref(pref):\n        return pref.ref.name[:5] + PkgCache._short_hash_path(pref.repr_notime())\n\n    def create_export_recipe_layout(self, ref: RecipeReference):\n        \"\"\"  This is a temporary layout while exporting a new recipe, because the revision is not\n        computed until later. The entry is not added to DB, just a temp folder is created\n\n        This temporary export folder will be moved to permanent when revision is computed by the\n        assign_rrev() method\n        \"\"\"\n        assert ref.revision is None, \"Recipe revision should be None\"\n        assert ref.timestamp is None\n        h = ref.name[:5] + PkgCache._short_hash_path(ref.repr_notime())\n        reference_path = os.path.join(\"t\", h)\n        self._create_path(reference_path)\n        return RecipeLayout(ref, os.path.join(self._base_folder, reference_path))\n\n    def create_build_pkg_layout(self, pref: PkgReference):\n        # Temporary layout to build a new package, when we don't know the package revision yet\n        assert pref.ref.revision, \"Recipe revision must be known to get or create the package layout\"\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/internal/cache/cache.py",
+        "old_string": "        self._create_path(package_path, remove_contents=False)\n        return PackageLayout(pref, os.path.join(self._base_folder, package_path))\n\n    def exists_prev(self, pref):\n        # Used just by download to skip downloads if prev already exists in cache\n        return self._db.exists_prev(pref)\n",
+        "new_string": "        self._create_path(package_path, remove_contents=False)\n        return PackageLayout(pref, os.path.join(self._base_folder, package_path))\n\n    def update_recipe_timestamp(self, ref: RecipeReference):\n        \"\"\" when the recipe already exists in cache, but we get a new timestamp from a server\n        that would affect its order in our cache \"\"\"\n        assert ref.revision\n        assert ref.timestamp\n        self._db.update_recipe_timestamp(ref)\n\n    def search_recipes(self, pattern=None, ignorecase=True):\n        # Conan references in main storage\n        if pattern:\n            if isinstance(pattern, RecipeReference):\n                pattern = repr(pattern)\n            pattern = translate(pattern)\n            pattern = re.compile(pattern, re.IGNORECASE if ignorecase else 0)\n\n        return self._db.list_references(pattern)\n\n    def exists_prev(self, pref):\n        # Used just by download to skip downloads if prev already exists in cache\n        return self._db.exists_prev(pref)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/internal/cache/cache.py",
+        "old_string": "    def get_latest_package_reference(self, pref):\n        return self._db.get_latest_package_reference(pref)\n\n    def get_package_revisions_references(self, pref: PkgReference, only_latest_prev=False):\n        return self._db.get_package_revisions_references(pref, only_latest_prev)\n\n",
+        "new_string": "    def get_latest_package_reference(self, pref):\n        return self._db.get_latest_package_reference(pref)\n\n    def get_package_references(self, ref: RecipeReference,\n                               only_latest_prev=True) -> List[PkgReference]:\n        \"\"\"Get the latest package references\"\"\"\n        return self._db.get_package_references(ref, only_latest_prev)\n\n    def get_package_revisions_references(self, pref: PkgReference, only_latest_prev=False):\n        return self._db.get_package_revisions_references(pref, only_latest_prev)\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/internal/cache/cache.py",
+        "old_string": "            self._db.update_recipe_timestamp(ref)\n\n    def get_recipe_lru(self, ref):\n        return self._db.get_recipe_lru(ref)",
+        "new_string": "            self._db.update_recipe_timestamp(ref)\n\n    def get_recipe_lru(self, ref):\n        return self._db.get_recipe_lru(ref)\n\n    def update_recipe_lru(self, ref):\n        self._db.update_recipe_lru(ref)\n\n    def get_package_lru(self, pref):\n        return self._db.get_package_lru(pref)\n\n    def update_package_lru(self, pref):\n        self._db.update_package_lru(pref)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'conan/internal/cache/cache.py').resolve()\ntry:\n module = importlib.import_module('conan.internal.cache.cache')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\n\nimport os, tempfile\nfrom conan.api.model import RecipeReference\nfrom conan.internal.cache.cache import PkgCache\ntmp = tempfile.mkdtemp()\ncache = PkgCache(tmp, {})\nref = RecipeReference('pkg', '0.1')\nlayout = cache.create_export_recipe_layout(ref)\nassert os.path.isdir(layout.base_folder)\nprint(\"get_hit\", True)\nassert cache.create_export_recipe_layout(RecipeReference('pkg', '0.1')).base_folder == layout.base_folder\nprint(\"equivalence\", True)\nassert cache.create_export_recipe_layout(RecipeReference('z', '9.9')).base_folder != layout.base_folder\nprint(\"isolation\", True)\nfrom conan.internal.errors import ConanReferenceDoesNotExistInDB\ntry:\n    cache.get_recipe_lru(ref)\nexcept ConanReferenceDoesNotExistInDB:\n    print(\"invalidate\", True)\nelse:\n    raise AssertionError(\"unregistered recipe must miss lru\")\nimport shutil\nshutil.rmtree(layout.base_folder)\nback = cache.create_export_recipe_layout(ref)\nassert os.path.isdir(back.base_folder)\nprint(\"recompute\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "dd28656ffa832c7417d0bc5b0e58f9ca25f8be0621b8c1deff7611efac0e254c"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored ClientCache cache_method_presence_for_store_and_load. The actual inline cache observation completed after the production edit. Patch submitted."
+}

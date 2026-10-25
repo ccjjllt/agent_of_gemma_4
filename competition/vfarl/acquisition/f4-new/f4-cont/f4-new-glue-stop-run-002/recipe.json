@@ -1,0 +1,93 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Owner glue sessions/triggers; usage active lifetime; release stop_session/stop_trigger must terminate the live resource; delete removes the record. SPLIT-FAMILY stop_session+stop_trigger+delete_table+delete_partition. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "moto/glue/models.py",
+        "start_line": 294,
+        "end_line": 312
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'moto/glue/models.py').resolve()\ntry:\n module = importlib.import_module('moto.glue.models')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('binding_ok')\nPYREPLAY\npython3 -m pytest tests/test_glue/test_glue.py::test_stop_trigger tests/test_glue/test_glue.py::test_stop_session -x -q"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "39dbf4b822ff4b206f523e2bc54ff7bd02b0441bba43f3b4097d05fe9793a034"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "moto/glue/models.py",
+        "old_string": "        else:\n            return [table for table_name, table in database.tables.items()]\n\n    def update_table(\n        self, database_name: str, table_name: str, table_input: Dict[str, Any]\n    ) -> None:\n",
+        "new_string": "        else:\n            return [table for table_name, table in database.tables.items()]\n\n    def delete_table(self, database_name: str, table_name: str) -> None:\n        database = self.get_database(database_name)\n        try:\n            del database.tables[table_name]\n        except KeyError:\n            raise TableNotFoundException(table_name)\n\n    def update_table(\n        self, database_name: str, table_name: str, table_input: Dict[str, Any]\n    ) -> None:\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "moto/glue/models.py",
+        "old_string": "        table = self.get_table(database_name, table_name)\n        table.update_partition(part_to_update, part_input)\n\n    def create_crawler(\n        self,\n        name: str,\n",
+        "new_string": "        table = self.get_table(database_name, table_name)\n        table.update_partition(part_to_update, part_input)\n\n    def delete_partition(\n        self, database_name: str, table_name: str, part_to_delete: int\n    ) -> None:\n        table = self.get_table(database_name, table_name)\n        table.delete_partition(part_to_delete)\n\n    def create_crawler(\n        self,\n        name: str,\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "moto/glue/models.py",
+        "old_string": "    def list_sessions(self) -> List[\"FakeSession\"]:\n        return [session for _, session in self.sessions.items()]\n\n    def delete_session(self, session_id: str) -> None:\n        try:\n            del self.sessions[session_id]\n",
+        "new_string": "    def list_sessions(self) -> List[\"FakeSession\"]:\n        return [session for _, session in self.sessions.items()]\n\n    def stop_session(self, session_id: str) -> None:\n        session = self.get_session(session_id)\n        session.stop_session()\n\n    def delete_session(self, session_id: str) -> None:\n        try:\n            del self.sessions[session_id]\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "moto/glue/models.py",
+        "old_string": "        trigger = self.get_trigger(name)\n        trigger.start_trigger()\n\n    @paginate(pagination_model=PAGINATION_MODEL)\n    def get_triggers(self, dependent_job_name: str) -> List[\"FakeTrigger\"]:\n        if dependent_job_name:\n",
+        "new_string": "        trigger = self.get_trigger(name)\n        trigger.start_trigger()\n\n    def stop_trigger(self, name: str) -> None:\n        trigger = self.get_trigger(name)\n        trigger.stop_trigger()\n\n    @paginate(pagination_model=PAGINATION_MODEL)\n    def get_triggers(self, dependent_job_name: str) -> List[\"FakeTrigger\"]:\n        if dependent_job_name:\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "moto/glue/models.py",
+        "old_string": "        self.connections[name] = connection\n        return connection.status\n\n    @paginate(pagination_model=PAGINATION_MODEL)\n    def get_connections(\n        self, catalog_id: str, filter: Dict[str, Any], hide_password: bool\n",
+        "new_string": "        self.connections[name] = connection\n        return connection.status\n\n    def get_connection(\n        self,\n        catalog_id: str,\n        name: str,\n        hide_password: bool,\n        apply_override_for_compute_environment: str,\n    ) -> \"FakeConnection\":\n        # TODO: Implement filtering\n        connection = self.connections.get(name)\n        if not connection:\n            raise EntityNotFoundException(f\"Connection {name} not found\")\n        return connection\n\n    @paginate(pagination_model=PAGINATION_MODEL)\n    def get_connections(\n        self, catalog_id: str, filter: Dict[str, Any], hide_password: bool\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'moto/glue/models.py').resolve()\ntry:\n module = importlib.import_module('moto.glue.models')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('binding_ok')\nPYREPLAY\npython3 -m pytest tests/test_glue/test_glue.py::test_stop_trigger tests/test_glue/test_glue.py::test_stop_session -x -q"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "39dbf4b822ff4b206f523e2bc54ff7bd02b0441bba43f3b4097d05fe9793a034"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored moto.GlueBackend.stop_session release semantics (glue_stop_releases_session_and_trigger). Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

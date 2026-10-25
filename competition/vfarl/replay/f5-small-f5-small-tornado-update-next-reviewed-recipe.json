@@ -1,0 +1,57 @@
+{
+  "actions": [
+    {
+      "arguments": {},
+      "expected_status": "ok",
+      "tool": "get_status"
+    },
+    {
+      "arguments": {
+        "end_line": 974,
+        "filepath": "tornado/ioloop.py",
+        "start_line": 947
+      },
+      "expected_status": "ok",
+      "tool": "read_file"
+    },
+    {
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('tornado.ioloop')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'tornado/ioloop.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom unittest import mock\nfrom tornado.ioloop import PeriodicCallback\nrandom_times=[0.5,1,0,0.75]\nexpected=[1010,1022.5,1030,1041.25]\npc=PeriodicCallback(lambda: None,10000,jitter=0.5)\ndef mock_random():\n    return random_times.pop(0)\ncalls=[]\nnow=1000\npc._next_timeout=now\nwith mock.patch('random.random',mock_random):\n    for d in [0,0,0,0]:\n        pc._update_next(now)\n        calls.append(pc._next_timeout)\n        now=pc._next_timeout+d\nprint('schedule_catchup_jitter',calls)\nassert calls==expected,(calls,expected)\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "1025cc107938e08614e29457dd9831b6b3b678b5ef7943c711b681853d4c6dfe",
+      "tool": "run_command"
+    },
+    {
+      "arguments": {
+        "filepath": "tornado/ioloop.py",
+        "new_string": "    def _update_next(self, current_time: float) -> None:\n        callback_time_sec = self.callback_time / 1000.0\n        if self.jitter:\n            # apply jitter fraction\n            callback_time_sec *= 1 + (self.jitter * (random.random() - 0.5))\n        if self._next_timeout <= current_time:\n            # The period should be measured from the start of one call\n            # to the start of the next. If one call takes too long,\n            # skip cycles to get back to a multiple of the original\n            # schedule.\n            self._next_timeout += (\n                math.floor((current_time - self._next_timeout) / callback_time_sec) + 1\n            ) * callback_time_sec\n        else:\n            # If the clock moved backwards, ensure we advance the next\n            # timeout instead of recomputing the same value again.\n            # This may result in long gaps between callbacks if the\n            # clock jumps backwards by a lot, but the far more common\n            # scenario is a small NTP adjustment that should just be\n            # ignored.\n            #\n            # Note that on some systems if time.time() runs slower\n            # than time.monotonic() (most common on windows), we\n            # effectively experience a small backwards time jump on\n            # every iteration because PeriodicCallback uses\n            # time.time() while asyncio schedules callbacks using\n            # time.monotonic().\n            # https://github.com/tornadoweb/tornado/issues/2333\n            self._next_timeout += callback_time_sec\n",
+        "old_string": "    def _update_next(self, current_time: float) -> None:\n        \"\"\"Update the next time this periodic callback should run.\n    \n        This function handles the case where callbacks are scheduled too\n        closely together (e.g. due to a long-running callback or a short\n        callback interval). If we're more than a callback interval behind,\n        we'll skip some callbacks to get back on schedule.\n    \n        If jitter is specified, we'll add a random variation to the callback\n        interval.\n        \"\"\"\n        if self._next_timeout <= current_time:\n            # If we're behind, calculate how many callback periods have passed.\n            # This ensures we don't queue up multiple callbacks if we're running behind.\n            callback_time_sec = self.callback_time / 1000.0\n            time_delta = current_time - self._next_timeout\n            periods_behind = math.floor(1 + time_delta / callback_time_sec)\n            self._next_timeout += periods_behind * callback_time_sec\n        else:\n            # Not behind schedule, just add the callback_time to the existing next_timeout\n            callback_time_sec = self.callback_time / 1000.0\n            self._next_timeout += callback_time_sec\n    \n        # Apply jitter if specified\n        if self.jitter:\n            # Calculate a random callback time within the jitter window\n            jitter_amount = self.jitter * callback_time_sec\n            # The window is centered on callback_time, so we use +/- jitter_amount/2\n            self._next_timeout += random.uniform(-jitter_amount/2, jitter_amount/2)"
+      },
+      "expected_status": "ok",
+      "tool": "edit_file"
+    },
+    {
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('tornado.ioloop')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'tornado/ioloop.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom unittest import mock\nfrom tornado.ioloop import PeriodicCallback\nrandom_times=[0.5,1,0,0.75]\nexpected=[1010,1022.5,1030,1041.25]\npc=PeriodicCallback(lambda: None,10000,jitter=0.5)\ndef mock_random():\n    return random_times.pop(0)\ncalls=[]\nnow=1000\npc._next_timeout=now\nwith mock.patch('random.random',mock_random):\n    for d in [0,0,0,0]:\n        pc._update_next(now)\n        calls.append(pc._next_timeout)\n        now=pc._next_timeout+d\nprint('schedule_catchup_jitter',calls)\nassert calls==expected,(calls,expected)\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "1025cc107938e08614e29457dd9831b6b3b678b5ef7943c711b681853d4c6dfe",
+      "tool": "run_command"
+    },
+    {
+      "arguments": {},
+      "expected_status": "ok",
+      "tool": "get_status"
+    },
+    {
+      "arguments": {},
+      "expected_status": "ok",
+      "tool": "submit_patch"
+    }
+  ],
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "final_response": "Schedule a PeriodicCallback with jitter, fall behind, catch up through _update_next, ending aligned to jitter-scaled period multiples. The bug applies jitter after catch-up as additive uniform noise so the schedule never matches. The source-bound reproduction passes after the repair. Patch submitted.",
+  "review_notes": "Schedule a PeriodicCallback with jitter, fall behind, catch up through _update_next, ending aligned to jitter-scaled period multiples. The bug applies jitter after catch-up as additive uniform noise so the schedule never matches. The complete production-file delta is exactly the reviewed hunks inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25"
+}

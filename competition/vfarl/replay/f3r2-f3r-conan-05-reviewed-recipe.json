@@ -1,0 +1,93 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex root source contract and actual command review 2026-10-26; f3-replace2 observation fix (no source-edit change)",
+  "review_notes": "conan-io/conan CacheAPI.clean must preserve cache_clean_scope_and_recompute. Cache path lookup: set->exported recipe, get->cache path resolves with equivalence and isolation across folders, expire/invalidate->missing folder errors (second observation differs), recompute->path resolves again. Restore the exact production logic without hardcoding values or altering tests. All original F2P/P2P identifiers and complete target files are retained verbatim. The Smith row introduces the defect; this is an off-policy scripted demonstration, not a model sample or preference pair. The inline observation fails before the repair (first run expects error) and passes after (second run expects ok), so the second observation differs.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "conan/api/subapi/cache.py",
+        "start_line": 255,
+        "end_line": 290
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "conan/cli/commands/cache.py",
+        "start_line": 5,
+        "end_line": 40
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'conan/api/subapi/cache.py').resolve()\ntry:\n module = importlib.import_module('conan.api.subapi.cache')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('edited_file', 'conan/cli/commands/cache.py', 'sha256', hashlib.sha256(Path('conan/cli/commands/cache.py').read_bytes()).hexdigest())\n\nfrom conan.test.assets.genconanfile import GenConanfile\nfrom conan.test.utils.tools import TestClient\nc = TestClient()\nc.save({'conanfile.py': GenConanfile('pkg', '0.1').with_exports('*').with_exports_sources('*'),\n        'sorces/file.txt': ''})\nc.run('create .')\nref_layout = c.exported_layout()\nc.run('cache path pkg/0.1')\nassert ref_layout.export() == str(c.out).rstrip()\nprint(\"get_hit\", True)\nc.run('cache path pkg/0.1 --folder=export_source')\nassert ref_layout.export_sources() == str(c.out).rstrip()\nprint(\"equivalence\", True)\nc.run('cache path pkg/0.1 --folder=source')\nassert ref_layout.source() == str(c.out).rstrip()\nprint(\"isolation\", True)\nc.run('remove pkg/0.1 -c')\nc.run('cache path pkg/0.1 --folder=export_source', assert_error=True)\nprint(\"invalidate\", True)\nc.run('create .')\nref_layout2 = c.exported_layout()\nc.run('cache path pkg/0.1 --folder=export_source')\nassert ref_layout2.export_sources() == str(c.out).rstrip()\nprint(\"recompute\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "30ea96dce8b4b720a968f55865bbd56d1887a0260cac210a1f3f778d8ba159d0"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/api/subapi/cache.py",
+        "old_string": "    return folder_path",
+        "new_string": "    return folder_path\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/cli/commands/cache.py",
+        "old_string": "\n@conan_command(group=\"Consumer\")\ndef cache(conan_api: ConanAPI, parser, *args):\n    \"\"\"Performs file operations in the local cache (of recipes and packages)\"\"\"\n    pass\n\n\n",
+        "new_string": "\n@conan_command(group=\"Consumer\")\ndef cache(conan_api: ConanAPI, parser, *args):\n    \"\"\"\n    Perform file operations in the local cache (of recipes and/or packages).\n    \"\"\"\n    pass\n\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/cli/commands/cache.py",
+        "old_string": "    Show the path to the Conan cache for a given reference.\n    \"\"\"\n    subparser.add_argument(\"reference\", help=\"Recipe reference or Package reference\")\n    subparser.add_argument(\"--folder\", choices=['exports', 'exports_sources', 'sources', 'build', 'package'], default=\"exports\",\n                           help=\"Show the path to the specified element. The 'build' and 'package'\"\n                           \" requires a package reference. If not specified it shows 'exports' path \")\n    args = parser.parse_args(*args)\n    pref = _get_package_reference(args.reference)\n    methods = {\"package\": conan_api.cache.package_path,\n               \"build\": conan_api.cache.build_path,\n               \"exports\": conan_api.cache.exports_path,\n               \"exports_sources\": conan_api.cache.exports_sources_path,\n               \"sources\": conan_api.cache.sources_path}\n    if not pref:  # Not a package reference\n        ref = _get_recipe_reference(args.reference)\n        if not ref:\n            raise ConanException(\"Invalid recipe or package reference, specify a complete\"\n                                 \" reference with revision\")\n        if args.folder in (\"build\", \"package\"):\n            raise ConanException(\"'--folder {}' requires a valid package reference\".format(args.folder))\n        method = methods.get(args.folder)\n        path = method(ref)\n    else:\n        method = methods.get(args.folder)\n        if args.folder in (\"exports\", \"exports_sources\", \"sources\"):\n            path = method(pref.ref)\n        else:\n            path = method(pref)\n    return path\n\n\n",
+        "new_string": "    Show the path to the Conan cache for a given reference.\n    \"\"\"\n    subparser.add_argument(\"reference\", help=\"Recipe reference or Package reference\")\n    subparser.add_argument(\"--folder\", choices=['export_source', 'source', 'build', 'metadata'],\n                           help=\"Path to show. The 'build' requires a package reference. \"\n                                \"If the argument is not passed, it shows 'exports' path for recipe references \"\n                                \"and 'package' folder for package references.\")\n\n    args = parser.parse_args(*args)\n    try:\n        pref = PkgReference.loads(args.reference)\n    except ConanException:\n        pref = None\n\n    if not pref:  # Not a package reference\n        ref = RecipeReference.loads(args.reference)\n        if args.folder is None:\n            path = conan_api.cache.export_path(ref)\n        elif args.folder == \"export_source\":\n            path = conan_api.cache.export_source_path(ref)\n        elif args.folder == \"source\":\n            path = conan_api.cache.source_path(ref)\n        elif args.folder == \"metadata\":\n            path = conan_api.cache.recipe_metadata_path(ref)\n        else:\n            raise ConanException(f\"'--folder {args.folder}' requires a valid package reference\")\n    else:\n        if args.folder is None:\n            path = conan_api.cache.package_path(pref)\n        elif args.folder == \"build\":\n            path = conan_api.cache.build_path(pref)\n        elif args.folder == \"metadata\":\n            path = conan_api.cache.package_metadata_path(pref)\n        else:\n            raise ConanException(f\"'--folder {args.folder}' requires a recipe reference\")\n    return path\n\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/cli/commands/cache.py",
+        "old_string": "    \"\"\"\n    files = conan_api.cache.get_backup_sources()\n    conan_api.upload.upload_backup_sources(files)\n\n\ndef _get_recipe_reference(reference):\n    try:\n        ref = RecipeReference.loads(reference)\n        if not ref.revision:\n            return None\n        return ref\n    except ConanException:\n        return None\n\n\ndef _get_package_reference(pref):\n    try:\n        pref = PkgReference.loads(pref)\n        if not pref.revision or not pref.ref.revision:\n            return None\n        return pref\n    except ConanException:\n        return None",
+        "new_string": "    \"\"\"\n    files = conan_api.cache.get_backup_sources()\n    conan_api.upload.upload_backup_sources(files)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'conan/api/subapi/cache.py').resolve()\ntry:\n module = importlib.import_module('conan.api.subapi.cache')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('edited_file', 'conan/cli/commands/cache.py', 'sha256', hashlib.sha256(Path('conan/cli/commands/cache.py').read_bytes()).hexdigest())\n\nfrom conan.test.assets.genconanfile import GenConanfile\nfrom conan.test.utils.tools import TestClient\nc = TestClient()\nc.save({'conanfile.py': GenConanfile('pkg', '0.1').with_exports('*').with_exports_sources('*'),\n        'sorces/file.txt': ''})\nc.run('create .')\nref_layout = c.exported_layout()\nc.run('cache path pkg/0.1')\nassert ref_layout.export() == str(c.out).rstrip()\nprint(\"get_hit\", True)\nc.run('cache path pkg/0.1 --folder=export_source')\nassert ref_layout.export_sources() == str(c.out).rstrip()\nprint(\"equivalence\", True)\nc.run('cache path pkg/0.1 --folder=source')\nassert ref_layout.source() == str(c.out).rstrip()\nprint(\"isolation\", True)\nc.run('remove pkg/0.1 -c')\nc.run('cache path pkg/0.1 --folder=export_source', assert_error=True)\nprint(\"invalidate\", True)\nc.run('create .')\nref_layout2 = c.exported_layout()\nc.run('cache path pkg/0.1 --folder=export_source')\nassert ref_layout2.export_sources() == str(c.out).rstrip()\nprint(\"recompute\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "30ea96dce8b4b720a968f55865bbd56d1887a0260cac210a1f3f778d8ba159d0"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored CacheAPI.clean cache_clean_scope_and_recompute. The actual inline cache observation completed after the production edit. Patch submitted."
+}

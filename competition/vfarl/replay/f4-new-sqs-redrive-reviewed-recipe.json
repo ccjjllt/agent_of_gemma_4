@@ -1,0 +1,65 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Owner pending messages; usage in-flight visibility window; release on visibility timeout must drop from pending, and past maxReceive must move to DLQ. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "moto/sqs/models.py",
+        "start_line": 972,
+        "end_line": 1035
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'moto/sqs/models.py').resolve()\ntry:\n module = importlib.import_module('moto.sqs.models')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('binding_ok')\nimport json, time\nimport boto3\nfrom moto import mock_aws\n@mock_aws\ndef main():\n    c = boto3.client('sqs', region_name='us-east-1')\n    dlq = c.create_queue(QueueName='dlq.fifo', Attributes={'FifoQueue': 'true'})['QueueUrl']\n    arn = c.get_queue_attributes(QueueUrl=dlq, AttributeNames=['QueueArn'])['Attributes']['QueueArn']\n    q = c.create_queue(QueueName='q.fifo', Attributes={'FifoQueue': 'true', 'VisibilityTimeout': '1', 'RedrivePolicy': json.dumps({'deadLetterTargetArn': arn, 'maxReceiveCount': '2'})})['QueueUrl']\n    c.send_message(QueueUrl=q, MessageBody='hi', MessageGroupId='g1', MessageDeduplicationId='d1')\n    m1 = c.receive_message(QueueUrl=q).get('Messages', [])\n    assert len(m1) == 1, 'first delivery'\n    time.sleep(1.5)\n    m2 = c.receive_message(QueueUrl=q).get('Messages', [])\n    assert len(m2) == 1, 'timed-out message must be released from pending'\n    time.sleep(1.5)\n    m3 = c.receive_message(QueueUrl=q).get('Messages', [])\n    assert len(m3) == 0, 'exceeded message must move to DLQ'\n    d = c.receive_message(QueueUrl=dlq).get('Messages', [])\n    assert len(d) == 1 and d[0]['Body'] == 'hi', 'dlq must hold the message'\n    print('sqs_redrive_ok')\nmain()\n"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "8f444ed3a13101eddd864f3e054a7a6145a522e0d1e04b82ee06f49794ef3110"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "moto/sqs/models.py",
+        "old_string": "                if not message.visible:\n                    continue\n\n                queue.pending_messages.add(message)\n                message.mark_received(visibility_timeout=visibility_timeout)\n",
+        "new_string": "                if not message.visible:\n                    continue\n\n                if message in queue.pending_messages:\n                    # The message is pending but is visible again, so the\n                    # consumer must have timed out.\n                    queue.pending_messages.remove(message)\n                    currently_pending_groups = deepcopy(queue.pending_message_groups)\n\n                if message.group_id and queue.fifo_queue:\n                    if message.group_id in currently_pending_groups:\n                        # A previous call is still processing messages in this group, so we cannot deliver this one.\n                        continue\n\n                if (\n                    queue.dead_letter_queue is not None\n                    and queue.redrive_policy\n                    and message.approximate_receive_count\n                    >= queue.redrive_policy[\"maxReceiveCount\"]\n                ):\n                    messages_to_dlq.append(message)\n                    continue\n\n                queue.pending_messages.add(message)\n                message.mark_received(visibility_timeout=visibility_timeout)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "moto/sqs/models.py",
+        "old_string": "        return result\n    def delete_message",
+        "new_string": "        return result\n\n    def delete_message"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'moto/sqs/models.py').resolve()\ntry:\n module = importlib.import_module('moto.sqs.models')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('binding_ok')\nimport json, time\nimport boto3\nfrom moto import mock_aws\n@mock_aws\ndef main():\n    c = boto3.client('sqs', region_name='us-east-1')\n    dlq = c.create_queue(QueueName='dlq.fifo', Attributes={'FifoQueue': 'true'})['QueueUrl']\n    arn = c.get_queue_attributes(QueueUrl=dlq, AttributeNames=['QueueArn'])['Attributes']['QueueArn']\n    q = c.create_queue(QueueName='q.fifo', Attributes={'FifoQueue': 'true', 'VisibilityTimeout': '1', 'RedrivePolicy': json.dumps({'deadLetterTargetArn': arn, 'maxReceiveCount': '2'})})['QueueUrl']\n    c.send_message(QueueUrl=q, MessageBody='hi', MessageGroupId='g1', MessageDeduplicationId='d1')\n    m1 = c.receive_message(QueueUrl=q).get('Messages', [])\n    assert len(m1) == 1, 'first delivery'\n    time.sleep(1.5)\n    m2 = c.receive_message(QueueUrl=q).get('Messages', [])\n    assert len(m2) == 1, 'timed-out message must be released from pending'\n    time.sleep(1.5)\n    m3 = c.receive_message(QueueUrl=q).get('Messages', [])\n    assert len(m3) == 0, 'exceeded message must move to DLQ'\n    d = c.receive_message(QueueUrl=dlq).get('Messages', [])\n    assert len(d) == 1 and d[0]['Body'] == 'hi', 'dlq must hold the message'\n    print('sqs_redrive_ok')\nmain()\n"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "8f444ed3a13101eddd864f3e054a7a6145a522e0d1e04b82ee06f49794ef3110"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ]
+}

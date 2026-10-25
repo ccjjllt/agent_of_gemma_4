@@ -1,0 +1,75 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "subagent f2-push: causal source read (clone passes scheme/host into the constructor, but for absolute urls the constructor only patches the scheme/host cache and keeps the original url object; rebuilding url via with_scheme/with_host isolates the clone url), pinned tests, command review 2026-10-25",
+  "review_notes": "A cloned request must own an independent url: the clone is not the original and its url is rebuilt from the new scheme/host while the original url stays untouched. Copy-time identity (is not the original url) plus bidirectional isolation are asserted source-bound before and after the repair. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Off-policy scripted demonstration, not a Gemma sample. Dependency note: 3.11-dev tree runs on the parent .venv with blockbuster/xdist task plugins (R2 precedent).",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "aiohttp/web_request.py",
+        "start_line": 168,
+        "end_line": 210
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nmodule = importlib.import_module('aiohttp.web_request')\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert str(actual).endswith('aiohttp/web_request.py'), actual\nfrom aiohttp.test_utils import make_mocked_request\nreq = make_mocked_request('GET', 'https://example.com/path/to?a=1')\nreq2 = req.clone(scheme='http')\nprint('clone_identity', req2 is req, req2.url is req.url)\nassert req2 is not req, 'clone aliases the original'\nassert req2.url is not req.url, 'clone shares the original url'\nassert req2.url.scheme == 'http', req2.url\nassert req.url.scheme == 'https', req.url\nprint('f2_clone_isolation', True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "437a305def77177e18148b75957a1dc7aa30f7638d729d968582afcc9b00b463"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "aiohttp/web_request.py",
+        "old_string": "        self._cache: Dict[str, Any] = {}\n        url = message.url\n        if url.is_absolute():\n            # absolute URL is given,\n            # override auto-calculating url, host, and scheme\n            # all other properties should be good\n",
+        "new_string": "        self._cache: Dict[str, Any] = {}\n        url = message.url\n        if url.is_absolute():\n            if scheme is not None:\n                url = url.with_scheme(scheme)\n            if host is not None:\n                url = url.with_host(host)\n            # absolute URL is given,\n            # override auto-calculating url, host, and scheme\n            # all other properties should be good\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "aiohttp/web_request.py",
+        "old_string": "            self._rel_url = url.relative()\n        else:\n            self._rel_url = message.url\n        self._post: Optional[MultiDictProxy[Union[str, bytes, FileField]]] = None\n        self._read_bytes: Optional[bytes] = None\n\n",
+        "new_string": "            self._rel_url = url.relative()\n        else:\n            self._rel_url = message.url\n            if scheme is not None:\n                self._cache[\"scheme\"] = scheme\n            if host is not None:\n                self._cache[\"host\"] = host\n        self._post: Optional[MultiDictProxy[Union[str, bytes, FileField]]] = None\n        self._read_bytes: Optional[bytes] = None\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "aiohttp/web_request.py",
+        "old_string": "        self._transport_sslcontext = transport.get_extra_info(\"sslcontext\")\n        self._transport_peername = transport.get_extra_info(\"peername\")\n\n        if scheme is not None:\n            self._cache[\"scheme\"] = scheme\n        if host is not None:\n            self._cache[\"host\"] = host\n        if remote is not None:\n            self._cache[\"remote\"] = remote\n\n",
+        "new_string": "        self._transport_sslcontext = transport.get_extra_info(\"sslcontext\")\n        self._transport_peername = transport.get_extra_info(\"peername\")\n\n        if remote is not None:\n            self._cache[\"remote\"] = remote\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nmodule = importlib.import_module('aiohttp.web_request')\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert str(actual).endswith('aiohttp/web_request.py'), actual\nfrom aiohttp.test_utils import make_mocked_request\nreq = make_mocked_request('GET', 'https://example.com/path/to?a=1')\nreq2 = req.clone(scheme='http')\nprint('clone_identity', req2 is req, req2.url is req.url)\nassert req2 is not req, 'clone aliases the original'\nassert req2.url is not req.url, 'clone shares the original url'\nassert req2.url.scheme == 'http', req2.url\nassert req.url.scheme == 'https', req.url\nprint('f2_clone_isolation', True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "437a305def77177e18148b75957a1dc7aa30f7638d729d968582afcc9b00b463"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Rebuild the clone url from the new scheme/host so clones no longer share the original url. Source-bound inline observations now pass. Patch submitted."
+}

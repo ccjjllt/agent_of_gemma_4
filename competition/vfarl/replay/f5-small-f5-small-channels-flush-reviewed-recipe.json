@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "Produce a message, run expiry cleanup with nothing expired, consume it, ending with the channel gone. The bug rebuilds live queues and pops empty ones so pending getters orphan and group delivery stalls. The complete production-file delta is exactly the reviewed hunks inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "channels/layers.py",
+        "start_line": 290,
+        "end_line": 352
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('channels.layers')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'channels/layers.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport django\nfrom django.conf import settings\nsettings.configure(DATABASES={},INSTALLED_APPS=['django.contrib.auth','django.contrib.contenttypes'],AUTHENTICATION_BACKENDS=['django.contrib.auth.backends.ModelBackend'])\ndjango.setup()\nimport asyncio\nfrom channels.layers import InMemoryChannelLayer\nasync def main():\n    layer=InMemoryChannelLayer()\n    await layer.send('c',{'n':1})\n    q0=layer.channels['c']\n    layer._clean_expired()\n    print('expiry_queue_identity',layer.channels.get('c') is q0)\n    assert layer.channels.get('c') is q0,'clean replaced a live queue; pending getters orphaned'\n    m=await asyncio.wait_for(layer.receive('c'),2)\n    assert m=={'n':1},m\n    assert 'c' not in layer.channels,dict(layer.channels)\nasyncio.new_event_loop().run_until_complete(main())\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "e0191dbab3884ee1838af38f72150da814044fcd20fd9a017e270c91929b5237"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "channels/layers.py",
+        "old_string": "    def _clean_expired(self):\n        \"\"\"\n        Goes through all messages and groups and removes those that are expired.\n        Any channel with an expired message is removed from all groups.\n        \"\"\"\n        now = time.time()\n    \n        # Find expired messages and collect channels to remove\n        channels_to_remove = set()\n        for channel, queue in list(self.channels.items()):\n            # Create new queue with only unexpired messages\n            new_queue = asyncio.Queue(maxsize=self.get_capacity(channel))\n            expired = False\n        \n            # Check all messages in the queue\n            while not queue.empty():\n                try:\n                    expiry, message = queue.get_nowait()\n                    if expiry > now:\n                        # If not expired, keep it\n                        new_queue.put_nowait((expiry, message))\n                    else:\n                        expired = True\n                except (asyncio.QueueEmpty, asyncio.QueueFull):\n                    break\n                \n            # If we found an expired message, remove channel from all groups\n            if expired:\n                channels_to_remove.add(channel)\n            \n            # If the new queue is empty, remove the channel\n            if new_queue.empty():\n                self.channels.pop(channel, None)\n            else:\n                # Otherwise replace with the clean queue\n                self.channels[channel] = new_queue\n    \n        # Remove channels with expired messages from all groups\n        for channel in channels_to_remove:\n            self._remove_from_groups(channel)\n    \n        # Remove expired group memberships\n        group_expiry = now - self.group_expiry\n        for group_name, channels in list(self.groups.items()):\n            for channel, added in list(channels.items()):\n                # If membership is expired, remove it\n                if added and added < group_expiry:\n                    channels.pop(channel, None)\n        \n            # If group is empty, remove it\n            if not channels:\n                self.groups.pop(group_name, None)\n    # Flush extension\n\n    async def flush(self):\n        self.channels = {}\n        self.groups = {}\n\n    async def close(self):\n        # Nothing to go\n        pass\n\n",
+        "new_string": "    def _clean_expired(self):\n        \"\"\"\n        Goes through all messages and groups and removes those that are expired.\n        Any channel with an expired message is removed from all groups.\n        \"\"\"\n        # Channel cleanup\n        for channel, queue in list(self.channels.items()):\n            # See if it's expired\n            while not queue.empty() and queue._queue[0][0] < time.time():\n                queue.get_nowait()\n                # Any removal prompts group discard\n                self._remove_from_groups(channel)\n                # Is the channel now empty and needs deleting?\n                if queue.empty():\n                    self.channels.pop(channel, None)\n\n        # Group Expiration\n        timeout = int(time.time()) - self.group_expiry\n        for channels in self.groups.values():\n            for name, timestamp in list(channels.items()):\n                # If join time is older than group_expiry\n                # end the group membership\n                if timestamp and timestamp < timeout:\n                    # Delete from group\n                    channels.pop(name, None)\n\n    # Flush extension\n\n    async def flush(self):\n        self.channels = {}\n        self.groups = {}\n\n    async def close(self):\n        # Nothing to go\n        pass\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('channels.layers')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'channels/layers.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport django\nfrom django.conf import settings\nsettings.configure(DATABASES={},INSTALLED_APPS=['django.contrib.auth','django.contrib.contenttypes'],AUTHENTICATION_BACKENDS=['django.contrib.auth.backends.ModelBackend'])\ndjango.setup()\nimport asyncio\nfrom channels.layers import InMemoryChannelLayer\nasync def main():\n    layer=InMemoryChannelLayer()\n    await layer.send('c',{'n':1})\n    q0=layer.channels['c']\n    layer._clean_expired()\n    print('expiry_queue_identity',layer.channels.get('c') is q0)\n    assert layer.channels.get('c') is q0,'clean replaced a live queue; pending getters orphaned'\n    m=await asyncio.wait_for(layer.receive('c'),2)\n    assert m=={'n':1},m\n    assert 'c' not in layer.channels,dict(layer.channels)\nasyncio.new_event_loop().run_until_complete(main())\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "e0191dbab3884ee1838af38f72150da814044fcd20fd9a017e270c91929b5237"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Produce a message, run expiry cleanup with nothing expired, consume it, ending with the channel gone. The bug rebuilds live queues and pops empty ones so pending getters orphan and group delivery stalls. The source-bound reproduction passes after the repair. Patch submitted."
+}

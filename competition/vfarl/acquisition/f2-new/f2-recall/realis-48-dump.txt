@@ -1,0 +1,1351 @@
+### gym facebookresearch__hydra-2085 total=151 F2P=7 P2P=144 repo=facebookresearch/hydra
+PROB: [Feature Request] Allow multirun default through config # 🚀 Feature Request  ## Motivation / Pitch  I mostly use hydra to sweep over configs, requiring `-m` / `--multirun`. It would be great if it was possibly to default to multirun through Hyrda's configuration.   ## Additional context  Following discussion with @omry on Zulip.
+PATCH_CHG(30):
+  +        validate_sweep_overrides: bool = True,
+  +                validate_sweep_overrides=validate_sweep_overrides,
+  +        validate_sweep_overrides: bool = True,
+  -        self.validate_sweep_overrides_legal(
+  -            overrides=parsed_overrides, run_mode=run_mode, from_shell=from_shell
+  -        )
+  +        if validate_sweep_overrides:
+  +            self.validate_sweep_overrides_legal(
+  +                overrides=parsed_overrides, run_mode=run_mode, from_shell=from_shell
+  +            )
+  +    def get_mode(
+  +        self,
+  +        config_name: Optional[str],
+  +        overrides: List[str],
+  +    ) -> Any:
+  +        try:
+  +            cfg = self.compose_config(
+  +                config_name=config_name,
+  +                overrides=overrides,
+  +                with_log_configuration=False,
+F2P: ['tests/test_hydra.py::test_hydra_mode[sweep_from_config_with_custom_sweeper]', 'tests/test_hydra.py::test_hydra_mode[multirun_commandline_with_run_config_with_warning]', 'tests/test_hydra.py::test_hydra_mode[single_run_config]', 'tests/test_hydra.py::test_hydra_mode[run_with_no_config]', 'tests/test_hydra.py::test_hydra_mode[multi_run_commandline]', 'tests/test_hydra.py::test_hydra_mode[sweep_from_config]', 'tests/test_hydra.py::test_hydra_mode[multi_run_config]']
+REAL_IS(1):
+  +        assert warning_msg is not None
+
+
+### v2 stfc__psyclone-2380 total=152 F2P=1 P2P=151 repo=stfc/PSyclone
+PROB: Add `get_siblings` function/method It'd be useful to have a way to get all 'siblings' of a node, i.e., all of its parents' children.
+PATCH_CHG(6):
+  -	17 PR #2378 for #2369. Adds sibling property to node to help tree
+  -	traversal.
+  +	17) PR #2380 and #2378 for #2369. Add PSyIR node.sibilings property.
+  -        return self.parent.children
+  +        parent = self.parent
+  +        return [self] if parent is None else parent.children
+F2P: ['src/psyclone/tests/psyir/nodes/node_test.py::test_siblings']
+REAL_IS(1):
+  +    assert root_siblings[0] is psyir
+
+
+### v2 aio-libs__aiohttp-9671 total=152 F2P=20 P2P=132 repo=aio-libs/aiohttp
+PROB: deadlock with TCPConnector limit after timeout ### Describe the bug  When using a limit in TCPConnector, timeouts can lead to a condition where new requests are not actually sent, resulting in "sticky" timeouts.  After debugging, I believe the problem occurs in this line:https://github.com/aio-libs/aiohttp/blob/v3.10.10/aiohttp/connector.py#L541  When a `ValueError` is raised there, that's the result of: - Awaiting the future failed, potentially due to a `CancelledError`: a timeout - `_release_waiter` method was called, and it tried to wake up a coroutine waiting for this connection. But since this coroutine also suffered the timeout, it won't proceed. Since it doesn't proceed, it won'
+PATCH_CHG(30):
+  +9671.bugfix.rst
+  +Fixed a deadlock that could occur while attempting to get a new connection slot after a timeout -- by :user:`bdraco`.
+  +
+  +The connector was not cancellation-safe.
+  -from collections import defaultdict, deque
+  +from collections import OrderedDict, defaultdict
+  -        self._waiters: DefaultDict[ConnectionKey, deque[asyncio.Future[None]]] = (
+  -            defaultdict(deque)
+  -        )
+  +        # The FIFO is implemented with an OrderedDict with None keys because
+  +        # python does not have an ordered set.
+  +        self._waiters: DefaultDict[
+  +            ConnectionKey, OrderedDict[asyncio.Future[None], None]
+  +        ] = defaultdict(OrderedDict)
+  -        now = self._loop.time()
+  +        now = monotonic()
+  -    def _drop_acquired_per_host(
+  -        self, key: "ConnectionKey", val: ResponseHandler
+  -    ) -> None:
+  -        if conns := self._acquired_per_host.get(key):
+F2P: ['tests/test_connector.py::test_get[pyloop]', 'tests/test_connector.py::test_get_unconnected_proto[pyloop]', 'tests/test_connector.py::test_get_unconnected_proto_ssl[pyloop]', 'tests/test_connector.py::test_get_expired[pyloop]', 'tests/test_connector.py::test_get_expired_ssl[pyloop]', 'tests/test_connector.py::test_release_waiter_no_limit[pyloop]', 'tests/test_connector.py::test_release_waiter_first_available[pyloop]', 'tests/test_connector.py::test_release_waiter_release_first[pyloop]']
+REAL_IS(5):
+  +    assert connection is not None
+  +    assert connection is not None
+  +    assert connection is not None
+  assert conn._cleanup_handle is not None
+  assert conn._cleanup_handle is not None
+
+
+### v2 hypothesisworks__hypothesis-3412 total=152 F2P=152 P2P=0 repo=HypothesisWorks/hypothesis
+PROB: Warn when an `@st.composite` strategy doesn't use the `draw()` function I've seen a few cases where users have missed the point of `@st.composite`, and ended up using it as a substitute for `st.just()`:  ```python @st.composite def foo(_):     return "bar" ```  I propose to fix this by using `inspect.getsource()`+`ast.parse()`+a custom AST visitor, which will raise an explanatory error (initially a deprecation warning) if the `draw` argument is not referenced in the function body.  Note that the name of said argument is determined by the AST of the function signature, and the `ctx` of the node must be `Load()`.
+PATCH_CHG(30):
+  -# Cancel in-progress PR builds if another commit is pushed.
+  -# On non-PR builds, fall back to the globally-unique run_id and don't cancel.
+  -concurrency:
+  -  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  -  cancel-in-progress: true
+  -
+  +* `Grzegorz Zieba <https://github.com/gzaxel>`_ (g.zieba@erax.pl)
+  +* `Rodrigo Girão Serrão <https://github.com/rodrigogiraoserrao>`_ (rodrigo@mathspp.com)
+  +* `Thomas Ball <https://www.github.com/bomtall>`_ (bomtall1@hotmail.com)
+  -* `Tim Martin <https://www.github.com/timmartin>`_ (tim@asymptotic.co.uk)
+  +* `Tim Martin <https://www.github.com/timmartin>`_ (tim@asymptotic.co.uk)
+  +RELEASE_TYPE: minor
+  +
+  +Issue a deprecation warning if a function decorated with
+  +:func:`@composite <hypothesis.strategies.composite>`
+  +does not draw any values (:issue:`3384`).
+  +
+  +Thanks to Grzegorz Zieba, Rodrigo Girão, and Thomas Ball for
+  +working on this at the EuroPython sprints!
+  +import textwrap
+F2P: ['hypothesis-python/tests/cover/test_annotations.py::test_has_an_annotation', 'hypothesis-python/tests/cover/test_annotations.py::test_copying_preserves_signature[has_annotation]', 'hypothesis-python/tests/cover/test_annotations.py::test_copying_preserves_signature[<lambda>0]', 'hypothesis-python/tests/cover/test_annotations.py::test_copying_preserves_signature[<lambda>1]', 'hypothesis-python/tests/cover/test_annotations.py::test_kwonly_lambda_formatting[<lambda>-lambda', 'hypothesis-python/tests/cover/test_annotations.py::test_given_notices_missing_kwonly_args', 'hypothesis-python/tests/cover/test_annotations.py::test_converter_handles_kwonly_args', 'hypothesis-python/tests/cover/test_annotations.py::test_converter_notices_missing_kwonly_args']
+REAL_IS(2):
+  assert sig_comp.parameters["nothing"].annotation is not P.empty
+  assert all(p.annotation is not P.empty for p in sig_given.parameters.values())
+
+
+### v2 aio-libs__aiohttp-10672 total=153 F2P=1 P2P=152 repo=aio-libs/aiohttp
+PROB: Responses headers are mutated by the aiohttp web.Response ### Describe the bug  I am actually not sure if it is a bug a not, but I am observed different behaviour when using global response headers starting from aiohttp 3.11.8.  After first call with `aiohttp/3.11.8+` aiohttp will mutate headers and store all information inside headers  ``` web.Response(headers=default_headers) ```  ``` <CIMultiDict('Content-Type': 'application/json; charset=utf-8', 'Content-Length': '1091', 'Date': 'Tue, 01 Apr 2025 13:00:28 GMT', 'Server': 'Python/3.13 aiohttp/3.11.15')> ``` And this will fail on the second response since content length was changed and now passed as incorrect value.  Contrary aiohttp 3.11.
+PATCH_CHG(5):
+  +Fixed :class:`multidict.CIMultiDict` being mutated when passed to :class:`aiohttp.web.Response` -- by :user:`bdraco`.
+  -        elif not isinstance(headers, CIMultiDict):
+  -            real_headers = CIMultiDict(headers)
+  -            real_headers = headers  # = cast('CIMultiDict[str]', headers)
+  +            real_headers = CIMultiDict(headers)
+F2P: ['tests/test_web_response.py::test_passing_cimultidict_to_web_response_not_mutated[CIMultiDict]']
+REAL_IS(1):
+  assert match is not None
+
+
+### v2 sabnzbd__sabnzbd-2679 total=153 F2P=4 P2P=149 repo=sabnzbd/sabnzbd
+PROB: Downloads non-force priority articles while paused ## Steps - Pause queue - Add a couple of items - Set first item to force priority  ## Outcome Some of the normal/paused items download.  ## Observations It depends on how many connections there are but with 50 at 1 Gbps I downloaded 1GB of a paused item before it idled again.  ## Why I think it'll be hitting [this section](https://github.com/sabnzbd/sabnzbd/blob/667ffec667aaf85356220f15863a02d1240fd5a9/sabnzbd/downloader.py#L614-L645) and there is an active job until the force one finishes post-processing, so it'll execute line 645.  So it can get a normal non-force article to request here:  https://github.com/sabnzbd/sabnzbd
+PATCH_CHG(13):
+  -
+  -- If the queue is paused but one or more jobs have the Force priority, SABnzbd might still
+  -  download some data from other jobs in the queue if active servers have unused connections.
+  -setuptools==68.2.0
+  +setuptools==68.2.2
+  -        if((jQuery("body").width() - jQuery("#content").width())/2 > (jQuery('.Servers .server-frame iframe').width() + 40)) {
+  +        if((jQuery("body").width() - jQuery("#content").width())/2 > (jQuery('.Servers .server-frame').width() + 40)) {
+  -"Project-Id-Version: SABnzbd-4.1.0Alpha1\n"
+  +"Project-Id-Version: SABnzbd-4.1.0RC2\n"
+  -            if nzo.status not in (Status.PAUSED, Status.GRABBING) or nzo.priority == FORCE_PRIORITY:
+  +            if (
+  +                nzo.status not in (Status.PAUSED, Status.GRABBING) and not sabnzbd.Downloader.paused
+  +            ) or nzo.priority == FORCE_PRIORITY:
+F2P: ['tests/test_functional_api.py::TestOtherApi::test_api_speedlimit_pct[93]', 'tests/test_functional_api.py::TestOtherApi::test_api_speedlimit_abs[False-24-True]', 'tests/test_functional_api.py::TestOtherApi::test_api_speedlimit_abs[True-30-True]', 'tests/test_functional_api.py::TestQueueApi::test_api_queue_change_job_postproc[D-False-False]']
+REAL_IS(1):
+  assert self._get_api_json("watched_now")["status"] is True  # is set_watched_dir
+
+
+### v2 aio-libs__aiohttp-9029 total=153 F2P=153 P2P=0 repo=aio-libs/aiohttp
+PROB: Incorrect re-use future in _make_or_get_ssl_context ### Describe the bug  I meet following error: ``` RuntimeError: Task <Task pending name='Task-2' coro=<async_connect() running at <ipython-input-1-ba65b5596d34>:18>> got Future <Future pending> attached to a different loop ``` After going through the code, it seems the bug is caused by `aiohttp/connector.py::_make_or_get_ssl_context`. There is a global cache _made_ssl_context for asyncio.Future[SSLContext]. However, the cached future is bound to the first loop. When a new call with different loop to _make_or_get_ssl_context, the cached future is not expected because it has the old loop.  The bug exists since 3.10  ### To Reproduce
+PATCH_CHG(30):
+  -from .helpers import (
+  -    _SENTINEL,
+  -    ceil_timeout,
+  -    is_ip_address,
+  -    sentinel,
+  -    set_exception,
+  -    set_result,
+  -)
+  +from .helpers import _SENTINEL, ceil_timeout, is_ip_address, sentinel, set_result
+  +def _make_ssl_context(verified: bool) -> SSLContext:
+  +    """Create SSL context.
+  +
+  +    This method is not async-friendly and should be called from a thread
+  +    because it will load certificates from disk and do other blocking I/O.
+  +    """
+  +    if ssl is None:
+  +        # No ssl support
+  +        return None
+  +    if verified:
+  +        return ssl.create_default_context()
+F2P: ['tests/test_connector.py::test_connection_del[pyloop]', 'tests/test_connector.py::test_connection_del_loop_debug[pyloop]', 'tests/test_connector.py::test_connection_del_loop_closed[pyloop]', 'tests/test_connector.py::test_del[pyloop]', 'tests/test_connector.py::test_del_with_closed_loop[pyloop]', 'tests/test_connector.py::test_del_empty_connector[pyloop]', 'tests/test_connector.py::test_create_conn', 'tests/test_connector.py::test_async_context_manager[pyloop]']
+REAL_IS(10):
+  -    assert ctx is await conn._make_or_get_ssl_context(True)
+  -    assert ctx is await conn._make_or_get_ssl_context(False)
+  -    assert await conn._get_ssl_context(req) is ctx
+  +    assert conn._get_ssl_context(req) is ctx
+  -    assert await conn._get_ssl_context(req) is ctx
+  +    assert conn._get_ssl_context(req) is ctx
+  -    assert await conn._get_ssl_context(req) is await conn._make_or_get_ssl_context(
+  +    assert conn._get_ssl_context(req) is _SSL_CONTEXT_UNVERIFIED
+  -    assert await conn._get_ssl_context(req) is await conn._make_or_get_ssl_context(
+  +    assert conn._get_ssl_context(req) is _SSL_CONTEXT_UNVERIFIED
+
+
+### v2 pyomo__pyomo-3288 total=156 F2P=2 P2P=154 repo=Pyomo/pyomo
+PROB: IndexedSet objects can no longer be used with the within argument in pyomo 6.7.3 ## Summary  Pyomo Set objects allow users to define their supersets for validation via the within argument. This used to be possible with indexed set too (objects (e.g., pyomo 6.6) but is no longer possible.  ### Steps to reproduce the issue  The following script can be used to reproduce the issue. I adapted the example from the website (https://pyomo.readthedocs.io/en/stable/pyomo_modeling_components/Sets.html).  ``` import pyomo.environ as pyo from pyomo.opt import check_available_solvers  use_within_argument = False # change to True to trigger the error  model = pyo.AbstractModel() # non-indexe
+PATCH_CHG(23):
+  +
+  +set X[2] := 1;
+  +set X[5] := 2 3;
+  -23 Set Declarations
+  +24 Set Declarations
+  +    X : Size=2, Index=B, Ordered=Insertion
+  +        Key : Dimen : Domain : Size : Members
+  +          2 :     1 :   S[2] :    1 : {1,}
+  +          5 :     1 :   S[5] :    2 : {2, 3}
+  -23 Declarations: A B C D E F G H Hsub I J K K_2 L M N O P R S T U V
+  +24 Declarations: A B C D E F G H Hsub I J K K_2 L M N O P R S X T U V
+  +#
+  +# Validation of a set array can also be linked to another set array. If so, the
+  +# elements under each index must also be found under the corresponding index in
+  +# the validation set array:
+  +#
+  +model.X = Set(model.B, within=model.S)
+  +
+  -        in this set
+  +        in this set. If the latter is indexed, the former can be indexed or
+F2P: ['pyomo/core/tests/unit/test_set.py::TestSet::test_construction', 'pyomo/core/tests/unit/test_set.py::TestIssues::test_issue_3284']
+REAL_IS(1):
+  self.assertIsNot(vals[0], cross)
+
+
+### v2 stfc__psyclone-2637 total=156 F2P=8 P2P=148 repo=stfc/PSyclone
+PROB: Add support to parse Fortran array bounds with expressions For example: `real :: a(start - 1: stop + 1)`  Currently it is a UnknownFortranType, but it should be an ArrayType with an ArrayBound with 2 psyir expressions.
+PATCH_CHG(30):
+  -        its own output file(s). The generated driver has been extended so that
+  -        the name of the file to use can be specified on the command line.
+  +    its own output file(s). The generated driver has been extended so that
+  +    the name of the file to use can be specified on the command line.
+  +
+  +	58) PR #2637 for #2138. Add Fortran frontend support to parser array
+  +	declarations with expressions in their shape dimensions.
+  -    StructureType, Symbol, SymbolError, SymbolTable, UnknownInterface,
+  +    StructureType, Symbol, SymbolError, UnknownInterface,
+  -    while symbol_table.node and not isinstance(
+  +    while symbol_table and symbol_table.node and not isinstance(
+  -    @staticmethod
+  -    def _parse_dimensions(dimensions, symbol_table):
+  +    def _process_array_bound(self, bound_expr, table):
+  +        '''Process the supplied fparser2 parse tree for the upper/lower
+  +        bound of a dimension in an array declaration.
+  +
+  +        :param bound_expr: fparser2 parse tree for lower/upper bound.
+  +        :type bound_expr: :py:class:`fparser.two.utils.Base`
+  +
+F2P: ['src/psyclone/tests/psyir/frontend/fparser2_test.py::test_process_array_declarations_bound_expressions', 'src/psyclone/tests/psyir/frontend/fparser2_test.py::test_structures_duplicate_name', 'src/psyclone/tests/psyir/frontend/fparser2_where_handler_test.py::test_where_mask_starting_value', 'src/psyclone/tests/psyir/frontend/fparser2_where_handler_test.py::test_where_mask_is_slice_lower_limit', 'src/psyclone/tests/psyir/nodes/array_mixin_test.py::test_is_upper_lower_bound', 'src/psyclone/tests/psyir/nodes/array_mixin_test.py::test_is_bound_access[n+8-n+8-False-True]', 'src/psyclone/tests/psyir/nodes/array_mixin_test.py::test_is_bound_access[n-5:n+5-n-5-True-False]', 'src/psyclone/tests/psyir/nodes/array_mixin_test.py::test_same_range']
+REAL_IS(7):
+  +    assert ("declarations where the routine name is of UnsupportedType, but "
+  +    assert l5dtype.shape[0].lower.intrinsic is IntrinsicCall.Intrinsic.NINT
+  +    assert l5dtype.shape[0].upper.intrinsic is IntrinsicCall.Intrinsic.NINT
+  assert type(vsym) is Symbol
+  assert shape[0][1].symbol is vsym
+  +    assert ycompt.datatype.intrinsic is ysym
+  +    assert ycompt.datatype.shape[0].upper.symbol is nelem
+
+
+### v2 theacodes__nox-439 total=159 F2P=1 P2P=158 repo=theacodes/nox
+PROB: Session.posargs should be immutable There's no reason that `Session.posargs` should be mutated by users.  > ...a tuple would be preferable ...[and] might not even constitute a breaking change  _Originally posted by @cjolowicz in https://github.com/theacodes/nox/pull/397#discussion_r591857948_
+PATCH_CHG(2):
+  -        self.posargs: List[str] = global_config.posargs
+  +        self.posargs: List[str] = global_config.posargs[:]
+F2P: ['tests/test_sessions.py::TestSession::test_posargs_are_not_shared_between_sessions']
+REAL_IS(9):
+  -    assert session.posargs is cfg.posargs
+  assert session.name is runner.friendly_name
+  assert session.env is runner.venv.env
+  -        assert session.posargs is runner.global_config.posargs
+  assert session.virtualenv is runner.venv
+  assert session.bin_paths is runner.venv.bin_paths
+  assert session.bin is runner.venv.bin_paths[0]
+  assert runner.func is not None
+  assert return_value is manifest
+
+
+### v2 hdmf-dev__hdmf-848 total=160 F2P=1 P2P=159 repo=hdmf-dev/hdmf
+PROB: [Bug]: Export with link_data=False does not copy data ### What happened?  See description in https://github.com/NeurodataWithoutBorders/pynwb/issues/1683  ### Steps to Reproduce  ```shell import h5py import numpy as np  with h5py.File("pynwb_1683_data.h5", "w") as f:     f.create_dataset(name="data", data=np.random.rand(5, 4))  from pynwb import NWBFile, NWBHDF5IO, validate, TimeSeries import datetime   f = h5py.File("pynwb_1683_data.h5", "r")  nwbfile = NWBFile(     session_description="session_description",     identifier="identifier",     session_start_time=datetime.datetime.now(datetime.timezone.utc), )  ts = TimeSeries(     name="test_ts",     data=f["data"],     un
+PATCH_CHG(30):
+  -## HDMF 3.5.5 (Upcoming)
+  +## HDMF 3.5.5 (April 12, 2023)
+  +- Fix export with `'link_data': False'` not copying datasets in some situations. @rly
+  +  [#842](https://github.com/hdmf-dev/hdmf/pull/842)
+  +        # clear_cache is an arg on HDMFIO.export but it is intended for internal usage
+  +        # so it is not available on HDF5IO
+  +        if not write_args.get('link_data', True):
+  +            ckwargs['clear_cache'] = True
+  -             'default': dict()})
+  +             'default': dict()},
+  +            {'name': 'clear_cache', 'type': bool, 'doc': 'whether to clear the build manager cache',
+  +             'default': False})
+  -        src_io, container, write_args = getargs('src_io', 'container', 'write_args', kwargs)
+  +        src_io, container, write_args, clear_cache = getargs('src_io', 'container', 'write_args', 'clear_cache', kwargs)
+  +        if container is None and clear_cache:
+  +            # clear all containers and builders from cache so that they can all get rebuilt with export=True.
+  +            # constructing the container is not efficient but there is no elegant way to trigger a
+  +            # rebuild of src_io with new source.
+  +            container = src_io.read()
+  -            # build any modified containers
+F2P: ['tests/unit/build_tests/test_io_manager.py::TestBuildManager::test_clear_cache']
+REAL_IS(3):
+  self.assertIs(container1, container2)
+  +        self.assertIsNot(builder1, builder2)
+  +        self.assertIsNot(container1, container2)
+
+
+### v2 pre-commit__pre-commit-906 total=162 F2P=162 P2P=0 repo=pre-commit/pre-commit
+PROB: .pre-commit directory is not cleaned up I noticed at one point that my ~/.pre-commit directory was 3G in size, which seems pretty large.  I asked around and @struys said:  > jtwang: we don't do garbage collection > so when you get a new version of hooks, the old one stays there > jtwang: you can also use `pre-commit clean` to remove the files > rm'ing the directory directly isn't a great idea > jtwang: mind filing a ticket on pre-commit - https://github.com/pre-commit/pre-commit > we should add some form of GC based on the last time you used a hook repo
+PATCH_CHG(30):
+  +from __future__ import absolute_import
+  +from __future__ import unicode_literals
+  +
+  +import os.path
+  +
+  +import pre_commit.constants as C
+  +from pre_commit import output
+  +from pre_commit.clientlib import InvalidConfigError
+  +from pre_commit.clientlib import InvalidManifestError
+  +from pre_commit.clientlib import is_local_repo
+  +from pre_commit.clientlib import is_meta_repo
+  +from pre_commit.clientlib import load_config
+  +from pre_commit.clientlib import load_manifest
+  +
+  +
+  +def _mark_used_repos(store, all_repos, unused_repos, repo):
+  +    if is_meta_repo(repo):
+  +        return
+  +    elif is_local_repo(repo):
+  +        for hook in repo['hooks']:
+F2P: ['tests/clientlib_test.py::test_check_type_tag_failures[definitely-not-a-tag]', 'tests/clientlib_test.py::test_check_type_tag_failures[fiel]', 'tests/clientlib_test.py::test_is_local_repo', 'tests/clientlib_test.py::test_validate_config_main[args0-0]', 'tests/clientlib_test.py::test_validate_config_main[args1-1]', 'tests/clientlib_test.py::test_validate_config_main[args2-1]', 'tests/clientlib_test.py::test_validate_config_main[args3-1]', 'tests/clientlib_test.py::test_config_valid[config_obj0-True]']
+REAL_IS(1):
+  +    # an assertion that this is idempotent and does not crash
+
+
+### gym pydantic__pydantic-5322 total=165 F2P=4 P2P=161 repo=pydantic/pydantic
+PROB: Handle frozen and extra configs for dataclasses
+PATCH_CHG(30):
+  -from pydantic.config import Extra
+  -
+  +from ..config import ConfigDict
+  -    from ..config import ConfigDict
+  -    extra = config.get('extra', Extra.ignore)  # ignore is the default in V1
+  -    if extra is Extra.allow:
+  -        raise ValueError(
+  -            'extra=Extra.allow is not allowed for dataclasses.'
+  -            ' Only Extra.ignore (the default) and Extra.forbid are allowed.'
+  -        )
+  -
+  -    core_config = core_schema.CoreConfig(
+  -        title=config['title'] or cls.__name__,
+  -        typed_dict_extra_behavior=config['extra'].value,
+  -        allow_inf_nan=config['allow_inf_nan'],
+  -        populate_by_name=config['populate_by_name'],
+  -        str_strip_whitespace=config['str_strip_whitespace'],
+  -        str_to_lower=config['str_to_lower'],
+  -        str_to_upper=config['str_to_upper'],
+  -        strict=config['strict'],
+F2P: ['tests/test_dataclasses.py::test_validate_assignment_extra_unknown_field_assigned_allowed[config7]', 'tests/test_dataclasses.py::test_validate_assignment_extra_unknown_field_assigned_allowed[config4]', 'tests/test_dataclasses.py::test_validate_assignment_extra_unknown_field_assigned_allowed[config1]', 'tests/test_dataclasses.py::test_validate_assignment_extra_unknown_field_assigned_errors[config1]']
+REAL_IS(3):
+  -    assert BaseModel.model_config['extra'] is Extra.ignore
+  -    assert Mixin.model_config['extra'] is Extra.ignore
+  assert Mixin.model_config['json_encoders'][int] is int2_encoder
+
+
+### v2 hypothesisworks__hypothesis-2660 total=167 F2P=3 P2P=164 repo=HypothesisWorks/hypothesis
+PROB: `st.from_regex(re.compile("[\u0130_]", re.IGNORECASE))` triggers internal error `\u0130`, Latin Capital Letter I with Dot Above, lower-cases to `i\u0307`; and in turn if we have this in a regex character set we eventually trigger an internal error by passing it to `ord()` (which requires single-character strings).  I suspect that this is symptomatic of more general mishandling of length-changing case handling and will investigate.
+PATCH_CHG(30):
+  +RELEASE_TYPE: patch
+  +
+  +This patch fixes :issue:`2657`, where passing unicode patterns compiled with
+  +:obj:`python:re.IGNORECASE` to :func:`~hypothesis.strategies.from_regex` could
+  +trigger an internal error when casefolding a character creates a longer string
+  +(e.g. ``"\u0130".lower() -> "i\u0370"``).
+  -    """functions(*, like=lambda: None, returns=none())
+  +    """functions(*, like=lambda: None, returns=none(), pure=False)
+  +        # Due to the .swapcase() issue described below (and in issue #2657),
+  +        # self._whitelist_chars may contain strings of len > 1.  We therefore
+  +        # have some extra logic to filter them out of st.characters() args,
+  +        # but still generate them if allowed to.
+  -                blacklist_characters=self._whitelist_chars,
+  +                blacklist_characters={c for c in self._whitelist_chars if len(c) == 1},
+  -        return st.characters(
+  +        multi_chars = {c for c in white_chars if len(c) > 1}
+  +        char_strategy = st.characters(
+  -            whitelist_characters=white_chars,
+  +            whitelist_characters=white_chars - multi_chars,
+  +        if multi_chars:
+F2P: ['hypothesis-python/tests/cover/test_regex.py::test_sets_allow_multichar_output_in_ignorecase_mode', 'hypothesis-python/tests/nocover/test_regex.py::test_case_insensitive_not_literal_never_constructs_multichar_match', 'hypothesis-python/tests/nocover/test_regex.py::test_no_error_converting_negated_sets_to_strategy']
+REAL_IS(1):
+  +        assert pattern.fullmatch(s) is not None
+
+
+### v2 aio-libs__aiohttp-7829 total=167 F2P=3 P2P=164 repo=aio-libs/aiohttp
+PROB: UrlDispatcher improvements ### Describe the bug  The UrlDispatcher currently has to do a linear search to dispatch urls which has an average time complexity of `O(n)`. This means that urls that are registered first can be found faster than urls that are registered later.     ### To Reproduce  Results ``` % python3 url_dispatcher.py resolve_time_first_url: 0.0017513339989818633 resolve_time_last_url: 2.258735582989175 ```  This can be demonstrated with the following benchmark script ```python import asyncio import timeit from unittest.mock import MagicMock, AsyncMock  from yarl import URL  from aiohttp import web from aiohttp.web_urldispatcher import (     UrlDispatche
+PATCH_CHG(30):
+  +Improved URL handler resolution time by indexing resources in the UrlDispatcher.
+  +For applications with a large number of handlers, this should increase performance significantly.
+  +-- by :user:`bdraco`
+  -        for resource in app.router.resources():
+  -            resource.add_prefix(prefix)
+  +        self._add_prefix_to_resources(prefix)
+  -        for resource in self._app.router.resources():
+  +        self._add_prefix_to_resources(prefix)
+  +
+  +    def _add_prefix_to_resources(self, prefix: str) -> None:
+  +        router = self._app.router
+  +        for resource in router.resources():
+  +            # Since the canonical path of a resource is about
+  +            # to change, we need to unindex it and then reindex
+  +            router.unindex_resource(resource)
+  +            router.index_resource(resource)
+  -        if (
+  -            not request.url.raw_path.startswith(self._prefix2)
+  -            and request.url.raw_path != self._prefix
+  -        ):
+F2P: ['tests/test_urldispatch.py::test_prefixed_subapp_overlap', 'tests/test_urldispatch.py::test_prefixed_subapp_empty_route', 'tests/test_web_urldispatcher.py::test_order_is_preserved[pyloop]']
+REAL_IS(3):
+  assert match_info.route.handler is handler1
+  assert match_info.route.handler is handler2
+  +    assert match_info.route.handler is handler3
+
+
+### v2 googleapis__python-bigquery-2218 total=170 F2P=1 P2P=169 repo=googleapis/python-bigquery
+PROB: AccessEntry.from_api_repr != AccessEntry when entity_type = view AccessEntry.from_api_repr results in an object that is not equal to the same access entry object instantiated directly.  #### Environment details    - OS type and version: Linux   - Python version: `python --version`  3.12.8   - pip version: `pip --version` 24.3.1   - `google-cloud-bigquery` version: `pip show google-cloud-bigquery` > 3.31.0 (the bug does not exist in versions <= 3.31.0)  #### Steps to reproduce    1. Instantiate the same access entry using two different methods   2. Equality test fails  #### Code example  ```python entry1 = bigquery.dataset.AccessEntry(         entity_type="view",         entity_id={          
+PATCH_CHG(17):
+  +import json
+  -        return self._key() == other._key()
+  +        return (
+  +            self.role == other.role
+  +            and self.entity_type == other.entity_type
+  +            and self._normalize_entity_id(self.entity_id)
+  +            == self._normalize_entity_id(other.entity_id)
+  +            and self.condition == other.condition
+  +        )
+  +
+  +    @staticmethod
+  +    def _normalize_entity_id(value):
+  +        """Ensure consistent equality for dicts like 'view'."""
+  +        if isinstance(value, dict):
+  +            return json.dumps(value, sort_keys=True)
+  +        return value
+  -
+F2P: ['tests/unit/test_dataset.py::TestCondition::test_access_entry_view_equality']
+REAL_IS(1):
+  assert hash(cond1) is not None
+
+
+### v2 stfc__psyclone-2301 total=170 F2P=5 P2P=165 repo=stfc/PSyclone
+PROB: LFRic-specific Dependency Analysis As part of #2197, we are moving to using pointers to pass data to kernel calls so as to avoid accessing structures within an OpenACC region (e.g. `my_proxy%data`). However, the Dependence Analysis now sees that we are passing an array to a kernel and, by default, we give all such arguments read-write access (`Call.reference_accesses`). It therefore correctly identifies that this is a potential race condition (since it doesn't know which elements of the array are written to) and says the call cannot be safely executed in parallel.  Since the call is actually to an LFRic kernel (which are only permitted to write to data in the current column), we can do bet
+PATCH_CHG(30):
+  +	199) PR #2293 for #2301. Add 'is_independent' property/query to Loop.
+  +
+  -   Copyright (c) 2021-2022, Science and Technology Facilities Council.
+  +   Copyright (c) 2021-2023, Science and Technology Facilities Council.
+  -    integer :: i, j, k, a(10, 10)
+  +    integer :: i, j, k, a(11, 11)
+  +       a(i,i) = a(i+1,i+1)
+  -    loop = psyir.children[0][1]
+  +    loop = psyir.walk(Loop)[0]
+  -    # private variables. But since all this example does is calling
+  +    # private variables. But since all this example does is call
+  +	   a(i-1,i) = a(i,i) + 1
+  -    The first 2 statements can be parallelised.
+  +    The first 3 statements can be parallelised.
+  -An example of how to use this class is shown below. It takes a list of statements
+  +An example of how to use this class is shown below. (Note that this is just
+  +for demonstration purposes: in reality the `validate` method of `OMPLoopTrans`
+  +will also use the dependence analysis to check that the transformation is
+  +safe.) It takes a list of statements
+  -    This loop triggers the message that it is not a nested loop and
+F2P: ['src/psyclone/tests/domain/gocean/goloop_test.py::test_independent_iterations', 'src/psyclone/tests/domain/lfric/lfric_loop_test.py::test_loop_independent_iterations[False]', 'src/psyclone/tests/domain/lfric/lfric_loop_test.py::test_loop_independent_iterations[True]', 'src/psyclone/tests/psyir/nodes/loop_test.py::test_loop_dag_name', 'src/psyclone/tests/psyir/nodes/loop_test.py::test_loop_independent_iterations']
+REAL_IS(2):
+  +    assert "loop of type 'broken' is not supported" in str(err.value)
+  +    assert "variable 'tmp' is only written once" in str(msgs[0])
+
+
+### v2 aio-libs__aiohttp-9032 total=170 F2P=170 P2P=0 repo=aio-libs/aiohttp
+PROB: ClientSession.get() doesn't support hostname. ### Describe the bug  When using a URI with a hostname for an GET call, an error stating 'Bad value for ai_flags' occurs. When replacing the hostname with an IPv4 address, the error no longer occurs. I would like to be able to use the hostname instead because I'm trying to connect to a link local IPv6 device.  I'm trying to do a GET request from a device that is directly connected to my PC. The backtrace is down below:  It appears that this behavior was introduced around this change: https://github.com/aio-libs/aiohttp/commit/38dd9b8557f35bdfc1376e5833fb8e235c9d49ba  I've noticed that removing the AI_NUMERICHOST flag causes the error to g
+PATCH_CHG(30):
+  +Tracing overhead is avoided in the http writer when there are no active traces -- by user:`bdraco`.
+  +Fixed the incorrect use of flags for ``getnameinfo()`` in the Resolver --by :user:`GitNMLee`
+  +
+  +Link-Local IPv6 addresses can now be handled by the Resolver correctly.
+  -            on_chunk_sent=functools.partial(
+  -                self._on_chunk_request_sent, self.method, self.url
+  +            on_chunk_sent=(
+  +                functools.partial(self._on_chunk_request_sent, self.method, self.url)
+  +                if self._traces
+  +                else None
+  -            on_headers_sent=functools.partial(
+  -                self._on_headers_request_sent, self.method, self.url
+  +            on_headers_sent=(
+  +                functools.partial(self._on_headers_request_sent, self.method, self.url)
+  +                if self._traces
+  +                else None
+  -from .helpers import (
+  -    _SENTINEL,
+  -    ceil_timeout,
+  -    is_ip_address,
+F2P: ['tests/test_connector.py::test_connection_del[pyloop]', 'tests/test_connector.py::test_connection_del_loop_debug[pyloop]', 'tests/test_connector.py::test_connection_del_loop_closed[pyloop]', 'tests/test_connector.py::test_del[pyloop]', 'tests/test_connector.py::test_del_with_closed_loop[pyloop]', 'tests/test_connector.py::test_del_empty_connector[pyloop]', 'tests/test_connector.py::test_create_conn', 'tests/test_connector.py::test_async_context_manager[pyloop]']
+REAL_IS(10):
+  -    assert ctx is await conn._make_or_get_ssl_context(True)
+  -    assert ctx is await conn._make_or_get_ssl_context(False)
+  -    assert await conn._get_ssl_context(req) is ctx
+  +    assert conn._get_ssl_context(req) is ctx
+  -    assert await conn._get_ssl_context(req) is ctx
+  +    assert conn._get_ssl_context(req) is ctx
+  -    assert await conn._get_ssl_context(req) is await conn._make_or_get_ssl_context(
+  +    assert conn._get_ssl_context(req) is _SSL_CONTEXT_UNVERIFIED
+  -    assert await conn._get_ssl_context(req) is await conn._make_or_get_ssl_context(
+  +    assert conn._get_ssl_context(req) is _SSL_CONTEXT_UNVERIFIED
+
+
+### gym modin-project__modin-6608 total=172 F2P=1 P2P=171 repo=modin-project/modin
+PROB: BUG: `.sort_values()` may break column widths cache if the data size is small  ### Modin version checks  - [X] I have checked that this issue has not already been reported.  - [X] I have confirmed this bug exists on the latest released version of Modin.  - [X] I have confirmed this bug exists on the main branch of Modin. (In order to do this you can follow [this guide](https://modin.readthedocs.io/en/stable/getting_started/installation.html#installing-from-the-github-master-branch).)   ### Reproducible Example  ```python import pandas from modin.test.storage_formats.pandas.test_internals import (     construct_modin_df_by_scheme, )  modin_df = construct_modin_df_by_scheme( 
+PATCH_CHG(30):
+  -        self, key_columns, func, ascending=True, **kwargs
+  +        self, key_columns, func, ascending=True, preserve_columns=False, **kwargs
+  +        preserve_columns : bool, default: False
+  +            If the columns cache should be preserved (specify this flag if `func` doesn't change column labels).
+  -            return self.apply_full_axis(axis=1, func=func)
+  +            result = self.apply_full_axis(
+  +                axis=1,
+  +                func=func,
+  +                new_columns=self.copy_columns_cache() if preserve_columns else None,
+  +            )
+  +            if preserve_columns:
+  +                result._set_axis_lengths_cache(self._column_widths_cache, axis=1)
+  +            return result
+  -        return self.__constructor__(new_partitions)
+  +        result = self.__constructor__(new_partitions)
+  +        if preserve_columns:
+  +            result.set_columns_cache(self.copy_columns_cache())
+  +            # We perform the final steps of the sort on full axis partitions, so we know that the
+  +            # length of each partition is the full length of the dataframe.
+  +            if self.has_materialized_columns:
+F2P: ['modin/test/storage_formats/pandas/test_internals.py::test_sort_values_cache']
+REAL_IS(3):
+  -    assert row_lengths is not None
+  -    assert column_widths is not None
+  +        assert axis_lengths[ax] is not None
+
+
+### v2 aio-libs__aiohttp-9047 total=173 F2P=173 P2P=0 repo=aio-libs/aiohttp
+PROB: ClientSession.get() doesn't support hostname. ### Describe the bug  When using a URI with a hostname for an GET call, an error stating 'Bad value for ai_flags' occurs. When replacing the hostname with an IPv4 address, the error no longer occurs. I would like to be able to use the hostname instead because I'm trying to connect to a link local IPv6 device.  I'm trying to do a GET request from a device that is directly connected to my PC. The backtrace is down below:  It appears that this behavior was introduced around this change: https://github.com/aio-libs/aiohttp/commit/38dd9b8557f35bdfc1376e5833fb8e235c9d49ba  I've noticed that removing the AI_NUMERICHOST flag causes the error to g
+PATCH_CHG(30):
+  +Fixed the incorrect use of flags for ``getnameinfo()`` in the Resolver --by :user:`GitNMLee`
+  +
+  +Link-Local IPv6 addresses can now be handled by the Resolver correctly.
+  -from .helpers import (
+  -    ceil_timeout,
+  -    is_ip_address,
+  -    noop,
+  -    sentinel,
+  -    set_exception,
+  -    set_result,
+  -)
+  +from .helpers import ceil_timeout, is_ip_address, noop, sentinel
+  +def _make_ssl_context(verified: bool) -> SSLContext:
+  +    """Create SSL context.
+  +
+  +    This method is not async-friendly and should be called from a thread
+  +    because it will load certificates from disk and do other blocking I/O.
+  +    """
+  +    if ssl is None:
+  +        # No ssl support
+F2P: ['tests/test_connector.py::test_connection_del[pyloop]', 'tests/test_connector.py::test_connection_del_loop_debug[pyloop]', 'tests/test_connector.py::test_connection_del_loop_closed[pyloop]', 'tests/test_connector.py::test_del[pyloop]', 'tests/test_connector.py::test_del_with_closed_loop[pyloop]', 'tests/test_connector.py::test_del_empty_connector[pyloop]', 'tests/test_connector.py::test_create_conn[pyloop]', 'tests/test_connector.py::test_connector_context_manager[pyloop]']
+REAL_IS(10):
+  -    assert ctx is await conn._make_or_get_ssl_context(True)
+  -    assert ctx is await conn._make_or_get_ssl_context(False)
+  -    assert await conn._get_ssl_context(req) is ctx
+  +    assert conn._get_ssl_context(req) is ctx
+  -    assert await conn._get_ssl_context(req) is ctx
+  +    assert conn._get_ssl_context(req) is ctx
+  -    assert await conn._get_ssl_context(req) is await conn._make_or_get_ssl_context(
+  +    assert conn._get_ssl_context(req) is _SSL_CONTEXT_UNVERIFIED
+  -    assert await conn._get_ssl_context(req) is await conn._make_or_get_ssl_context(
+  +    assert conn._get_ssl_context(req) is _SSL_CONTEXT_UNVERIFIED
+
+
+### v2 pydicom__pydicom-1048 total=173 F2P=173 P2P=0 repo=pydicom/pydicom
+PROB: dcmread cannot handle pathlib.Path objects **Describe the bug** The `dcmread()` currently fails when passed an instance of `pathlib.Path`. The problem is the following line: https://github.com/pydicom/pydicom/blob/8b0bbaf92d7a8218ceb94dedbee3a0463c5123e3/pydicom/filereader.py#L832  **Expected behavior** `dcmread()` should open and read the file to which the `pathlib.Path` object points.  The line above should probably be: ```python if isinstance(fp, (str, Path)): ````  **Steps To Reproduce** ```python from pathlib import Path from pydicom.filereader import dcmread  dcm_filepath = Path('path/to/file') dcmread(dcm_filepath) ```
+PATCH_CHG(30):
+  +Enhancements
+  +............
+  +* Allow PathLike objects for filename argument in `dcmread`, `dcmwrite` and
+  +  `Dataset.save_as` (:issue:`1047`)
+  +
+  +* Fix failure to parse dataset with an empty *LUT Descriptor* or
+  +  *Red/Green/Blue Palette Color LUT Descriptor* element. (:issue:`1049`)
+  +from pydicom.fileutil import path_from_pathlike
+  +
+  -    base : str
+  +    base : str or PathLike
+  +    base = path_from_pathlike(base)
+  -    if raw.tag in _LUT_DESCRIPTOR_TAGS and value[0] < 0:
+  +    if raw.tag in _LUT_DESCRIPTOR_TAGS and value:
+  -        value[0] += 65536
+  +        try:
+  +            if value[0] < 0:
+  +                value[0] += 65536
+  +        except TypeError:
+  +            pass
+F2P: ['pydicom/tests/test_filereader.py::TestReader::test_empty_numbers_tag', 'pydicom/tests/test_filereader.py::TestReader::test_UTF8_filename', 'pydicom/tests/test_filereader.py::TestReader::test_pathlib_path_filename', 'pydicom/tests/test_filereader.py::TestReader::test_RTPlan', 'pydicom/tests/test_filereader.py::TestReader::test_RTDose', 'pydicom/tests/test_filereader.py::TestReader::test_CT', 'pydicom/tests/test_filereader.py::TestReader::test_no_force', 'pydicom/tests/test_filereader.py::TestReader::test_RTStruct']
+REAL_IS(1):
+  assert ds is not None
+
+
+### v2 hypothesisworks__hypothesis-3540 total=174 F2P=3 P2P=171 repo=HypothesisWorks/hypothesis
+PROB: Improve reporting of failing examples It's been a while since we revisited the way that Hypothesis reports failing examples, but I think it's time:  - We'll need to revisit reporting in order to support https://github.com/HypothesisWorks/hypothesis/issues/3411, and it'd be nice to get that ready before the engine changes both to break the work into smaller chunks, and to get improvements into users' hands as soon as possible. - I'd like to encourage more use of the `@example()` decorator, perhaps with `.via()` on Python 3.9+, and reporting failures in that format seems like an effective way to do so - and makes reproducing a mere matter of copy-pasting when the database doesn't make it fu
+PATCH_CHG(30):
+  +RELEASE_TYPE: minor
+  +
+  +Hypothesis now reports some failing inputs by showing the call which constructed
+  +an object, rather than the repr of the object.  This can be helpful when the default
+  +repr does not include all relevant details, and will unlock further improvements
+  +in a future version.
+  +
+  +For now, we capture calls made via :func:`~hypothesis.strategies.builds`, and via
+  +:ref:`SearchStrategy.map() <mapping>`.
+  +.. _mapping:
+  +
+  -from typing import NoReturn, Optional, Union
+  +from collections import defaultdict
+  +from typing import NoReturn, Union
+  +from hypothesis.internal.reflection import get_pretty_function_description
+  +from hypothesis.vendor.pretty import IDKey
+  -def current_build_context() -> "Optional[BuildContext]":
+  +def current_build_context() -> "BuildContext":
+  +        # Use defaultdict(list) here to handle the possibility of having multiple
+  +        # functions registered for the same object (due to caching, small ints, etc).
+F2P: ['hypothesis-python/tests/cover/test_custom_reprs.py::test_reprs_as_created', 'hypothesis-python/tests/cover/test_custom_reprs.py::test_reprs_as_created_interactive', 'hypothesis-python/tests/cover/test_custom_reprs.py::test_reprs_as_created_consistent_calls_despite_indentation']
+REAL_IS(1):
+  +        assert a is not b
+
+
+### v2 aristanetworks__anta-1021 total=174 F2P=21 P2P=153 repo=aristanetworks/anta
+PROB: MultiProtocolCaps custom type should be more restrictive Even though `MultiProtocolCaps` has support for abbreviations (IPv4 Unicast, etc.), it supports any string today: ```yaml anta.tests.routing:   bgp:     - VerifyBGPPeerMPCaps:         bgp_peers:           - peer_address: 10.1.254.21             vrf: default             strict: False             capabilities:               - ipv4Unicast               - pizza ``` Result: `DC1-LEAF1A :: VerifyBGPPeerMPCaps :: FAILURE(Peer: 10.1.254.21 VRF: default - pizza not found)`  The custom type should be updated to support the following mapping (both formats): ``` MP_CAPABILITIES_MAPPING = {    # Human readable format -> EOS format    "Dynamic Path 
+PATCH_CHG(30):
+  -# Regexp BGP AFI/SAFI
+  -REGEXP_BGP_L2VPN_AFI = r"\b(l2[\s\-]?vpn[\s\-]?evpn)\b"
+  -"""Match L2VPN EVPN AFI."""
+  -REGEXP_BGP_IPV4_MPLS_LABELS = r"\b(ipv4[\s\-]?mpls[\s\-]?label(s)?)\b"
+  -"""Match IPv4 MPLS Labels."""
+  -REGEX_BGP_IPV4_MPLS_VPN = r"\b(ipv4[\s\-]?mpls[\s\-]?vpn)\b"
+  -"""Match IPv4 MPLS VPN."""
+  -REGEX_BGP_IPV4_UNICAST = r"\b(ipv4[\s\-]?uni[\s\-]?cast)\b"
+  -"""Match IPv4 Unicast."""
+  -
+  +    Handles different separators (hyphen, underscore, space) and case sensitivity.
+  +
+  -    - IPv4 Unicast
+  -    - L2vpnEVPN
+  -    - ipv4 MPLS Labels
+  -    - ipv4Mplsvpn
+  -
+  +    ```python
+  +    >>> bgp_multiprotocol_capabilities_abbreviations("IPv4 Unicast")
+  +    'ipv4Unicast'
+F2P: ['tests/units/anta_tests/routing/test_bgp.py::test[anta.tests.routing.bgp.VerifyBGPPeerMPCaps-success]', 'tests/units/anta_tests/routing/test_bgp.py::test[anta.tests.routing.bgp.VerifyBGPPeerMPCaps-failure-incorrect-capabilities]', 'tests/units/test_custom_types.py::test_bgp_multiprotocol_capabilities_abbreviations[ipv4MplsLabels]', 'tests/units/test_custom_types.py::test_bgp_multiprotocol_capabilities_abbreviations[ipv4Unicast]', 'tests/units/test_custom_types.py::test_bgp_multiprotocol_capabilities_abbreviations[ipv4Mvpn]', 'tests/units/test_custom_types.py::test_bgp_multiprotocol_capabilities_abbreviations[ipv4FlowSpecVpn]', 'tests/units/test_custom_types.py::test_bgp_multiprotocol_capabilities_abbreviations[dps]', 'tests/units/test_custom_types.py::test_bgp_multiprotocol_capabilities_abbreviations[ipv6Unicast]']
+REAL_IS(10):
+  -    assert re.search(REGEXP_BGP_L2VPN_AFI, "l2vpn-evpn") is not None
+  -    assert re.search(REGEXP_BGP_L2VPN_AFI, "l2 vpn evpn") is not None
+  -    assert re.search(REGEXP_BGP_L2VPN_AFI, "l2-vpn evpn") is not None
+  -    assert re.search(REGEXP_BGP_L2VPN_AFI, "l2vpn evpn") is not None
+  -    assert re.search(REGEXP_BGP_L2VPN_AFI, "l2vpnevpn") is not None
+  -    assert re.search(REGEXP_BGP_L2VPN_AFI, "l2 vpnevpn") is not None
+  -    assert re.search(REGEXP_BGP_IPV4_MPLS_LABELS, "ipv4-mpls-label") is not None
+  -    assert re.search(REGEXP_BGP_IPV4_MPLS_LABELS, "ipv4 mpls labels") is not None
+  -    assert re.search(REGEX_BGP_IPV4_MPLS_VPN, "ipv4-mpls-vpn") is not None
+  -    assert re.search(REGEX_BGP_IPV4_UNICAST, "ipv4-uni-cast") is not None
+
+
+### v2 stac-utils__pystac-1512 total=175 F2P=2 P2P=173 repo=stac-utils/pystac
+PROB: STACVersionID assigned string value in migration https://github.com/stac-utils/pystac/blob/main/pystac/serialization/identify.py#L268  I believe    `version_range.set_to_single(stac_version)`  should be `version_range.set_to_single(STACVersionID(stac_version))`  This issue results in `min_version` and `max_version` being assigned strings. Later during migrations it results in bad code paths.  <img width="1147" alt="Image" src="https://github.com/user-attachments/assets/db92997a-6348-4223-ab4a-e708e4a0668b" />  This only occurs when the item stac_version is < STACVersion.DEFAULT_STAC_VERSION, which is why it doesn't happen during `test_older_extension_version` and probably wasn't common scena
+PATCH_CHG(30):
+  +### Fixed
+  +
+  +- Make sure that `VersionRange` has `VersionID`s rather than strings ([#1512](https://github.com/stac-utils/pystac/pull/1512))
+  +
+  -    min_version: STACVersionID
+  -    max_version: STACVersionID
+  +    _min_version: STACVersionID
+  +    _max_version: STACVersionID
+  -    def set_min(self, v: STACVersionID) -> None:
+  +    @property
+  +    def min_version(self) -> STACVersionID:
+  +        return self._min_version
+  +
+  +    @min_version.setter
+  +    def min_version(self, v: str | STACVersionID) -> None:
+  +        if isinstance(v, str):
+  +            v = STACVersionID(v)
+  +        self._min_version = v
+  +
+  +    @property
+F2P: ['tests/extensions/test_eo.py::test_unnecessary_migrations_not_performed', 'tests/serialization/test_identify.py::VersionTest::test_version_range_set_to_single']
+REAL_IS(1):
+  assert bands is not None
+
+
+### v2 stfc__psyclone-2508 total=175 F2P=4 P2P=171 repo=stfc/PSyclone
+PROB: InlineTrans should ignore formal arguments when checking for symbol clashes  As reported by Hugo, the following code:      def test_apply_argument_clash(fortran_reader, fortran_writer):         '''         Check that the dummy arguments to the inlined routine are not included         when checking for clashes (since they will be replaced by the formal         arguments to the call).         '''          code_clash = """       subroutine run_it()         integer :: i         integer :: Istr         real :: a(10)          do i=Istr,10           a(i) = 1.0         end do          call sub(Istr)       end subroutine run_it        subroutine sub(Istr)         integer :: Ist
+PATCH_CHG(30):
+  +	6) PR #2508 for #2507. Add a symbols_to_ignore argument to some
+  +	symbol_table operations and use it to fix inline transformation issues.
+  +
+  -                whole_routine_scope.merge(schedule.symbol_table)
+  +                sched_table = schedule.symbol_table
+  +                # We can't declare a routine inside itself so make sure we
+  +                # skip any RoutineSymbol representing this routine.
+  +                try:
+  +                    rsym = sched_table.lookup_with_tag("own_routine_symbol")
+  +                    skip = [rsym] if isinstance(rsym, RoutineSymbol) else []
+  +                except KeyError:
+  +                    skip = []
+  +                whole_routine_scope.merge(sched_table, skip)
+  +from collections.abc import Iterable
+  -    def check_for_clashes(self, other_table):
+  +    def check_for_clashes(self, other_table, symbols_to_skip=()):
+  -        renaming then a SymbolError is raised.
+  +        renaming then a SymbolError is raised. Any symbols appearing
+  +        in `symbols_to_skip` are excluded from the checks.
+  -
+F2P: ['src/psyclone/tests/psyir/symbols/symbol_table_test.py::test_check_for_clashes_cannot_rename', 'src/psyclone/tests/psyir/symbols/symbol_table_test.py::test_table_merge', 'src/psyclone/tests/psyir/transformations/inline_trans_test.py::test_symbols_to_skip', 'src/psyclone/tests/psyir/transformations/inline_trans_test.py::test_apply_argument_clash']
+REAL_IS(3):
+  assert ("Cannot rename symbol 'jeltz' because it is a routine argument "
+  assert table1.lookup("trillian") is arg_sym
+  assert psyir.walk(Routine)[0].symbol_table.get_symbols()['i_1'] is not None
+
+
+### v2 systemd__mkosi-2954 total=176 F2P=1 P2P=175 repo=systemd/mkosi
+PROB: Add an executable version of `mkosi.version` Originally proposed by @septatrix in https://github.com/systemd/mkosi/pull/2905#issuecomment-2251456448  This is effectivly a version of `mkosi.version` that is executed and its output on `stdout` is used as `ImageVersion=`, instead of using the contents of the file for the version.  This would for example allow writing a script that roughly contains `exec git describe --tags --dirty --broken` to use a versioning scheme that is defined by `git tag`, without needing to run `mkosi bump` (with the linked PR) to update the version file before every build.
+PATCH_CHG(30):
+  -    version = Path("mkosi.version").read_text().strip()
+  +
+  +    version_file = Path("mkosi.version")
+  +    if not version_file.exists():
+  +        die(f"Cannot bump image version, '{version_file}' not found")
+  +
+  +    if os.access(version_file, os.X_OK):
+  +        die(f"Cannot bump image version, '{version_file}' is executable")
+  +
+  +    version = version_file.read_text().strip()
+  -        m = int(v[-1])
+  +        v[-1] = str(int(v[-1]) + 1)
+  -        new_version = version + ".2"
+  -        logging.info(
+  -            "Last component of current version is not a decimal integer, "
+  -            f"appending '.2', bumping '{version}' → '{new_version}'."
+  -        )
+  -    else:
+  -        new_version = ".".join(v[:-1] + [str(m + 1)])
+  -        logging.info(f"Increasing last component of version by one, bumping '{version}' → '{new_version}'.")
+F2P: ['tests/test_config.py::test_mkosi_version_executable']
+REAL_IS(1):
+  +        assert error.type is SystemExit
+
+
+### v2 aristanetworks__anta-969 total=178 F2P=4 P2P=174 repo=aristanetworks/anta
+PROB: VerifyEVPNType2Route test fails for locally originated MAC/IP addresses The 'VerifyEVPNType2Route' test currently marks endpoints with locally originated MAC/IP addresses as "FAILURE.  This behavior is unexpected because locally originated entries: 1. Are valid endpoints that can exist in the database of a VTEP. 2. Can still be advertised correctly to other VTEPs.  Marking these as "FAILURE" results in misleading test outcomes, especially when specific endpoints are explicitly validated and when the 'leaf' tag is applied to include all leaf devices in test.  Output of entry that contain locally originated mac-ip:  ```VerifyEVPNType2Route is FAILURE for Leaf-01 with Message: The fol
+PATCH_CHG(30):
+  -    rev: v0.8.2
+  +    rev: v0.8.3
+  +
+  +KNOWN_EOS_ERRORS = [
+  +    r"BGP inactive",
+  +    r"VRF '.*' is not active",
+  +    r".* does not support IP",
+  +    r"IS-IS (.*) is disabled because: .*",
+  +    r"No source interface .*",
+  +]
+  +"""List of known EOS errors that should set a test status to 'failure' with the error message."""
+  -    async def _collect(self, command: AntaCommand, *, collection_id: str | None = None) -> None:  # noqa: C901  function is too complex - because of many required except blocks
+  +    async def _collect(self, command: AntaCommand, *, collection_id: str | None = None) -> None:
+  -            command.errors = e.errors
+  -            if command.requires_privileges:
+  -                logger.error(
+  -                    "Command '%s' requires privileged mode on %s. Verify user permissions and if the `enable` option is required.", command.command, self.name
+  -                )
+  -            if command.supported:
+  -                logger.error("Command '%s' failed on %s: %s", command.command, self.name, e.errors[0] if len(e.errors) == 1 else e.errors)
+F2P: ['tests/units/test_models.py::TestAntaTest::test_test[tests.units.test_models.FakeTestWithKnownEOSError-known', 'tests/units/test_models.py::TestAntaCommand::test_returned_known_eos_error[show', 'tests/units/test_models.py::TestAntaCommand::test_returned_known_eos_error[ping', 'tests/units/test_models.py::TestAntaCommand::test_returned_known_eos_error_failure']
+REAL_IS(6):
+  -            assert dev.cache is not None
+  -            assert dev.cache_locks is not None
+  +            assert expected is not None
+  +                assert dev.cache is not None
+  +                assert dev.cache_locks is not None
+  +        assert command.returned_known_eos_error is is_known
+
+
+### v2 theacodes__nox-432 total=178 F2P=6 P2P=172 repo=theacodes/nox
+PROB: Add an option to skip install commands **How would this feature be useful?** Frequently you just want to re-run a particular session in a reused virtual environment as quickly as possible (e.g for unit tests, docs or linting). This is possible with `--reuse-existing-virtualenvs`, but `session.install()` still takes a second or two, which is not a lot, but still slower than just running `pytest` directly. Therefore, it would be useful to have an option for skipping `session.install()`, especially when executing sessions locally in a development loop.  **Describe the solution you'd like** Add an inverse of the `--install-only` command.  **Describe alternatives you've considered** * Use 
+PATCH_CHG(30):
+  -By default, Nox deletes and recreates virtualenvs every time it is run. This is usually fine for most projects and continuous integration environments as `pip's caching <https://p
+  +By default, Nox deletes and recreates virtualenvs every time it is run. This is usually fine for most projects and continuous integration environments as `pip's caching <https://p
+  +Additionally, you can skip the re-installation of packages when a virtualenv is reused. Use ``-R`` or ``--reuse-existing-virtualenvs --no-install``:
+  +
+  +.. code-block:: console
+  +
+  +    nox -R
+  +    nox --reuse-existing-virtualenvs --no-install
+  +
+  +The ``--no-install`` option causes the following session methods to return early:
+  +
+  +- :func:`session.install <nox.sessions.Session.install>`
+  +- :func:`session.conda_install <nox.sessions.Session.conda_install>`
+  +- :func:`session.run_always <nox.sessions.Session.run_always>`
+  +
+  +This option has no effect if the virtualenv is not being reused.
+  +
+  +def _R_finalizer(value: bool, args: argparse.Namespace) -> bool:
+  +    """Propagate -R to --reuse-existing-virtualenvs and --no-install."""
+  +    if value:
+F2P: ['tests/test_main.py::test_main_reuse_existing_virtualenvs_no_install', 'tests/test_sessions.py::TestSession::test_run_always_no_install[True-True-False]', 'tests/test_sessions.py::TestSession::test_conda_venv_reused_with_no_install[True-True-False]', 'tests/test_sessions.py::TestSession::test_session_venv_reused_with_no_install[True-True-False]', 'tests/test_virtualenv.py::test_condaenv_create', 'tests/test_virtualenv.py::test_create']
+REAL_IS(3):
+  +        assert run.called is run_called
+  +        assert run.called is run_called
+  +        assert run.called is run_called
+
+
+### v2 python-attrs__attrs-763 total=179 F2P=1 P2P=178 repo=python-attrs/attrs
+PROB: Python 3.10 compatibility Hello.  We have already started testing RPM packages in Fedora with Python 3.10a2 and attrs is currently not compatible.  The problem is caused by the implementation of [PEP 563](https://www.python.org/dev/peps/pep-0563/#abstract) — type annotations are now stored as strings which cause asserts like this one to fail:  ```python class TestAnnotations:     """     Tests for types derived from variable annotations (PEP-526).     """      def test_basic_annotations(self):         """         Sets the `Attribute.type` attr from basic type annotations.         """          @attr.s         class C:             x: int = attr.ib()             y = attr.ib(
+PATCH_CHG(14):
+  -        python-version: ["2.7", "3.5", "3.6", "3.7", "3.8", "3.9", "pypy2", "pypy3"]
+  +        python-version: ["2.7", "3.5", "3.6", "3.7", "3.8", "3.9", "3.10.0-alpha - 3.10", "pypy2", "pypy3"]
+  +    "Programming Language :: Python :: 3.10",
+  -    return str(annot).startswith(_classvar_prefixes)
+  +    annot = str(annot)
+  +
+  +    # Annotation can be quoted.
+  +    if annot.startswith(("'", '"')) and annot.endswith(("'", '"')):
+  +        annot = annot[1:-1]
+  +
+  +    return annot.startswith(_classvar_prefixes)
+  +    3.10: py310
+  -envlist = typing,lint,py27,py35,py36,py37,py38,py39,pypy,pypy3,manifest,docs,pypi-description,changelog,coverage-report
+  +envlist = typing,lint,py27,py35,py36,py37,py38,py39,py310,pypy,pypy3,manifest,docs,pypi-description,changelog,coverage-report
+F2P: ["tests/test_annotations.py::test_is_class_var['typing.ClassVar[dict]']"]
+REAL_IS(8):
+  assert int is attr.fields(C).x.type
+  assert str is attr.fields(C).y.type
+  assert None is attr.fields(C).z.type
+  assert typing.List[int] is attr.fields(C).x.type
+  assert typing.Optional[str] is attr.fields(C).y.type
+  -        assert str is attr.fields(C).y.type
+  -        assert None is attr.fields(C).z.type
+  assert int is attr.fields(C).x.type
+
+
+### v2 getmoto__moto-7850 total=179 F2P=4 P2P=175 repo=getmoto/moto
+PROB: S3: get/head with partNumber is returning 200 status code instead of 206 ``` s3 = boto3.resource("s3") s3.create_bucket(Bucket="bucket") s3.Object("bucket", "some-key").put(Body="foo")  assert s3.meta.client.head_object(Bucket="bucket", Key="some-key", PartNumber=1)["ResponseMetadata"]["HTTPStatusCode"] == 206 ```  Since it's effectively a range request, it should return 206, not 200.  Same for `get_object`.
+PATCH_CHG(28):
+  +class RangeNotSatisfiable(S3ClientError):
+  +    code = 416
+  +
+  +    def __init__(self) -> None:
+  +        super().__init__(RangeNotSatisfiable.code, "Requested Range Not Satisfiable")
+  +
+  +
+  +    RangeNotSatisfiable,
+  +
+  +        part_number = query.get("partNumber", [None])[0]
+  +        if part_number:
+  +            part_number = int(part_number)
+  +        if part_number:
+  +            if key.multipart:
+  +                # TODO
+  +                pass
+  +            else:
+  +                if part_number > 1:
+  +                    raise RangeNotSatisfiable
+  +                response_headers["content-range"] = f"bytes 0-{key.size - 1}/{key.size}"
+F2P: ['tests/test_s3/test_s3.py::test_head_object[10]', 'tests/test_s3/test_s3.py::test_head_object[10000000]', 'tests/test_s3/test_s3.py::test_get_object[10]', 'tests/test_s3/test_s3.py::test_get_object[10000000]']
+REAL_IS(1):
+  assert deleted_version_id is not None
+
+
+### v2 hikari-py__hikari-785 total=180 F2P=1 P2P=179 repo=hikari-py/hikari
+PROB: Uncast Raw Command Interaction Option Values ### Steps to reproduce 1. Have a slash command with any option with type user, channel, role, or mentionable.  2. Invoke it.  ### Expected Result Expected values of options with type 6—9 to be of type Snowflake.  ### Actual Result They're str.  ### System info hikari (2.0.0.dev102) [HEAD] CPython 3.9.6 GCC 11.1.0 Linux arch 5.13.13-zen1-1-zen #​1 ZEN SMP PREEMPT Thu, 26 Aug 2021 19:14:35 +0000 x86_64  ### Further info Seems like it's passed in as-is. https://github.com/hikari-py/hikari/blob/0d38beef0b883f39e6dd6dd9ae60c2abf2541cca/hikari/impl/entity_factory.py#L1743  ### Checklist <!-- Make sure to tick all the following boxes b
+PATCH_CHG(19):
+  +`CommandOption.value` will now be cast to a `Snowflake` for types 6-9
+  +_interaction_option_type_mapping: typing.Dict[int, typing.Callable[[typing.Any], typing.Any]] = {
+  +    commands.OptionType.USER: snowflakes.Snowflake,
+  +    commands.OptionType.CHANNEL: snowflakes.Snowflake,
+  +    commands.OptionType.ROLE: snowflakes.Snowflake,
+  +    commands.OptionType.MENTIONABLE: snowflakes.Snowflake,
+  +}
+  +
+  +        option_type = commands.OptionType(payload["type"])
+  +        value = payload.get("value")
+  +        if modifier := _interaction_option_type_mapping.get(option_type):
+  +            value = modifier(value)
+  +
+  -            type=commands.OptionType(payload["type"]),
+  -            value=payload.get("value"),
+  +            type=option_type,
+  +            value=value,
+  -    value: typing.Union[str, int, bool, None] = attr.field(repr=True)
+  +    value: typing.Union[snowflakes.Snowflake, str, int, bool, None] = attr.field(repr=True)
+F2P: ['tests/hikari/impl/test_entity_factory.py::TestEntityFactoryImpl::test_deserialize_command_interaction']
+REAL_IS(4):
+  assert option.type is commands.OptionType.SUB_COMMAND
+  -        assert sub_option.type is commands.OptionType.INTEGER
+  +        assert sub_option1.type is commands.OptionType.INTEGER
+  +        assert sub_option2.type is commands.OptionType.USER
+
+
+### v2 aio-libs__aiohttp-7907 total=181 F2P=1 P2P=180 repo=aio-libs/aiohttp
+PROB: Response connection is None on 3.9.0 ### Describe the bug  Sorry for the not easily reproducible bug, but since 3.9.0 connection upgrading doesn't work   ### To Reproduce  I experienced the bug using aiodocker exec, so forgive me for indirect reproduce of the bug: * get a running docker container in aiodocker * `exec_ = await container.exec(command)` (the command doesn't matter, can be ls) * `async with exec_.start(detach=False) as stream:` * the above line will fail  ### Expected behavior  I used aiodocker version 0.21.0, when using aiohttp version 3.8.6 it works well (but uninstallable for python3.12), on version 3.9.0 it fails with  Status code: 101 (https://github.com/aio-
+PATCH_CHG(24):
+  +Fixed a regression where connection may get closed during upgrade. -- by :user:`Dreamsorcerer`
+  -        if self._connection is not None:
+  -            # websocket, protocol could be None because
+  -            # connection could be detached
+  -            if (
+  -                self._connection.protocol is not None
+  -                and self._connection.protocol.upgraded
+  -            ):
+  -                return
+  -
+  -            self._release_connection()
+  +        # protocol could be None because connection could be detached
+  +        protocol = self._connection and self._connection.protocol
+  +        if protocol is not None and protocol.upgraded:
+  +            return
+  +        self._release_connection()
+  -        await self._wait_released()  # Underlying connection released
+  +        protocol = self._connection and self._connection.protocol
+  +        if protocol is None or not protocol.upgraded:
+  +            await self._wait_released()  # Underlying connection released
+F2P: ['tests/test_client_functional.py::test_upgrade_connection_not_released_after_read[pyloop]']
+REAL_IS(1):
+  +    assert resp.connection is not None
+
+
+### v2 aio-libs__aiohttp-7908 total=181 F2P=1 P2P=180 repo=aio-libs/aiohttp
+PROB: Response connection is None on 3.9.0 ### Describe the bug  Sorry for the not easily reproducible bug, but since 3.9.0 connection upgrading doesn't work   ### To Reproduce  I experienced the bug using aiodocker exec, so forgive me for indirect reproduce of the bug: * get a running docker container in aiodocker * `exec_ = await container.exec(command)` (the command doesn't matter, can be ls) * `async with exec_.start(detach=False) as stream:` * the above line will fail  ### Expected behavior  I used aiodocker version 0.21.0, when using aiohttp version 3.8.6 it works well (but uninstallable for python3.12), on version 3.9.0 it fails with  Status code: 101 (https://github.com/aio-
+PATCH_CHG(24):
+  +Fixed a regression where connection may get closed during upgrade. -- by :user:`Dreamsorcerer`
+  -        if self._connection is not None:
+  -            # websocket, protocol could be None because
+  -            # connection could be detached
+  -            if (
+  -                self._connection.protocol is not None
+  -                and self._connection.protocol.upgraded
+  -            ):
+  -                return
+  -
+  -            self._release_connection()
+  +        # protocol could be None because connection could be detached
+  +        protocol = self._connection and self._connection.protocol
+  +        if protocol is not None and protocol.upgraded:
+  +            return
+  +        self._release_connection()
+  -        await self._wait_released()  # Underlying connection released
+  +        protocol = self._connection and self._connection.protocol
+  +        if protocol is None or not protocol.upgraded:
+  +            await self._wait_released()  # Underlying connection released
+F2P: ['tests/test_client_functional.py::test_upgrade_connection_not_released_after_read[pyloop]']
+REAL_IS(1):
+  +    assert resp.connection is not None
+
+
+### v2 aio-libs__aiohttp-8038 total=184 F2P=4 P2P=180 repo=aio-libs/aiohttp
+PROB: Client attempts to reuse a closed connection if "Connection: keep-alive" header was received ### Describe the bug  When making requests through a ClientSession, the session will try to reuse connections, where the "Connection: keep-alive" http header was last sent, even when the connection was closed on a lower layer.  Let's say we make a request to server.com. In the response, server.com will include (misleadingly) the header "Connection: keep-alive", but will close the connection, e.g. by closing the socket. When we try to make a second request to server.com, `ClientSession` (or the underlying connector) will  reuse this connection, even though it is closed, and the request will thus fai
+PATCH_CHG(11):
+  +Added a feature to retry closed connections automatically for idempotent methods. -- by :user:`Dreamsorcerer`
+  +# https://www.rfc-editor.org/rfc/rfc9110#section-9.2.2
+  +IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE", "PUT", "DELETE"})
+  +
+  +                # https://www.rfc-editor.org/rfc/rfc9112.html#name-retrying-requests
+  +                retry_persistent_connection = method in IDEMPOTENT_METHODS
+  +                    except (ClientOSError, ServerDisconnectedError):
+  +                        if retry_persistent_connection:
+  +                            retry_persistent_connection = False
+  +                            continue
+  +                        raise
+F2P: ['tests/test_client_functional.py::test_keepalive_timeout_sync_sleep', 'tests/test_client_functional.py::test_HTTP_304[pyloop]', 'tests/test_client_functional.py::test_handle_keepalive_on_closed_connection', 'tests/test_client_functional.py::test_error_in_performing_request[pyloop]']
+REAL_IS(1):
+  +            assert closed_conn is not new_conn
+
+
+### v2 dask__dask-10485 total=184 F2P=184 P2P=0 repo=dask/dask
+PROB: Stricter data type for dask keys - Follow up to dask/distributed#8083  - Blocks https://github.com/dask/distributed/issues/8130  dask/distributed#8083 recently redefined dask keys from any hashable to bytes, float, int, str, or tuples thereof.  While it is possible to run dask/dask on schedulers other than distributed, I don't think it's a healthy idea to have stricter restrictions in dask/distributed than in dask/dask.  # Actions 1. Create a new type alias, ```python Key: TypeAlias = Union[str, bytes, int, float, tuple["Key", ...]] ``` 2. Search the dask/dask codebase for all instances of `Hashable` and replace wherever applicable with `Key` 3. Update documentation, e.g. https:
+PATCH_CHG(30):
+  -        uses: actions/checkout@v3.6.0
+  +        uses: actions/checkout@v4.0.0
+  -        uses: actions/checkout@v3.6.0
+  +        uses: actions/checkout@v4.0.0
+  -      - uses: actions/checkout@v3.6.0
+  +      - uses: actions/checkout@v4.0.0
+  -      - uses: actions/checkout@v3.6.0
+  +      - uses: actions/checkout@v4.0.0
+  -      - uses: actions/checkout@v3.6.0
+  +      - uses: actions/checkout@v4.0.0
+  -      - uses: actions/checkout@v3.6.0
+  +      - uses: actions/checkout@v4.0.0
+  -        uses: actions/checkout@v3.6.0
+  +        uses: actions/checkout@v4.0.0
+  -    Hashable,
+  +    Sequence,
+  +from dask.typing import Graph, Key, NestedKeys
+  -    def __dask_graph__(self):
+  +    def __dask_graph__(self) -> Graph:
+  -    def __dask_layers__(self):
+F2P: ['dask/tests/test_base.py::test_normalize_function', 'dask/tests/test_base.py::test_tokenize', 'dask/tests/test_base.py::test_tokenize_numpy_array_consistent_on_values', 'dask/tests/test_base.py::test_tokenize_numpy_array_supports_uneven_sizes', 'dask/tests/test_base.py::test_tokenize_discontiguous_numpy_array', 'dask/tests/test_base.py::test_tokenize_numpy_datetime', 'dask/tests/test_base.py::test_tokenize_numpy_scalar', 'dask/tests/test_base.py::test_tokenize_numpy_scalar_string_rep']
+REAL_IS(1):
+  assert subs(df, "x", 1) is df
+
+
+### v2 enthought__traits-1335 total=186 F2P=4 P2P=182 repo=enthought/traits
+PROB: Don't hard-code class names in TraitListEvent.__repr__ and similar __repr__ implementations We currently hardcode the `TraitListEvent` class name in `TraitListEvent.__repr__`; instead, we should use `self.__class__.__name__`, so that subclasses don't have a misleading `__repr__`. See https://github.com/enthought/traits/blob/786a39ee9a94f925e10a602b84fdc17b1895816a/traits/trait_list_object.py#L57  I haven't checked other `__repr__`s, but we will almost certainly need to update `TraitDictEvent` and `TraitSetEvent` similarly, and possibly others, too.  Ref: enthought/envisage#352
+PATCH_CHG(30):
+  -        template = "<AdaptationOffer: '{from_}' -> '{to}'>"
+  -
+  -        from_ = self.from_protocol_name
+  -        to = self.to_protocol_name
+  -
+  -        return template.format(from_=from_, to=to)
+  +        return (f"<{self.__class__.__name__}: '{self.from_protocol_name}' "
+  +                f"-> '{self.to_protocol_name}'>")
+  -            "{event.__class__.__name__}("
+  -            "object={event.object!r}, "
+  -            "removed={event.removed!r}, "
+  -            "added={event.added!r}"
+  -            ")".format(event=self)
+  +            f"{self.__class__.__name__}("
+  +            f"object={self.object!r}, "
+  +            f"removed={self.removed!r}, "
+  +            f"added={self.added!r})"
+  -            "{event.__class__.__name__}("
+  -            "object={event.object!r}, "
+  -            "index={event.index!r}, "
+F2P: ['traits/tests/test_trait_dict_object.py::TestTraitDictEvent::test_trait_dict_event_subclass_str_representation', 'traits/tests/test_trait_list_object.py::TestTraitListEvent::test_trait_list_event_subclass_str_representation', 'traits/tests/test_trait_set_object.py::TestTraitSetEvent::test_trait_set_event_subclass_str_representation', 'traits/util/tests/test_weakidddict.py::TestWeakIDDict::test_weak_id_key_dict_str_representation']
+REAL_IS(1):
+  self.assertIs(to_protocol, IFoo)
+
+
+### v2 aio-libs__aiohttp-11289 total=188 F2P=169 P2P=19 repo=aio-libs/aiohttp
+PROB: Regression when closing session ### Describe the bug  [V3.12.4](https://github.com/aio-libs/aiohttp/releases/tag/v3.12.4) Introduced a regression, in which, session with some proxies can't be closed. Originally posted: https://github.com/aio-libs/aiohttp/discussions/11261  ### To Reproduce  *Done* never prints here: ```python import asyncio from aiohttp import ClientSession  async def main():     proxy = ""     session = ClientSession(proxy=proxy)      async with session.get(         "https://api.ipify.org/",     ) as response:         ip = await response.text()     print("Closing session...")     await session.close()     print("Done")     return ip  asyncio.run(main()) ``` Using `async wit
+PATCH_CHG(23):
+  +Fixed :py:meth:`ClientSession.close() <aiohttp.ClientSession.close>` hanging indefinitely when using HTTPS requests through HTTP proxies -- by :user:`bdraco`.
+  +class _ConnectTunnelConnection(Connection):
+  +    """Special connection wrapper for CONNECT tunnels that must never be pooled.
+  +
+  +    This connection wraps the proxy connection that will be upgraded with TLS.
+  +    It must never be released to the pool because:
+  +    1. Its 'closed' future will never complete, causing session.close() to hang
+  +    2. It represents an intermediate state, not a reusable connection
+  +    3. The real connection (with TLS) will be created separately
+  +    """
+  +
+  +    def release(self) -> None:
+  +        """Do nothing - don't pool or close the connection.
+  +
+  +        These connections are an intermediate state during the CONNECT tunnel
+  +        setup and will be cleaned up naturally after the TLS upgrade. If they
+  +        were to be pooled, they would never be properly closed, causing
+  +        session.close() to wait forever for their 'closed' future.
+  +        """
+  +
+F2P: ['tests/test_connector.py::test_release_waiter_first_available[pyloop]', 'tests/test_connector.py::test_release_waiter_no_available[pyloop]', 'tests/test_connector.py::test_async_context_manager[pyloop]', 'tests/test_connector.py::test_tcp_connector_resolve_host[pyloop]', 'tests/test_connector.py::test_tcp_connector_dns_throttle_requests_cancelled_when_close[pyloop]', 'tests/test_connector.py::test_tcp_connector_clear_dns_cache_bad_args[pyloop]', 'tests/test_connector.py::test_tcp_connector_ctor[pyloop]', 'tests/test_connector.py::test_dns_error[pyloop]']
+REAL_IS(3):
+  +    assert conn._protocol is protocol
+  +    assert conn._protocol is protocol
+  +        assert connector is not None
+
+
+### v2 hdmf-dev__hdmf-751 total=189 F2P=3 P2P=186 repo=hdmf-dev/hdmf
+PROB: [Feature]: Differentiate between calling Container __init__ by user vs during object construction ### What would you like to see added to HDMF?  In PyNWB/HDMF, we often want to check that input parameters to an object's __init__ method are compliant with the schema. Over time, w may add new checks in __init__ that raise errors when a noncompliant set of parameters is provided. However, if this noncompliant set of parameters were allowed to be written by a previous version of the API, then files exist in the wild with this noncompliant set of parameters. Reading these files involves constructing the object using the object's constructor, which now raises an error. Even though these files are 
+PATCH_CHG(30):
+  +- Added `AbstractContainer._in_construct_mode` that is set and modified only by the ObjectMapper when constructing an
+  +  object from a builder read from a file. Subclasses of `AbstractContainer` can check `_in_construct_mode`
+  +  during the initialization phase as part of ``__init__`` to distinguish between actions during construction
+  +  (i.e., read from disk) vs. creation by the user, e.g., to determine whether to raise a warning or error when
+  +  encountering invalid data to support reading and correcting data that is invalid while preventing creation
+  +  of new data that is invalid. @rly (#751)
+  -        assert(np.all(np.array(table.index) == np.array(ref_table.index) + 1))
+  +        assert np.all(np.array(table.index) == np.array(ref_table.index) + 1)
+  -                assert(np.all(np.array(table[c]) == np.array(ref_table[c]) + 1))
+  +                assert np.all(np.array(table[c]) == np.array(ref_table[c]) + 1)
+  -                assert(np.all(np.array(table[c]) == np.array(ref_table[c])))
+  +                assert np.all(np.array(table[c]) == np.array(ref_table[c]))
+  +  docs/source/tutorials/
+  +  docs/_build/
+  -  docs/source/tutorials/*:E402,T001
+  -        obj = cls.__new__(cls, container_source=container_source, parent=parent, object_id=object_id)
+  +        obj = cls.__new__(cls, container_source=container_source, parent=parent, object_id=object_id,
+  +                          in_construct_mode=True)
+  +        # obj has been created and is in construction mode, indicating that the object is being constructed by
+  +        # the automatic construct process during read, rather than by the user
+F2P: ['tests/unit/test_container.py::TestContainer::test_init', 'tests/unit/test_container.py::TestContainer::test_new', 'tests/unit/test_container.py::TestContainer::test_new_construct_mode']
+REAL_IS(2):
+  self.assertIs(child_obj.parent, parent_obj)
+  self.assertIs(parent_obj.children[0], child_obj)
+
+
+### v2 tornadoweb__tornado-2162 total=189 F2P=189 P2P=0 repo=tornadoweb/tornado
+PROB: X-Forwarded-Proto Multiple Values I have been investigating an issue with AWS Application Load Balancers forwarding traffic to a JupyterHub instance (that uses Tornado) - and it appears that the AWS ALB can forward traffic with the following header:  `X-Forwarded-Proto: https,https`  However, Tornado only appears to be able to support a singular value:  https://github.com/tornadoweb/tornado/blob/d4094a0c2a7cddc654381c162ee7786d4bf8453b/tornado/httpserver.py#L286  It seems a similar issue affected ASP.NET at one point:  https://github.com/aspnet/BasicMiddleware/issues/18  Although Mozilla document it as only having a single value:  https://developer.mozilla.org/en-US/docs/Web/HT
+PATCH_CHG(30):
+  +class DummyAsyncHandler(web.RequestHandler):
+  +    @gen.coroutine
+  +    def get(self):
+  +        raise web.Finish('ok\n')
+  +
+  +
+  +
+  +    (r'/dummyasync/', DummyAsyncHandler),
+  +    yield client.fetch('http://127.0.0.1:8888/dummyasync/', raise_error=False)
+  -    gc.collect()
+  +
+  +def _create_future():
+  +    future = Future()
+  +    # Fixup asyncio debug info by removing extraneous stack entries
+  +    source_traceback = getattr(future, "_source_traceback", ())
+  +    while source_traceback:
+  +        # Each traceback entry is equivalent to a
+  +        # (filename, self.lineno, self.name, self.line) tuple
+  +        filename = source_traceback[-1][0]
+  +        if filename == __file__:
+F2P: ['tornado/test/gen_test.py::GenEngineTest::test_arguments', 'tornado/test/gen_test.py::GenEngineTest::test_async_raise_return', 'tornado/test/gen_test.py::GenEngineTest::test_async_raise_return_value', 'tornado/test/gen_test.py::GenEngineTest::test_async_raise_return_value_tuple', 'tornado/test/gen_test.py::GenEngineTest::test_bogus_yield', 'tornado/test/gen_test.py::GenEngineTest::test_bogus_yield_tuple', 'tornado/test/gen_test.py::GenEngineTest::test_exception_in_task_phase1', 'tornado/test/gen_test.py::GenEngineTest::test_exception_in_task_phase2']
+REAL_IS(1):
+  self.assertIs(self.local_ref(), None)
+
+
+### v2 stfc__psyclone-2147 total=190 F2P=26 P2P=164 repo=stfc/PSyclone
+PROB: [nemo] PSyclone loses ‘ELEMENTAL’ and ‘IMPURE ELEMENTAL’ subroutine prefixes Simon has reported that:  PSyclone appears to falsely drop ‘ELEMENTAL’ and ‘IMPURE ELEMENTAL’ subroutine prefixes. ‘ELEMENTAL’ and ‘IMPURE ELEMENTAL’ prefixes have recently been added to some functions in NEMO ‘main’. In builds without AGRIF processing these functions appear to be reproduced correctly by PSyclone, but after AGRIF processing the prefixes additionally apply to subroutines and seem to disappear during PSyclone processing.  We've discussed having the `ELEMENTAL` property previously. I guess this would need an extension to `RoutineSymbol`.  ![image](https://user-images.githubusercontent.com/1740921
+PATCH_CHG(30):
+  +	158) PR #2147 for #2119. Add elemental and pure routine attributes.
+  +
+  -# Modified S. Siso and N. Nobre, STFC Daresbury Lab
+  +# Modified A. R. Porter, S. Siso and N. Nobre, STFC Daresbury Lab
+  -from __future__ import absolute_import
+  -        array_reference = node.parent
+  -        array_index = node.parent.indices.index(node)
+  +        :raises TransformationError: if the node argument contains a \
+  +            non-elemental Operation or Call.
+  -        # Does the rhs of the assignment have any operations that are not
+  +        # Does the rhs of the assignment have any operations/calls that are not
+  -        for operation in assignment.rhs.walk(Operation):
+  -            # Allow non elemental UBOUND and LBOUND
+  -            if operation.operator is BinaryOperation.Operator.LBOUND:
+  -                continue
+  -            if operation.operator is BinaryOperation.Operator.UBOUND:
+  -                continue
+  -            if not operation.is_elemental():
+  -                raise TransformationError(
+  -                    f"Error in NemoArrayRange2LoopTrans transformation. This "
+F2P: ['src/psyclone/tests/domain/common/extract_driver_creator_test.py::test_driver_creation_import_modules', 'src/psyclone/tests/domain/nemo/transformations/nemo_arrayrange2loop_trans_test.py::test_validate_with_a_function_call', 'src/psyclone/tests/domain/nemo/transformations/nemo_arrayrange2loop_trans_test.py::test_validate_array_non_elemental_operator', 'src/psyclone/tests/psyir/frontend/fparser2_subroutine_handler_test.py::test_supported_prefix[function-elemental]', 'src/psyclone/tests/psyir/frontend/fparser2_subroutine_handler_test.py::test_supported_prefix[function-pure]', 'src/psyclone/tests/psyir/frontend/fparser2_subroutine_handler_test.py::test_supported_prefix[function-impure]', 'src/psyclone/tests/psyir/frontend/fparser2_subroutine_handler_test.py::test_supported_prefix[function-pure', 'src/psyclone/tests/psyir/frontend/fparser2_subroutine_handler_test.py::test_supported_prefix[subroutine-elemental]']
+REAL_IS(5):
+  +    assert rsym.is_pure is fn_prefix.startswith("pure")
+  assert node2.symbol_table is not node.symbol_table
+  assert tam_sym.datatype is tam_type
+  assert sym2.datatype is INTEGER_TYPE
+  assert type(asym) is RoutineSymbol
+
+
+### v2 wntrblm__nox-935 total=191 F2P=10 P2P=181 repo=wntrblm/nox
+PROB: URL dependencies are sometimes silently ignored in PEP 723 noxfiles ### Current Behavior  URL dependencies in a noxfile's PEP 723 `dependencies` are silently ignored in some cases.  ### Expected Behavior  Nox should not ignore any PEP 723 dependencies.  ### Steps To Reproduce  Minimal reproducer:  1.  `noxfile.py`:      ```python     # /// script     # requires-python = ">= 3.9"     # dependencies = [     #     "nox @ git+https://github.com/wntrblm/nox.git@2024.10.09",     # ]     # ///      import importlib.metadata      import nox       @nox.session(python=False)     def a(session: nox.Session) -> None:         print(importlib.metadata.version("nox"))       if __name__ == "__main__":      
+PATCH_CHG(30):
+  -def setup_action(input_: str) -> None:
+  +def setup_action(input_: str, *, self_version: str = "3.12") -> None:
+  -    # we want to install python 3.11 last to ease nox set-up
+  -    if "3.11" in cpython_versions_filtered:
+  -        index = cpython_versions_filtered.index("3.11")
+  +    # we want to install our own self version last to ease nox set-up
+  +    if self_version in cpython_versions_filtered:
+  +        index = cpython_versions_filtered.index(self_version)
+  -        versions.append("3.11")
+  +        versions.append(self_version)
+  -    default: "3.8, 3.9, 3.10, 3.11, 3.12, 3.13"
+  +    default: "3.9, 3.10, 3.11, 3.12, 3.13"
+  -        python-version: "3.8 - 3.12"
+  +        python-version: "3.9 - 3.13"
+  -   Also, uv tries very hard to cache, so you might want
+  -   ``--reinstall-package=<package>`` in your pip install command for the local
+  -   package, or preferably set ``tool.uv.reinstall-package`` in your
+  -   pyproject.toml/uv.toml.
+  -
+  +import urllib.parse
+F2P: ['tests/test__cli.py::test_url_dependency', 'tests/test__cli.py::test_dependencies_with_url', 'tests/test_action_helper.py::test_setup_action[3.7,', 'tests/test_action_helper.py::test_setup_action[]', 'tests/test_action_helper.py::test_setup_action[~3.12.0-0]', 'tests/test_action_helper.py::test_setup_action[3.11.4]', 'tests/test_action_helper.py::test_setup_action[3.9-dev,pypy3.9-nightly]', 'tests/test_action_helper.py::test_setup_action[3.12,']
+REAL_IS(1):
+  assert answer is results
+
+
+### v2 aio-libs__aiohttp-11291 total=191 F2P=172 P2P=19 repo=aio-libs/aiohttp
+PROB: Regression when closing session ### Describe the bug  [V3.12.4](https://github.com/aio-libs/aiohttp/releases/tag/v3.12.4) Introduced a regression, in which, session with some proxies can't be closed. Originally posted: https://github.com/aio-libs/aiohttp/discussions/11261  ### To Reproduce  *Done* never prints here: ```python import asyncio from aiohttp import ClientSession  async def main():     proxy = ""     session = ClientSession(proxy=proxy)      async with session.get(         "https://api.ipify.org/",     ) as response:         ip = await response.text()     print("Closing session...")     await session.close()     print("Done")     return ip  asyncio.run(main()) ``` Using `async wit
+PATCH_CHG(23):
+  +Fixed :py:meth:`ClientSession.close() <aiohttp.ClientSession.close>` hanging indefinitely when using HTTPS requests through HTTP proxies -- by :user:`bdraco`.
+  +class _ConnectTunnelConnection(Connection):
+  +    """Special connection wrapper for CONNECT tunnels that must never be pooled.
+  +
+  +    This connection wraps the proxy connection that will be upgraded with TLS.
+  +    It must never be released to the pool because:
+  +    1. Its 'closed' future will never complete, causing session.close() to hang
+  +    2. It represents an intermediate state, not a reusable connection
+  +    3. The real connection (with TLS) will be created separately
+  +    """
+  +
+  +    def release(self) -> None:
+  +        """Do nothing - don't pool or close the connection.
+  +
+  +        These connections are an intermediate state during the CONNECT tunnel
+  +        setup and will be cleaned up naturally after the TLS upgrade. If they
+  +        were to be pooled, they would never be properly closed, causing
+  +        session.close() to wait forever for their 'closed' future.
+  +        """
+  +
+F2P: ['tests/test_connector.py::test_del_empty_connector[pyloop]', 'tests/test_connector.py::test_tcp_connector_dns_throttle_requests[pyloop]', 'tests/test_connector.py::test_tcp_connector_resolve_host[pyloop]', 'tests/test_connector.py::test_get_expired[pyloop]', 'tests/test_connector.py::test_exception_during_connection_queued_tracing[pyloop]', 'tests/test_connector.py::test_release_waiter_skip_done_waiter[pyloop]', 'tests/test_connector.py::test__release_acquired_per_host1[pyloop]', 'tests/test_connector.py::test_release[pyloop]']
+REAL_IS(3):
+  +    assert conn._protocol is protocol
+  +    assert conn._protocol is protocol
+  +        assert connector is not None
+
+
+### v2 aio-libs__aiohttp-11292 total=191 F2P=172 P2P=19 repo=aio-libs/aiohttp
+PROB: Regression when closing session ### Describe the bug  [V3.12.4](https://github.com/aio-libs/aiohttp/releases/tag/v3.12.4) Introduced a regression, in which, session with some proxies can't be closed. Originally posted: https://github.com/aio-libs/aiohttp/discussions/11261  ### To Reproduce  *Done* never prints here: ```python import asyncio from aiohttp import ClientSession  async def main():     proxy = ""     session = ClientSession(proxy=proxy)      async with session.get(         "https://api.ipify.org/",     ) as response:         ip = await response.text()     print("Closing session...")     await session.close()     print("Done")     return ip  asyncio.run(main()) ``` Using `async wit
+PATCH_CHG(23):
+  +Fixed :py:meth:`ClientSession.close() <aiohttp.ClientSession.close>` hanging indefinitely when using HTTPS requests through HTTP proxies -- by :user:`bdraco`.
+  +class _ConnectTunnelConnection(Connection):
+  +    """Special connection wrapper for CONNECT tunnels that must never be pooled.
+  +
+  +    This connection wraps the proxy connection that will be upgraded with TLS.
+  +    It must never be released to the pool because:
+  +    1. Its 'closed' future will never complete, causing session.close() to hang
+  +    2. It represents an intermediate state, not a reusable connection
+  +    3. The real connection (with TLS) will be created separately
+  +    """
+  +
+  +    def release(self) -> None:
+  +        """Do nothing - don't pool or close the connection.
+  +
+  +        These connections are an intermediate state during the CONNECT tunnel
+  +        setup and will be cleaned up naturally after the TLS upgrade. If they
+  +        were to be pooled, they would never be properly closed, causing
+  +        session.close() to wait forever for their 'closed' future.
+  +        """
+  +
+F2P: ['tests/test_connector.py::test_connector_context_manager[pyloop]', 'tests/test_connector.py::test_release_acquired[pyloop]', 'tests/test_connector.py::test_release_waiter_first_available[pyloop]', 'tests/test_connector.py::test_release_already_closed[pyloop]', 'tests/test_connector.py::test__release_acquired_per_host3[pyloop]', 'tests/test_connector.py::test_close[pyloop]', 'tests/test_connector.py::test_del_empty_connector[pyloop]', 'tests/test_connector.py::test__release_acquired_per_host1[pyloop]']
+REAL_IS(3):
+  +    assert conn._protocol is protocol
+  +    assert conn._protocol is protocol
+  +        assert connector is not None
+
+
+### v2 celery__celery-8143 total=193 F2P=3 P2P=190 repo=celery/celery
+PROB: Unnamed add_periodic_task unexpectedly override another periodic task <!-- Please fill this template entirely and do not erase parts of it. We reserve the right to close without a response enhancement requests which are incomplete. --> # Checklist <!-- To check an item on the list replace [ ] with [x]. -->  - [ ] I have checked the [issues list](https://github.com/celery/celery/issues?q=is%3Aissue+label%3A%22Issue+Type%3A+Enhancement%22+-label%3A%22Category%3A+Documentation%22)   for similar or identical enhancement to an existing feature. - [ ] I have checked the [pull requests list](https://github.com/celery/celery/pulls?q=is%3Apr+label%3A%22Issue+Type%3A+Enhancement%22+-label%
+PATCH_CHG(30):
+  +            elif isinstance(expires, str):
+  +                expires_s = (maybe_make_aware(
+  +                    datetime.fromisoformat(expires)) - self.now()).total_seconds()
+  -            self._add_periodic_task(*pending_beat.popleft())
+  +            periodic_task_args, periodic_task_kwargs = pending_beat.popleft()
+  +            self._add_periodic_task(*periodic_task_args, **periodic_task_kwargs)
+  +        """
+  +        Add a periodic task to beat schedule.
+  +
+  +        Celery beat store tasks based on `sig` or `name` if provided. Adding the
+  +        same signature twice make the second task override the first one. To
+  +        avoid the override, use distinct `name` for them.
+  +        """
+  -            self._add_periodic_task(key, entry)
+  +            self._add_periodic_task(key, entry, name=name)
+  -            self._pending_periodic_tasks.append((key, entry))
+  +            self._pending_periodic_tasks.append([(key, entry), {"name": name}])
+  -    def _add_periodic_task(self, key, entry):
+  +    def _add_periodic_task(self, key, entry, name=None):
+  +        if name is None and key in self._conf.beat_schedule:
+F2P: ['t/unit/app/test_app.py::test_App::test_add_periodic_task_unexpected_override', 't/unit/app/test_app.py::test_App::test_send_task_expire_as_string', 't/unit/tasks/test_tasks.py::test_task_retries::test_retry_with_unpickleable_exception']
+REAL_IS(1):
+  assert main_backend is thread_backend
+
+
+### gym pandas-dev__pandas-49933 total=194 F2P=12 P2P=182 repo=pandas-dev/pandas
+PROB: BUG: Incorrect IntervalIndex.is_overlapping ### Pandas version checks  - [X] I have checked that this issue has not already been reported.  - [X] I have confirmed this bug exists on the [latest version](https://pandas.pydata.org/docs/whatsnew/index.html) of pandas.  - [ ] I have confirmed this bug exists on the main branch of pandas.   ### Reproducible Example  ```python import pandas as pd  a = [ 10, 15, 20, 25, 30, 35, 40, 45, 45, 50, 55, 60, 65, 70, 75, 80, 85 ] b = [ 15, 20, 25, 30, 35, 40, 45, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90 ] #                             ^^^^^^^^^^ (overlapping region)  idx_1 = pd.IntervalIndex.from_arrays(a, b) print(idx_1.is_overlapping) # prints True
+PATCH_CHG(5):
+  --
+  +- Bug in :meth:`IntervalIndex.is_overlapping` incorrect output if interval has duplicate left boundaries (:issue:`49581`)
+  -            self._left_sorter = np.argsort(self.left)
+  +            values = [self.right, self.left]
+  +            self._left_sorter = np.lexsort(values)
+F2P: ['pandas/tests/indexes/interval/test_interval.py::TestIntervalIndex::test_is_overlapping[right-start2-shift2-na_value2]', 'pandas/tests/indexes/interval/test_interval.py::TestIntervalIndex::test_is_overlapping[both-0-1-nan]', 'pandas/tests/indexes/interval/test_interval.py::TestIntervalIndex::test_is_overlapping[left-start2-shift2-na_value2]', 'pandas/tests/indexes/interval/test_interval.py::TestIntervalIndex::test_is_overlapping[left-start1-shift1-na_value1]', 'pandas/tests/indexes/interval/test_interval.py::TestIntervalIndex::test_is_overlapping[neither-start2-shift2-na_value2]', 'pandas/tests/indexes/interval/test_interval.py::TestIntervalIndex::test_is_overlapping[right-0-1-nan]', 'pandas/tests/indexes/interval/test_interval.py::TestIntervalIndex::test_is_overlapping[left-0-1-nan]', 'pandas/tests/indexes/interval/test_interval.py::TestIntervalIndex::test_is_overlapping[neither-start1-shift1-na_value1]']
+REAL_IS(1):
+  assert result is expected
+
+
+### gym getmoto__moto-4890 total=197 F2P=12 P2P=185 repo=getmoto/moto
+PROB: multi part upload with empty part list should be rejected # Steps to reproduce  ``` from moto import mock_s3 import boto3  bucket = 'mybucket' key = 'test-multi-empty'  if True:     mock_s3().start()          client = boto3.client('s3')     client.create_bucket(         Bucket=bucket,         CreateBucketConfiguration={             'LocationConstraint': 'ap-southeast-2'         },     )  response = boto3.client('s3').create_multipart_upload(     Bucket=bucket,     Key=key, ) id = response['UploadId']  upload = boto3.resource('s3').MultipartUpload(bucket, key, id) print("Completing") upload.complete(     MultipartUpload={         'Parts': []     } ) print("Don
+PATCH_CHG(30):
+  +        if count == 0:
+  +            raise MalformedXML
+  +
+  -            # Differentiate between FakeKey and FakeDeleteMarkers
+  -            if not isinstance(version, FakeKey):
+  -                delete_markers.append(version)
+  -                continue
+  +            # Differentiate between FakeKey and FakeDeleteMarkers
+  +            if not isinstance(version, FakeKey):
+  +                delete_markers.append(version)
+  +                continue
+  +
+  +"""Exceptions raised by the s3control service."""
+  +from moto.core.exceptions import RESTError
+  +
+  +
+  +ERROR_WITH_ACCESS_POINT_NAME = """{% extends 'wrapped_single_error' %}
+  +{% block extra %}<AccessPointName>{{ name }}</AccessPointName>{% endblock %}
+  +"""
+  +
+F2P: ['tests/test_s3/test_s3_multipart.py::test_complete_multipart_with_empty_partlist', 'tests/test_s3control/test_s3control_access_points.py::test_get_access_point_minimal', 'tests/test_s3control/test_s3control_access_points.py::test_delete_access_point', 'tests/test_s3control/test_s3control_accesspoint_policy.py::test_get_access_point_policy_status', 'tests/test_s3control/test_s3control_access_points.py::test_get_unknown_access_point', 'tests/test_s3control/test_s3control_accesspoint_policy.py::test_get_unknown_access_point_policy_status', 'tests/test_s3control/test_s3control_access_points.py::test_get_access_point_full', 'tests/test_s3control/test_s3control_accesspoint_policy.py::test_get_access_point_policy']
+REAL_IS(2):
+  -    assert "The nextToken provided is invalid" in inte.value.message
+  +    assert "The nextToken provided is invalid" in inte.value.message
+
+
+### v2 repobee__repobee-166 total=199 F2P=199 P2P=0 repo=repobee/repobee
+PROB: Enable collaboration repos While I don't personally have much use of this, I'd imagine it could be interesting for other courses. It basically just boils down to augmenting the student list (maybe listing multiple students on one line in the list) and also the repo name generation. The `GitHubAPI.ensure_teams_and_members` is already prepared to handle multiple students per team, so there's really only a need to change top level functionality in the `commands` and `cli` modules.  Things to consider:  * Repo name generation could simply be `<student_1>[-<student_i>...]-<master_repo_name>` * Student names should be sorted lexicographically so order of arguments doesn't matter * Potentiall
+PATCH_CHG(30):
+  -version = "1.2"
+  +version = "1.3"
+  -release = "1.2.1"
+  +release = "1.3.0"
+  +.. note::
+  +
+  +   **Since v1.3.0:** It is now possible to specify groups of students to get
+  +   access to the same repos by putting multiple usernames on the same line,
+  +   separated by spaces. For example, the following file will put `spam` and
+  +   `ham` in the same group.
+  +
+  +   .. code-block:: bash
+  +
+  +      spam ham
+  +      eggs
+  +
+  +   See :ref:`groups` for details.
+  +
+  +.. _groups:
+  +
+F2P: ['tests/test_cli.py::TestDispatchCommand::test_raises_on_invalid_subparser_value', 'tests/test_cli.py::TestDispatchCommand::test_no_crash_on_valid_args[setup]', 'tests/test_cli.py::TestDispatchCommand::test_no_crash_on_valid_args[update]', 'tests/test_cli.py::TestDispatchCommand::test_no_crash_on_valid_args[clone]', 'tests/test_cli.py::TestDispatchCommand::test_no_crash_on_valid_args[migrate]', 'tests/test_cli.py::TestDispatchCommand::test_no_crash_on_valid_args[open-issues]', 'tests/test_cli.py::TestDispatchCommand::test_no_crash_on_valid_args[close-issues]', 'tests/test_cli.py::TestDispatchCommand::test_no_crash_on_valid_args[list-issues]']
+REAL_IS(1):
+  +        assert "generated Team/Repository name is too long" in str(exc_info)
+
+
+### v2 aio-libs__aiohttp-8632 total=200 F2P=4 P2P=196 repo=aio-libs/aiohttp
+PROB: Error while trying to use unix socket, when `aiohttp`>=3.10 ## Long story short  <!-- Please describe your problem and why the fix is important. -->  * Expected behaviour: Communicating via unix socket should work. * Actual behaviour: Error. Its traceback: ``` Traceback (most recent call last):   File "/tmp/aiodocker_fail/example.py", line 12, in <module>     asyncio.run(main())   File "/usr/lib/python3.11/asyncio/runners.py", line 190, in run     return runner.run(main)            ^^^^^^^^^^^^^^^^   File "/usr/lib/python3.11/asyncio/runners.py", line 118, in run     return self._loop.run_until_complete(task)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^   File "/usr/lib/pyt
+PATCH_CHG(30):
+  +Fixed connecting to ``npipe://``, ``tcp://``, and ``unix://`` urls -- by :user:`bdraco`.
+  -from .connector import BaseConnector, NamedPipeConnector, TCPConnector, UnixConnector
+  +from .connector import (
+  +    HTTP_AND_EMPTY_SCHEMA_SET,
+  +    BaseConnector,
+  +    NamedPipeConnector,
+  +    TCPConnector,
+  +    UnixConnector,
+  +)
+  -HTTP_SCHEMA_SET = frozenset({"http", "https", ""})
+  -WS_SCHEMA_SET = frozenset({"ws", "wss"})
+  -ALLOWED_PROTOCOL_SCHEMA_SET = HTTP_SCHEMA_SET | WS_SCHEMA_SET
+  -        if url.scheme not in ALLOWED_PROTOCOL_SCHEMA_SET:
+  +        assert self._connector is not None
+  +        if url.scheme not in self._connector.allowed_protocol_schema_set:
+  -                            assert self._connector is not None
+  -                        if scheme not in HTTP_SCHEMA_SET:
+  +                        if scheme not in HTTP_AND_EMPTY_SCHEMA_SET:
+  +EMPTY_SCHEMA_SET = frozenset({""})
+  +HTTP_SCHEMA_SET = frozenset({"http", "https"})
+F2P: ['tests/test_client_session.py::test_ws_connect_unix_socket_allowed_protocols[pyloop-unix]', 'tests/test_connector.py::test_tcp_connector_allowed_protocols[pyloop]', 'tests/test_connector.py::test_base_connector_allows_high_level_protocols[pyloop]', 'tests/test_connector.py::test_unix_connector[pyloop]']
+REAL_IS(3):
+  +    assert session._connector is not None
+  assert session._connector is not None
+  assert loop is conn._loop

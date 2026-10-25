@@ -1,0 +1,75 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "subagent f2-push: causal source read (inner decorator pops cls from the shared closure attrs dict so a reused factory mis-classes the second command; promoting cls to an explicit factory parameter leaves attrs unmutated), pinned tests, command review 2026-10-25",
+  "review_notes": "Reusable decorator factories must not mutate the shared attrs mapping: each application owns its params (is not the sibling application params) and the shared mapping stays reusable. Copy-time identity plus bidirectional isolation are asserted source-bound before and after the repair. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Off-policy scripted demonstration, not a Gemma sample. Layout note: src tree bound via --source-layout src (parent .venv click would shadow the workspace).",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/click/decorators.py",
+        "start_line": 329,
+        "end_line": 385
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nmodule = importlib.import_module('click.decorators')\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert str(actual).endswith('src/click/decorators.py'), actual\nimport click\nclass CustomArgument(click.Argument):\n    pass\nreusable = click.argument('art', cls=CustomArgument)\n@click.command()\n@reusable\ndef foo(arg):\n    pass\n@click.command()\n@reusable\ndef bar(arg):\n    pass\nprint('params_identity', foo.params[0] is bar.params[0])\nassert foo.params[0] is not bar.params[0], 'applications share one param'\nassert isinstance(foo.params[0], CustomArgument)\nassert isinstance(bar.params[0], CustomArgument)\nprint('f2_decorator_isolation', True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "8d7f6977dcddb29cdc8c6505c42af9430434b70a5a720bc7e14f1a6819d323eb"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/click/decorators.py",
+        "old_string": "        f.__click_params__.append(param)  # type: ignore\n\n\ndef argument(*param_decls: str, **attrs: t.Any) -> _Decorator[FC]:\n    \"\"\"Attaches an argument to the command.  All positional arguments are\n    passed as parameter declarations to :class:`Argument`; all keyword\n    arguments are forwarded unchanged (except ``cls``).\n",
+        "new_string": "        f.__click_params__.append(param)  # type: ignore\n\n\ndef argument(\n    *param_decls: str, cls: t.Optional[t.Type[Argument]] = None, **attrs: t.Any\n) -> _Decorator[FC]:\n    \"\"\"Attaches an argument to the command.  All positional arguments are\n    passed as parameter declarations to :class:`Argument`; all keyword\n    arguments are forwarded unchanged (except ``cls``).\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/click/decorators.py",
+        "old_string": "        ``cls``.\n    :param attrs: Passed as keyword arguments to the constructor of ``cls``.\n    \"\"\"\n\n    def decorator(f: FC) -> FC:\n        ArgumentClass = attrs.pop(\"cls\", None) or Argument\n        _param_memo(f, ArgumentClass(param_decls, **attrs))\n        return f\n\n    return decorator\n\n\ndef option(*param_decls: str, **attrs: t.Any) -> _Decorator[FC]:\n    \"\"\"Attaches an option to the command.  All positional arguments are\n    passed as parameter declarations to :class:`Option`; all keyword\n    arguments are forwarded unchanged (except ``cls``).\n",
+        "new_string": "        ``cls``.\n    :param attrs: Passed as keyword arguments to the constructor of ``cls``.\n    \"\"\"\n    if cls is None:\n        cls = Argument\n\n    def decorator(f: FC) -> FC:\n        _param_memo(f, cls(param_decls, **attrs))\n        return f\n\n    return decorator\n\n\ndef option(\n    *param_decls: str, cls: t.Optional[t.Type[Option]] = None, **attrs: t.Any\n) -> _Decorator[FC]:\n    \"\"\"Attaches an option to the command.  All positional arguments are\n    passed as parameter declarations to :class:`Option`; all keyword\n    arguments are forwarded unchanged (except ``cls``).\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/click/decorators.py",
+        "old_string": "        ``cls``.\n    :param attrs: Passed as keyword arguments to the constructor of ``cls``.\n    \"\"\"\n\n    def decorator(f: FC) -> FC:\n        # Issue 926, copy attrs, so pre-defined options can re-use the same cls=\n        option_attrs = attrs.copy()\n        OptionClass = option_attrs.pop(\"cls\", None) or Option\n        _param_memo(f, OptionClass(param_decls, **option_attrs))\n        return f\n\n    return decorator\n",
+        "new_string": "        ``cls``.\n    :param attrs: Passed as keyword arguments to the constructor of ``cls``.\n    \"\"\"\n    if cls is None:\n        cls = Option\n\n    def decorator(f: FC) -> FC:\n        _param_memo(f, cls(param_decls, **attrs))\n        return f\n\n    return decorator\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nmodule = importlib.import_module('click.decorators')\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert str(actual).endswith('src/click/decorators.py'), actual\nimport click\nclass CustomArgument(click.Argument):\n    pass\nreusable = click.argument('art', cls=CustomArgument)\n@click.command()\n@reusable\ndef foo(arg):\n    pass\n@click.command()\n@reusable\ndef bar(arg):\n    pass\nprint('params_identity', foo.params[0] is bar.params[0])\nassert foo.params[0] is not bar.params[0], 'applications share one param'\nassert isinstance(foo.params[0], CustomArgument)\nassert isinstance(bar.params[0], CustomArgument)\nprint('f2_decorator_isolation', True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "8d7f6977dcddb29cdc8c6505c42af9430434b70a5a720bc7e14f1a6819d323eb"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Stop mutating the shared decorator attrs mapping so reused factories keep their class on every application. Source-bound inline observations now pass. Patch submitted."
+}

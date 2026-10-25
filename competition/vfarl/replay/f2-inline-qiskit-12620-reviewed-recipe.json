@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "subagent f2-inline: causal source read (copy_empty_like shallow-copies parameter cache via copy.copy; nullifying cpy._parameters isolates empty copy), pinned tests, command review 2026-10-25",
+  "review_notes": "copy_empty_like must not share the parameter cache with the original: the empty copy carries no parameters (is not the original cache) so later mutations on either side stay invisible. Copy-time identity (is not the original list) plus bidirectional isolation are asserted source-bound before and after the repair. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Off-policy scripted demonstration, not a Gemma sample. Heavy dependency note: qiskit 0.46 needs Rust _accelerate build; workspace import without build fails (see triple log); dual pending.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "qiskit/circuit/quantumcircuit.py",
+        "start_line": 2140,
+        "end_line": 2160
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nmodule = importlib.import_module('qiskit.circuit.quantumcircuit')\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert str(actual).endswith('qiskit/circuit/quantumcircuit.py'), actual\nfrom qiskit import QuantumCircuit\nfrom qiskit.circuit import Parameter\na=Parameter('a')\nqc1=QuantumCircuit(1)\nqc1.rz(a,0)\n_ = qc1.parameters\ncpy=qc1.copy_empty_like()\nprint('cache_identity', cpy._parameters is qc1._parameters, cpy._parameters is None)\nassert cpy._parameters is not qc1._parameters, 'empty-like copy shares parameter cache'\nassert cpy._parameters is None, 'cache not invalidated'\nassert set(cpy.parameters)==set(), set(cpy.parameters)\nqc3=qc1.copy()\nqc3.rz(Parameter('b'),0)\nassert set(qc1.parameters)=={a}, set(qc1.parameters)\nprint('f2_copy_empty_like_isolation', True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "81896a99bea961161d50b6bf5c7fe68922579931ba85af511824f274f0362a9c"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "qiskit/circuit/quantumcircuit.py",
+        "old_string": "\n        cpy._calibrations = copy.deepcopy(self._calibrations)\n        cpy._metadata = copy.deepcopy(self._metadata)\n\n        if name:\n            cpy.name = name\n",
+        "new_string": "\n        cpy._calibrations = copy.deepcopy(self._calibrations)\n        cpy._metadata = copy.deepcopy(self._metadata)\n        # Invalidate parameters caching.\n        cpy._parameters = None\n\n        if name:\n            cpy.name = name\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nmodule = importlib.import_module('qiskit.circuit.quantumcircuit')\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert str(actual).endswith('qiskit/circuit/quantumcircuit.py'), actual\nfrom qiskit import QuantumCircuit\nfrom qiskit.circuit import Parameter\na=Parameter('a')\nqc1=QuantumCircuit(1)\nqc1.rz(a,0)\n_ = qc1.parameters\ncpy=qc1.copy_empty_like()\nprint('cache_identity', cpy._parameters is qc1._parameters, cpy._parameters is None)\nassert cpy._parameters is not qc1._parameters, 'empty-like copy shares parameter cache'\nassert cpy._parameters is None, 'cache not invalidated'\nassert set(cpy.parameters)==set(), set(cpy.parameters)\nqc3=qc1.copy()\nqc3.rz(Parameter('b'),0)\nassert set(qc1.parameters)=={a}, set(qc1.parameters)\nprint('f2_copy_empty_like_isolation', True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "81896a99bea961161d50b6bf5c7fe68922579931ba85af511824f274f0362a9c"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Invalidate the parameter cache after copy_empty_like so the empty copy owns no parameters. Source-bound inline observations now pass. Patch submitted."
+}

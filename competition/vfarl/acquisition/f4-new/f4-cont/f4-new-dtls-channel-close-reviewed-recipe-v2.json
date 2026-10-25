@@ -1,0 +1,57 @@
+{
+ "evidence_kind": "human_reviewed_off_policy_demonstration",
+ "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+ "review_notes": "Owner DTLS channel; usage connection lifetime; release close() must unmap the channel whenever it is still mapped (even if replaced) and close the receive queue. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair. Second-round revision (resource time-point assertion, v2c): inline diagnostics force workspace-src import precedence (installed trio in harness interpreter otherwise shadows src-layout code); the release-time state assertion runs LAST so the command exit reflects it (diagnostic pytest outcome varies by env: skipped in sandbox, failed locally - both fine pre-repair). Closing a replaced-but-still-mapped channel must unmap it and close the receive queue at that point: fails on buggy logic, passes after repair. F2P node retained unchanged.",
+ "actions": [
+  {
+   "tool": "get_status",
+   "arguments": {},
+   "expected_status": "ok"
+  },
+  {
+   "tool": "read_file",
+   "arguments": {
+    "filepath": "src/trio/_dtls.py",
+    "start_line": 899,
+    "end_line": 928
+   },
+   "expected_status": "ok"
+  },
+  {
+   "tool": "run_command",
+   "arguments": {
+    "command": "python3 - <<'PYREPLAY'\nimport sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path.cwd() / 'src'))\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/trio/_dtls.py').resolve()\ntry:\n module = importlib.import_module('trio._dtls')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('binding_ok')\nPYREPLAY\nPYTHONPATH=src python3 -m pytest src/trio/_tests/test_dtls.py::test_channel_closing -x -q\npython3 - <<'PYREPLAY'\nimport sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path.cwd() / 'src'))\nfrom unittest import mock\nfrom trio._dtls import DTLSChannel\nchannel = object.__new__(DTLSChannel)\nchannel._closed = False\nchannel._replaced = True\nchannel.peer_address = 'peer1'\nendpoint = mock.Mock()\nendpoint._streams = {'peer1': channel}\nchannel.endpoint = endpoint\nchannel._q = mock.Mock()\nDTLSChannel.close(channel)\nassert 'peer1' not in endpoint._streams, 'replaced channel must be unmapped at release time'\nassert channel._q.r.close.called, 'close() must close the receive queue at release time'\nprint('dtls_channel_close_ok')\nPYREPLAY"
+   },
+   "expected_status": "error",
+   "reviewed_command_sha256": "a9c13fb1579073d4b2984f0d88327e7ee7f7a2c31af7badf945c6c55b5014c4d"
+  },
+  {
+   "tool": "edit_file",
+   "arguments": {
+    "filepath": "src/trio/_dtls.py",
+    "old_string": "        \"\"\"\n        if self._closed:\n            return\n    \n        self._closed = True\n    \n        # Close the queue to interrupt any tasks waiting on receive()\n        self._q.s.close()\n    \n        # Remove ourselves from the endpoint's mapping if we're still there\n        # (we might not be if we were replaced by a new connection)\n        if not self._replaced and self.peer_address in self.endpoint._streams:\n            if self.endpoint._streams[self.peer_address] is self:\n                del self.endpoint._streams[self.peer_address]\n    def __enter__(self) -> Self:\n        return self\n\n",
+    "new_string": "        \"\"\"\n        if self._closed:\n            return\n        self._closed = True\n        if self.endpoint._streams.get(self.peer_address) is self:\n            del self.endpoint._streams[self.peer_address]\n        # Will wake any tasks waiting on self._q.get with a\n        # ClosedResourceError\n        self._q.r.close()\n\n    def __enter__(self) -> Self:\n        return self\n\n"
+   },
+   "expected_status": "ok"
+  },
+  {
+   "tool": "run_command",
+   "arguments": {
+    "command": "python3 - <<'PYREPLAY'\nimport sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path.cwd() / 'src'))\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/trio/_dtls.py').resolve()\ntry:\n module = importlib.import_module('trio._dtls')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('binding_ok')\nPYREPLAY\nPYTHONPATH=src python3 -m pytest src/trio/_tests/test_dtls.py::test_channel_closing -x -q\npython3 - <<'PYREPLAY'\nimport sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path.cwd() / 'src'))\nfrom unittest import mock\nfrom trio._dtls import DTLSChannel\nchannel = object.__new__(DTLSChannel)\nchannel._closed = False\nchannel._replaced = True\nchannel.peer_address = 'peer1'\nendpoint = mock.Mock()\nendpoint._streams = {'peer1': channel}\nchannel.endpoint = endpoint\nchannel._q = mock.Mock()\nDTLSChannel.close(channel)\nassert 'peer1' not in endpoint._streams, 'replaced channel must be unmapped at release time'\nassert channel._q.r.close.called, 'close() must close the receive queue at release time'\nprint('dtls_channel_close_ok')\nPYREPLAY"
+   },
+   "expected_status": "ok",
+   "reviewed_command_sha256": "a9c13fb1579073d4b2984f0d88327e7ee7f7a2c31af7badf945c6c55b5014c4d"
+  },
+  {
+   "tool": "get_status",
+   "arguments": {},
+   "expected_status": "ok"
+  },
+  {
+   "tool": "submit_patch",
+   "arguments": {},
+   "expected_status": "ok"
+  }
+ ],
+ "final_response": "Restored trio.DTLSChannel.close release semantics (dtls_channel_close_unmaps_and_closes_receive). Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

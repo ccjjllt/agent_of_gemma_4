@@ -1,0 +1,84 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "root research agent: causal source read (real-PR repair deep-copies extra_fields in clone), pinned tests, command review 2026-10-25",
+  "review_notes": "Asset.clone must own a deep copy of extra_fields: clone-side mutation leaves the original untouched, captured at the clone() call timepoint; asserted source-bound before and after the repair. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Off-policy scripted demonstration, not a Gemma sample.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "pystac/asset.py",
+        "start_line": 136,
+        "end_line": 160
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'pystac/asset.py').resolve()\nmodule = importlib.import_module('pystac.asset')\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom pystac import Asset\nasset = Asset(href='http://example.com/a.tif', extra_fields={'k': 'v'})\nmask = asset.clone()\nprint('clone_identity', mask.extra_fields is asset.extra_fields)\nassert mask.extra_fields is not asset.extra_fields, 'clone shares extra_fields'\nmask.extra_fields['abc'] = True\nprint('orig_untouched', asset.extra_fields)\nassert asset.extra_fields == {'k': 'v'}, 'mutation leaked into original'\nprint('f2_clone_isolation', True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "cdd91832f24f56514bdf47bf7e317e1a9115d3151f11fad7f2e8da24b0aa623e"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "CHANGELOG.md",
+        "old_string": "\n### Fixed\n\n- \"How to create STAC catalogs\" tutorial ([#775](https://github.com/stac-utils/pystac/pull/775))\n- Add a `variables` argument, to accompany `dimensions`, for the `apply` method of stac objects extended with datacube ([#782](https://github.com/stac-utils/pystac/pull/782))\n- Deepcopy collection properties on clone. Implement `clone` method for `Summaries` ([#794](https://github.com/stac-utils/pystac/pull/794))\n",
+        "new_string": "\n### Fixed\n\n- Mutating `Asset.extra_fields` on a cloned `Asset` also mutated the original asset ([#826](https://github.com/stac-utils/pystac/pull/826))\n- \"How to create STAC catalogs\" tutorial ([#775](https://github.com/stac-utils/pystac/pull/775))\n- Add a `variables` argument, to accompany `dimensions`, for the `apply` method of stac objects extended with datacube ([#782](https://github.com/stac-utils/pystac/pull/782))\n- Deepcopy collection properties on clone. Implement `clone` method for `Summaries` ([#794](https://github.com/stac-utils/pystac/pull/794))\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pystac/asset.py",
+        "old_string": "from html import escape\nfrom copy import copy\nfrom typing import Any, Dict, List, Optional, TYPE_CHECKING, Union\n\nfrom pystac import common_metadata\n",
+        "new_string": "from html import escape\nfrom copy import copy, deepcopy\nfrom typing import Any, Dict, List, Optional, TYPE_CHECKING, Union\n\nfrom pystac import common_metadata\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pystac/asset.py",
+        "old_string": "        return d\n\n    def clone(self) -> \"Asset\":\n        \"\"\"Clones this asset.\n\n        Returns:\n            Asset: The clone of this asset.\n",
+        "new_string": "        return d\n\n    def clone(self) -> \"Asset\":\n        \"\"\"Clones this asset. Makes a ``deepcopy`` of the :attr:`~pystac.Asset.extra_fields`.\n\n        Returns:\n            Asset: The clone of this asset.\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "pystac/asset.py",
+        "old_string": "            description=self.description,\n            media_type=self.media_type,\n            roles=self.roles,\n            extra_fields=self.extra_fields,\n        )\n\n    @property\n",
+        "new_string": "            description=self.description,\n            media_type=self.media_type,\n            roles=self.roles,\n            extra_fields=deepcopy(self.extra_fields),\n        )\n\n    @property\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'pystac/asset.py').resolve()\nmodule = importlib.import_module('pystac.asset')\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom pystac import Asset\nasset = Asset(href='http://example.com/a.tif', extra_fields={'k': 'v'})\nmask = asset.clone()\nprint('clone_identity', mask.extra_fields is asset.extra_fields)\nassert mask.extra_fields is not asset.extra_fields, 'clone shares extra_fields'\nmask.extra_fields['abc'] = True\nprint('orig_untouched', asset.extra_fields)\nassert asset.extra_fields == {'k': 'v'}, 'mutation leaked into original'\nprint('f2_clone_isolation', True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "cdd91832f24f56514bdf47bf7e317e1a9115d3151f11fad7f2e8da24b0aa623e"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Deep-copy extra_fields in Asset.clone so clones never share mutable state with the original. Source-bound inline observations now pass. Patch submitted."
+}

@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Owner repo lock handle; usage critical section; release unlock() must raise on unlocked locks and close the live handle exactly once. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "dvc/lock.py",
+        "start_line": 114,
+        "end_line": 140
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'dvc/lock.py').resolve()\ntry:\n module = importlib.import_module('dvc.lock')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport tempfile\nfrom dvc.lock import Lock\nfrom dvc.exceptions import DvcException\npath = tempfile.mktemp(prefix='f4lock')\nlock = Lock(path)\nlock.lock()\nassert lock.is_locked\nlock.unlock()\nassert not lock.is_locked\nprint('unlock_ok')\ntry:\n    lock.unlock()\n    raise SystemExit('expected DvcException')\nexcept DvcException as e:\n    print('double_unlock_rejected', e)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "b8118b81293c9edcd4ff47389e030b4136d02931826e5d8cd8c3b10ae6f2d773"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "dvc/lock.py",
+        "old_string": "        lock_retry()\n\n    def unlock(self):\n        if not self.is_locked:\n            return\n\n        if self._lock_failed:\n            return\n\n        self._lock.close()\n        self._lock = None\n    @property\n    def is_locked(self):\n        return bool(self._lock)\n",
+        "new_string": "        lock_retry()\n\n    def unlock(self):\n        if self._lock_failed:\n            assert self._lock is None\n            return\n\n        if not self.is_locked:\n            raise DvcException(\"Unlock called on an unlocked lock\")\n        assert self._lock\n        self._lock.close()\n        self._lock = None\n\n    @property\n    def is_locked(self):\n        return bool(self._lock)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'dvc/lock.py').resolve()\ntry:\n module = importlib.import_module('dvc.lock')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport tempfile\nfrom dvc.lock import Lock\nfrom dvc.exceptions import DvcException\npath = tempfile.mktemp(prefix='f4lock')\nlock = Lock(path)\nlock.lock()\nassert lock.is_locked\nlock.unlock()\nassert not lock.is_locked\nprint('unlock_ok')\ntry:\n    lock.unlock()\n    raise SystemExit('expected DvcException')\nexcept DvcException as e:\n    print('double_unlock_rejected', e)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "b8118b81293c9edcd4ff47389e030b4136d02931826e5d8cd8c3b10ae6f2d773"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored dvc.Lock.unlock release semantics (lock_unlock_raises_on_unlocked_and_closes). Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

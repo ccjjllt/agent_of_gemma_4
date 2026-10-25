@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Owner socket; usage connected I/O; half-close release shutdown(SHUT_WR/SHUT_RDWR) must record did_shutdown_SHUT_WR exactly on success. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/trio/_socket.py",
+        "start_line": 930,
+        "end_line": 951
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/trio/_socket.py').resolve()\ntry:\n module = importlib.import_module('trio._socket')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport socket\nimport trio\nasync def main():\n    a, b = trio.socket.socketpair()\n    a.shutdown(socket.SHUT_WR)\n    print('flag', a._did_shutdown_SHUT_WR)\n    assert a._did_shutdown_SHUT_WR is True\n    a.close()\n    b.close()\n    print('sock_shutdown_ok')\ntrio.run(main)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "7119ee48f83623c918b0af53b555fbe13ee6060c44bf25e639b8a5612c07f89f"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/trio/_socket.py",
+        "old_string": "            return self._sock.bind(address)\n\n    def shutdown(self, flag: int) -> None:\n        self._sock.shutdown(flag)\n        if flag in [_stdlib_socket.SHUT_RD, _stdlib_socket.SHUT_RDWR]:\n            self._did_shutdown_SHUT_WR = False\n\n    def is_readable(self) -> bool:\n        # use select.select on Windows, and select.poll everywhere else\n",
+        "new_string": "            return self._sock.bind(address)\n\n    def shutdown(self, flag: int) -> None:\n        # no need to worry about return value b/c always returns None:\n        self._sock.shutdown(flag)\n        # only do this if the call succeeded:\n        if flag in [_stdlib_socket.SHUT_WR, _stdlib_socket.SHUT_RDWR]:\n            self._did_shutdown_SHUT_WR = True\n\n    def is_readable(self) -> bool:\n        # use select.select on Windows, and select.poll everywhere else\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/trio/_socket.py').resolve()\ntry:\n module = importlib.import_module('trio._socket')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport socket\nimport trio\nasync def main():\n    a, b = trio.socket.socketpair()\n    a.shutdown(socket.SHUT_WR)\n    print('flag', a._did_shutdown_SHUT_WR)\n    assert a._did_shutdown_SHUT_WR is True\n    a.close()\n    b.close()\n    print('sock_shutdown_ok')\ntrio.run(main)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "7119ee48f83623c918b0af53b555fbe13ee6060c44bf25e639b8a5612c07f89f"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored trio._SocketType.shutdown release semantics (socket_shutdown_records_write_shutdown). Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

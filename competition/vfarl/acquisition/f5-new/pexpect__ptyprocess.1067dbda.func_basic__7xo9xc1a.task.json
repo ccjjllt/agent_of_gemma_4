@@ -1,0 +1,30 @@
+{
+  "source_dataset": "SWE-bench/SWE-smith-py",
+  "revision": "77cab9055d42ab4a5c25c89a8f937096db13558e",
+  "split": "train",
+  "row_idx": 21107,
+  "row": {
+    "instance_id": "pexpect__ptyprocess.1067dbda.func_basic__7xo9xc1a",
+    "patch": "diff --git a/ptyprocess/ptyprocess.py b/ptyprocess/ptyprocess.py\nindex 0f05803..6e64bd3 100644\n--- a/ptyprocess/ptyprocess.py\n+++ b/ptyprocess/ptyprocess.py\n@@ -468,10 +468,12 @@ class PtyProcess(object):\n             errmsg = 'getecho() may not be called on this platform'\n             if err.args[0] == errno.EINVAL:\n                 raise IOError(err.args[0], '%s: %s.' % (err.args[1], errmsg))\n-            raise\n+            # removing re-raise may cause silent failures\n+       \n \n-        self.echo = bool(attr[3] & termios.ECHO)\n-        return self.echo\n+        # Incorrect use of termios.ECHO as 2nd bitsite should be 4th (termios.ECHO has a correct bit)\n+        self.echo = bool(attr[3] & (termios.ECHO >> 1))\n+        return not self.echo  # Inverting the expected return value\n \n     def setecho(self, state):\n         '''Enable or disable terminal echo.\n",
+    "FAIL_TO_PASS": [
+      "tests/test_echo.py::PtyEchoTestCase::test_waitnoecho_forever",
+      "tests/test_echo.py::PtyEchoTestCase::test_waitnoecho_timeout"
+    ],
+    "PASS_TO_PASS": [
+      "tests/test_invalid_binary.py::InvalidBinaryChars::test_invalid_binary",
+      "tests/test_preexec_fn.py::PreexecFns::test_preexec",
+      "tests/test_preexec_fn.py::PreexecFns::test_preexec_error",
+      "tests/test_spawn.py::PtyTestCase::test_pass_fds",
+      "tests/test_spawn.py::PtyTestCase::test_quick_spawn",
+      "tests/test_spawn.py::PtyTestCase::test_spawn_sh",
+      "tests/test_spawn.py::PtyTestCase::test_spawn_sh_unicode",
+      "tests/test_wait.py::TestWaitAfterTermination::test_wait_false_shortproc",
+      "tests/test_wait.py::TestWaitAfterTermination::test_wait_true_shortproc",
+      "tests/test_wait.py::TestWaitAfterTermination::test_wait_twice_longproc"
+    ],
+    "image_name": "swebench/swesmith.x86_64.pexpect_1776_ptyprocess.1067dbda",
+    "repo": "swesmith/pexpect__ptyprocess.1067dbda",
+    "problem_statement": "# getecho() returns incorrect value and waitnoecho() fails\n\n#### Description\nThere's an issue with the `getecho()` method in PtyProcess. It's returning the opposite of the expected value and also using an incorrect bit mask for checking the echo flag.\n\n#### Steps to Reproduce\n```python\nfrom ptyprocess import PtyProcess\n\n# Create a process with echo enabled\ncat = PtyProcess.spawn(['cat'], echo=True)\nprint(f\"Expected echo=True, got {cat.getecho()}\")\n\n# Create a process with echo disabled\ncat2 = PtyProcess.spawn(['cat'], echo=False)\nprint(f\"Expected echo=False, got {cat2.getecho()}\")\n\n# Try to wait for echo to be disabled\nresult = cat.waitnoecho(timeout=1)\nprint(f\"waitnoecho() returned {result} when it should return False\")\n```\n\n#### Expected Results\n- `getecho()` should return `True` when echo is enabled and `False` when disabled\n- `waitnoecho()` should work correctly with timeout\n\n#### Actual Results\n- `getecho()` returns the opposite of the expected value (returns `False` when echo is enabled)\n- `waitnoecho()` fails to work correctly\n- Additionally, there's a silent failure when an exception is raised in `getecho()` because the re-raise is missing\n\n#### Environment\n- Linux\n- Python 3.10\n- ptyprocess latest version\n\nThis issue affects any code that relies on the correct behavior of terminal echo detection."
+  },
+  "source_page": "competition/vfarl/acquisition/expand-resource/pexpect__ptyprocess.1067dbda-train.json"
+}

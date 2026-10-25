@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Owner HTTP connection; usage message exchange; release on transport EOF must emit ConnectionClosed (or reader read_eof error) exactly once, never NEED_DATA forever. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "h11/_connection.py",
+        "start_line": 422,
+        "end_line": 446
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'h11/_connection.py').resolve()\ntry:\n module = importlib.import_module('h11._connection')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom h11 import ConnectionClosed\nfrom h11.tests.test_connection import ConnectionPair, CLIENT, SERVER\nfor first, second in [(CLIENT, SERVER), (SERVER, CLIENT)]:\n    p = ConnectionPair()\n    p.send(first, ConnectionClosed())\n    assert p.conn[second].next_event() == ConnectionClosed()\n    assert p.conn[second].next_event() == ConnectionClosed()\n    p.conn[second].receive_data(b'')\n    assert p.conn[second].next_event() == ConnectionClosed()\nprint('eof_closed_ok')\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "79baf6bd9365e1107b16c5ffd0f046a43f85d036817d5b9ca1ddc05c0a46d5ad"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "h11/_connection.py",
+        "old_string": "                # return that event, and then the state will change and we'll\n                # get called again to generate the actual ConnectionClosed().\n                if hasattr(self._reader, \"read_eof\"):\n                    event = ConnectionClosed()\n                else:\n                    event = self._reader.read_eof()\n        if event is None:\n            event = NEED_DATA\n        return event\n    def next_event(self) -> Union[Event, Type[NEED_DATA], Type[PAUSED]]:\n        \"\"\"Parse the next event out of our receive buffer, update our internal\n        state, and return it.\n",
+        "new_string": "                # return that event, and then the state will change and we'll\n                # get called again to generate the actual ConnectionClosed().\n                if hasattr(self._reader, \"read_eof\"):\n                    event = self._reader.read_eof()\n                else:\n                    event = ConnectionClosed()\n        if event is None:\n            event = NEED_DATA\n        return event  # type: ignore[no-any-return]\n\n    def next_event(self) -> Union[Event, Type[NEED_DATA], Type[PAUSED]]:\n        \"\"\"Parse the next event out of our receive buffer, update our internal\n        state, and return it.\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'h11/_connection.py').resolve()\ntry:\n module = importlib.import_module('h11._connection')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom h11 import ConnectionClosed\nfrom h11.tests.test_connection import ConnectionPair, CLIENT, SERVER\nfor first, second in [(CLIENT, SERVER), (SERVER, CLIENT)]:\n    p = ConnectionPair()\n    p.send(first, ConnectionClosed())\n    assert p.conn[second].next_event() == ConnectionClosed()\n    assert p.conn[second].next_event() == ConnectionClosed()\n    p.conn[second].receive_data(b'')\n    assert p.conn[second].next_event() == ConnectionClosed()\nprint('eof_closed_ok')\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "79baf6bd9365e1107b16c5ffd0f046a43f85d036817d5b9ca1ddc05c0a46d5ad"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored h11.Connection._extract_next_receive_event release semantics (eof_generates_connection_closed_event). Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

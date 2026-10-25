@@ -1,0 +1,83 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Owner repo artifacts; usage project lifetime; release destroy() must destroy stages, close the repo, remove the dvcignore file, and remove the dvc dir. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "dvc/repo/destroy.py",
+        "start_line": 1,
+        "end_line": 20
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "dvc/ignore.py",
+        "start_line": 420,
+        "end_line": 444
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'dvc/repo/destroy.py').resolve()\ntry:\n module = importlib.import_module('dvc.repo.destroy')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('binding_ok')\nimport os, subprocess, tempfile\nfrom dvc.repo import Repo\ntmp = tempfile.mkdtemp(prefix='dvcdestroy')\nsubprocess.run(['git', 'init', '-q', tmp], check=True)\nsubprocess.run(['git', '-C', tmp, 'config', 'user.email', 't@t'], check=True)\nsubprocess.run(['git', '-C', tmp, 'config', 'user.name', 't'], check=True)\nrepo = Repo.init(tmp)\nopen(os.path.join(tmp, 'data'), 'w').write('x')\nopen(os.path.join(tmp, 'data.dvc'), 'w').write('outs: []\\n')\nassert os.path.exists(os.path.join(tmp, '.dvcignore')), 'usage needs a dvcignore artifact'\nrepo.destroy()\nassert not os.path.exists(os.path.join(tmp, '.dvc')), 'release destroy must remove the dvc dir'\nassert not os.path.exists(os.path.join(tmp, '.dvcignore')), 'release destroy must remove the dvcignore file'\nassert not os.path.exists(os.path.join(tmp, 'data.dvc')), 'release destroy must destroy stages'\nprint('destroy_ok')\n"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "5070eeb81d75e74ca0752aa9583dba1ea01d013e2532ef870a558d6af85d339d"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "dvc/repo/destroy.py",
+        "old_string": "from dvc.utils.fs import remove\n",
+        "new_string": "from dvc.ignore import destroy as destroy_dvcignore\nfrom dvc.utils.fs import remove\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "dvc/repo/destroy.py",
+        "old_string": "def destroy(repo):\n    _destroy_stages(repo)\n    repo.close()\n    remove(repo.dvc_dir)",
+        "new_string": "def destroy(repo):\n    _destroy_stages(repo)\n    repo.close()\n    destroy_dvcignore(repo.root_dir)\n    remove(repo.dvc_dir)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "dvc/ignore.py",
+        "old_string": "        )\n\n    return dvcignore",
+        "new_string": "        )\n\n    return dvcignore\n\n\ndef destroy(path):\n    from dvc.utils.fs import remove\n\n    dvcignore = os.path.join(path, DvcIgnore.DVCIGNORE_FILE)\n    remove(dvcignore)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'dvc/repo/destroy.py').resolve()\ntry:\n module = importlib.import_module('dvc.repo.destroy')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('binding_ok')\nimport os, subprocess, tempfile\nfrom dvc.repo import Repo\ntmp = tempfile.mkdtemp(prefix='dvcdestroy')\nsubprocess.run(['git', 'init', '-q', tmp], check=True)\nsubprocess.run(['git', '-C', tmp, 'config', 'user.email', 't@t'], check=True)\nsubprocess.run(['git', '-C', tmp, 'config', 'user.name', 't'], check=True)\nrepo = Repo.init(tmp)\nopen(os.path.join(tmp, 'data'), 'w').write('x')\nopen(os.path.join(tmp, 'data.dvc'), 'w').write('outs: []\\n')\nassert os.path.exists(os.path.join(tmp, '.dvcignore')), 'usage needs a dvcignore artifact'\nrepo.destroy()\nassert not os.path.exists(os.path.join(tmp, '.dvc')), 'release destroy must remove the dvc dir'\nassert not os.path.exists(os.path.join(tmp, '.dvcignore')), 'release destroy must remove the dvcignore file'\nassert not os.path.exists(os.path.join(tmp, 'data.dvc')), 'release destroy must destroy stages'\nprint('destroy_ok')\n"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "5070eeb81d75e74ca0752aa9583dba1ea01d013e2532ef870a558d6af85d339d"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ]
+}

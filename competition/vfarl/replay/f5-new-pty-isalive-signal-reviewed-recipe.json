@@ -1,0 +1,66 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "A child killed by a signal must report not-alive with exitstatus None, the signal number, and terminated true. Dropping those assignments leaves stale exit state across the spawn-signal-reap chain. The complete production-file delta is exactly the reviewed hunks inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "ptyprocess/ptyprocess.py",
+        "start_line": 700,
+        "end_line": 777
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('ptyprocess.ptyprocess')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'ptyprocess/ptyprocess.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport time, signal\nfrom ptyprocess import PtyProcess\nproc=PtyProcess.spawn(['sh','-c','kill -TERM $$'])\ntime.sleep(0.5)\nalive=proc.isalive()\nevents=[alive,proc.exitstatus,proc.signalstatus,proc.terminated]\nprint('signal_reap_sequence',events)\nassert events==[False,None,signal.SIGTERM,True]\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "a1f6f5d1e31efdce93c0d62271f14e5ae7d472d3fe1d3759db098b5c73a74c3e"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "ptyprocess/ptyprocess.py",
+        "old_string": "            self.terminated = True\n        elif os.WIFSIGNALED(status):\n            self.status = status\n            self.signalstatus = os.WTERMSIG(status)\n        elif os.WIFSTOPPED(status):\n            raise PtyProcessError('isalive() encountered condition ' +\n                    'where child process is stopped. This is not ' +\n                    'supported. Is some other process attempting ' +\n                    'job control with our child pid?')\n        return False\n    def kill(self, sig):\n        \"\"\"Send the given signal to the child application.\n",
+        "new_string": "            self.terminated = True\n        elif os.WIFSIGNALED(status):\n            self.status = status\n            self.exitstatus = None\n            self.signalstatus = os.WTERMSIG(status)\n            self.terminated = True\n        elif os.WIFSTOPPED(status):\n            raise PtyProcessError('isalive() encountered condition ' +\n                    'where child process is stopped. This is not ' +\n                    'supported. Is some other process attempting ' +\n                    'job control with our child pid?')\n        return False\n\n    def kill(self, sig):\n        \"\"\"Send the given signal to the child application.\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "ptyprocess/ptyprocess.py",
+        "old_string": "            return False\n\n        if self.flag_eof:\n            pass\n        else:\n            waitpid_options = os.WNOHANG\n",
+        "new_string": "            return False\n\n        if self.flag_eof:\n            # This is for Linux, which requires the blocking form\n            # of waitpid to get the status of a defunct process.\n            # This is super-lame. The flag_eof would have been set\n            # in read_nonblocking(), so this should be safe.\n            waitpid_options = 0\n        else:\n            waitpid_options = os.WNOHANG\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('ptyprocess.ptyprocess')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'ptyprocess/ptyprocess.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport time, signal\nfrom ptyprocess import PtyProcess\nproc=PtyProcess.spawn(['sh','-c','kill -TERM $$'])\ntime.sleep(0.5)\nalive=proc.isalive()\nevents=[alive,proc.exitstatus,proc.signalstatus,proc.terminated]\nprint('signal_reap_sequence',events)\nassert events==[False,None,signal.SIGTERM,True]\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "a1f6f5d1e31efdce93c0d62271f14e5ae7d472d3fe1d3759db098b5c73a74c3e"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "A child killed by a signal must report not-alive with exitstatus None, the signal number, and terminated true. Dropping those assignments leaves stale exit state across the spawn-signal-reap chain. The source-bound reproduction passes after the repair. Patch submitted."
+}

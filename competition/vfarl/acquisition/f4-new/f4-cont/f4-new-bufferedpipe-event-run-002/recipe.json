@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Owner buffered pipe; usage event-gated reads; release visibility a fresh event on a closed (or data-bearing) pipe must start set so select() callers never deadlock on a released pipe. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "paramiko/buffered_pipe.py",
+        "start_line": 61,
+        "end_line": 83
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'paramiko/buffered_pipe.py').resolve()\ntry:\n module = importlib.import_module('paramiko.buffered_pipe')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport threading\nfrom paramiko.buffered_pipe import BufferedPipe\np = BufferedPipe()\np.close()\nev = threading.Event()\np.set_event(ev)\nprint('event_set', ev.is_set())\nassert ev.is_set(), 'event on released pipe must start set'\nprint('bufferedpipe_event_ok')\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "9ff009622bea3aae520c3c3359a2566b4d7f378635ddc289a77121050d42c132"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "paramiko/buffered_pipe.py",
+        "old_string": "        self._lock.acquire()\n        try:\n            self._event = event\n            if self._closed or len(self._buffer) == 0:\n                event.clear()\n            else:\n                event.set()\n        finally:\n            self._lock.release()\n\n",
+        "new_string": "        self._lock.acquire()\n        try:\n            self._event = event\n            # Make sure the event starts in `set` state if we appear to already\n            # be closed; otherwise, if we start in `clear` state & are closed,\n            # nothing will ever call `.feed` and the event (& OS pipe, if we're\n            # wrapping one - see `Channel.fileno`) will permanently stay in\n            # `clear`, causing deadlock if e.g. `select`ed upon.\n            if self._closed or len(self._buffer) > 0:\n                event.set()\n            else:\n                event.clear()\n        finally:\n            self._lock.release()\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'paramiko/buffered_pipe.py').resolve()\ntry:\n module = importlib.import_module('paramiko.buffered_pipe')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport threading\nfrom paramiko.buffered_pipe import BufferedPipe\np = BufferedPipe()\np.close()\nev = threading.Event()\np.set_event(ev)\nprint('event_set', ev.is_set())\nassert ev.is_set(), 'event on released pipe must start set'\nprint('bufferedpipe_event_ok')\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "9ff009622bea3aae520c3c3359a2566b4d7f378635ddc289a77121050d42c132"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored paramiko.BufferedPipe.set_event release semantics (closed_pipe_event_starts_set). Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

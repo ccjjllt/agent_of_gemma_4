@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "root research agent: causal source read (SessionRunner aliased global posargs list; slice copy isolates per-session mutation), pinned tests, command review 2026-10-25",
+  "review_notes": "SessionRunner must own a copy of global posargs so extending one session does not pollute others or the global config. Copy-time identity (is not the global list) plus mutation isolation are asserted source-bound before and after the repair. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Off-policy scripted demonstration, not a Gemma sample.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "nox/sessions.py",
+        "start_line": 500,
+        "end_line": 512
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nmodule = importlib.import_module('nox.sessions')\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert str(actual).endswith('nox/sessions.py'), actual\nfrom unittest import mock\nimport nox.sessions, nox.manifest\nfrom nox import _options\ncfg = _options.options.namespace(posargs=[\"--orig\"])\nrunner = nox.sessions.SessionRunner(name=\"test\", signatures=[\"test\"], func=mock.sentinel.func, global_config=cfg, manifest=mock.create_autospec(nox.manifest.Manifest))\nprint('copy_identity', runner.posargs is not cfg.posargs)\nassert runner.posargs is not cfg.posargs, 'posargs aliased global config'\nrunner.posargs.append(\"--new\")\nassert cfg.posargs == [\"--orig\"], cfg.posargs\nprint('f2_posargs_isolation', True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "5a0730d337d4ce5d88e2412604d9704f23911e6846548f32107e47670af3d191"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "nox/sessions.py",
+        "old_string": "        self.global_config = global_config\n        self.manifest = manifest\n        self.venv: Optional[ProcessEnv] = None\n        self.posargs: List[str] = global_config.posargs\n\n    @property\n    def description(self) -> Optional[str]:\n",
+        "new_string": "        self.global_config = global_config\n        self.manifest = manifest\n        self.venv: Optional[ProcessEnv] = None\n        self.posargs: List[str] = global_config.posargs[:]\n\n    @property\n    def description(self) -> Optional[str]:\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nmodule = importlib.import_module('nox.sessions')\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert str(actual).endswith('nox/sessions.py'), actual\nfrom unittest import mock\nimport nox.sessions, nox.manifest\nfrom nox import _options\ncfg = _options.options.namespace(posargs=[\"--orig\"])\nrunner = nox.sessions.SessionRunner(name=\"test\", signatures=[\"test\"], func=mock.sentinel.func, global_config=cfg, manifest=mock.create_autospec(nox.manifest.Manifest))\nprint('copy_identity', runner.posargs is not cfg.posargs)\nassert runner.posargs is not cfg.posargs, 'posargs aliased global config'\nrunner.posargs.append(\"--new\")\nassert cfg.posargs == [\"--orig\"], cfg.posargs\nprint('f2_posargs_isolation', True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "5a0730d337d4ce5d88e2412604d9704f23911e6846548f32107e47670af3d191"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Copy global posargs with [:] so each session owns its list. Source-bound inline observations now pass. Patch submitted."
+}

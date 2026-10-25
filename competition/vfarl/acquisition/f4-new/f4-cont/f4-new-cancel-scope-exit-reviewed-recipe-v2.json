@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Owner cancel scope; usage guarded async block; exit must adapt _close() filtering to the CM protocol (swallow only filtered errors) without creating reference cycles. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair. Second-round revision (v2): force workspace-src import precedence (installed trio otherwise shadows src-layout code and makes diagnostics vacuous); diagnostic pytest run with PYTHONPATH=src so the 3 F2P release-time nodes (exception-group filtering at exit, misnesting, no-cyclic-garbage) genuinely fail pre-repair; appended release-time probe (scope owns cancel-status at entry, exit completes, gc pass) runs LAST so command exit reflects it.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/trio/_core/_run.py",
+        "start_line": 645,
+        "end_line": 667
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nimport sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path.cwd() / 'src'))\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/trio/_core/_run.py').resolve()\ntry:\n module = importlib.import_module('trio._core._run')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('binding_ok')\nPYREPLAY\npython3 - <<'PYREPLAY'\nimport sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path.cwd() / 'src'))\nimport gc, weakref\nimport trio\nfrom trio._core._run import CancelScope\nasync def main():\n    with trio.CancelScope() as scope:\n        assert scope._cancel_status is not None, 'scope must own a cancel-status at entry time'\n        status_ref = weakref.ref(scope._cancel_status)\n        scope.cancel()\n        await trio.sleep(0)\n    assert status_ref() is not None\n    print('scope_exit_ok', 'cancelled', scope.cancelled_caught)\ntrio.run(main)\ncollected = gc.collect()\nprint('gc_collected', collected)\nprint('cancel_scope_exit_ok')\nPYREPLAY\nPYTHONPATH=src python3 -m pytest src/trio/_core/_tests/test_run.py::test_cancel_scope_exceptiongroup_filtering src/trio/_core/_tests/test_run.py::test_cancel_scope_misnesting src/trio/_core/_tests/test_run.py::test_cancel_scope_exit_doesnt_create_cyclic_garbage -q"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "ef43adc443f3e6ed264126004349f2454ba8876647287de62586cb276026d23d"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/trio/_core/_run.py",
+        "old_string": "        return exc\n\n    @enable_ki_protection\n    def __exit__(self, etype: (type[BaseException] | None), exc: (BaseException |\n        None), tb: (TracebackType | None)) -> bool:\n        exc_value = self._close(exc)\n        return exc_value is None\n    def __repr__(self) -> str:\n        if self._cancel_status is not None:\n            binding = \"active\"\n",
+        "new_string": "        return exc\n\n    @enable_ki_protection\n    def __exit__(\n        self,\n        etype: type[BaseException] | None,\n        exc: BaseException | None,\n        tb: TracebackType | None,\n    ) -> bool:\n        # NB: NurseryManager calls _close() directly rather than __exit__(),\n        # so __exit__() must be just _close() plus this logic for adapting\n        # the exception-filtering result to the context manager API.\n\n        # Tracebacks show the 'raise' line below out of context, so let's give\n        # this variable a name that makes sense out of context.\n        remaining_error_after_cancel_scope = self._close(exc)\n        if remaining_error_after_cancel_scope is None:\n            return True\n        elif remaining_error_after_cancel_scope is exc:\n            return False\n        else:\n            # Copied verbatim from the old MultiErrorCatcher.  Python doesn't\n            # allow us to encapsulate this __context__ fixup.\n            old_context = remaining_error_after_cancel_scope.__context__\n            try:\n                raise remaining_error_after_cancel_scope\n            finally:\n                _, value, _ = sys.exc_info()\n                assert value is remaining_error_after_cancel_scope\n                value.__context__ = old_context\n                # delete references from locals to avoid creating cycles\n                # see test_cancel_scope_exit_doesnt_create_cyclic_garbage\n                # Note: still relevant\n                del remaining_error_after_cancel_scope, value, _, exc\n\n    def __repr__(self) -> str:\n        if self._cancel_status is not None:\n            binding = \"active\"\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nimport sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path.cwd() / 'src'))\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/trio/_core/_run.py').resolve()\ntry:\n module = importlib.import_module('trio._core._run')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('binding_ok')\nPYREPLAY\npython3 - <<'PYREPLAY'\nimport sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path.cwd() / 'src'))\nimport gc, weakref\nimport trio\nfrom trio._core._run import CancelScope\nasync def main():\n    with trio.CancelScope() as scope:\n        assert scope._cancel_status is not None, 'scope must own a cancel-status at entry time'\n        status_ref = weakref.ref(scope._cancel_status)\n        scope.cancel()\n        await trio.sleep(0)\n    assert status_ref() is not None\n    print('scope_exit_ok', 'cancelled', scope.cancelled_caught)\ntrio.run(main)\ncollected = gc.collect()\nprint('gc_collected', collected)\nprint('cancel_scope_exit_ok')\nPYREPLAY\nPYTHONPATH=src python3 -m pytest src/trio/_core/_tests/test_run.py::test_cancel_scope_exceptiongroup_filtering src/trio/_core/_tests/test_run.py::test_cancel_scope_misnesting src/trio/_core/_tests/test_run.py::test_cancel_scope_exit_doesnt_create_cyclic_garbage -q"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "ef43adc443f3e6ed264126004349f2454ba8876647287de62586cb276026d23d"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored trio.CancelScope.__exit__ release semantics (cancel_scope_exit_adapts_exception_filter). Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

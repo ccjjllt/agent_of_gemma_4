@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Owner write buffer; usage buffered writes; release flush() must write out buffered bytes first and only then clear the buffer. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "paramiko/file.py",
+        "start_line": 81,
+        "end_line": 105
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'paramiko/file.py').resolve()\ntry:\n module = importlib.import_module('paramiko.file')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom io import BytesIO\nfrom paramiko.file import BufferedFile\nclass W(BufferedFile):\n    def __init__(self):\n        self._closed = False\n        self._wbuffer = BytesIO()\n        self.written = []\n    def _write_all(self, data):\n        self.written.append(bytes(data))\nw = W()\nw._wbuffer.write(b'data')\nw.flush()\nprint('written', w.written, 'remaining', w._wbuffer.getvalue())\nassert w.written == [b'data'], w.written\nassert w._wbuffer.getvalue() == b''\nprint('flush_ok')\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "c5b60c8c613639431740ede99f5d477e11e129c65dd03597df8dcce0cd82ff50"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "paramiko/file.py",
+        "old_string": "\n    def flush(self):\n        \"\"\"\n        Write out any data in the write buffer. This may do nothing if write\n        buffering is not turned on.\n        \"\"\"\n        self._wbuffer = BytesIO()\n        self._write_all(self._wbuffer.getvalue())\n        return 1\n\n    def __next__(self):\n        \"\"\"\n",
+        "new_string": "\n    def flush(self):\n        \"\"\"\n        Write out any data in the write buffer.  This may do nothing if write\n        buffering is not turned on.\n        \"\"\"\n        self._write_all(self._wbuffer.getvalue())\n        self._wbuffer = BytesIO()\n        return\n\n    def __next__(self):\n        \"\"\"\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'paramiko/file.py').resolve()\ntry:\n module = importlib.import_module('paramiko.file')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom io import BytesIO\nfrom paramiko.file import BufferedFile\nclass W(BufferedFile):\n    def __init__(self):\n        self._closed = False\n        self._wbuffer = BytesIO()\n        self.written = []\n    def _write_all(self, data):\n        self.written.append(bytes(data))\nw = W()\nw._wbuffer.write(b'data')\nw.flush()\nprint('written', w.written, 'remaining', w._wbuffer.getvalue())\nassert w.written == [b'data'], w.written\nassert w._wbuffer.getvalue() == b''\nprint('flush_ok')\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "c5b60c8c613639431740ede99f5d477e11e129c65dd03597df8dcce0cd82ff50"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored paramiko.BufferedFile.flush release semantics (bufferedfile_flush_writes_before_clearing). Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

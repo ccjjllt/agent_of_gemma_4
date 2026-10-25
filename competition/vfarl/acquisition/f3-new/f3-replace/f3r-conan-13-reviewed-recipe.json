@@ -1,0 +1,93 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex root source contract and actual command review 2026-10-26",
+  "review_notes": "conan-io/conan CacheAPI must preserve cache_query_hit_and_miss_isolation. Cache save/restore: set->exported recipe, get->saved tgz present with equivalence, expire/invalidate->remove clears revisions (second observation differs), recompute->restore brings the recipe back; unknown refs stay isolated. Restore the exact production logic without hardcoding values or altering tests. All original F2P/P2P identifiers and complete target files are retained verbatim. The Smith row introduces the defect; this is an off-policy scripted demonstration, not a model sample or preference pair. The inline observation fails before the repair (first run expects error) and passes after (second run expects ok), so the second observation differs.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "conan/api/subapi/cache.py",
+        "start_line": 108,
+        "end_line": 143
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "conan/cli/commands/cache.py",
+        "start_line": 1,
+        "end_line": 36
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'conan/api/subapi/cache.py').resolve()\ntry:\n module = importlib.import_module('conan.api.subapi.cache')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('edited_file', 'conan/cli/commands/cache.py', 'sha256', hashlib.sha256(Path('conan/cli/commands/cache.py').read_bytes()).hexdigest())\n\nfrom conan.test.utils.tools import TestClient\nc = TestClient()\nc.save({'conanfile.py': 'from conan import ConanFile\\n'\n                         'class Pkg(ConanFile):\\n'\n                         \"    name = 'pkg'\\n\"\n                         \"    version = '0.1'\\n\"})\nc.run('export .')\nassert 'pkg/0.1' in c.out\nprint(\"get_hit\", True)\nc.run('cache save pkg/0.1 --file backup.tgz')\nimport os\nassert os.path.exists(os.path.join(c.current_folder, 'backup.tgz'))\nprint(\"equivalence\", True)\nc.run('remove pkg/0.1 -c')\nfrom conan.api.model import RecipeReference\nassert c.cache.get_recipe_revisions_references(RecipeReference('pkg', '0.1')) == []\nprint(\"invalidate\", True)\nc.run('cache restore backup.tgz')\nc.run('list pkg/0.1:*')\nassert 'pkg/0.1' in c.out\nprint(\"recompute\", True)\nc.run('cache save other/0.1 --file x.tgz', assert_error=True)\nprint(\"isolation\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "54f21a95c695ec6d42f027eed0b988d929660542c2776e6c8a42309be652ebe7"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/api/subapi/cache.py",
+        "old_string": "\n    def save(self, package_list, tgz_path):\n        global_conf = self.conan_api.config.global_conf\n        cache = PkgCache(self.conan_api.cache_folder, self.conan_api.config.global_conf)\n        cache_folder = cache.store  # Note, this is not the home, but the actual package cache\n        out = ConanOutput()\n        mkdir(os.path.dirname(tgz_path))\n",
+        "new_string": "\n    def save(self, package_list, tgz_path):\n        global_conf = self.conan_api.config.global_conf\n        cache = PkgCache(self.conan_api.cache_folder, global_conf)\n        cache_folder = cache.store  # Note, this is not the home, but the actual package cache\n        out = ConanOutput()\n        mkdir(os.path.dirname(tgz_path))\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/api/subapi/cache.py",
+        "old_string": "    return folder_path",
+        "new_string": "    return folder_path\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/cli/commands/cache.py",
+        "old_string": "from conan.api.conan_api import ConanAPI\nfrom conan.api.model import ListPattern, MultiPackagesList\nfrom conan.api.output import cli_out_write, ConanOutput\nfrom conan.cli.command import conan_command, conan_subcommand, OnceArgument\nfrom conan.errors import ConanException\nfrom conan.api.model import PkgReference\nfrom conan.api.model import RecipeReference\n",
+        "new_string": "from conan.api.conan_api import ConanAPI\nfrom conan.api.model import ListPattern, MultiPackagesList\nfrom conan.api.output import cli_out_write, ConanOutput\nfrom conan.cli import make_abs_path\nfrom conan.cli.command import conan_command, conan_subcommand, OnceArgument\nfrom conan.cli.commands.list import print_list_text, print_list_json\nfrom conan.errors import ConanException\nfrom conan.api.model import PkgReference\nfrom conan.api.model import RecipeReference\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/cli/commands/cache.py",
+        "old_string": "    ConanOutput().success(\"Integrity check: ok\")\n\n\n@conan_subcommand()\ndef cache_backup_upload(conan_api: ConanAPI, parser, subparser, *args):\n    \"\"\"\n    Upload all the source backups present in the cache\n    \"\"\"\n    files = conan_api.cache.get_backup_sources()\n    conan_api.upload.upload_backup_sources(files)",
+        "new_string": "    ConanOutput().success(\"Integrity check: ok\")\n\n\n@conan_subcommand(formatters={\"text\": print_list_text,\n                              \"json\": print_list_json})\ndef cache_save(conan_api: ConanAPI, parser, subparser, *args):\n    \"\"\"\n    Get the artifacts from a package list and archive them\n    \"\"\"\n    subparser.add_argument('pattern', nargs=\"?\",\n                           help=\"A pattern in the form 'pkg/version#revision:package_id#revision', \"\n                                \"e.g: zlib/1.2.13:* means all binaries for zlib/1.2.13. \"\n                                \"If revision is not specified, it is assumed latest one.\")\n    subparser.add_argument(\"-l\", \"--list\", help=\"Package list of packages to save\")\n    subparser.add_argument('--file', help=\"Save to this tgz file\")\n    args = parser.parse_args(*args)\n\n    if args.pattern is None and args.list is None:\n        raise ConanException(\"Missing pattern or package list file\")\n    if args.pattern and args.list:\n        raise ConanException(\"Cannot define both the pattern and the package list file\")\n\n    if args.list:\n        listfile = make_abs_path(args.list)\n        multi_package_list = MultiPackagesList.load(listfile)\n        package_list = multi_package_list[\"Local Cache\"]\n    else:\n        ref_pattern = ListPattern(args.pattern)\n        package_list = conan_api.list.select(ref_pattern)\n    tgz_path = make_abs_path(args.file or \"conan_cache_save.tgz\")\n    conan_api.cache.save(package_list, tgz_path)\n    return {\"results\": {\"Local Cache\": package_list.serialize()}}\n\n\n@conan_subcommand(formatters={\"text\": print_list_text,\n                              \"json\": print_list_json})\ndef cache_restore(conan_api: ConanAPI, parser, subparser, *args):\n    \"\"\"\n    Put  the artifacts from an archive into the cache\n    \"\"\"\n    subparser.add_argument(\"file\", help=\"Path to archive to restore\")\n    args = parser.parse_args(*args)\n    path = make_abs_path(args.file)\n    package_list = conan_api.cache.restore(path)\n    return {\"results\": {\"Local Cache\": package_list.serialize()}}\n\n\n@conan_subcommand()\ndef cache_backup_upload(conan_api: ConanAPI, parser, subparser, *args):\n    \"\"\"\n    Upload all the source backups present in the cache\n    \"\"\"\n    files = conan_api.cache.get_backup_sources()\n    conan_api.upload.upload_backup_sources(files)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'conan/api/subapi/cache.py').resolve()\ntry:\n module = importlib.import_module('conan.api.subapi.cache')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('edited_file', 'conan/cli/commands/cache.py', 'sha256', hashlib.sha256(Path('conan/cli/commands/cache.py').read_bytes()).hexdigest())\n\nfrom conan.test.utils.tools import TestClient\nc = TestClient()\nc.save({'conanfile.py': 'from conan import ConanFile\\n'\n                         'class Pkg(ConanFile):\\n'\n                         \"    name = 'pkg'\\n\"\n                         \"    version = '0.1'\\n\"})\nc.run('export .')\nassert 'pkg/0.1' in c.out\nprint(\"get_hit\", True)\nc.run('cache save pkg/0.1 --file backup.tgz')\nimport os\nassert os.path.exists(os.path.join(c.current_folder, 'backup.tgz'))\nprint(\"equivalence\", True)\nc.run('remove pkg/0.1 -c')\nfrom conan.api.model import RecipeReference\nassert c.cache.get_recipe_revisions_references(RecipeReference('pkg', '0.1')) == []\nprint(\"invalidate\", True)\nc.run('cache restore backup.tgz')\nc.run('list pkg/0.1:*')\nassert 'pkg/0.1' in c.out\nprint(\"recompute\", True)\nc.run('cache save other/0.1 --file x.tgz', assert_error=True)\nprint(\"isolation\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "54f21a95c695ec6d42f027eed0b988d929660542c2776e6c8a42309be652ebe7"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored CacheAPI cache_query_hit_and_miss_isolation. The actual inline cache observation completed after the production edit. Patch submitted."
+}

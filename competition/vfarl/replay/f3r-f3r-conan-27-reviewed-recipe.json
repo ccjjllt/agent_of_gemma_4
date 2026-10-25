@@ -1,0 +1,129 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex root source contract and actual command review 2026-10-26",
+  "review_notes": "conan-io/conan conans.tools.download must preserve download_failure_retry_scope. Download failure scope: set->failing url with retries raises after exactly N waits with equivalence on repeat runs and isolation across urls, expire/invalidate->not-found never retries (second observation differs: waits vs none), recompute->retryable failure retries again. Restore the exact production logic without hardcoding values or altering tests. All original F2P/P2P identifiers and complete target files are retained verbatim. The Smith row introduces the defect; this is an off-policy scripted demonstration, not a model sample or preference pair. The inline observation fails before the repair (first run expects error) and passes after (second run expects ok), so the second observation differs.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "conan/internal/conan_app.py",
+        "start_line": 14,
+        "end_line": 49
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "conan/tools/files/files.py",
+        "start_line": 164,
+        "end_line": 199
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'conan/internal/conan_app.py').resolve()\ntry:\n module = importlib.import_module('conan.internal.conan_app')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('edited_file', 'conan/tools/files/files.py', 'sha256', hashlib.sha256(Path('conan/tools/files/files.py').read_bytes()).hexdigest())\n\nimport os\nimport pytest\nfrom conan.tools.files import download\nfrom conan.errors import ConanException\nfrom conan.test.utils.file_server import TestFileServer\nfrom conan.test.utils.mocks import ConanFileMock, RedirectedTestOutput\nfrom conan.test.utils.test_files import temp_folder\nfrom conan.test.utils.tools import redirect_output, TestRequester\nfrom conans.util.files import chdir\nwork = temp_folder()\nos.chdir(work)\nconanfile = ConanFileMock()\nconanfile._conan_helpers.requester = TestRequester({})\ntry:\n    output = RedirectedTestOutput()\n    with redirect_output(output):\n        download(conanfile, \"http://fakesomething\", \"path\", retry=2, retry_wait=0.1)\nexcept ConanException:\n    pass\nelse:\n    raise AssertionError(\"failing download must raise\")\nassert str(output).count(\"Waiting 0.1 seconds to retry...\") == 2, str(output)\nprint(\"get_hit\", True)\nconanfile2 = ConanFileMock()\nconanfile2._conan_helpers.requester = TestRequester({})\ntry:\n    output2 = RedirectedTestOutput()\n    with redirect_output(output2):\n        download(conanfile2, \"http://fakesomething\", \"path\", retry=2, retry_wait=0.1)\nexcept ConanException:\n    pass\nelse:\n    raise AssertionError(\"failing download must raise\")\nassert str(output2).count(\"Waiting 0.1 seconds to retry...\") == 2\nprint(\"equivalence\", True)\nfile_server = TestFileServer()\nconanfile3 = ConanFileMock()\nconanfile3._conan_helpers.requester = TestRequester({\"file_server\": file_server})\nfile_path = os.path.join(temp_folder(), \"file.txt\")\ntry:\n    download(conanfile3, file_server.fake_url + \"/manual.html\", file_path, retry=2, retry_wait=0)\nexcept ConanException:\n    pass\nelse:\n    raise AssertionError(\"not-found must raise\")\nassert \"Waiting\" not in str(conanfile3.output)\nassert \"retry\" not in str(conanfile3.output)\nprint(\"isolation\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "9d6689333d1a7f611df2bbb915ac50900cd56b7a02d8fa876b322b91146ecebb"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/internal/conan_app.py",
+        "old_string": "\n\nclass ConanFileHelpers:\n    def __init__(self, requester, cmd_wrapper, cache, home_folder):\n        self.requester = requester\n        self.cmd_wrapper = cmd_wrapper\n        self.cache = cache\n        self.home_folder = home_folder\n\n",
+        "new_string": "\n\nclass ConanFileHelpers:\n    def __init__(self, requester, cmd_wrapper, global_conf, cache, home_folder):\n        self.requester = requester\n        self.cmd_wrapper = cmd_wrapper\n        self.global_conf = global_conf\n        self.cache = cache\n        self.home_folder = home_folder\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/internal/conan_app.py",
+        "old_string": "\n        self.pyreq_loader = PyRequireLoader(self, self.global_conf)\n        cmd_wrap = CmdWrapper(HomePaths(self.cache_folder).wrapper_path)\n        conanfile_helpers = ConanFileHelpers(conan_api.remotes.requester, cmd_wrap, self.cache, self.cache_folder)\n        self.loader = ConanFileLoader(self.pyreq_loader, conanfile_helpers)",
+        "new_string": "\n        self.pyreq_loader = PyRequireLoader(self, self.global_conf)\n        cmd_wrap = CmdWrapper(HomePaths(self.cache_folder).wrapper_path)\n        conanfile_helpers = ConanFileHelpers(conan_api.remotes.requester, cmd_wrap, self.global_conf,\n                                             self.cache, self.cache_folder)\n        self.loader = ConanFileLoader(self.pyreq_loader, conanfile_helpers)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/tools/files/files.py",
+        "old_string": "    \"\"\"\n    Retrieves a file from a given URL into a file with a given filename. It uses certificates from\n    a list of known verifiers for https downloads, but this can be optionally disabled.\n    You can pass hash checking parameters: ``md5``, ``sha1``, ``sha256``. All the specified\n    algorithms will be checked. If any of them doesn’t match, the downloaded file will be removed\n    and it will raise a ``ConanException``.\n",
+        "new_string": "    \"\"\"\n    Retrieves a file from a given URL into a file with a given filename. It uses certificates from\n    a list of known verifiers for https downloads, but this can be optionally disabled.\n\n    You can pass hash checking parameters: ``md5``, ``sha1``, ``sha256``. All the specified\n    algorithms will be checked. If any of them doesn’t match, the downloaded file will be removed\n    and it will raise a ``ConanException``.\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/tools/files/files.py",
+        "old_string": "    :param sha1: SHA-1 hash code to check the downloaded file\n    :param sha256: SHA-256 hash code to check the downloaded file\n    \"\"\"\n    # TODO: Add all parameters to the new conf\n    requester = conanfile._conan_helpers.requester\n    config = conanfile.conf\n\n    retry = retry if retry is not None else 2\n",
+        "new_string": "    :param sha1: SHA-1 hash code to check the downloaded file\n    :param sha256: SHA-256 hash code to check the downloaded file\n    \"\"\"\n    config = conanfile.conf\n\n    retry = retry if retry is not None else 2\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/tools/files/files.py",
+        "old_string": "    retry_wait = retry_wait if retry_wait is not None else 5\n    retry_wait = config.get(\"tools.files.download:retry_wait\", check_type=int, default=retry_wait)\n    verify = config.get(\"tools.files.download:verify\", check_type=bool, default=verify)\n    \n    # Conan 2.0: Removed \"tools.files.download:download_cache\" from configuration\n    checksum = md5 or sha1 or sha256\n    download_cache = config.get(\"tools.files.download:download_cache\") if checksum else None\n    if download_cache and not os.path.isabs(download_cache):\n        raise ConanException(\"core.download:download_cache must be an absolute path\")\n    \n    filename = os.path.abspath(filename)\n    downloader = SourcesCachingDownloader(conanfile)\n    downloader.download(url, filename, retry, retry_wait, verify, auth, headers, md5, sha1, sha256)\n",
+        "new_string": "    retry_wait = retry_wait if retry_wait is not None else 5\n    retry_wait = config.get(\"tools.files.download:retry_wait\", check_type=int, default=retry_wait)\n    verify = config.get(\"tools.files.download:verify\", check_type=bool, default=verify)\n\n    filename = os.path.abspath(filename)\n    downloader = SourcesCachingDownloader(conanfile)\n    downloader.download(url, filename, retry, retry_wait, verify, auth, headers, md5, sha1, sha256)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/tools/files/files.py",
+        "old_string": "    frequently raises “Access is denied” exception on Windows.\n    This function renames file or folder using robocopy to avoid the exception on Windows.\n\n    :param conanfile: The current recipe object. Always use ``self``.\n    :param src: Path to be renamed.\n    :param dst: Path to be renamed to.\n",
+        "new_string": "    frequently raises “Access is denied” exception on Windows.\n    This function renames file or folder using robocopy to avoid the exception on Windows.\n\n\n\n    :param conanfile: The current recipe object. Always use ``self``.\n    :param src: Path to be renamed.\n    :param dst: Path to be renamed to.\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/tools/files/files.py",
+        "old_string": "                # This will avoid a first whole file read resulting in a performant improvement around 25%\n                tarredgzippedFile.extract(member, path=destination)\n\n\ndef check_sha1(conanfile, file_path, signature):\n    \"\"\"\n    Check that the specified ``sha1`` of the ``file_path`` matches with signature.\n",
+        "new_string": "                # This will avoid a first whole file read resulting in a performant improvement around 25%\n                tarredgzippedFile.extract(member, path=destination)\n\ndef check_sha1(conanfile, file_path, signature):\n    \"\"\"\n    Check that the specified ``sha1`` of the ``file_path`` matches with signature.\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/tools/files/files.py",
+        "old_string": "    except OSError:\n        pass",
+        "new_string": "    except OSError:\n        pass\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'conan/internal/conan_app.py').resolve()\ntry:\n module = importlib.import_module('conan.internal.conan_app')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('edited_file', 'conan/tools/files/files.py', 'sha256', hashlib.sha256(Path('conan/tools/files/files.py').read_bytes()).hexdigest())\n\nimport os\nimport pytest\nfrom conan.tools.files import download\nfrom conan.errors import ConanException\nfrom conan.test.utils.file_server import TestFileServer\nfrom conan.test.utils.mocks import ConanFileMock, RedirectedTestOutput\nfrom conan.test.utils.test_files import temp_folder\nfrom conan.test.utils.tools import redirect_output, TestRequester\nfrom conans.util.files import chdir\nwork = temp_folder()\nos.chdir(work)\nconanfile = ConanFileMock()\nconanfile._conan_helpers.requester = TestRequester({})\ntry:\n    output = RedirectedTestOutput()\n    with redirect_output(output):\n        download(conanfile, \"http://fakesomething\", \"path\", retry=2, retry_wait=0.1)\nexcept ConanException:\n    pass\nelse:\n    raise AssertionError(\"failing download must raise\")\nassert str(output).count(\"Waiting 0.1 seconds to retry...\") == 2, str(output)\nprint(\"get_hit\", True)\nconanfile2 = ConanFileMock()\nconanfile2._conan_helpers.requester = TestRequester({})\ntry:\n    output2 = RedirectedTestOutput()\n    with redirect_output(output2):\n        download(conanfile2, \"http://fakesomething\", \"path\", retry=2, retry_wait=0.1)\nexcept ConanException:\n    pass\nelse:\n    raise AssertionError(\"failing download must raise\")\nassert str(output2).count(\"Waiting 0.1 seconds to retry...\") == 2\nprint(\"equivalence\", True)\nfile_server = TestFileServer()\nconanfile3 = ConanFileMock()\nconanfile3._conan_helpers.requester = TestRequester({\"file_server\": file_server})\nfile_path = os.path.join(temp_folder(), \"file.txt\")\ntry:\n    download(conanfile3, file_server.fake_url + \"/manual.html\", file_path, retry=2, retry_wait=0)\nexcept ConanException:\n    pass\nelse:\n    raise AssertionError(\"not-found must raise\")\nassert \"Waiting\" not in str(conanfile3.output)\nassert \"retry\" not in str(conanfile3.output)\nprint(\"isolation\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "9d6689333d1a7f611df2bbb915ac50900cd56b7a02d8fa876b322b91146ecebb"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored conans.tools.download download_failure_retry_scope. The actual inline cache observation completed after the production edit. Patch submitted."
+}

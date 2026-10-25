@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "Enter the profiler context and observe enabled state inside the body. Enter must enable before the body runs and exit must disable after. The bug disables at enter so the body never profiles. The complete production-file delta is exactly the reviewed hunks inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "kernprof.py",
+        "start_line": 199,
+        "end_line": 208
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('kernprof')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'kernprof.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom kernprof import ContextualProfile\np=ContextualProfile()\nwith p:\n    inside=p.enable_count\nprint('enter_depth',inside)\nassert inside==1,inside\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "297b5c6df467a99040ead005168f850ca30f4a606e23a70c5b84581600cf2f1f"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "kernprof.py",
+        "old_string": "        return wrapper\n\n    def __enter__(self):\n        self.disable_by_count()\n\n    def __exit__(self, exc_type, exc_val, exc_tb):\n        self.disable_by_count()",
+        "new_string": "        return wrapper\n\n    def __enter__(self):\n        self.enable_by_count()\n\n    def __exit__(self, exc_type, exc_val, exc_tb):\n        self.disable_by_count()"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('kernprof')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'kernprof.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom kernprof import ContextualProfile\np=ContextualProfile()\nwith p:\n    inside=p.enable_count\nprint('enter_depth',inside)\nassert inside==1,inside\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "297b5c6df467a99040ead005168f850ca30f4a606e23a70c5b84581600cf2f1f"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Enter the profiler context and observe enabled state inside the body. Enter must enable before the body runs and exit must disable after. The bug disables at enter so the body never profiles. The source-bound reproduction passes after the repair. Patch submitted."
+}

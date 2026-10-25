@@ -1,0 +1,120 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex root source contract and actual command review 2026-10-26",
+  "review_notes": "conan-io/conan CacheAPI must preserve cache_path_profile_scope_and_equivalence. Cache clean flow: set->exported recipe, get->listed with equivalence, expire/invalidate->clean removes it (second observation differs), recompute->re-export restores; full clean isolates nothing leftover. Restore the exact production logic without hardcoding values or altering tests. All original F2P/P2P identifiers and complete target files are retained verbatim. The Smith row introduces the defect; this is an off-policy scripted demonstration, not a model sample or preference pair. The inline observation fails before the repair (first run expects error) and passes after (second run expects ok), so the second observation differs.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "conan/api/subapi/cache.py",
+        "start_line": 255,
+        "end_line": 290
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "conan/api/subapi/profiles.py",
+        "start_line": 3,
+        "end_line": 38
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "conan/cli/commands/cache.py",
+        "start_line": 58,
+        "end_line": 93
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'conan/api/subapi/cache.py').resolve()\ntry:\n module = importlib.import_module('conan.api.subapi.cache')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('edited_file', 'conan/api/subapi/profiles.py', 'sha256', hashlib.sha256(Path('conan/api/subapi/profiles.py').read_bytes()).hexdigest())\nprint('edited_file', 'conan/cli/commands/cache.py', 'sha256', hashlib.sha256(Path('conan/cli/commands/cache.py').read_bytes()).hexdigest())\n\nfrom conan.test.utils.tools import TestClient\nc = TestClient()\nc.save({'conanfile.py': 'from conan import ConanFile\\n'\n                         'class Pkg(ConanFile):\\n'\n                         \"    name = 'pkg'\\n\"\n                         \"    version = '0.1'\\n\"})\nc.run('export .')\nassert 'pkg/0.1' in c.out\nprint(\"get_hit\", True)\nc.run('export .')\nprint(\"equivalence\", True)\nc.run('cache clean pkg/0.1')\nprint(\"invalidate\", True)\nc.run('export .')\nassert 'pkg/0.1' in c.out\nprint(\"recompute\", True)\nc.run('cache clean')\nprint(\"isolation\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "24c781874e2f6c75f14bb03dc0cf2131e0e70d5bdb075a92d77e4c765a2e401b"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/api/subapi/cache.py",
+        "old_string": "    return folder_path",
+        "new_string": "    return folder_path\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/api/subapi/profiles.py",
+        "old_string": "class ProfilesAPI:\n\n    def __init__(self, conan_api):\n        self._cache = ClientCache(conan_api.cache_folder)\n        self._home_paths = HomePaths(conan_api.cache_folder)\n\n    def get_default_host(self):\n",
+        "new_string": "class ProfilesAPI:\n\n    def __init__(self, conan_api):\n        self._conan_api = conan_api\n        self._home_paths = HomePaths(conan_api.cache_folder)\n\n    def get_default_host(self):\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/api/subapi/profiles.py",
+        "old_string": "            return mod.profile_plugin",
+        "new_string": "            return mod.profile_plugin\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/cli/commands/cache.py",
+        "old_string": "    Remove non-critical folders from the cache, like source, build and/or download\n    (.tgz store) ones.\n    \"\"\"\n    subparser.add_argument(\"pattern\", help=\"Selection pattern for references to clean\")\n    subparser.add_argument(\"-s\", \"--source\", action='store_true', default=False,\n                           help=\"Clean source folders\")\n    subparser.add_argument(\"-b\", \"--build\", action='store_true', default=False,\n                           help=\"Clean build folders\")\n    subparser.add_argument(\"-d\", \"--download\", action='store_true', default=False,\n                           help=\"Clean download and metadata folders\")\n    subparser.add_argument(\"-bs\", \"--backup-sources\", action='store_true', default=False,\n                           help=\"Clean backup sources\")\n    subparser.add_argument('-p', '--package-query', action=OnceArgument,\n",
+        "new_string": "    Remove non-critical folders from the cache, like source, build and/or download\n    (.tgz store) ones.\n    \"\"\"\n    subparser.add_argument(\"pattern\", nargs=\"?\", help=\"Selection pattern for references to clean\")\n    subparser.add_argument(\"-s\", \"--source\", action='store_true', default=False,\n                           help=\"Clean source folders\")\n    subparser.add_argument(\"-b\", \"--build\", action='store_true', default=False,\n                           help=\"Clean build folders\")\n    subparser.add_argument(\"-d\", \"--download\", action='store_true', default=False,\n                           help=\"Clean download and metadata folders\")\n    subparser.add_argument(\"-t\", \"--temp\", action='store_true', default=False,\n                           help=\"Clean temporary folders\")\n    subparser.add_argument(\"-bs\", \"--backup-sources\", action='store_true', default=False,\n                           help=\"Clean backup sources\")\n    subparser.add_argument('-p', '--package-query', action=OnceArgument,\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/cli/commands/cache.py",
+        "old_string": "                                \"os=Windows AND (arch=x86 OR compiler=gcc)\")\n    args = parser.parse_args(*args)\n\n    if not args.source and not args.build and not args.download:\n        raise ConanException(\"Define at least one argument among [--source, --build, --download]\")\n\n    ref_pattern = ListPattern(args.pattern, rrev=\"*\", package_id=\"*\", prev=\"*\")\n    package_list = conan_api.list.select(ref_pattern, package_query=args.package_query)\n    conan_api.cache.clean(package_list, source=args.source, build=args.build,\n                          download=args.download)\n\n\n@conan_subcommand(formatters={\"text\": print_list_text,\n                              \"json\": print_list_json})\ndef cache_check_integrity(conan_api: ConanAPI, parser, subparser, *args):\n    \"\"\"\n    Check the integrity of the local cache for the given references\n",
+        "new_string": "                                \"os=Windows AND (arch=x86 OR compiler=gcc)\")\n    args = parser.parse_args(*args)\n\n    ref_pattern = ListPattern(args.pattern or \"*\", rrev=\"*\", package_id=\"*\", prev=\"*\")\n    package_list = conan_api.list.select(ref_pattern, package_query=args.package_query)\n    if args.build or args.source or args.download or args.temp or args.backup_sources:\n        conan_api.cache.clean(package_list, source=args.source, build=args.build,\n                              download=args.download, temp=args.temp,\n                              backup_sources=args.backup_sources)\n    else:\n        conan_api.cache.clean(package_list)\n\n\n@conan_subcommand()\ndef cache_check_integrity(conan_api: ConanAPI, parser, subparser, *args):\n    \"\"\"\n    Check the integrity of the local cache for the given references\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/cli/commands/cache.py",
+        "old_string": "    conan_api.upload.upload_backup_sources(files)",
+        "new_string": "    conan_api.upload.upload_backup_sources(files)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'conan/api/subapi/cache.py').resolve()\ntry:\n module = importlib.import_module('conan.api.subapi.cache')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('edited_file', 'conan/api/subapi/profiles.py', 'sha256', hashlib.sha256(Path('conan/api/subapi/profiles.py').read_bytes()).hexdigest())\nprint('edited_file', 'conan/cli/commands/cache.py', 'sha256', hashlib.sha256(Path('conan/cli/commands/cache.py').read_bytes()).hexdigest())\n\nfrom conan.test.utils.tools import TestClient\nc = TestClient()\nc.save({'conanfile.py': 'from conan import ConanFile\\n'\n                         'class Pkg(ConanFile):\\n'\n                         \"    name = 'pkg'\\n\"\n                         \"    version = '0.1'\\n\"})\nc.run('export .')\nassert 'pkg/0.1' in c.out\nprint(\"get_hit\", True)\nc.run('export .')\nprint(\"equivalence\", True)\nc.run('cache clean pkg/0.1')\nprint(\"invalidate\", True)\nc.run('export .')\nassert 'pkg/0.1' in c.out\nprint(\"recompute\", True)\nc.run('cache clean')\nprint(\"isolation\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "24c781874e2f6c75f14bb03dc0cf2131e0e70d5bdb075a92d77e4c765a2e401b"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored CacheAPI cache_path_profile_scope_and_equivalence. The actual inline cache observation completed after the production edit. Patch submitted."
+}

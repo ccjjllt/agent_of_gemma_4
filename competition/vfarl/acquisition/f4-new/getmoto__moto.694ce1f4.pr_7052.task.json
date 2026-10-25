@@ -1,0 +1,31 @@
+{
+  "row": {
+    "instance_id": "getmoto__moto.694ce1f4.pr_7052",
+    "repo": "swesmith/getmoto__moto.694ce1f4",
+    "patch": "diff --git a/moto/lakeformation/exceptions.py b/moto/lakeformation/exceptions.py\nindex 9041402..a88b697 100644\n--- a/moto/lakeformation/exceptions.py\n+++ b/moto/lakeformation/exceptions.py\n@@ -10,9 +10,4 @@ class EntityNotFound(JsonRESTError):\n \n class InvalidInput(JsonRESTError):\n     def __init__(self, message: str) -> None:\n-        super().__init__(\"InvalidInputException\", message)\n-\n-\n-class AlreadyExists(JsonRESTError):\n-    def __init__(self, message: str) -> None:\n-        super().__init__(\"AlreadyExistsException\", message)\n+        super().__init__(\"InvalidInputException\", message)\n\\ No newline at end of file\ndiff --git a/moto/lakeformation/models.py b/moto/lakeformation/models.py\nindex d85f479..b543a69 100644\n--- a/moto/lakeformation/models.py\n+++ b/moto/lakeformation/models.py\n@@ -9,7 +9,7 @@ from moto.core.base_backend import BackendDict, BaseBackend\n from moto.core.common_models import BaseModel\n from moto.utilities.tagging_service import TaggingService\n \n-from .exceptions import AlreadyExists, EntityNotFound, InvalidInput\n+from .exceptions import EntityNotFound, InvalidInput\n \n \n class RessourceType(Enum):\n@@ -289,10 +289,6 @@ class LakeFormationBackend(BaseBackend):\n         del self.resources[resource_arn]\n \n     def register_resource(self, resource_arn: str, role_arn: str) -> None:\n-        if resource_arn in self.resources:\n-            raise AlreadyExists(\n-                \"An error occurred (AlreadyExistsException) when calling the RegisterResource operation: Resource is already registered\"\n-            )\n         self.resources[resource_arn] = Resource(resource_arn, role_arn)\n \n     def list_resources(self) -> List[Resource]:\n@@ -579,7 +575,7 @@ class LakeFormationBackend(BaseBackend):\n         self,\n         catalog_id: str,  # pylint: disable=unused-argument\n         resource: Dict[str, Any],\n-    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:\n+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]:\n         database_tags = []\n         table_tags = []\n         column_tags = []\n@@ -638,4 +634,4 @@ class LakeFormationBackend(BaseBackend):\n                     existing_tags.remove(tag)\n \n \n-lakeformation_backends = BackendDict(LakeFormationBackend, \"lakeformation\")\n+lakeformation_backends = BackendDict(LakeFormationBackend, \"lakeformation\")\n\\ No newline at end of file\n",
+    "FAIL_TO_PASS": [
+      "tests/test_lakeformation/test_lakeformation.py::test_register_resource",
+      "tests/test_lakeformation/test_lakeformation.py::test_describe_resource",
+      "tests/test_lakeformation/test_lakeformation.py::test_deregister_resource",
+      "tests/test_lakeformation/test_lakeformation.py::test_list_resources",
+      "tests/test_lakeformation/test_lakeformation.py::test_data_lake_settings",
+      "tests/test_lakeformation/test_lakeformation.py::test_grant_permissions",
+      "tests/test_lakeformation/test_lakeformation.py::test_grant_permissions_idempotent",
+      "tests/test_lakeformation/test_lakeformation.py::test_grant_permissions_staggered",
+      "tests/test_lakeformation/test_lakeformation.py::test_list_permissions",
+      "tests/test_lakeformation/test_lakeformation.py::test_list_permissions_invalid_input",
+      "tests/test_lakeformation/test_lakeformation.py::test_list_permissions_filtered_for_catalog_id",
+      "tests/test_lakeformation/test_lakeformation.py::test_list_permissions_filtered_for_resource_type",
+      "tests/test_lakeformation/test_lakeformation.py::test_list_permissions_filtered_for_resource_db",
+      "tests/test_lakeformation/test_lakeformation.py::test_list_permissions_filtered_for_resource_table",
+      "tests/test_lakeformation/test_lakeformation.py::test_list_permissions_filtered_for_resource_data_location",
+      "tests/test_lakeformation/test_lakeformation.py::test_revoke_permissions",
+      "tests/test_lakeformation/test_lakeformation.py::test_revoke_permissions_unknown_catalog_id",
+      "tests/test_lakeformation/test_lakeformation.py::test_list_data_cells_filter",
+      "tests/test_lakeformation/test_lakeformation.py::test_batch_revoke_permissions"
+    ],
+    "PASS_TO_PASS": [],
+    "problem_statement": "### Resource Registration Overwrites Existing Entries\n\n#### Summary\nIt seems that when attempting to register a resource that has already been registered, the existing resource entry is overwritten without any warning or error. This behavior is unexpected as it should ideally prevent duplicate registrations or at least notify the user of the existing entry.\n\n#### Reproducer\nThe issue can be reproduced with the following script:\n\n```python\nimport boto3\nfrom moto import mock_aws\n\n@mock_aws\ndef test_register_resource():\n    client = boto3.client('lakeformation', region_name='us-east-2')\n    client.register_resource(ResourceArn='arn:aws:lakeformation:us-east-2:123456789012:resource/some-resource', RoleArn='arn:aws:iam::123456789012:role/some-role')\n    client.register_resource(ResourceArn='arn:aws:lakeformation:us-east-2:123456789012:resource/some-resource', RoleArn='arn:aws:iam::123456789012:role/some-role')\n    resources = client.list_resources()\n    assert len(resources['ResourceInfoList']) == 1, \"Expected only one resource to be registered, but found multiple.\"\n\ntest_register_resource()\n```\n\n#### Expected Behavior\nWhen attempting to register a resource that already exists, an `AlreadyExistsException` should be raised to prevent overwriting the existing resource entry.\n\n#### Environment\n- Python 3.12.9\n- Moto version: [version]\n- Boto3 version: [version]\n\nThis behavior was observed in a controlled test environment using the `moto` library to mock AWS services.",
+    "image_name": "swebench/swesmith.x86_64.getmoto_1776_moto.694ce1f4"
+  }
+}

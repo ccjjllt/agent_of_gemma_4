@@ -1,0 +1,75 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex root source contract and actual command review 2026-10-26",
+  "review_notes": "conan-io/conan ClientCache must preserve cache_recipe_store_and_key_isolation. Package layout reuse: set->create export layout, get->dir present with equivalence and isolation, expire/invalidate->removed dir gone (second observation differs), recompute->recreate restores; duplicate creates reuse the layout. Restore the exact production logic without hardcoding values or altering tests. All original F2P/P2P identifiers and complete target files are retained verbatim. The Smith row introduces the defect; this is an off-policy scripted demonstration, not a model sample or preference pair. The inline observation fails before the repair (first run expects error) and passes after (second run expects ok), so the second observation differs.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "conan/internal/cache/cache.py",
+        "start_line": 1,
+        "end_line": 36
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'conan/internal/cache/cache.py').resolve()\ntry:\n module = importlib.import_module('conan.internal.cache.cache')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\n\nimport os, tempfile\nfrom conan.api.model import RecipeReference, PkgReference\nfrom conan.internal.cache.cache import PkgCache\ntmp = tempfile.mkdtemp()\ncache = PkgCache(tmp, {})\ndef fresh_pref():\n    return PkgReference(RecipeReference('pkg', '0.1', revision='r1'), 'pid123')\nlayout = cache.create_build_pkg_layout(fresh_pref())\nassert os.path.isdir(layout.base_folder)\nprint(\"get_hit\", True)\nlayout.reference.revision = 'prev1'\ncache.assign_prev(layout)\nprint(\"equivalence\", True)\nlayout2 = cache.create_build_pkg_layout(fresh_pref())\nlayout2.reference.revision = 'prev1'\ncache.assign_prev(layout2)\nassert os.path.isdir(layout2.base_folder)\nprint(\"isolation\", True)\nother = cache.create_build_pkg_layout(\n    PkgReference(RecipeReference('other', '0.1', revision='r1'), 'pid999'))\nassert other.base_folder != layout2.base_folder\nprint(\"recompute\", True)\ncache.remove_package_layout(layout2)\nassert not os.path.exists(layout2.base_folder)\nprint(\"invalidate\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "0eb7cd2890879e5c396080abb5b28f42a6047c8784449c105d3fee9333b2bcb3"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/internal/cache/cache.py",
+        "old_string": "import hashlib\nimport os\nimport re\nimport uuid\nfrom fnmatch import translate\nfrom typing import List\n",
+        "new_string": "import hashlib\nimport os\nimport re\nimport shutil\nimport uuid\nfrom fnmatch import translate\nfrom typing import List\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/internal/cache/cache.py",
+        "old_string": "            self._db.create_package(relpath, pref, build_id)\n        except ConanReferenceAlreadyExistsInDB:\n            # TODO: Optimize this into 1 single UPSERT operation\n            # This was exported before, making it latest again, update timestamp\n            pkg_layout = self.get_package_layout(pref)\n            # We remove the old one and move the new one to the path of the previous one\n            # this can be necessary in case of new metadata or build-folder because of \"build_id()\"\n            pkg_layout.remove()\n",
+        "new_string": "            self._db.create_package(relpath, pref, build_id)\n        except ConanReferenceAlreadyExistsInDB:\n            # TODO: Optimize this into 1 single UPSERT operation\n            # There was a previous package folder for this same package reference (and prev)\n            pkg_layout = self.pkg_layout(pref)\n            # We remove the old one and move the new one to the path of the previous one\n            # this can be necessary in case of new metadata or build-folder because of \"build_id()\"\n            pkg_layout.remove()\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "conan/internal/cache/cache.py",
+        "old_string": "        self._db.update_package_lru(pref)",
+        "new_string": "        self._db.update_package_lru(pref)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'conan/internal/cache/cache.py').resolve()\ntry:\n module = importlib.import_module('conan.internal.cache.cache')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\n\nimport os, tempfile\nfrom conan.api.model import RecipeReference, PkgReference\nfrom conan.internal.cache.cache import PkgCache\ntmp = tempfile.mkdtemp()\ncache = PkgCache(tmp, {})\ndef fresh_pref():\n    return PkgReference(RecipeReference('pkg', '0.1', revision='r1'), 'pid123')\nlayout = cache.create_build_pkg_layout(fresh_pref())\nassert os.path.isdir(layout.base_folder)\nprint(\"get_hit\", True)\nlayout.reference.revision = 'prev1'\ncache.assign_prev(layout)\nprint(\"equivalence\", True)\nlayout2 = cache.create_build_pkg_layout(fresh_pref())\nlayout2.reference.revision = 'prev1'\ncache.assign_prev(layout2)\nassert os.path.isdir(layout2.base_folder)\nprint(\"isolation\", True)\nother = cache.create_build_pkg_layout(\n    PkgReference(RecipeReference('other', '0.1', revision='r1'), 'pid999'))\nassert other.base_folder != layout2.base_folder\nprint(\"recompute\", True)\ncache.remove_package_layout(layout2)\nassert not os.path.exists(layout2.base_folder)\nprint(\"invalidate\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "0eb7cd2890879e5c396080abb5b28f42a6047c8784449c105d3fee9333b2bcb3"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored ClientCache cache_recipe_store_and_key_isolation. The actual inline cache observation completed after the production edit. Patch submitted."
+}

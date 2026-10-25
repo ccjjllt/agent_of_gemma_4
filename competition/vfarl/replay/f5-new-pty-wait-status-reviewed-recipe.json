@@ -1,0 +1,66 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "Wait must check aliveness and reap via waitpid before interpreting the status word. Reading an unassigned status breaks the spawn-wait-reap chain with an unbound variable. The complete production-file delta is exactly the reviewed hunks inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "ptyprocess/ptyprocess.py",
+        "start_line": 671,
+        "end_line": 706
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('ptyprocess.ptyprocess')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'ptyprocess/ptyprocess.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom ptyprocess import PtyProcess\nproc=PtyProcess.spawn(['true'])\nresult=proc.wait()\nprint('wait_reap_sequence',[result,proc.exitstatus,proc.terminated])\nassert [result,proc.exitstatus,proc.terminated]==[0,0,True]\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "a5d4cfb7fda33a769491c0414f4a21d1b32e27dd4eeb82c1ec5b9783ec603f71"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "ptyprocess/ptyprocess.py",
+        "old_string": "            raise PtyProcessError('Called wait() on a stopped child ' +\n                    'process. This is not supported. Is some other ' +\n                    'process attempting job control with our child pid?')\n\n        if self.isalive():\n            pid, status = os.waitpid(self.pid, 0)\n        else:\n            return self.exitstatus\n        return self.exitstatus\n    def isalive(self):\n        '''This tests if the child process is running or not. This is\n        non-blocking. If the child was terminated then this will read the",
+        "new_string": "            raise PtyProcessError('Called wait() on a stopped child ' +\n                    'process. This is not supported. Is some other ' +\n                    'process attempting job control with our child pid?')\n        return self.exitstatus\n\n    def isalive(self):\n        '''This tests if the child process is running or not. This is\n        non-blocking. If the child was terminated then this will read the"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "ptyprocess/ptyprocess.py",
+        "old_string": "        child has unread output and has terminated. In other words, the child\n        may have printed output then called exit(), but, the child is\n        technically still alive until its output is read by the parent. '''\n        self.exitstatus = os.WEXITSTATUS(status)\n        if os.WIFEXITED(status):\n            self.status = status",
+        "new_string": "        child has unread output and has terminated. In other words, the child\n        may have printed output then called exit(), but, the child is\n        technically still alive until its output is read by the parent. '''\n\n        if self.isalive():\n            pid, status = os.waitpid(self.pid, 0)\n        else:\n            return self.exitstatus\n        self.exitstatus = os.WEXITSTATUS(status)\n        if os.WIFEXITED(status):\n            self.status = status"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('ptyprocess.ptyprocess')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'ptyprocess/ptyprocess.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom ptyprocess import PtyProcess\nproc=PtyProcess.spawn(['true'])\nresult=proc.wait()\nprint('wait_reap_sequence',[result,proc.exitstatus,proc.terminated])\nassert [result,proc.exitstatus,proc.terminated]==[0,0,True]\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "a5d4cfb7fda33a769491c0414f4a21d1b32e27dd4eeb82c1ec5b9783ec603f71"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Wait must check aliveness and reap via waitpid before interpreting the status word. Reading an unassigned status breaks the spawn-wait-reap chain with an unbound variable. The source-bound reproduction passes after the repair. Patch submitted."
+}

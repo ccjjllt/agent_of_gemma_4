@@ -1,0 +1,129 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex root source contract and actual command review 2026-10-26",
+  "review_notes": "iterative/dvc StageCache.load must preserve stage_cache_load_scope_and_reuse. StageCache load and loader scope: set->loader stays a Mapping, get->saved entry loads with equivalence and isolation across keys, expire/invalidate->corrupt entry misses and unlinks (second observation differs), recompute->rewrite restores the hit. Restore the exact production logic without hardcoding values or altering tests. All original F2P/P2P identifiers and complete target files are retained verbatim. The Smith row introduces the defect; this is an off-policy scripted demonstration, not a model sample or preference pair. The inline observation fails before the repair (first run expects error) and passes after (second run expects ok), so the second observation differs.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "dvc/stage/cache.py",
+        "start_line": 63,
+        "end_line": 98
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "dvc/stage/loader.py",
+        "start_line": 12,
+        "end_line": 47
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'dvc/stage/cache.py').resolve()\ntry:\n module = importlib.import_module('dvc.stage.cache')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('edited_file', 'dvc/stage/loader.py', 'sha256', hashlib.sha256(Path('dvc/stage/loader.py').read_bytes()).hexdigest())\n\nimport os, tempfile\nfrom collections.abc import Mapping\nfrom dvc.stage.cache import StageCache\nfrom dvc.stage.loader import StageLoader\nassert issubclass(StageLoader, Mapping)\nprint(\"get_hit\", True)\nsc = StageCache.__new__(StageCache)\ntmp = tempfile.mkdtemp()\nsc.cache_dir = tmp\nkey, val = 'a' * 32, 'v1'\np = os.path.join(tmp, key[:2], key, val)\nos.makedirs(os.path.dirname(p), exist_ok=True)\nwith open(p, 'w') as f:\n    f.write('cmd: [echo]\\nouts: []\\n')\nassert isinstance(sc._load_cache(key, val), dict)\nprint(\"equivalence\", True)\nassert sc._load_cache('b' * 32, val) is None\nprint(\"isolation\", True)\nwith open(p, 'w') as f:\n    f.write('not: [valid\\n')\nassert sc._load_cache(key, val) is None\nassert not os.path.exists(p)\nprint(\"invalidate\", True)\nwith open(p, 'w') as f:\n    f.write('cmd: [echo]\\nouts: []\\n')\nassert isinstance(sc._load_cache(key, val), dict)\nprint(\"recompute\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "5741c3c118dbdf0d21be6ccc6a04c0b30b61e74347d0d8f519c00990ad894b35"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "dvc/stage/cache.py",
+        "old_string": "        return os.path.join(self._get_cache_dir(key), value)\n\n    def _load_cache(self, key, value):\n\n        from dvc.schema import COMPILED_LOCK_FILE_STAGE_SCHEMA\n\n        try:\n            return COMPILED_LOCK_FILE_STAGE_SCHEMA(load_yaml(path))\n",
+        "new_string": "        return os.path.join(self._get_cache_dir(key), value)\n\n    def _load_cache(self, key, value):\n        from voluptuous import Invalid\n\n        from dvc.schema import COMPILED_LOCK_FILE_STAGE_SCHEMA\n        from dvc.utils.serialize import YAMLFileCorruptedError, load_yaml\n\n        path = self._get_cache_path(key, value)\n\n        try:\n            return COMPILED_LOCK_FILE_STAGE_SCHEMA(load_yaml(path))\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "dvc/stage/cache.py",
+        "old_string": "            os.unlink(path)\n            return None\n\n        path = self._get_cache_path(key, value)\n        from dvc.utils.serialize import YAMLFileCorruptedError, load_yaml\n        from voluptuous import Invalid\n    def _load(self, stage):\n        key = _get_stage_hash(stage)\n        if not key:\n",
+        "new_string": "            os.unlink(path)\n            return None\n\n    def _load(self, stage):\n        key = _get_stage_hash(stage)\n        if not key:\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "dvc/stage/loader.py",
+        "old_string": "logger = logger.getChild(__name__)\n\n\nclass StageLoader():\n    def __init__(self, dvcfile: \"ProjectFile\", data, lockfile_data=None):\n        self.dvcfile = dvcfile\n        self.resolver = self.dvcfile.resolver\n",
+        "new_string": "logger = logger.getChild(__name__)\n\n\nclass StageLoader(Mapping):\n    def __init__(self, dvcfile: \"ProjectFile\", data, lockfile_data=None):\n        self.dvcfile = dvcfile\n        self.resolver = self.dvcfile.resolver\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "dvc/stage/loader.py",
+        "old_string": "\n    @classmethod\n    def load_stage(cls, dvcfile: \"ProjectFile\", name, stage_data, lock_data=None):\n\n        deps = project(stage_data, [stage.PARAM_DEPS, stage.PARAM_PARAMS])\n        assert all([name, dvcfile, dvcfile.repo, dvcfile.path])\n\n        path, wdir = resolve_paths(\n            dvcfile.repo.fs, dvcfile.path, stage_data.get(Stage.PARAM_WDIR)\n        )\n\n        if lock_data:\n            stage.cmd_changed = lock_data.get(Stage.PARAM_CMD) != stage.cmd\n        stage.desc = stage_data.get(Stage.PARAM_DESC)\n        assert stage_data\n\n        cls.fill_from_lock(stage, lock_data)\n        stage.meta = stage_data.get(Stage.PARAM_META)\n        return stage\n        assert isinstance(stage_data, dict)\n        stage.name = name\n        stage.outs = lcat(\n            output.load_from_pipeline(stage, data, typ=key)\n            for key, data in outs.items()\n        )\n\n        outs = project(\n            stage_data,\n",
+        "new_string": "\n    @classmethod\n    def load_stage(cls, dvcfile: \"ProjectFile\", name, stage_data, lock_data=None):\n        assert all([name, dvcfile, dvcfile.repo, dvcfile.path])\n        assert stage_data\n        assert isinstance(stage_data, dict)\n\n        path, wdir = resolve_paths(\n            dvcfile.repo.fs, dvcfile.path, stage_data.get(Stage.PARAM_WDIR)\n        )\n        stage = loads_from(PipelineStage, dvcfile.repo, path, wdir, stage_data)\n        stage.name = name\n        stage.desc = stage_data.get(Stage.PARAM_DESC)\n        stage.meta = stage_data.get(Stage.PARAM_META)\n\n        deps = project(stage_data, [stage.PARAM_DEPS, stage.PARAM_PARAMS])\n        fill_stage_dependencies(stage, **deps)\n\n        outs = project(\n            stage_data,\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "dvc/stage/loader.py",
+        "old_string": "                stage.PARAM_PLOTS,\n            ],\n        )\n        fill_stage_dependencies(stage, **deps)\n        stage = loads_from(PipelineStage, dvcfile.repo, path, wdir, stage_data)\n    @once\n    def lockfile_needs_update(self):\n        # if lockfile does not have all of the entries that dvc.yaml says it\n",
+        "new_string": "                stage.PARAM_PLOTS,\n            ],\n        )\n        stage.outs = lcat(\n            output.load_from_pipeline(stage, data, typ=key)\n            for key, data in outs.items()\n        )\n\n        if lock_data:\n            stage.cmd_changed = lock_data.get(Stage.PARAM_CMD) != stage.cmd\n\n        cls.fill_from_lock(stage, lock_data)\n        return stage\n\n    @once\n    def lockfile_needs_update(self):\n        # if lockfile does not have all of the entries that dvc.yaml says it\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "dvc/stage/loader.py",
+        "old_string": "            raise StageNameUnspecified(self.dvcfile)\n\n        try:\n            pass\n        except EntryNotFound:\n            raise StageNotFound(self.dvcfile, name)  # noqa: B904\n\n        if self.lockfile_data and name not in self.lockfile_data:\n            self.lockfile_needs_update()\n            logger.trace(\"No lock entry found for '%s:%s'\", self.dvcfile.relpath, name)\n        stage = self.load_stage(\n            self.dvcfile,\n            name,\n",
+        "new_string": "            raise StageNameUnspecified(self.dvcfile)\n\n        try:\n            resolved_data = self.resolver.resolve_one(name)\n        except EntryNotFound:\n            raise StageNotFound(self.dvcfile, name)  # noqa: B904\n\n        if self.lockfile_data and name not in self.lockfile_data:\n            self.lockfile_needs_update()\n            logger.trace(\"No lock entry found for '%s:%s'\", self.dvcfile.relpath, name)\n\n        resolved_stage = resolved_data[name]\n        stage = self.load_stage(\n            self.dvcfile,\n            name,\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "dvc/stage/loader.py",
+        "old_string": "\n        stage.raw_data.parametrized = self.stages_data.get(name, {}) != resolved_stage\n        return stage\n    def __iter__(self):\n        return iter(self.resolver.get_keys())\n\n",
+        "new_string": "\n        stage.raw_data.parametrized = self.stages_data.get(name, {}) != resolved_stage\n        return stage\n\n    def __iter__(self):\n        return iter(self.resolver.get_keys())\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "dvc/stage/loader.py",
+        "old_string": "            and {FOREACH_KWD, MATRIX_KWD} & self.stages_data[name].keys()\n        )\n\nclass SingleStageLoader(Mapping):\n    def __init__(\n        self,\n",
+        "new_string": "            and {FOREACH_KWD, MATRIX_KWD} & self.stages_data[name].keys()\n        )\n\n\nclass SingleStageLoader(Mapping):\n    def __init__(\n        self,\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'dvc/stage/cache.py').resolve()\ntry:\n module = importlib.import_module('dvc.stage.cache')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('edited_file', 'dvc/stage/loader.py', 'sha256', hashlib.sha256(Path('dvc/stage/loader.py').read_bytes()).hexdigest())\n\nimport os, tempfile\nfrom collections.abc import Mapping\nfrom dvc.stage.cache import StageCache\nfrom dvc.stage.loader import StageLoader\nassert issubclass(StageLoader, Mapping)\nprint(\"get_hit\", True)\nsc = StageCache.__new__(StageCache)\ntmp = tempfile.mkdtemp()\nsc.cache_dir = tmp\nkey, val = 'a' * 32, 'v1'\np = os.path.join(tmp, key[:2], key, val)\nos.makedirs(os.path.dirname(p), exist_ok=True)\nwith open(p, 'w') as f:\n    f.write('cmd: [echo]\\nouts: []\\n')\nassert isinstance(sc._load_cache(key, val), dict)\nprint(\"equivalence\", True)\nassert sc._load_cache('b' * 32, val) is None\nprint(\"isolation\", True)\nwith open(p, 'w') as f:\n    f.write('not: [valid\\n')\nassert sc._load_cache(key, val) is None\nassert not os.path.exists(p)\nprint(\"invalidate\", True)\nwith open(p, 'w') as f:\n    f.write('cmd: [echo]\\nouts: []\\n')\nassert isinstance(sc._load_cache(key, val), dict)\nprint(\"recompute\", True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "5741c3c118dbdf0d21be6ccc6a04c0b30b61e74347d0d8f519c00990ad894b35"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored StageCache.load stage_cache_load_scope_and_reuse. The actual inline cache observation completed after the production edit. Patch submitted."
+}

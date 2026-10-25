@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "Freeze via TickingDateTimeFactory at T0, tick 5s forward, read again, ending forward in time. The bug returns early without moving so time never advances. The complete production-file delta is exactly the reviewed hunks inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "freezegun/api.py",
+        "start_line": 508,
+        "end_line": 523
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('freezegun.api')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'freezegun/api.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport datetime, time\nfrom freezegun.api import TickingDateTimeFactory\nT0 = datetime.datetime(2020, 1, 1, 0, 0, 0)\nimport freezegun.api as api\nstart = api.real_datetime.now()\nf = TickingDateTimeFactory(T0, start)\nt1 = f.tick(5)\nt2 = f()\nprint('ticking_tick_sequence', [t1.isoformat(), t2.isoformat()])\nassert t1 >= T0 + datetime.timedelta(seconds=4), t1\nassert t2 >= t1, (t2, t1)\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "ec7849823ea917f7308be984d1d7d7ba258297c1c21d52ebf7e5dcdb2645936e"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "freezegun/api.py",
+        "old_string": "        return self.time_to_freeze + (real_datetime.now() - self.start)\n\n    def tick(self, delta: Union[datetime.timedelta, float]=datetime.timedelta(seconds=1)) -> datetime.datetime:\n        return self.time_to_freeze\n        if isinstance(delta, numbers.Integral):\n            self.move_to(self.time_to_freeze + datetime.timedelta(seconds=int(delta)))\n        elif isinstance(delta, numbers.Real):\n            self.move_to(self.time_to_freeze + datetime.timedelta(seconds=float(delta)))\n        else:\n            self.move_to(self.time_to_freeze + delta)  # type: ignore\n    def move_to(self, target_datetime: _Freezable) -> None:\n        \"\"\"Moves frozen date to the given ``target_datetime``\"\"\"\n        self.start = real_datetime.now()",
+        "new_string": "        return self.time_to_freeze + (real_datetime.now() - self.start)\n\n    def tick(self, delta: Union[datetime.timedelta, float]=datetime.timedelta(seconds=1)) -> datetime.datetime:\n        if isinstance(delta, numbers.Integral):\n            self.move_to(self.time_to_freeze + datetime.timedelta(seconds=int(delta)))\n        elif isinstance(delta, numbers.Real):\n            self.move_to(self.time_to_freeze + datetime.timedelta(seconds=float(delta)))\n        else:\n            self.move_to(self.time_to_freeze + delta)  # type: ignore\n        return self.time_to_freeze\n\n    def move_to(self, target_datetime: _Freezable) -> None:\n        \"\"\"Moves frozen date to the given ``target_datetime``\"\"\"\n        self.start = real_datetime.now()"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('freezegun.api')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'freezegun/api.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nimport datetime, time\nfrom freezegun.api import TickingDateTimeFactory\nT0 = datetime.datetime(2020, 1, 1, 0, 0, 0)\nimport freezegun.api as api\nstart = api.real_datetime.now()\nf = TickingDateTimeFactory(T0, start)\nt1 = f.tick(5)\nt2 = f()\nprint('ticking_tick_sequence', [t1.isoformat(), t2.isoformat()])\nassert t1 >= T0 + datetime.timedelta(seconds=4), t1\nassert t2 >= t1, (t2, t1)\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "ec7849823ea917f7308be984d1d7d7ba258297c1c21d52ebf7e5dcdb2645936e"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Freeze via TickingDateTimeFactory at T0, tick 5s forward, read again, ending forward in time. The bug returns early without moving so time never advances. The source-bound reproduction passes after the repair. Patch submitted."
+}

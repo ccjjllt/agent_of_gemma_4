@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "Update must queue the supplied row so the exit flush persists it. Queuing None breaks the produce-queue-flush chain and crashes grouping. The complete production-file delta is exactly the reviewed hunks inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "dataset/chunked.py",
+        "start_line": 72,
+        "end_line": 81
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('dataset.chunked')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'dataset/chunked.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom dataset.chunked import ChunkedUpdate\nclass T:\n    def __init__(self): self.batches=[]\n    def update_many(self, rows, keys): self.batches.append((list(rows),keys))\nt=T()\nup=ChunkedUpdate(t, keys=['id'], chunksize=100)\nwith up as u:\n    enter_ok=(u is up)\n    u.update({'id':1,'v':'a'})\n    u.update({'id':2,'v':'b'})\nprint('chunked_update_sequence',[enter_ok,t.batches,len(up.queue)])\nassert enter_ok is True\nassert t.batches==[([{'id':1,'v':'a'},{'id':2,'v':'b'}],['id'])]\nassert up.queue==[]\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "14bf9d0c84e2035102f230c0ed94327db6715140a478f1a2ff4bbfa4e3385867"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "dataset/chunked.py",
+        "old_string": "        super().__init__(table, chunksize, callback)\n\n    def update(self, item):\n        super()._queue_add(None)\n\n    def flush(self):\n        if self.callback is not None:",
+        "new_string": "        super().__init__(table, chunksize, callback)\n\n    def update(self, item):\n        super()._queue_add(item)\n\n    def flush(self):\n        if self.callback is not None:"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('dataset.chunked')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'dataset/chunked.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom dataset.chunked import ChunkedUpdate\nclass T:\n    def __init__(self): self.batches=[]\n    def update_many(self, rows, keys): self.batches.append((list(rows),keys))\nt=T()\nup=ChunkedUpdate(t, keys=['id'], chunksize=100)\nwith up as u:\n    enter_ok=(u is up)\n    u.update({'id':1,'v':'a'})\n    u.update({'id':2,'v':'b'})\nprint('chunked_update_sequence',[enter_ok,t.batches,len(up.queue)])\nassert enter_ok is True\nassert t.batches==[([{'id':1,'v':'a'},{'id':2,'v':'b'}],['id'])]\nassert up.queue==[]\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "14bf9d0c84e2035102f230c0ed94327db6715140a478f1a2ff4bbfa4e3385867"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Update must queue the supplied row so the exit flush persists it. Queuing None breaks the produce-queue-flush chain and crashes grouping. The source-bound reproduction passes after the repair. Patch submitted."
+}

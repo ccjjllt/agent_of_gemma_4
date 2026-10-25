@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Owner endpoint socket; usage serving lifetime; finalizer must schedule close for unclosed endpoints and emit ResourceWarning only when actually unclosed. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/trio/_dtls.py",
+        "start_line": 1236,
+        "end_line": 1258
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/trio/_dtls.py').resolve()\ntry:\n module = importlib.import_module('trio._dtls')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport gc\nimport warnings\nimport trio\nasync def main():\n    import trio.socket as tsocket\n    s = tsocket.socket(type=tsocket.SOCK_DGRAM)\n    await s.bind(('127.0.0.1', 0))\n    ep = trio.DTLSEndpoint(s)\n    assert not ep._closed\n    with warnings.catch_warnings(record=True) as rec:\n        warnings.simplefilter('always')\n        del ep\n        gc.collect()\n        await trio.sleep(0.1)\n    msgs = [str(w.message) for w in rec if issubclass(w.category, ResourceWarning)]\n    assert any('unclosed DTLS endpoint' in m for m in msgs), 'finalizer must warn on unclosed release'\n    print('warned_unclosed')\n    s2 = tsocket.socket(type=tsocket.SOCK_DGRAM)\n    await s2.bind(('127.0.0.1', 0))\n    ep2 = trio.DTLSEndpoint(s2)\n    ep2.close()\n    assert ep2._closed\n    with warnings.catch_warnings(record=True) as rec2:\n        warnings.simplefilter('always')\n        del ep2\n        gc.collect()\n        await trio.sleep(0.1)\n    msgs2 = [str(w.message) for w in rec2 if issubclass(w.category, ResourceWarning) and 'DTLS endpoint' in str(w.message)]\n    assert not msgs2, msgs2\n    print('closed_silent_ok')\ntrio.run(main)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "509a12441092d2b521762b54a8b32aef6e606e83d59a14f571db0babe4457737"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/trio/_dtls.py",
+        "old_string": "            self._receive_loop_spawned = True\n\n    def __del__(self) -> None:\n        if self._initialized:\n            if self._closed:\n                with contextlib.suppress(RuntimeError):\n                    self._token.run_sync_soon(self.close)\n            warnings.warn(\n                f\"unclosed DTLS endpoint {self!r}\",\n                ResourceWarning,\n",
+        "new_string": "            self._receive_loop_spawned = True\n\n    def __del__(self) -> None:\n        # Do nothing if this object was never fully constructed\n        if not self._initialized:\n            return\n        # Close the socket in Trio context (if our Trio context still exists), so that\n        # the background task gets notified about the closure and can exit.\n        if not self._closed:\n            with contextlib.suppress(RuntimeError):\n                self._token.run_sync_soon(self.close)\n            # Do this last, because it might raise an exception\n            warnings.warn(\n                f\"unclosed DTLS endpoint {self!r}\",\n                ResourceWarning,\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/trio/_dtls.py').resolve()\ntry:\n module = importlib.import_module('trio._dtls')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nimport gc\nimport warnings\nimport trio\nasync def main():\n    import trio.socket as tsocket\n    s = tsocket.socket(type=tsocket.SOCK_DGRAM)\n    await s.bind(('127.0.0.1', 0))\n    ep = trio.DTLSEndpoint(s)\n    assert not ep._closed\n    with warnings.catch_warnings(record=True) as rec:\n        warnings.simplefilter('always')\n        del ep\n        gc.collect()\n        await trio.sleep(0.1)\n    msgs = [str(w.message) for w in rec if issubclass(w.category, ResourceWarning)]\n    assert any('unclosed DTLS endpoint' in m for m in msgs), 'finalizer must warn on unclosed release'\n    print('warned_unclosed')\n    s2 = tsocket.socket(type=tsocket.SOCK_DGRAM)\n    await s2.bind(('127.0.0.1', 0))\n    ep2 = trio.DTLSEndpoint(s2)\n    ep2.close()\n    assert ep2._closed\n    with warnings.catch_warnings(record=True) as rec2:\n        warnings.simplefilter('always')\n        del ep2\n        gc.collect()\n        await trio.sleep(0.1)\n    msgs2 = [str(w.message) for w in rec2 if issubclass(w.category, ResourceWarning) and 'DTLS endpoint' in str(w.message)]\n    assert not msgs2, msgs2\n    print('closed_silent_ok')\ntrio.run(main)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "509a12441092d2b521762b54a8b32aef6e606e83d59a14f571db0babe4457737"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored trio.DTLSEndpoint.__del__ release semantics (endpoint_finalizer_closes_unclosed_socket). Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

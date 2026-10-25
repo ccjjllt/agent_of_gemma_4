@@ -1,0 +1,88 @@
+{
+  "row": {
+    "base_commit": "d0a948fc2a32ed6e557042a95ef3e4af97ec4a7c",
+    "created_at": "2024-11-27 16:39:06",
+    "image_name": "docker.io/swerebenchv2/huggingface-huggingface-hub:2683-d0a948f",
+    "instance_id": "huggingface__huggingface_hub-2683",
+    "interface": "No new interfaces are introduced.",
+    "language": "python",
+    "license": "Apache-2.0",
+    "patch": "diff --git a/src/huggingface_hub/utils/_datetime.py b/src/huggingface_hub/utils/_datetime.py\nindex e544884b..1a7f4428 100644\n--- a/src/huggingface_hub/utils/_datetime.py\n+++ b/src/huggingface_hub/utils/_datetime.py\n@@ -46,15 +46,20 @@ def parse_datetime(date_string: str) -> datetime:\n             If `date_string` cannot be parsed.\n     \"\"\"\n     try:\n-        # Datetime ending with a Z means \"UTC\". We parse the date and then explicitly\n-        # set the timezone to UTC.\n-        # See https://en.wikipedia.org/wiki/ISO_8601#Coordinated_Universal_Time_(UTC)\n-        # Taken from https://stackoverflow.com/a/3168394.\n-        if len(date_string) == 30:\n-            # Means timezoned-timestamp with nanoseconds precision. We need to truncate the last 3 digits.\n-            date_string = date_string[:-4] + \"Z\"\n-        dt = datetime.strptime(date_string, \"%Y-%m-%dT%H:%M:%S.%fZ\")\n-        return dt.replace(tzinfo=timezone.utc)  # Set explicit timezone\n+        # Normalize the string to always have 6 digits of fractional seconds\n+        if date_string.endswith(\"Z\"):\n+            # Case 1: No decimal point (e.g., \"2024-11-16T00:27:02Z\")\n+            if \".\" not in date_string:\n+                # No fractional seconds - insert .000000\n+                date_string = date_string[:-1] + \".000000Z\"\n+            # Case 2: Has decimal point (e.g., \"2022-08-19T07:19:38.123456789Z\")\n+            else:\n+                # Get the fractional and base parts\n+                base, fraction = date_string[:-1].split(\".\")\n+                # fraction[:6] takes first 6 digits and :0<6 pads with zeros if less than 6 digits\n+                date_string = f\"{base}.{fraction[:6]:0<6}Z\"\n+\n+        return datetime.strptime(date_string, \"%Y-%m-%dT%H:%M:%S.%fZ\").replace(tzinfo=timezone.utc)\n     except ValueError as e:\n         raise ValueError(\n             f\"Cannot parse '{date_string}' as a datetime. Date string is expected to\"\n",
+    "pr_description": "Fix timestamp parsing to always include milliseconds\nfixes #2671.\r\n\r\nSee the original [slack thread](https://huggingface.slack.com/archives/C03E4DQ9LAJ/p1729806188701489) (internal) for more context.\r\n\r\nThe client expects timestamps to follow the pattern `%Y-%m-%dT%H:%M:%S.%fZ`, but the server was inconsistently returning timestamps without milliseconds when they were zero (e.g. \"2024-11-20T20:01:58Z\"). This causes the parsing error reported in the issue mentioned above. \r\nwe're handling this client-side as it's intentional behavior in the API to reduce precision, see[ this comment](https://github.com/huggingface-internal/workloads/pull/2524#discussion_r1860758864) (private).\r\n\r\nthis is fixed by a small refactoring of `parse_datetime()` function and adding a normalization to ensure it has six digits of microseconds by padding with zeros or truncating. This approach handles inputs with or without milliseconds and nanoseconds.\r\n\r\ncc @ErikKaum ",
+    "problem_statement": "list_inference_endpoints fails with Date parsing error\n### Describe the bug\n\nPretty simple, the `list_inference_endpoints` is completely broken. It fails with some parse date error, see stacktrace. \n\n### Reproduction\n\nlist_inference_endpoints(namespace=NAMESPACE, token=HF_API_KEY)\n\n### Logs\n\n```shell\nFile \"/Users/jd/code/prompt-js/prompt-worker-py/activities/llama_guard.py\", line 98, in check_endpoint\r\n    x = list_inference_endpoints(namespace=NAMESPACE, token=HF_API_KEY)\r\n        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\n  File \"/Users/jd/code/prompt-js/prompt-worker-py/.venv/lib/python3.11/site-packages/huggingface_hub/hf_api.py\", line 7716, in list_inference_endpoints\r\n    return [\r\n           ^\r\n  File \"/Users/jd/code/prompt-js/prompt-worker-py/.venv/lib/python3.11/site-packages/huggingface_hub/hf_api.py\", line 7717, in <listcomp>\r\n    InferenceEndpoint.from_raw(endpoint, namespace=namespace, token=token)\r\n  File \"/Users/jd/code/prompt-js/prompt-worker-py/.venv/lib/python3.11/site-packages/huggingface_hub/_inference_endpoints.py\", line 134, in from_raw\r\n    return cls(raw=raw, namespace=namespace, _token=token, _api=api)\r\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\n  File \"<string>\", line 7, in __init__\r\n  File \"/Users/jd/code/prompt-js/prompt-worker-py/.venv/lib/python3.11/site-packages/huggingface_hub/_inference_endpoints.py\", line 138, in __post_init__\r\n    self._populate_from_raw()\r\n  File \"/Users/jd/code/prompt-js/prompt-worker-py/.venv/lib/python3.11/site-packages/huggingface_hub/_inference_endpoints.py\", line 394, in _populate_from_raw\r\n    self.created_at = parse_datetime(self.raw[\"status\"][\"createdAt\"])\r\n                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\n  File \"/Users/jd/code/prompt-js/prompt-worker-py/.venv/lib/python3.11/site-packages/huggingface_hub/utils/_datetime.py\", line 59, in parse_datetime\r\n    raise ValueError(\r\nValueError: Cannot parse '2024-11-20T20:01:58Z' as a datetime. Date string is expected to follow '%Y-%m-%dT%H:%M:%S.%fZ' pattern.\n```\n\n\n### System info\n\n```shell\n- huggingface_hub version: 0.26.2\r\n- Platform: macOS-14.4.1-arm64-arm-64bit\r\n- Python version: 3.11.7\r\n- Running in iPython ?: No\r\n- Running in notebook ?: No\r\n- Running in Google Colab ?: No\r\n- Running in Google Colab Enterprise ?: No\r\n- Token path ?: /Users/jd/.cache/huggingface/token\r\n- Has saved token ?: True\r\n- Who am I ?: jamie-de\r\n- Configured git credential helpers: osxkeychain\r\n- FastAI: N/A\r\n- Tensorflow: N/A\r\n- Torch: 2.2.0\r\n- Jinja2: 3.1.4\r\n- Graphviz: N/A\r\n- keras: N/A\r\n- Pydot: N/A\r\n- Pillow: 11.0.0\r\n- hf_transfer: N/A\r\n- gradio: N/A\r\n- tensorboard: N/A\r\n- numpy: 1.25.1\r\n- pydantic: 2.9.2\r\n- aiohttp: 3.10.11\r\n- ENDPOINT: https://huggingface.co\r\n- HF_HUB_CACHE: /Users/jd/.cache/huggingface/hub\r\n- HF_ASSETS_CACHE: /Users/jd/.cache/huggingface/assets\r\n- HF_TOKEN_PATH: /Users/jd/.cache/huggingface/token\r\n- HF_STORED_TOKENS_PATH: /Users/jd/.cache/huggingface/stored_tokens\r\n- HF_HUB_OFFLINE: False\r\n- HF_HUB_DISABLE_TELEMETRY: False\r\n- HF_HUB_DISABLE_PROGRESS_BARS: None\r\n- HF_HUB_DISABLE_SYMLINKS_WARNING: False\r\n- HF_HUB_DISABLE_EXPERIMENTAL_WARNING: False\r\n- HF_HUB_DISABLE_IMPLICIT_TOKEN: False\r\n- HF_HUB_ENABLE_HF_TRANSFER: False\r\n- HF_HUB_ETAG_TIMEOUT: 10\r\n- HF_HUB_DOWNLOAD_TIMEOUT: 10\n```\n",
+    "repo": "huggingface/huggingface_hub",
+    "test_patch": "diff --git a/tests/test_utils_datetime.py b/tests/test_utils_datetime.py\nindex 3cb6c048..091fbc1f 100644\n--- a/tests/test_utils_datetime.py\n+++ b/tests/test_utils_datetime.py\n@@ -20,6 +20,12 @@ class TestDatetimeUtils(unittest.TestCase):\n             datetime(2022, 8, 19, 7, 19, 38, 123456, tzinfo=timezone.utc),\n         )\n \n+        # Test without milliseconds (should add .000)\n+        self.assertEqual(\n+            parse_datetime(\"2024-11-16T00:27:02Z\"),\n+            datetime(2024, 11, 16, 0, 27, 2, 0, tzinfo=timezone.utc),\n+        )\n+\n         with pytest.raises(ValueError, match=r\".*Cannot parse '2022-08-19T07:19:38' as a datetime.*\"):\n             parse_datetime(\"2022-08-19T07:19:38\")\n \n",
+    "FAIL_TO_PASS": [
+      "tests/test_utils_datetime.py::TestDatetimeUtils::test_parse_datetime"
+    ],
+    "PASS_TO_PASS": [],
+    "install_config": {
+      "base_image_name": "python_base_310",
+      "docker_specs": {
+        "_variant": null,
+        "bazel_version": null,
+        "bun_version": null,
+        "cargo_version": null,
+        "deno_version": null,
+        "docker_version": null,
+        "erlang_version": null,
+        "gcc_version": null,
+        "go_version": null,
+        "helm_version": null,
+        "java_version": null,
+        "jdk_version": null,
+        "llvm_version": null,
+        "lua_version": null,
+        "luajit_version": null,
+        "neovim_version": null,
+        "node_version": null,
+        "npm_version": null,
+        "nvim_version": null,
+        "pnpm_version": null,
+        "python_image": "python_base_310",
+        "python_version": null,
+        "redis_version": null,
+        "ruby_version": null,
+        "rust_version": null,
+        "rustc_version": null,
+        "solana_version": null,
+        "sqlite_version": null
+      },
+      "install": [
+        "pip install -e .[testing] --quiet"
+      ],
+      "log_parser": "parse_log_pytest",
+      "test_cmd": "pytest --no-header -rA --tb=line --color=no -p no:cacheprovider -W ignore::DeprecationWarning tests/test_utils_datetime.py"
+    },
+    "meta": {
+      "llm_metadata": {
+        "code": "A",
+        "confidence": 0.97,
+        "detected_issues": {
+          "B1": false,
+          "B2": false,
+          "B3": false,
+          "B4": false,
+          "B5": false,
+          "B6": false
+        },
+        "difficulty": "easy",
+        "external_urls": [],
+        "intent_completeness": "complete",
+        "pr_categories": [
+          "edge_case_bug"
+        ],
+        "reasoning": "The issue reports a failure of `list_inference_endpoints` due to `parse_datetime` not handling ISO8601 strings without milliseconds, as shown by the stack trace. The added test expects the function to correctly parse such a string by defaulting missing fractional seconds to .000000, aligning with the intended bug fix. No test‑suite coupling, naming, external dependency, ambiguity, patch artifacts, or hidden knowledge issues are present. Therefore the task is a clear, solvable bug fix.",
+        "test_alignment_issues": []
+      },
+      "num_modified_files": 1,
+      "num_modified_lines": 14,
+      "pr_author": "hanouticelina",
+      "pr_labels": [],
+      "pr_url": null
+    }
+  },
+  "row_idx": 244,
+  "source_page": "parquet nebius/SWE-rebench-V2 train rows",
+  "revision": "10483de0f50fe5da545942705a76c6150171af7f"
+}

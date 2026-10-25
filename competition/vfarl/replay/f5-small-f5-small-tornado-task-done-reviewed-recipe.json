@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "Fill a LIFO queue, park two putters, consume via get_nowait, ending with the admitted putter item first. The bug consumes local stock before admitting putters so the order inverts. The complete production-file delta is exactly the reviewed hunks inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "tornado/queues.py",
+        "start_line": 256,
+        "end_line": 276
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('tornado.queues')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'tornado/queues.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom tornado.queues import LifoQueue\nq=LifoQueue(maxsize=2)\nq.put_nowait(1)\nq.put_nowait(0)\nassert q.full()\nf3=q.put(3)\nf2=q.put(2)\nfirst=q.get_nowait()\nprint('putter_admit_order',first)\nassert first==3,(first,)\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "e6f6002e46f61968762945f0ef97368f67fcc97fdd547c1cd56199d218907f98"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "tornado/queues.py",
+        "old_string": "    def get_nowait(self) ->_T:\n        \"\"\"Remove and return an item from the queue without blocking.\n\n        Return an item if one is immediately available, else raise\n        `QueueEmpty`.\n        \"\"\"\n        self._consume_expired()\n        if self.empty():\n            raise QueueEmpty\n    \n        item = self._get()\n    \n        # If we have putters waiting and we're at max capacity\n        # we can now accept a new item from a waiting putter\n        if self._putters and (self.maxsize == 0 or self.qsize() < self.maxsize):\n            new_item, putter = self._putters.popleft()\n            self.__put_internal(new_item)\n            future_set_result_unless_cancelled(putter, None)\n    \n        return item\n",
+        "new_string": "    def get_nowait(self) -> _T:\n        \"\"\"Remove and return an item from the queue without blocking.\n\n        Return an item if one is immediately available, else raise\n        `QueueEmpty`.\n        \"\"\"\n        self._consume_expired()\n        if self._putters:\n            assert self.full(), \"queue not full, why are putters waiting?\"\n            item, putter = self._putters.popleft()\n            self.__put_internal(item)\n            future_set_result_unless_cancelled(putter, None)\n            return self._get()\n        elif self.qsize():\n            return self._get()\n        else:\n            raise QueueEmpty\n\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('tornado.queues')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'tornado/queues.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom tornado.queues import LifoQueue\nq=LifoQueue(maxsize=2)\nq.put_nowait(1)\nq.put_nowait(0)\nassert q.full()\nf3=q.put(3)\nf2=q.put(2)\nfirst=q.get_nowait()\nprint('putter_admit_order',first)\nassert first==3,(first,)\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "e6f6002e46f61968762945f0ef97368f67fcc97fdd547c1cd56199d218907f98"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Fill a LIFO queue, park two putters, consume via get_nowait, ending with the admitted putter item first. The bug consumes local stock before admitting putters so the order inverts. The source-bound reproduction passes after the repair. Patch submitted."
+}

@@ -1,0 +1,35 @@
+{
+  "row": {
+    "instance_id": "iterative__dvc.1d6ea681.pr_8405",
+    "patch": "diff --git a/dvc/stage/cache.py b/dvc/stage/cache.py\nindex f97b471..67bc51a 100644\n--- a/dvc/stage/cache.py\n+++ b/dvc/stage/cache.py\n@@ -187,9 +187,9 @@ class StageCache:\n         assert os.path.exists(parent)\n         assert os.path.isdir(parent)\n         dump_yaml(tmp, cache)\n-        self.repo.cache.legacy.move(tmp, path)\n+        self.repo.odb.local.move(tmp, path)\n \n-    def restore(self, stage, run_cache=True, pull=False, dry=False):  # noqa: C901\n+    def restore(self, stage, run_cache=True, pull=False):  # noqa: C901\n         from .serialize import to_single_stage_lockfile\n \n         if not _can_hash(stage):\n@@ -204,30 +204,22 @@ class StageCache:\n         else:\n             if not run_cache:  # backward compatibility\n                 raise RunCacheNotFoundError(stage)\n-            if not dry:\n-                stage.save_deps()\n+            stage.save_deps()\n             cache = self._load(stage)\n             if not cache:\n                 raise RunCacheNotFoundError(stage)\n \n         cached_stage = self._create_stage(cache, wdir=stage.wdir)\n \n-        if pull and not dry:\n-            try:\n-                for objs in cached_stage.get_used_objs().values():\n-                    self.repo.cloud.pull(objs)\n-            except CollectCacheError as exc:\n-                raise RunCacheNotFoundError(stage) from exc\n-\n-        if not cached_stage.outs_cached():\n-            raise RunCacheNotFoundError(stage)\n+        if pull:\n+            for objs in cached_stage.get_used_objs().values():\n+                self.repo.cloud.pull(objs)\n \n         logger.info(\n             \"Stage '%s' is cached - skipping run, checking out outputs\",\n             stage.addressing,\n         )\n-        if not dry:\n-            cached_stage.checkout()\n+        cached_stage.checkout()\n \n     def transfer(self, from_odb, to_odb, force=True):\n         from dvc.fs import HTTPFileSystem, LocalFileSystem\n@@ -302,4 +294,4 @@ class StageCache:\n             stage = self._create_stage(entry)\n             for odb, objs in stage.get_used_objs(*args, **kwargs).items():\n                 used_objs[odb].update(objs)\n-        return used_objs\n+        return used_objs\n\\ No newline at end of file\ndiff --git a/dvc/stage/run.py b/dvc/stage/run.py\nindex 758fc42..15a1122 100644\n--- a/dvc/stage/run.py\n+++ b/dvc/stage/run.py\n@@ -163,20 +163,18 @@ def _pull_missing_deps(stage):\n             stage.repo.pull(dep.def_path)\n \n \n-def run_stage(stage, dry=False, force=False, run_env=None, **kwargs):\n-    if not force:\n+def run_stage(stage, dry=False, force=False, checkpoint_func=None, run_env=None, **kwargs):\n+    if not (dry or force or checkpoint_func):\n         if kwargs.get(\"pull\") and not dry:\n             _pull_missing_deps(stage)\n \n         from .cache import RunCacheNotFoundError\n \n         try:\n-            stage.repo.stage_cache.restore(stage, dry=dry, **kwargs)\n-            if not dry:\n-                return\n+            stage.repo.stage_cache.restore(stage, **kwargs)\n+            return\n         except RunCacheNotFoundError:\n-            if not dry:\n-                stage.save_deps()\n+            stage.save_deps()\n \n     run = cmd_run if dry else unlocked_repo(cmd_run)\n-    run(stage, dry=dry, run_env=run_env)\n+    run(stage, dry=dry, checkpoint_func=checkpoint_func, run_env=run_env)\n\\ No newline at end of file\n",
+    "FAIL_TO_PASS": [
+      "tests/unit/stage/test_cache.py::test_stage_cache",
+      "tests/unit/stage/test_cache.py::test_stage_cache_params",
+      "tests/unit/stage/test_cache.py::test_stage_cache_wdir",
+      "tests/unit/stage/test_cache.py::test_shared_stage_cache",
+      "tests/unit/stage/test_run.py::test_run_stage_dry[cmd1-expected1]"
+    ],
+    "PASS_TO_PASS": [
+      "tests/unit/stage/test_cache.py::test_unhashable[kwargs0]",
+      "tests/unit/stage/test_cache.py::test_unhashable[kwargs1]",
+      "tests/unit/stage/test_cache.py::test_unhashable[kwargs2]",
+      "tests/unit/stage/test_cache.py::test_unhashable[kwargs3]",
+      "tests/unit/stage/test_cache.py::test_unhashable[kwargs4]"
+    ],
+    "image_name": "swebench/swesmith.x86_64.iterative_1776_dvc.1d6ea681",
+    "repo": "swesmith/iterative__dvc.1d6ea681",
+    "problem_statement": "# Stage cache restore function doesn't handle dry run parameter correctly\n\n#### Problem Description\n\nWhen using the stage cache restore functionality, there's an issue with the `dry` parameter handling. The `restore` method in `StageCache` class no longer accepts the `dry` parameter, but the `run_stage` function still tries to pass it.\n\n#### MCVE Code Sample\n\n```python\nimport os\nfrom dvc.repo import Repo\n\n# Create a simple DVC project\nos.makedirs(\"myproject\", exist_ok=True)\nos.chdir(\"myproject\")\nrepo = Repo.init()\n\n# Create a simple stage\nwith open(\"script.py\", \"w\") as f:\n    f.write('open(\"out\", \"w+\").write(\"out\")')\nwith open(\"dep\", \"w\") as f:\n    f.write(\"dep\")\n\n# Run the stage to cache it\nstage = repo.stage.add(\n    cmd=\"python script.py\",\n    deps=[\"script.py\", \"dep\"],\n    outs=[\"out\"],\n    name=\"write-out\"\n)\nrepo.reproduce(\"write-out\")\n\n# Try to run with dry=True\n# This will fail with TypeError about unexpected 'dry' parameter\nrepo.reproduce(\"write-out\", dry=True)\n```\n\n#### Expected Output\n\nThe `dry` parameter should be properly handled when restoring from stage cache, allowing users to perform dry runs without errors.\n\n#### Versions\n- DVC version: 2.x\n- Python: 3.10\n- OS: Linux\n\n<END WRITING>"
+  },
+  "source": {
+    "instance_id": "iterative__dvc.1d6ea681.pr_8405",
+    "repo": "swesmith/iterative__dvc.1d6ea681",
+    "source": "SWE-bench/SWE-smith-py",
+    "revision": "77cab9055d42ab4a5c25c89a8f937096db13558e",
+    "split": "train",
+    "row_idx": 33074,
+    "file": "data/train-00007-of-00011.parquet",
+    "file_row_idx": 678
+  },
+  "saved_page": "competition/vfarl/acquisition/f3-new/artifacts/pages/iterative__dvc.1d6ea681-33010.json",
+  "saved_page_sha256": "888af43bc10e2e032cfc9066efb1ce1c71c09fc03b6bb47c48947fc6c36fda0b"
+}

@@ -1,0 +1,56 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Owner stack instances; usage stack lifetime; release delete() must delete and remove every matching instance (snapshot first, never mutate-during-iterate). Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "moto/cloudformation/models.py",
+        "start_line": 355,
+        "end_line": 375
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'moto/cloudformation/models.py').resolve()\ntry:\n module = importlib.import_module('moto.cloudformation.models')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('binding_ok')\nfrom moto.cloudformation.models import FakeStackInstances, FakeStackInstance\nT = '{\"AWSTemplateFormatVersion\": \"2010-09-09\", \"Resources\": {}}'\nholder = FakeStackInstances(account_id='111', region='us-east-1', template=T, parameters={}, stackset_id='ss1', stackset_name='ssn')\ndef mk(acct, region):\n    return FakeStackInstance(account_id=acct, region_name=region, stackset_id='ss1', stack_name='StackSet-ss1', name='n-%s-%s' % (acct, region), template=T, parameters=[], permission_model='SERVICE_MANAGED')\nholder.stack_instances = [mk('111', 'us-east-1'), mk('111', 'us-west-2'), mk('222', 'us-east-1')]\nholder.delete(accounts=['111'], regions=['us-east-1', 'us-west-2'])\nremaining = [(i.account_id, i.region_name) for i in holder.stack_instances]\nassert remaining == [('222', 'us-east-1')], 'release delete must remove every matching instance, got %r' % (remaining,)\nprint('stack_delete_ok')\n"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "92bfa1842cfe5c9e75385c563d0e4278c77ecee4dd533d0cc066ad4cb3010c73"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "moto/cloudformation/models.py",
+        "old_string": "    def delete(self, accounts: List[str], regions: List[str]) -> None:\n        for instance in self.stack_instances:\n            if instance.region_name in regions and instance.account_id in accounts:\n                instance.delete()\n                self.stack_instances.remove(instance)\n",
+        "new_string": "    def delete(self, accounts: List[str], regions: List[str]) -> None:\n        to_delete = [\n            i\n            for i in self.stack_instances\n            if i.region_name in regions and i.account_id in accounts\n        ]\n        for instance in to_delete:\n            instance.delete()\n            self.stack_instances.remove(instance)\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'moto/cloudformation/models.py').resolve()\ntry:\n module = importlib.import_module('moto.cloudformation.models')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nprint('binding_ok')\nfrom moto.cloudformation.models import FakeStackInstances, FakeStackInstance\nT = '{\"AWSTemplateFormatVersion\": \"2010-09-09\", \"Resources\": {}}'\nholder = FakeStackInstances(account_id='111', region='us-east-1', template=T, parameters={}, stackset_id='ss1', stackset_name='ssn')\ndef mk(acct, region):\n    return FakeStackInstance(account_id=acct, region_name=region, stackset_id='ss1', stack_name='StackSet-ss1', name='n-%s-%s' % (acct, region), template=T, parameters=[], permission_model='SERVICE_MANAGED')\nholder.stack_instances = [mk('111', 'us-east-1'), mk('111', 'us-west-2'), mk('222', 'us-east-1')]\nholder.delete(accounts=['111'], regions=['us-east-1', 'us-west-2'])\nremaining = [(i.account_id, i.region_name) for i in holder.stack_instances]\nassert remaining == [('222', 'us-east-1')], 'release delete must remove every matching instance, got %r' % (remaining,)\nprint('stack_delete_ok')\n"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "92bfa1842cfe5c9e75385c563d0e4278c77ecee4dd533d0cc066ad4cb3010c73"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ]
+}

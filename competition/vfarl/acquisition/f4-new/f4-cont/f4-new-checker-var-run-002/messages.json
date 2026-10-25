@@ -1,0 +1,150 @@
+[
+  {
+    "role": "user",
+    "content": "You are evaluating a software engineering task for repository swesmith/django__daphne.32ac73e1.\n\nProblem Statement:\n# Server crashes when handling disconnected protocols\n\n## Description\n\nI'm experiencing an issue with the server crashing when handling disconnected protocols. The application checker seems to be trying to access an undefined variable.\n\nWhen a client disconnects, the server throws the following error:\n\n```\nTraceback (most recent call last):\n  File \"/path/to/daphne/server.py\", line 307, in application_checker\n    if not application_instance and disconnected:\nNameError: name 'application_instance' is not defined\n```\n\nThis happens during the application_checker routine that's supposed to clean up disconnected protocols.\n\n## Steps to reproduce\n\n1. Start a Daphne server with a simple ASGI application\n2. Connect a client (either HTTP or WebSocket)\n3. Have the client disconnect abruptly\n4. Wait for the application_checker to run (it runs every 1 second)\n\nThe server will crash with the NameError shown above.\n\nThis issue seems to affect both HTTP and WebSocket connections that disconnect. The server is unable to properly clean up disconnected protocols because it's trying to reference a variable that doesn't exist in that scope.\n\n## Task Budget (Session terminates when any budget is exhausted)\n- Time allowance: 60 minutes\n- Tool calls allowance: 100 calls\n- Max loop iterations: 500 turns\n\n## Execution Environment Rules\n- Single command timeout: 300 seconds (commands exceeding this fail without ending the session)\n- Command output limit: 5000 characters\n- File view limit: 150 lines per read_file call\n- File character limit: 10000 characters per read_file call\n- Environment is offline (no network/PyPI access). All repository and test dependencies are ALREADY pre-installed. Do NOT attempt to run pip install or download packages.\n\n## Instructions:\n0. All source code is under `/workspace`. Do NOT search outside `/workspace` (e.g. `/usr/`, `/wheels/`, system site-packages). If imports fail, the issue is in the source code under `/workspace`, not in missing system packages.\n1. Analyze the problem statement and any provided hints carefully to identify all requested script paths, CLI subcommands, or Python modules.\n2. Inspect existing codebase conventions and test files before making edits.\n3. Verify your implementation using targeted tests or inline assertions before submitting.\n4. Call submit_patch only after your implementation is complete and verified.\n5. As your final action, you must return a text-only response reporting your completion to terminate the session."
+  },
+  {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+      {
+        "id": "replay_0000",
+        "type": "function",
+        "function": {
+          "name": "get_status",
+          "arguments": "{}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "replay_0000",
+    "name": "get_status",
+    "content": "{\"status\": \"ok\", \"tool_calls_used\": 0, \"patch_submitted\": false, \"patch_size\": 0, \"tool_calls_remaining\": 100, \"max_tool_calls\": 100, \"time_seconds_remaining\": 3599.9998797499575, \"max_time_minutes\": 60, \"agent_elapsed_seconds\": 0.00012087507639080286, \"max_turns\": 500, \"command_timeout_seconds\": 300}"
+  },
+  {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+      {
+        "id": "replay_0001",
+        "type": "function",
+        "function": {
+          "name": "read_file",
+          "arguments": "{\"filepath\": \"daphne/server.py\", \"start_line\": 261, \"end_line\": 279}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "replay_0001",
+    "name": "read_file",
+    "content": "{\"status\": \"ok\", \"filepath\": \"daphne/server.py\", \"content\": \"    ### Utility\\n\\n    def application_checker(self):\\n        \\\"\\\"\\\"\\n        Goes through the set of current application Futures and cleans up\\n        any that are done/prints exceptions for any that errored.\\n        \\\"\\\"\\\"\\n        for protocol, details in list(self.connections.items()):\\n            disconnected = details.get(\\\"disconnected\\\", None)\\n            # First, see if the protocol disconnected and the app has taken\\n            # too long to close up\\n            if (\\n                disconnected\\n                and time.time() - disconnected > self.application_close_timeout\\n            ):\\n                if application_instance and not application_instance.done():\\n                    logger.warning(\\n                        \\\"Application instance %r for connection %s took too long to shut down and was killed.\\\",\\n                        application_instance,\", \"start_line\": 261, \"end_line\": 279, \"total_lines\": 340, \"is_truncated\": false}"
+  },
+  {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+      {
+        "id": "replay_0002",
+        "type": "function",
+        "function": {
+          "name": "run_command",
+          "arguments": "{\"command\": \"python3 - <<'PYREPLAY'\\nfrom pathlib import Path\\nimport hashlib, importlib\\nexpected=(Path.cwd() / 'daphne/server.py').resolve()\\ntry:\\n module = importlib.import_module('daphne.server')\\nexcept Exception as import_error:\\n traceback=import_error.__traceback__\\n while traceback is not None:\\n  file=traceback.tb_frame.f_globals.get('__file__')\\n  if file and Path(file).resolve()==expected:\\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\\n  traceback=traceback.tb_next\\n raise\\nactual=Path(module.__file__).resolve()\\nprint(\\\"source_binding\\\", str(actual), \\\"sha256\\\", hashlib.sha256(actual.read_bytes()).hexdigest())\\nassert actual == expected, (actual, expected)\\nimport asyncio\\nimport time\\nfrom unittest import mock\\nimport daphne.server as srvmod\\nfrom daphne.server import Server\\nloop = asyncio.new_event_loop()\\ndone = loop.create_future()\\ndone.set_result(None)\\nstuck = loop.create_future()\\nsrv = Server.__new__(Server)\\nsrv.application_close_timeout = 10\\nsrv.connections = {\\n    'p_done': {'application_instance': done, 'disconnected': time.time()},\\n    'p_stuck': {'application_instance': stuck, 'disconnected': time.time() - 100},\\n}\\nwith mock.patch.object(srvmod.reactor, 'callLater') as cl:\\n    srv.application_checker()\\n    assert cl.called\\nprint('conns', {k: sorted(v) for k, v in srv.connections.items()})\\nassert stuck.cancelled(), 'stuck app past close timeout must be cancelled'\\nassert srv.connections == {}, 'reaped and cancelled connections must be fully released'\\nprint('app_checker_ok')\\n\\nPYREPLAY\"}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "replay_0002",
+    "name": "run_command",
+    "content": "{\"status\": \"error\", \"error_type\": \"CommandError\", \"error_message\": \"Traceback (most recent call last):\\n  File \\\"<stdin>\\\", line 33, in <module>\\n  File \\\"/Users/zhaohuaxiang/ccjjllt/agent_of_gemma_4/competition/vfarl/acquisition/f4-new/f4-cont/f4-new-checker-var-run-002/sandboxes/swegemma_sandbox_ea309b0f-420/workspace/daphne/server.py\\\", line 284, in application_checker\\n    if application_instance and application_instance.done():\\n       ^^^^^^^^^^^^^^^^^^^^\\nUnboundLocalError: cannot access local variable 'application_instance' where it is not associated with a value\\n\", \"details\": {\"stdout\": \"source_binding /Users/zhaohuaxiang/ccjjllt/agent_of_gemma_4/competition/vfarl/acquisition/f4-new/f4-cont/f4-new-checker-var-run-002/sandboxes/swegemma_sandbox_ea309b0f-420/workspace/daphne/server.py sha256 022af7b395805507e5fd4f02d6790f42cd94f3b9886827069618a48a3a38ff52\\n\", \"stderr\": \"Traceback (most recent call last):\\n  File \\\"<stdin>\\\", line 33, in <module>\\n  File \\\"/Users/zhaohuaxiang/ccjjllt/agent_of_gemma_4/competition/vfarl/acquisition/f4-new/f4-cont/f4-new-checker-var-run-002/sandboxes/swegemma_sandbox_ea309b0f-420/workspace/daphne/server.py\\\", line 284, in application_checker\\n    if application_instance and application_instance.done():\\n       ^^^^^^^^^^^^^^^^^^^^\\nUnboundLocalError: cannot access local variable 'application_instance' where it is not associated with a value\\n\", \"exit_code\": 1}}"
+  },
+  {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+      {
+        "id": "replay_0003",
+        "type": "function",
+        "function": {
+          "name": "edit_file",
+          "arguments": "{\"filepath\": \"daphne/server.py\", \"old_string\": \"        \\\"\\\"\\\"\\n        for protocol, details in list(self.connections.items()):\\n            disconnected = details.get(\\\"disconnected\\\", None)\\n            # First, see if the protocol disconnected and the app has taken\\n            # too long to close up\\n            if (\\n\", \"new_string\": \"        \\\"\\\"\\\"\\n        for protocol, details in list(self.connections.items()):\\n            disconnected = details.get(\\\"disconnected\\\", None)\\n            application_instance = details.get(\\\"application_instance\\\", None)\\n            # First, see if the protocol disconnected and the app has taken\\n            # too long to close up\\n            if (\\n\"}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "replay_0003",
+    "name": "edit_file",
+    "content": "{\"status\": \"ok\", \"filepath\": \"daphne/server.py\", \"occurrences\": 1, \"strategy\": \"exact\", \"diff\": \"--- a/daphne/server.py\\n+++ b/daphne/server.py\\n@@ -267,6 +267,7 @@\\n         \\\"\\\"\\\"\\n         for protocol, details in list(self.connections.items()):\\n             disconnected = details.get(\\\"disconnected\\\", None)\\n+            application_instance = details.get(\\\"application_instance\\\", None)\\n             # First, see if the protocol disconnected and the app has taken\\n             # too long to close up\\n             if (\\n\", \"is_truncated\": false}"
+  },
+  {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+      {
+        "id": "replay_0004",
+        "type": "function",
+        "function": {
+          "name": "run_command",
+          "arguments": "{\"command\": \"python3 - <<'PYREPLAY'\\nfrom pathlib import Path\\nimport hashlib, importlib\\nexpected=(Path.cwd() / 'daphne/server.py').resolve()\\ntry:\\n module = importlib.import_module('daphne.server')\\nexcept Exception as import_error:\\n traceback=import_error.__traceback__\\n while traceback is not None:\\n  file=traceback.tb_frame.f_globals.get('__file__')\\n  if file and Path(file).resolve()==expected:\\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\\n  traceback=traceback.tb_next\\n raise\\nactual=Path(module.__file__).resolve()\\nprint(\\\"source_binding\\\", str(actual), \\\"sha256\\\", hashlib.sha256(actual.read_bytes()).hexdigest())\\nassert actual == expected, (actual, expected)\\nimport asyncio\\nimport time\\nfrom unittest import mock\\nimport daphne.server as srvmod\\nfrom daphne.server import Server\\nloop = asyncio.new_event_loop()\\ndone = loop.create_future()\\ndone.set_result(None)\\nstuck = loop.create_future()\\nsrv = Server.__new__(Server)\\nsrv.application_close_timeout = 10\\nsrv.connections = {\\n    'p_done': {'application_instance': done, 'disconnected': time.time()},\\n    'p_stuck': {'application_instance': stuck, 'disconnected': time.time() - 100},\\n}\\nwith mock.patch.object(srvmod.reactor, 'callLater') as cl:\\n    srv.application_checker()\\n    assert cl.called\\nprint('conns', {k: sorted(v) for k, v in srv.connections.items()})\\nassert stuck.cancelled(), 'stuck app past close timeout must be cancelled'\\nassert srv.connections == {}, 'reaped and cancelled connections must be fully released'\\nprint('app_checker_ok')\\n\\nPYREPLAY\"}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "replay_0004",
+    "name": "run_command",
+    "content": "{\"status\": \"ok\", \"stdout\": \"source_binding /Users/zhaohuaxiang/ccjjllt/agent_of_gemma_4/competition/vfarl/acquisition/f4-new/f4-cont/f4-new-checker-var-run-002/sandboxes/swegemma_sandbox_ea309b0f-420/workspace/daphne/server.py sha256 380db5c45311dc7d5ed28b3d9dda1a9e8b8907dd1b831bdf4fcd0d0ec6aae6c1\\nconns {}\\napp_checker_ok\\n\", \"stderr\": \"Application instance <Future pending> for connection 'p_stuck' took too long to shut down and was killed.\\n\", \"exit_code\": 0}"
+  },
+  {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+      {
+        "id": "replay_0005",
+        "type": "function",
+        "function": {
+          "name": "get_status",
+          "arguments": "{}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "replay_0005",
+    "name": "get_status",
+    "content": "{\"status\": \"ok\", \"tool_calls_used\": 4, \"patch_submitted\": false, \"patch_size\": 0, \"tool_calls_remaining\": 96, \"max_tool_calls\": 100, \"time_seconds_remaining\": 3599.1727034169016, \"max_time_minutes\": 60, \"agent_elapsed_seconds\": 0.8272970831021667, \"max_turns\": 500, \"command_timeout_seconds\": 300}"
+  },
+  {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+      {
+        "id": "replay_0006",
+        "type": "function",
+        "function": {
+          "name": "submit_patch",
+          "arguments": "{}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "replay_0006",
+    "name": "submit_patch",
+    "content": "{\"status\": \"ok\", \"patch_size\": 509, \"files_changed\": 1}"
+  },
+  {
+    "role": "assistant",
+    "content": "Restored daphne.Server.application_checker release semantics (checker_tracks_instance_for_reap_decisions). Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+  }
+]

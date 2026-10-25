@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex F600 F5 source contract and explicit command review 2026-10-25",
+  "review_notes": "Fetch the cached manager, create it on miss, register hookspecs, publish before entry-point loading, load each plugin, then mark loading complete in order. The bug publishes an uncreated manager and returns before loading so every call raises. The complete production-file delta is exactly the reviewed hunks inside this function. Original full-file verification and all requirements retained. Actual diagnosis is not a rejected policy action.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/sqlfluff/core/plugin/host.py",
+        "start_line": 78,
+        "end_line": 115
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('sqlfluff.core.plugin.host')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'src/sqlfluff/core/plugin/host.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom sqlfluff.core.plugin.host import get_plugin_manager, purge_plugin_manager\npurge_plugin_manager()\nm1 = get_plugin_manager()\nm2 = get_plugin_manager()\nseq = [type(m1).__name__, m1 is m2]\nprint('plugin_sequence', seq)\nassert seq == ['PluginManager', True], seq\nprint('sqlfluff_temporal_create_register_publish_load_mark', True)\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "fb1c2843f589ffabf175f7d72cef38e49d69526b2fd3f489c1843af153bc1ad3"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/sqlfluff/core/plugin/host.py",
+        "old_string": "\n\ndef get_plugin_manager() -> pluggy.PluginManager:\n\n    # NOTE: We set the plugin manager before loading the\n    # entrypoints. This is because when we load the entry\n    # points, this function gets called again - and we only\n    # want to load the entry points once!\n    _plugin_manager.set(plugin_manager)\n    if plugin_manager:\n        return plugin_manager\n\n    return plugin_manager\n    \"\"\"Initializes the PluginManager.\n\n    NOTE: We cache the plugin manager as a global to\n    avoid reloading all the plugins each time.\n    \"\"\"\n\n    # Discover available plugins and load them individually.\n    # If any fail, log the issue and carry on.\n    for entry_point, plugin_name, plugin_version in _discover_plugins():\n        plugin_logger.info(f\"Loading plugin {plugin_name} version {plugin_version}.\")\n        _load_plugin(plugin_manager, entry_point, plugin_name, plugin_version)\n    plugin_manager.add_hookspecs(PluginSpec)\n\n    # Once plugins are loaded we set a second context var\n    # to indicate that loading is complete. Other parts of\n    # the codebase can use this to detect whether it's safe.\n    plugins_loaded.set(True)\n    plugin_manager = _plugin_manager.get()\n    plugin_manager = pluggy.PluginManager(plugin_base_name)\n\ndef purge_plugin_manager() -> None:\n    \"\"\"Purge the current loaded plugin manager.",
+        "new_string": "\n\ndef get_plugin_manager() -> pluggy.PluginManager:\n    \"\"\"Initializes the PluginManager.\n\n    NOTE: We cache the plugin manager as a global to\n    avoid reloading all the plugins each time.\n    \"\"\"\n    plugin_manager = _plugin_manager.get()\n    if plugin_manager:\n        return plugin_manager\n    plugin_manager = pluggy.PluginManager(plugin_base_name)\n    plugin_manager.add_hookspecs(PluginSpec)\n\n    # NOTE: We set the plugin manager before loading the\n    # entrypoints. This is because when we load the entry\n    # points, this function gets called again - and we only\n    # want to load the entry points once!\n    _plugin_manager.set(plugin_manager)\n\n    # Discover available plugins and load them individually.\n    # If any fail, log the issue and carry on.\n    for entry_point, plugin_name, plugin_version in _discover_plugins():\n        plugin_logger.info(f\"Loading plugin {plugin_name} version {plugin_version}.\")\n        _load_plugin(plugin_manager, entry_point, plugin_name, plugin_version)\n\n    # Once plugins are loaded we set a second context var\n    # to indicate that loading is complete. Other parts of\n    # the codebase can use this to detect whether it's safe.\n    plugins_loaded.set(True)\n\n    return plugin_manager\n\n\ndef purge_plugin_manager() -> None:\n    \"\"\"Purge the current loaded plugin manager."
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport importlib,hashlib\nm=importlib.import_module('sqlfluff.core.plugin.host')\nactual=Path(m.__file__).resolve();expected=(Path.cwd()/'src/sqlfluff/core/plugin/host.py').resolve()\nassert actual==expected,(actual,expected)\nprint('source_binding',actual,'sha256',hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom sqlfluff.core.plugin.host import get_plugin_manager, purge_plugin_manager\npurge_plugin_manager()\nm1 = get_plugin_manager()\nm2 = get_plugin_manager()\nseq = [type(m1).__name__, m1 is m2]\nprint('plugin_sequence', seq)\nassert seq == ['PluginManager', True], seq\nprint('sqlfluff_temporal_create_register_publish_load_mark', True)\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "fb1c2843f589ffabf175f7d72cef38e49d69526b2fd3f489c1843af153bc1ad3"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Fetch the cached manager, create it on miss, register hookspecs, publish before entry-point loading, load each plugin, then mark loading complete in order. The bug publishes an uncreated manager and returns before loading so every call raises. The source-bound reproduction passes after the repair. Patch submitted."
+}
