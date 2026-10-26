@@ -1,6 +1,6 @@
 # Kaggle L4×4 VFARL 实验载体
 
-账号固定为 `qingyu1232`，凭据只在调用 CLI 的进程内读取，不修改全局账号，也不写入 Notebook。用户已授权本实验私有训练材料和 Notebook 上传、运行、更新；不另加墙钟限制，仍受平台时限和本账号实际配额约束。GPU 启动由主代理统一协调。余额须重新读取：第四轮启动前的 `quota-before-gpu-v4.json` 记录累计已用 1.52h、剩余 28.48h，这不是运行中的实时余额。历史开工余额 30.00h 保留在早期 readback 中。
+账号固定为 `qingyu1232`，凭据只在调用 CLI 的进程内读取，不修改全局账号，也不写入 Notebook。用户已授权本实验私有训练材料和 Notebook 上传、运行、更新；不另加墙钟限制，仍受平台时限和本账号实际配额约束。GPU 启动由主代理统一协调。新 16K 研究前的只读 `16k-before-readback.json` 确认累计已用 10.78h、剩余 19.22h；首个概率校准后为 11.63h/18.37h，第二个校准后为累计 13.39h、剩余 16.61h，见对应 `calibration-16k-evidence-v1/`、`calibration-16k-evidence-v2/completion-readback.json`。启动新的 GPU 作业前仍需读取最新余额。历史开工余额 30.00h 和各轮读数继续保留。
 
 采样与训练复用官方 QAT-unquantized v2 派生的 NF4 缓存 `ccjjllt/p005-cpu-nf4-cache`，不是直接对 CT 打包权重做 QLoRA。CT v2 tokenizer/template 固定；本轮 r32、七个文本投影、BF16、1024 thinking，初始 LoRA B 为零。尚不据此声称 NF4 与部署 CT 权重的迁移效果相同。
 
@@ -45,14 +45,38 @@ DVC 最后一个环境的实际修复是：保留 xdist 等原依赖，仅移除
 | 多次 `--prevalidation-report PATH` | 冻结真实报告；按明确顺序后面的同 task 记录替换前面的，并保存来源 hash。只保留当前 selection 中的 task。 |
 | `--collect-only` | 保存所请求的真实 rollout/分支，跳过 optimizer 和 post-update；不暗示更新发生。 |
 | `--focal-states N` | 全作业最多 N 个状态，默认 5，按 ceil/floor 分给两 worker。0 表示只采原始运行。 |
-| `--context 4096` / `8192` | 同时设置 collector 上下文与训练配置最大序列长度；不同预算的状态组不得混合。 |
+| `--context 4096` / `8192` / `16384` | 同时设置 collector 上下文与训练配置最大序列长度；不同预算的状态组不得混合。 |
+| `--training-config PATH` | 明确冻结模型/RL YAML 的全文、仓库相对路径及 SHA；默认既有 4K YAML，主 16K 使用独立 16K YAML。runner 另记声明窗口与实际 `--context`，不暗中选择校正目标。 |
+| `--calibration-data PATH` | 冻结真实动作引用 manifest，用现有训练入口依次执行双卡 actor 和四 rank FSDP 的零 optimizer 概率研究。 |
+| 多次 `--calibration-action-file PATH` | 将 manifest 引用的原始 actions.jsonl 按仓库相对路径、原始文本冻结入源码包，文件和行哈希由消费者核对，old logprob 不重写。 |
+| `--calibration-only` | 只执行上述概率研究，不运行任务 collector、optimizer 或 post-update。与 collect-only 的真实 rollout 用途分开。 |
 | `--only-task ID` | 限定本次采样/CPU 验收；全局题序仍用于固定采样 seed。空 partition 提前返回，不装空闲模型。 |
 | `--jail-source PATH` | CPU 可冻结待验证候选；GPU override 只接受已实际验收的 d1ca 或 713 两个完整 SHA，路径/hash/依据写入 manifest。 |
 | `--export-runtime` | CPU 子集修环境后也导出 runtime archive；单纯验收可不重复发布大 archive。 |
 
 构建 GPU 载体时，材料清单使用 `artifacts/material-v4/material-build.json`，runtime 使用上表固定版本。最初一题环境不通过不能冒作策略失败；当前 100 题的最终来源按 `cpu-evidence-index-v4.json` 所列顺序冻结即可。只有最终 GPU push 使用 `--accelerator NvidiaL4`。
 
-## 后续两个独立臂
+## 当前授权：16K 优先的完整闭环
+
+用户已明确将下一步改为 **16K 优先，只有实际容量不成立才下降到 8K**。低奖励、同奖组或低成功率不构成降低上下文的理由。最初的 4K/8K 两臂计划保留为历史；16K 新载体不沿用旧状态组，也不热修改任何既有作业。
+
+优先修正焦点状态与概率计算：恢复前缀必须已经包含至少一次真实失败工具反馈，不能继续把 turn0 初始状态或纯成功 find/read 叫作失败反馈后的恢复。完整验收为 0 或 1 的原 episode 均可提供这种真实错误后的状态，保留 origin_episode_reward；不能把已恢复成功的原 episode 改称整题失败。参考概率使用独立真实前向，旧行为概率保持原件。先以不看奖励、按全局顺序和长度选择的真实动作做 actor 同路径重复评分、独立 reference 与四 rank FSDP 零更新评分，保留每条概率、ratio、执行身份、显存和参数前后哈希。这是数值研究，不产生奖励、优势或训练完成声明。
+
+校准载体先只装一次 NF4 本地副本：actor 使用可见卡 0–1，退出后才启动四 rank FSDP；`--calibration-only` 明确禁止 optimizer。完整闭环载体使用既定两个双卡 collector、3/2 个反馈后状态和独立四卡 FSDP。若真实出现 mixed group，保存 actor theta0 两次评分，训练后重新加载 adapter 保存同路径 theta1，并做四个固定训练题的实际 post-update rollout。
+
+主 16K 采样把独立 reference 计算集中在真正进入 focal loss 的随机分支首动作：这些动作的 reference 由同冻结基座、匹配采样计算路径的独立前向实际得到。其余 original/continuation 保留真实 behavior logprob，reference 明确为未计算，不得进入训练或 KL。这减少无训练用途的重复解码，不复制 old、不重建未知 behavior，也不把未评分动作冒称有 reference。
+
+16K 初始任务采用已允许的 DVC 补题及旧 4K original 中按冻结全局序号排列的前七个真实 context 失败任务，选题不读取分支成功率。原 100 题材料、五份 CPU 验收来源及已验收 713 jail 全部绑定；使用新的私有 Notebook slug 保留旧输出。实际选题与来源以新 manifest 为准，本文不将未执行的后续实验计为成果。
+
+首个零更新校准已实际完成：`qingyu1232/vfarl-l4x4-probability-calibration-16k/1`，source SHA `e0da8c31d7db300cff0f3c06f8c3e54c475b29b487fc8c487b3076c2887fa930`。三条真实动作的 actor 同路径重评分、重复评分、独立匹配 reference 均与实际 old 逐 token 一致；原分块 reference 则最大差 0.1024/0.0214/0.9345。四 rank FSDP current 对 old 的最大差为 0.2946/0.1099/2.1216，而其自身重复、grad/no-grad、reference/current 均一致。四 rank 的参数 shard hash 前后未变，optimizer 为 0；actor/FSDP 分别耗时 1155.31/114.13 秒，本次配额 0.85h。精确数组、来源及结果见 `calibration-16k-evidence-v1/`。这些实际序列仅 1551/3575/3767 tokens，不能将配置上限 16K 当作已测 16K 容量；因此没有直接沿用该概率路径启动主采样。
+
+第二个零更新校准也已实际完成：`qingyu1232/vfarl-l4x4-probability-aligned-16k/1`，source SHA `f1ece93424001e7af7e9b07c8b44ed71b734e7f62449b3d9f463a7ae96d05e03`。它统一 bnb dequant-linear 路径、使用 BF16 冻结权重的分块 FP32 概率 head，并禁用 TF32/BF16 reduced-precision reduction；相同三条真实源、行和 mask 上，比较本轮 actor 与本轮 FSDP，最大差为 0.06146/0.10496/0.85255，MAE 为 0.005006/0.004132/0.002808。actor 重复及独立 reference、FSDP 重复及 grad/no-grad/reference 均逐 token 一致，但跨执行方式仍未全部满足原 0.08 上限，不能宣布概率完全对齐。实际 whole-action log importance 为 −0.04029/+0.03805/+1.46243，对应未截断权重 0.96051/1.03878/4.31642；这些校准动作没有奖励或更新用途。actor/FSDP 耗时 2751.53/134.21 秒，本次配额 1.76h，LoRA 和四 rank shard hash 均未改变。长 1062-token 动作每次匹配路径评分约 743 秒，后续需据此估计实际采样成本。完整数组和配对方法结果见 `calibration-16k-evidence-v2/result-summary.json`；原 native old 数组原样保留为历史诊断，不被新执行概率覆盖。作业结束已停所有 worker、清理临时输入与 NF4 缓存。
+
+依据上述独立无奖励校准，主 16K YAML 明确启用 `rollout_correction: sequence_tis`、`rollout_is_max: 2`：保留真实 actor behavior 概率，以冻结的实际 learner no-grad 概率作为 PPO 起点，完整 focal action 的重要性权重只做预设上截断；同 learner 执行路径的 0.08 检验继续保留。它承认跨执行方式差异及截断带来的偏差，不把概率中心化后冒作零漂移。决策和校准来源绑定在 `../16k/probability-decision.json`。
+
+主闭环作业于 2026-10-26 04:19:12 UTC 提交为 `qingyu1232/vfarl-l4x4-focal-recovery-16k/1`，source SHA `a69c8a16ec92ce135de726a193b6600d81d93165c54e9a99579b8aa56d91f22b`。`train-16k-v1/` 冻结明确的 16K YAML、原八题、五个反馈后状态上限和所有材料/CPU 来源；提交起点配额 13.39h/16.61h。回读已确认私有、GPU、无 Internet、源码一致；实际阶段和硬件以 `train-16k-evidence-v1/` 为准，不将已提交视为已产生分叉或完成更新。
+
+## 历史待办：此前两个独立臂
 
 必须等第四轮完成后依次运行，不并发启动 GPU，也不热改已运行脚本。
 

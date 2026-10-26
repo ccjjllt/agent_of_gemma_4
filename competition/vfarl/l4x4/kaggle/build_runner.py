@@ -15,7 +15,10 @@ parser.add_argument('--mode', choices=('capabilities', 'jail-probe', 'prevalidat
 parser.add_argument('--out', type=Path, required=True)
 parser.add_argument('--runtime-kernel', help='Explicit completed owner/kernel/version to mount.')
 parser.add_argument('--runtime-sha256', help='Expected archive SHA256, mandatory for a GPU carrier.')
-parser.add_argument('--context', type=int, choices=(4096, 8192), default=4096)
+parser.add_argument('--context', type=int, choices=(4096, 8192, 16384), default=4096)
+parser.add_argument('--training-config', type=Path,
+                    default=ROOT / 'training/configs/vfarl_l4x4.yaml',
+                    help='Explicit model/RL configuration to freeze; runtime context follows --context.')
 parser.add_argument('--only-task', action='append', default=[])
 parser.add_argument('--kernel-id')
 parser.add_argument('--title')
@@ -23,6 +26,12 @@ parser.add_argument('--dataset-version', type=int, default=1)
 parser.add_argument('--export-runtime', action='store_true', help='Publish repaired runtime even for a CPU task subset.')
 parser.add_argument('--collect-only', action='store_true', help='Collect requested real rollouts/branches without optimizer or post-update runs.')
 parser.add_argument('--focal-states', type=int, default=5, help='Maximum focal states across both collectors; zero means rollout coverage only.')
+parser.add_argument('--calibration-data', type=Path,
+                    help='Manifest of real, source-bound actions for an explicit zero-update actor/FSDP probability study.')
+parser.add_argument('--calibration-action-file', type=Path, action='append', default=[],
+                    help='Real actions.jsonl referenced by the calibration manifest; preserved verbatim in the source bundle.')
+parser.add_argument('--calibration-only', action='store_true',
+                    help='Run actor then FSDP probability calibration only, without task collection or any optimizer.')
 parser.add_argument('--prevalidation-report', type=Path, action='append', default=[],
                     help='Actual local CPU report to freeze; later reports supersede earlier task records.')
 parser.add_argument('--jail-source', type=Path, help='Explicit CPU candidate or already CPU-accepted historical GPU jail source to freeze.')
@@ -33,6 +42,16 @@ if args.runtime_kernel and len(args.runtime_kernel.split('/')) != 3:
     parser.error('--runtime-kernel must include an explicit completed version')
 if args.focal_states < 0:
     parser.error('--focal-states must be nonnegative')
+if args.calibration_only and (args.mode != 'train' or not args.calibration_data):
+    parser.error('--calibration-only requires --mode train and --calibration-data')
+if args.calibration_data and args.mode != 'train':
+    parser.error('Probability calibration is restricted to the explicit GPU experiment mode')
+if args.calibration_action_file and not args.calibration_data:
+    parser.error('--calibration-action-file requires --calibration-data')
+training_config = args.training_config.resolve(strict=True)
+if not training_config.is_relative_to(ROOT) or not training_config.is_file():
+    parser.error('--training-config must be an existing file inside this research repository')
+training_config_path = str(training_config.relative_to(ROOT))
 jail_override = None
 if args.jail_source:
     jail_hash = hashlib.sha256(args.jail_source.read_bytes()).hexdigest()
@@ -55,6 +74,15 @@ paths += [ROOT / 'competition/vfarl/replay/run_official.py', ROOT / 'competition
 stock = ROOT / 'competition/vfarl/l4x4/kaggle/stock-environment-pins.json'
 if stock.is_file():
     paths.append(stock)
+paths.append(training_config)
+calibration_path = None
+if args.calibration_data:
+    for path in [args.calibration_data, *args.calibration_action_file]:
+        resolved = path.resolve(strict=True)
+        if not resolved.is_relative_to(ROOT) or not resolved.is_file():
+            parser.error('Calibration source must be an existing file inside this research repository')
+        paths.append(resolved)
+    calibration_path = str(args.calibration_data.resolve().relative_to(ROOT))
 bundle = {str(p.relative_to(ROOT)): p.read_text() for p in paths}
 if args.jail_source:
     bundle['competition/vfarl/l4x4/jail.py'] = args.jail_source.read_text()
@@ -64,7 +92,7 @@ for index, path in enumerate(args.prevalidation_report):
     bundle[name] = path.read_text()
     prevalidation_paths.append(name)
 packed = base64.b64encode(zlib.compress(json.dumps(bundle).encode())).decode()
-source = f'MODE = {args.mode!r}\nMATERIAL_SHA256 = {material["sha256"]!r}\nRUNTIME_SHA256 = {args.runtime_sha256!r}\nCONTEXT_LENGTH = {args.context!r}\nONLY_TASKS = {args.only_task!r}\nEXPORT_RUNTIME = {args.export_runtime!r}\nCOLLECT_ONLY = {args.collect_only!r}\nFOCAL_STATES = {args.focal_states!r}\nPREVALIDATION_REPORTS = {prevalidation_paths!r}\nSOURCE_BUNDLE = {packed!r}\n'
+source = f'MODE = {args.mode!r}\nMATERIAL_SHA256 = {material["sha256"]!r}\nRUNTIME_SHA256 = {args.runtime_sha256!r}\nCONTEXT_LENGTH = {args.context!r}\nTRAINING_CONFIG = {training_config_path!r}\nONLY_TASKS = {args.only_task!r}\nEXPORT_RUNTIME = {args.export_runtime!r}\nCOLLECT_ONLY = {args.collect_only!r}\nFOCAL_STATES = {args.focal_states!r}\nCALIBRATION_DATA = {calibration_path!r}\nCALIBRATION_ONLY = {args.calibration_only!r}\nPREVALIDATION_REPORTS = {prevalidation_paths!r}\nSOURCE_BUNDLE = {packed!r}\n'
 source += (HERE / 'runner.py').read_text()
 if args.mode == 'capabilities':
     # This CPU preparation step uploads only generic stdlib capability reads.
@@ -126,11 +154,19 @@ manifest = {'source_sha256': hashlib.sha256(source.encode()).hexdigest(),
             'runtime_kernel': args.runtime_kernel,
             'runtime_sha256': args.runtime_sha256,
             'context_length': args.context,
+            'training_config': {'path': training_config_path,
+                                'sha256': hashlib.sha256(training_config.read_bytes()).hexdigest()},
             'only_tasks': args.only_task,
             'dataset_version': args.dataset_version,
             'export_runtime': args.export_runtime,
             'collect_only': args.collect_only,
             'maximum_focal_states': args.focal_states,
+            'calibration_only': args.calibration_only,
+            'calibration_data': ({'path': calibration_path, 'sha256': hashlib.sha256(args.calibration_data.read_bytes()).hexdigest()}
+                                 if args.calibration_data else None),
+            'calibration_action_files': [{'path': str(path.resolve().relative_to(ROOT)),
+                                          'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+                                         for path in args.calibration_action_file],
             'collector_focal_quotas': [(args.focal_states + 1) // 2, args.focal_states // 2],
             'jail_source_override': jail_override,
             'prevalidation_reports': [{'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}

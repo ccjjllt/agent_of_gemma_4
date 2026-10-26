@@ -13,6 +13,7 @@ import dataclasses
 import hashlib
 import importlib.metadata
 import json
+import math
 import re
 import shutil
 import subprocess
@@ -175,6 +176,83 @@ def focal_order(item):
     return (not item.get('has_recovery_budget', False),
             not item.get('observed_tool_error', False),
             len(item['action']['prompt_token_ids']))
+
+
+def score_focal_rows(policy, args, data_path, *, stage):
+    """Score only real mixed-outcome focal rows on the actual actor path.
+
+    The original behavior probabilities remain immutable. Two current-policy
+    passes before the update measure repeat drift; one after-update pass gives
+    the matching policy comparison. The frozen reference is not substituted
+    for current policy.
+    """
+    from training.common import TrainingError
+    from training.train_vfarl import prepare_rows
+    if stage not in ('before', 'after'):
+        raise ValueError('Unknown actor scoring stage')
+    if stage == 'after' and args.adapter_run is None:
+        raise TrainingError('Post-update focal scoring requires an actual adapter run')
+    data_path = Path(data_path)
+    if not data_path.is_file():
+        if stage == 'before':
+            return
+        raise TrainingError('The post-update focal data file does not exist')
+    source_bytes = data_path.read_bytes()
+    source_hash = digest(source_bytes)
+    original_lines = {}
+    for number, line in enumerate(source_bytes.decode().splitlines(), 1):
+        if line.strip():
+            row = json.loads(line)
+            original_lines[row['branch_id']] = (number, digest(line.encode()))
+    rows, evidence = prepare_rows(data_path, args.context)
+    # Before scores consume each collector's own complete state groups. After
+    # scores consume the merged file, partitioning only after group validation.
+    if stage == 'after':
+        rows = rows[args.worker_index::args.worker_count]
+    if not rows:
+        print(json.dumps({'phase': 'actor_focal_scoring', 'stage': stage,
+            'scored_rows': 0, 'mixed_group_count': evidence['mixed_group_count']}), flush=True)
+        return
+    output = args.out/f'actor-{stage}.jsonl'
+    if output.exists():
+        raise TrainingError('Refusing to overwrite an actor focal scoring result')
+    repeats = 2 if stage == 'before' else 1
+    for row in rows:
+        if row['reference_id'] != policy.identity['reference_id']:
+            raise TrainingError('Actor focal scoring reference differs from sampled data')
+        if stage == 'before' and row['policy_id'] != policy.identity['policy_id']:
+            raise TrainingError('Actor before scoring policy differs from actual sampled policy')
+        for repeat in range(repeats):
+            score = policy.score_teacher_forced(row['prompt_token_ids'],
+                row['completion_token_ids'], row['loss_mask'], frozen_reference=False)
+            if (score.get('prompt_token_ids') != row['prompt_token_ids']
+                    or score.get('completion_token_ids') != row['completion_token_ids']
+                    or score.get('loss_mask') != row['loss_mask']
+                    or len(score.get('logprobs', [])) != len(row['completion_token_ids'])
+                    or any(not math.isfinite(value) or value > 1e-6
+                           for value in score.get('logprobs', []))
+                    or any(value != 0.0 for value, keep in
+                           zip(score.get('logprobs', []), row['loss_mask']) if not keep)
+                    or score.get('policy_id') != policy.identity['policy_id']
+                    or score.get('reference_id') != policy.identity['reference_id']):
+                raise TrainingError('Actor scoring changed the exact sampled tokens, mask or policy identity')
+            source_line, source_line_hash = original_lines[row['branch_id']]
+            append(output, dict(stage=stage, repeat_index=repeat,
+                branch_id=row['branch_id'], state_id=row['state_id'],
+                instance_id=row['instance_id'], reward=row['reward'],
+                advantage=row['advantage'], behavior_policy_id=row['policy_id'],
+                source_data_sha256=source_hash, source_line=source_line,
+                source_line_sha256=source_line_hash, score=score))
+            print(json.dumps({'phase': 'actor_focal_score', 'stage': stage,
+                'branch_id': row['branch_id'], 'repeat_index': repeat,
+                'selected_tokens': sum(row['loss_mask']),
+                'seconds': score['seconds']}), flush=True)
+    write(args.out/f'actor-{stage}-provenance.json', dict(
+        stage=stage, source_data_sha256=source_hash,
+        source_data_path=str(data_path), scored_rows=len(rows), repeats=repeats,
+        mixed_group_count=evidence['mixed_group_count'],
+        policy=policy.identity, execution=policy.execution,
+        scoring='Current actor, teacher-forced complete sampled tokens; original behavior logprobs are unchanged'))
 
 
 def final_patch(env):
@@ -388,7 +466,7 @@ async def prevalidate(args, entries):
 
 
 async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None,
-                  capture=False, seed=0, first_seed=None):
+                  capture=False, seed=0, first_seed=None, train_focal_first_action=False):
     from competition.vfarl.l4x4.state import Snapshot
     out.mkdir(parents=True, exist_ok=True)
     ledger = ledger if ledger is not None else {'output_tokens': 0, 'turns': 0, 'context_limit': args.context}
@@ -408,9 +486,14 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
             stop = 'context_or_output_budget_exhausted'
             break
         state = None
-        # An initial prompt has no observed task feedback. Focal recovery
-        # begins only after a real tool response has entered this prefix.
-        if capture and ledger.get('tool_observations', 0) > 0:
+        # Focal recovery starts only after an actual failed tool response is
+        # already in this prefix. Successful reads/searches alone do not
+        # establish a recovery state, and future action failures cannot do so.
+        recovery_budget = (room >= args.turn_tokens + 256
+            and args.turns-ledger['turns'] >= 2
+            and args.tool_calls-env.ctx.tool_calls_used >= 2)
+        if (capture and recovery_budget and ledger.get('tool_observations', 0) > 0
+                and ledger.get('tool_failures_observed', 0) > 0):
             try:
                 state = Snapshot.capture(env.manager, env.sid, env.ctx, ids, ledger,
                     policy.identity, out/f'state-{ledger["turns"]:03d}')
@@ -425,7 +508,8 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
         try:
             action = first_action if first_action is not None else policy.sample(ids,
                 max_new_tokens=min(room, args.turn_tokens), thinking_budget=1024,
-                seed=action_seed, stop_token_ids=policy.vfarl_stop_ids)
+                seed=action_seed, stop_token_ids=policy.vfarl_stop_ids,
+                compute_reference=train_focal_first_action and not actions)
         except Exception as exc:
             raise PolicyProtocolError('Current-policy sampling failed') from exc
         replayed = first_action is not None
@@ -446,11 +530,11 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
                                'manifest': state, 'action': action,
                                'checkpoint_turn': ledger['turns']-1,
                                'tool_observations': ledger['tool_observations'],
+                               'tool_failures_observed': ledger['tool_failures_observed'],
+                               'last_tool_feedback': dict(ledger.get('last_tool_feedback', {})),
                                'observed_tool_error': bool(ledger.get('last_tool_error', False)),
                                'remaining_token_capacity': room,
-                               'has_recovery_budget': (room >= args.turn_tokens + 256
-                                   and args.turns-ledger['turns'] >= 1
-                                   and args.tool_calls-env.ctx.tool_calls_used >= 2)})
+                               'has_recovery_budget': recovery_budget})
         if action['finish_reason'] not in ('tool_calls', 'stop'):
             if state is not None:
                 candidates[-1]['response_truncated'] = True
@@ -509,7 +593,11 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
         except Exception as exc:
             raise PolicyProtocolError('Actual tool response serialization failed') from exc
         ledger['tool_observations'] = ledger.get('tool_observations', 0) + 1
+        ledger['tool_failures_observed'] = ledger.get('tool_failures_observed', 0) + int(response_failed)
         ledger['last_tool_error'] = response_failed
+        ledger['last_tool_feedback'] = dict(tool=name, failed=response_failed,
+            response_sha256=digest(json.dumps(response, ensure_ascii=False).encode()),
+            observation_index=ledger['tool_observations'], observed_after_turn=ledger['turns'])
         if env.ctx.tool_calls_used >= args.tool_calls:
             stop = 'tool_budget_exhausted'
             break
@@ -534,7 +622,7 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
 
 
 async def collect(args, entries, questions):
-    if not entries:
+    if not entries and args.score_focal_data is None:
         (args.out/'collection.jsonl').touch()
         print(json.dumps({'phase': 'empty_partition', 'worker': args.worker_index,
                           'selected_tasks': 0}), flush=True)
@@ -544,7 +632,7 @@ async def collect(args, entries, questions):
     from training.common import TrainingError
     model_config, _ = read_config(args.config)
     if model_config['max_sequence_length'] != args.context:
-        raise ValueError('Sampling context and training config must match; use an explicit 8192 config for the 8K experiment')
+        raise ValueError('Sampling context and training config must match; use an explicit context-specific config')
     source_root = Path(__file__).resolve().parents[3]
     isolation = configure_isolation(args.isolation,
         hidden_paths=[args.assets.resolve(), args.out.resolve(), source_root])
@@ -573,6 +661,13 @@ async def collect(args, entries, questions):
                             ('<tool_call|>', '<turn|>', '<|end|>')]
     policy.vfarl_stop_ids = [x for x in policy.vfarl_stop_ids if isinstance(x, int) and x != policy.tokenizer.unk_token_id]
     write(args.out/'policy.json', policy.identity)
+    if args.score_focal_data is not None:
+        score_focal_rows(policy, args, args.score_focal_data, stage='after')
+    if not entries:
+        (args.out/'collection.jsonl').touch()
+        print(json.dumps({'phase': 'empty_partition', 'worker': args.worker_index,
+                          'selected_tasks': 0, 'focal_scoring_completed': True}), flush=True)
+        return
     preparation = {row['instance_id']: row for row in
                    (json.loads(line) for line in args.prevalidation.read_text().splitlines())}
     global_indices = {row['instance_id']: i for i, row in enumerate(json.loads(args.selection.read_text())['tasks'])}
@@ -619,10 +714,13 @@ async def collect(args, entries, questions):
                 summary, candidates, _ = await episode(env, policy, ids, args, out/'original',
                     capture=states < args.max_states, seed=base_seed)
                 environment_control = None
-                if summary['reward'] == 0 and candidates and states < args.max_states:
+                if (summary['verified'] and summary['reward'] in (0, 1)
+                        and candidates and states < args.max_states):
                     # Confirm this actual GPU worker's task environment before
-                    # turning a failure into an RL comparison. The reviewed
-                    # repair is host-only and never enters a policy prefix.
+                    # comparing an observed tool-failure state. The original
+                    # task may later recover and succeed; its terminal reward
+                    # does not determine whether this real state is eligible.
+                    # The reviewed repair remains host-only.
                     control = await env.verify((env.asset/'submitted.patch').read_text(),
                                                'focal-environment-control')
                     environment_control = str(env.output/'focal-environment-control-result.json')
@@ -632,11 +730,13 @@ async def collect(args, entries, questions):
                             reward_exclusion='Reviewed repair no longer verifies in the actual collection environment')
                     write(out/'original'/'episode.json', summary)
                 append(args.out/'collection.jsonl', dict(summary, sampled=True, draw=draw))
-                # Choose a real pre-action state from a genuinely failed attempt;
-                # no teacher repair, damaged source or fabricated failure.
-                if summary['reward'] == 0 and candidates and states < args.max_states:
-                    # Prefer an actual tool error with remaining context; a
-                    # late exhausted prefix cannot meaningfully test recovery.
+                # Every candidate prefix already contains a real tool error.
+                # Include naturally recovered original episodes as well as
+                # terminal failures; do not choose states by branch outcomes.
+                if (summary['verified'] and summary['reward'] in (0, 1)
+                        and candidates and states < args.max_states):
+                    # Prefer feedback immediately after an actual error with
+                    # remaining recovery budget.
                     candidate = min(candidates, key=focal_order)
                     retained_snapshot = candidate['snapshot']
                     rows = []
@@ -654,15 +754,22 @@ async def collect(args, entries, questions):
                         branch_summary, _, actions = await episode(env, policy, restored_ids, args,
                             branch_dir, ledger=ledger,
                             first_action=candidate['action'] if branch == 0 else None,
-                            seed=base_seed+500, first_seed=base_seed+500+branch*100)
+                            seed=base_seed+500, first_seed=base_seed+500+branch*100,
+                            train_focal_first_action=branch != 0)
                         if actions:
                             row = dict(actions[0], state_id=manifest['state_id'],
                                 branch_id=f'{key}-{draw}-{branch}', instance_id=key,
                                 kind='original_action_replay' if branch == 0 else 'sampled_focal_action',
                                 on_policy=branch != 0, verified=branch_summary['verified'],
                                 reward=branch_summary['reward'],
+                                origin_episode_reward=summary['reward'],
+                                focal_selection_basis='observed tool failure, regardless of original final result',
                                 environment_control_verified=True,
                                 environment_control_result=environment_control,
+                                checkpoint_turn=candidate['checkpoint_turn'],
+                                checkpoint_tool_observations=candidate['tool_observations'],
+                                checkpoint_tool_failures_observed=candidate['tool_failures_observed'],
+                                checkpoint_last_tool_feedback=candidate['last_tool_feedback'],
                                 restoration_scope=manifest['restoration_scope'],
                                 restored_state_evidence=str(branch_dir/'restore.json'),
                                 verification=branch_summary['verification'])
@@ -672,10 +779,14 @@ async def collect(args, entries, questions):
                     state_result = {'state_id': candidate['manifest']['state_id'],
                         'instance_id': key, 'branches': len(rows),
                         'rewards': [row['reward'] for row in rows],
+                        'origin_episode_reward': summary['reward'],
+                        'focal_selection_basis': 'observed tool failure, regardless of original final result',
                         'environment_control': environment_control,
                         'checkpoint_observed_tool_error': candidate.get('observed_tool_error', False),
                         'checkpoint_turn': candidate['checkpoint_turn'],
                         'checkpoint_tool_observations': candidate['tool_observations'],
+                        'checkpoint_tool_failures_observed': candidate['tool_failures_observed'],
+                        'checkpoint_last_tool_feedback': candidate['last_tool_feedback'],
                         'checkpoint_has_recovery_budget': candidate['has_recovery_budget'],
                         'checkpoint_remaining_token_capacity': candidate['remaining_token_capacity'],
                         'restoration_scope': candidate['manifest']['restoration_scope']}
@@ -707,6 +818,8 @@ async def collect(args, entries, questions):
                         shutil.rmtree(checkpoint)
             print(json.dumps({'phase': 'collection', 'instance_id': key, 'draw': draw,
                               'focal_states': states}), flush=True)
+    if args.adapter_run is None:
+        score_focal_rows(policy, args, args.out/'focal.jsonl', stage='before')
 
 
 def main():
@@ -718,10 +831,12 @@ def main():
                         help='Visible GPUs used by each real sampling model; FSDP training is separate')
     parser.add_argument('--adapter-run', type=Path,
                         help='Completed training run for a separate post-update rollout comparison')
+    parser.add_argument('--score-focal-data', type=Path,
+                        help='Merged real mixed focal rows to score with the loaded updated actor; no sampling or reward is manufactured')
     parser.add_argument('--tools', type=Path, default=Path('competition/vfarl/six-tools.json'))
     parser.add_argument('--prevalidate', action='store_true')
     parser.add_argument('--prevalidation', type=Path)
-    parser.add_argument('--context', type=int, choices=(4096, 8192), default=4096)
+    parser.add_argument('--context', type=int, choices=(4096, 8192, 16384), default=4096)
     parser.add_argument('--draws', type=int, choices=(1, 2), default=1)
     parser.add_argument('--branches', type=int, choices=(2, 3), default=3,
                         help='Total including original replay; use 3 for two independent sampled actions and a possible PPO advantage')
@@ -742,6 +857,8 @@ def main():
         parser.error('Invalid worker or focal-state count')
     if args.task_limit is not None and args.task_limit < 1:
         parser.error('--task-limit must be positive')
+    if args.score_focal_data is not None and (args.prevalidate or args.adapter_run is None):
+        parser.error('--score-focal-data requires a post-update actor loaded with --adapter-run')
     if args.out.exists():
         parser.error('Output already exists; preserve the previous real run')
     args.out.mkdir(parents=True)

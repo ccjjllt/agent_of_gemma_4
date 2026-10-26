@@ -198,7 +198,9 @@ def wait_workers(workers):
                 if isinstance(event, dict) and event.get('phase') in (
                         'prevalidate', 'collection', 'collection_error', 'model_loading', 'model_ready',
                         'policy_request', 'policy_action', 'episode_result', 'focal_group',
-                        'empty_partition', 'jail_system_public_ca'):
+                        'empty_partition', 'jail_system_public_ca', 'actor_focal_scoring',
+                        'actor_focal_score', 'probability_calibration', 'calibration_sample',
+                        'calibration_complete', 'actor_calibration_sample'):
                     print(json.dumps({'worker': index, **event}), flush=True)
         if MODE == 'train' and time.monotonic() - last_gpu_observation >= 60:
             last_gpu_observation = time.monotonic()
@@ -519,6 +521,47 @@ def prepare_cpu_repairs(stage, source, out, prep):
     (out / 'runtime-preparation-repair.json').write_text(json.dumps(corrections, indent=2) + '\n')
 
 
+def run_probability_calibration(source, config_path, out, env, evidence):
+    """Score real recorded actions on actor/FSDP paths without an optimizer."""
+    data = source / CALIBRATION_DATA
+    if not data.is_file():
+        raise RuntimeError('The frozen real-action calibration manifest is missing')
+    record = {'source_manifest': CALIBRATION_DATA, 'source_manifest_sha256': sha(data),
+              'optimizer_requested': False, 'stages': []}
+    evidence['probability_calibration'] = record
+    (out / 'carrier.json').write_text(json.dumps(evidence, indent=2) + '\n')
+    for stage in ('actor', 'fsdp'):
+        destination = out / ('calibration-' + stage)
+        arguments = ['-m', 'training.train_vfarl', '--config', str(config_path),
+                     '--data', str(data), '--calibrate', stage, '--out', str(destination)]
+        if stage == 'actor':
+            command = [sys.executable, *arguments]
+            stage_env = dict(env, CUDA_VISIBLE_DEVICES='0,1')
+        else:
+            command = [sys.executable, '-m', 'torch.distributed.run', '--standalone',
+                       '--nproc-per-node=4', '--max-restarts=0', *arguments]
+            stage_env = dict(env, CUDA_VISIBLE_DEVICES='0,1,2,3',
+                FSDP_TRANSFORMER_CLS_TO_WRAP='Gemma4TextDecoderLayer',
+                NCCL_DEBUG='WARN', TORCH_NCCL_ASYNC_ERROR_HANDLING='1')
+        started = time.monotonic()
+        print(json.dumps({'phase': 'probability_calibration_started', 'stage': stage,
+                          'source_manifest_sha256': record['source_manifest_sha256'],
+                          'optimizer_requested': False}), flush=True)
+        with (out / ('calibration-' + stage + '.log')).open('w') as log:
+            process = spawn(command, env=stage_env, cwd=source, stdout=log, stderr=subprocess.STDOUT)
+            failures = wait_workers([(process, log)])
+        stage_record = {'stage': stage, 'exit_code': process.returncode,
+                        'seconds': time.monotonic() - started,
+                        'output': str(destination), 'optimizer_requested': False}
+        record['stages'].append(stage_record)
+        (out / 'carrier.json').write_text(json.dumps(evidence, indent=2) + '\n')
+        print(json.dumps({'phase': 'probability_calibration_finished', **stage_record}), flush=True)
+        if failures:
+            raise RuntimeError('The actual zero-update probability study failed in ' + stage)
+    record['completed'] = True
+    (out / 'carrier.json').write_text(json.dumps(evidence, indent=2) + '\n')
+
+
 def main():
     global _OUTPUT
     started = time.monotonic()
@@ -704,13 +747,17 @@ def main():
                     unavailable_task_count=100 - len({r['instance_id'] for r in valid if r.get('usable')}),
                     sampling_scope='Only individually CPU-accepted tasks; other pool members are not claimed as sampled.')
     focal_quotas = ((FOCAL_STATES + 1) // 2, FOCAL_STATES // 2)
-    evidence.update(collect_only=COLLECT_ONLY, maximum_focal_states=FOCAL_STATES)
-    evidence['gpu_topology'] = {'collector_processes': 2, 'gpus_per_policy': 2,
+    evidence.update(collect_only=COLLECT_ONLY, maximum_focal_states=FOCAL_STATES,
+                    calibration_only=CALIBRATION_ONLY,
+                    calibration_manifest=CALIBRATION_DATA)
+    evidence['gpu_topology'] = {'collector_processes': 0 if CALIBRATION_ONLY else 2, 'gpus_per_policy': 2,
                                'visible_device_groups': ['0,1', '2,3'],
                                'focal_state_quotas': list(focal_quotas),
-                               'training_ranks': 0 if COLLECT_ONLY else 4,
-                               'post_update_task_limit': 0 if COLLECT_ONLY else 4,
-                               'post_update_collectors': 0 if COLLECT_ONLY else 2}
+                               'training_ranks': 0 if COLLECT_ONLY or CALIBRATION_ONLY else 4,
+                               'calibration_actor_gpus': 2 if CALIBRATION_DATA else 0,
+                               'calibration_fsdp_ranks': 4 if CALIBRATION_DATA else 0,
+                               'post_update_task_limit': 0 if COLLECT_ONLY or CALIBRATION_ONLY else 4,
+                               'post_update_collectors': 0 if COLLECT_ONLY or CALIBRATION_ONLY else 2}
     (out / 'carrier.json').write_text(json.dumps(evidence, indent=2) + '\n')
     caches = []
     for p in Path('/kaggle/input').rglob('cache-manifest.json'):
@@ -723,7 +770,12 @@ def main():
     # Use the stage's dependency path in this coordinator only for config loading.
     sys.path.insert(0, str(stage / 'runtime'))
     import yaml
-    config = yaml.safe_load((source / 'training/configs/vfarl_l4x4.yaml').read_text())
+    training_config_path = source / TRAINING_CONFIG
+    config = yaml.safe_load(training_config_path.read_text())
+    evidence['training_config'] = {'path': TRAINING_CONFIG,
+        'sha256': sha(training_config_path),
+        'declared_context': config['model']['max_sequence_length'],
+        'effective_context': CONTEXT_LENGTH}
     config['model'].update(model_name_or_path=str(model_cache),
         tokenizer_name_or_path=str(stage / 'tokenizer'),
         chat_template_path=str(stage / 'tokenizer/chat_template.jinja'),
@@ -731,6 +783,13 @@ def main():
         max_sequence_length=CONTEXT_LENGTH)
     config_path = out / 'config.json'
     config_path.write_text(json.dumps(config, indent=2) + '\n')
+    (out / 'carrier.json').write_text(json.dumps(evidence, indent=2) + '\n')
+    if CALIBRATION_ONLY:
+        run_probability_calibration(source, config_path, out, env, evidence)
+        evidence.update(one_update_completed=False, optimizer_requested=False,
+                        wall_seconds=time.monotonic() - started)
+        (out / 'carrier.json').write_text(json.dumps(evidence, indent=2) + '\n')
+        return
     active = []
     try:
         for rank, states in enumerate(focal_quotas):
@@ -757,6 +816,14 @@ def main():
             path = out / f'worker-{rank}/focal.jsonl'
             if path.is_file():
                 merged.write(path.read_text())
+    actor_before = out / 'actor-before.jsonl'
+    with actor_before.open('w') as merged:
+        for rank in range(2):
+            path = out / f'worker-{rank}/actor-before.jsonl'
+            if path.is_file():
+                merged.write(path.read_text())
+    if CALIBRATION_DATA:
+        run_probability_calibration(source, config_path, out, env, evidence)
     if COLLECT_ONLY:
         evidence.update(one_update_completed=False, optimizer_requested=False,
                         wall_seconds=time.monotonic() - started)
@@ -797,6 +864,7 @@ def main():
                 command = common + ['--config', str(config_path), '--prevalidation', str(prevalidation),
                     '--adapter-run', str(out / 'update'), '--context', str(CONTEXT_LENGTH), '--draws', '1',
                     '--max-states', '0', '--policy-gpus', '2', '--task-limit', '4',
+                    '--score-focal-data', str(focal),
                     '--worker-index', str(rank), '--worker-count', '2',
                     '--out', str(out / f'post-worker-{rank}')]
                 log = (out / f'post-worker-{rank}.log').open('w')
@@ -813,6 +881,11 @@ def main():
                     stop_worker(proc)
                 if not log.closed:
                     log.close()
+        with (out / 'actor-after.jsonl').open('w') as merged:
+            for rank in range(2):
+                path = out / f'post-worker-{rank}/actor-after.jsonl'
+                if path.is_file():
+                    merged.write(path.read_text())
     else:
         evidence['learning_signal_note'] = 'No optimizer-step manifest; inspect real focal outcomes and update.log.'
     evidence['wall_seconds'] = time.monotonic() - started

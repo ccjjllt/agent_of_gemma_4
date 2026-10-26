@@ -4,9 +4,10 @@ The collector supplies the real six-tool history. This module never executes a
 tool, fabricates a reward, or reconstructs behavior probabilities from a CT
 server. Sampling and updating use the same QAT-derived NF4 cache.
 """
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import functools
 import hashlib
+import importlib
 import json
 import math
 import random
@@ -21,10 +22,143 @@ from .train_ddp import trainable_hash
 
 
 PREFILL_CHUNK_SIZE = 256
+HEAD_VOCAB_CHUNK_SIZE = 16384
+PROBABILITY_EXECUTION_PROFILE = {
+    'version': 3,
+    'prompt_prefill': 'complete-prefix-contiguous-256-token-KV-chunks',
+    'completion': 'one-token-cached-autoregressive-forward',
+    'nf4_linear': 'bitsandbytes-0.50.2-CUDA-dequant-linear-fallback-for-all-M',
+    'head': 'tied-BF16-parameter-FP32-linear-vocab-blocks-16384',
+    'head_backward': 'shared-FP32-input-with-per-vocab-block-nonreentrant-checkpoint',
+    'float32_matmul_precision': 'highest',
+    'allow_tf32': False,
+    'allow_bf16_reduced_precision_reduction': False,
+    'logprob': 'FP32-head-and-native-FP32-softcap-to-float32-log-softmax',
+    'reference': 'independent-same-autoregressive-path-with-zero-LoRA-scaling',
+    'forced_controls': 'preserve-in-prefix-and-mask-from-loss',
+    'compute_dtype': 'bfloat16',
+}
 
 
 def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def _install_fp32_blocked_head(model, torch):
+    """Keep the tied BF16 parameter while evaluating its projection in FP32.
+
+    This is installed on the Linear module's existing execution boundary, so
+    Accelerate/FSDP hooks still run. Every vocabulary block checkpoints its
+    own cast/matmul when gradients are required; the complete FP32 weight is
+    never materialized or retained by this helper.
+    """
+    from torch.utils.checkpoint import checkpoint
+    base = model.get_base_model() if hasattr(model, 'get_base_model') else model
+    if type(base).__name__ not in ('Gemma4ForConditionalGeneration',
+                                   'Gemma4UnifiedForConditionalGeneration'):
+        raise TrainingError('VFARL FP32 probability head requires the supported Gemma4 base')
+    head = base.lm_head
+    embedding = base.get_input_embeddings()
+    if (not isinstance(head, torch.nn.Linear) or head.bias is not None
+            or head.weight.requires_grad or head.weight.dtype != torch.bfloat16
+            or head.weight is not embedding.weight):
+        raise TrainingError('VFARL probability head requires the original frozen tied BF16 Linear weight')
+    active = getattr(head, '_vfarl_probability_head', None)
+    if active is not None:
+        if active.get('vocab_chunk_size') != HEAD_VOCAB_CHUNK_SIZE:
+            raise TrainingError('A different VFARL probability head is already installed')
+        return dict(active)
+    # dispatch_model wraps forward with a device-alignment hook and keeps its
+    # actual implementation in _old_forward. Preserve that outer hook.
+    target = '_old_forward' if hasattr(head, '_hf_hook') else 'forward'
+    original = getattr(head, target, None)
+    if not callable(original):
+        raise TrainingError('The probability head device-alignment hook has no callable implementation')
+
+    @functools.wraps(original)
+    def forward(self, input):
+        if input.device != self.weight.device:
+            raise TrainingError('Probability head hook did not align hidden states and the tied weight')
+        with torch.autocast(device_type=input.device.type, enabled=False):
+            # Share one cast so all vocabulary-block gradients accumulate in
+            # FP32 before the single conversion back to the backbone dtype.
+            values = input.float()
+
+            def project(hidden, weight):
+                with torch.autocast(device_type=hidden.device.type, enabled=False):
+                    return torch.nn.functional.linear(hidden, weight.float())
+
+            pieces = []
+            for start in range(0, self.weight.shape[0], HEAD_VOCAB_CHUNK_SIZE):
+                weight = self.weight[start:start + HEAD_VOCAB_CHUNK_SIZE]
+                pieces.append(checkpoint(project, values, weight,
+                    use_reentrant=False, preserve_rng_state=False)
+                    if torch.is_grad_enabled() and values.requires_grad else project(values, weight))
+            return torch.cat(pieces, dim=-1)
+
+    setattr(head, target, types.MethodType(forward, head))
+    report = dict(vocab_chunk_size=HEAD_VOCAB_CHUNK_SIZE,
+        weight_shape=list(head.weight.shape), weight_dtype=str(head.weight.dtype),
+        output_dtype='torch.float32', tied_parameter_preserved=True,
+        per_vocab_block_checkpoint=True, shared_input_cast=True,
+        patched_implementation=target)
+    head._vfarl_probability_head = report
+    return dict(report)
+
+
+def install_probability_execution(model, stack):
+    """Install this experiment's explicit NF4 and probability arithmetic.
+
+    The private bitsandbytes control is restricted to the inspected 0.50.2
+    CUDA implementation. This function is called only by VFARL, after model
+    loading and before FSDP wrapping. Generic SFT loading stays unchanged.
+    """
+    torch, bnb = stack['torch'], stack['bitsandbytes']
+    if (not torch.cuda.is_available() or torch.version.hip is not None
+            or getattr(bnb, '__version__', None) != '0.50.2'):
+        raise TrainingError('VFARL uniform probability execution requires CUDA and bitsandbytes==0.50.2')
+    operations = importlib.import_module('bitsandbytes.backends.cuda.ops')
+    source_path = Path(operations.__file__).resolve()
+    source = source_path.read_text()
+    if (not callable(getattr(operations, '_dequant_linear_fallback', None))
+            or type(getattr(operations, '_gemm_4bit_custom_max_m', None)) is not int
+            or 'if M > _gemm_4bit_custom_max_m:' not in source
+            or 'return _dequant_linear_fallback(' not in source):
+        raise TrainingError('Unsupported bitsandbytes 0.50.2 CUDA GEMM dispatch; cannot bind the uniform fallback')
+    previous = operations._gemm_4bit_custom_max_m
+    owned = getattr(operations, '_vfarl_uniform_probability_dispatch', None)
+    backend_sha = sha256_file(source_path)
+    if previous != 1536 and not (previous == 0 and owned == backend_sha):
+        raise TrainingError('Unexpected existing bitsandbytes CUDA threshold; refuse to overwrite another backend policy')
+    if any(p.device.type != 'cuda' for p in model.parameters()):
+        raise TrainingError('VFARL probability execution does not support CPU/disk model offload')
+    head = _install_fp32_blocked_head(model, torch)
+    torch.set_float32_matmul_precision('highest')
+    if torch.get_float32_matmul_precision() != 'highest' or torch.backends.cuda.matmul.allow_tf32:
+        raise TrainingError('VFARL FP32 probability projection requires highest precision with TF32 disabled')
+    try:
+        reduced = torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction
+    except AttributeError as exc:
+        raise TrainingError('This torch lacks the required BF16 matmul reduction control') from exc
+    if type(reduced) is not bool:
+        raise TrainingError('Unsupported BF16 matmul reduction control type')
+    torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
+    if torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction:
+        raise TrainingError('VFARL BF16 matmuls require full-precision accumulation')
+    operations._gemm_4bit_custom_max_m = 0
+    operations._vfarl_uniform_probability_dispatch = backend_sha
+    active = dict(profile=PROBABILITY_EXECUTION_PROFILE,
+        bitsandbytes_version=bnb.__version__, cuda_backend_sha256=backend_sha,
+        nf4_gemm_custom_max_m=operations._gemm_4bit_custom_max_m,
+        float32_matmul_precision=torch.get_float32_matmul_precision(),
+        allow_tf32=bool(torch.backends.cuda.matmul.allow_tf32),
+        allow_bf16_reduced_precision_reduction=bool(
+            torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction),
+        head={key: value for key, value in head.items() if key != 'patched_implementation'})
+    return dict(identity=active, identity_sha256=digest(active),
+                installation=dict(cuda_backend_path=str(source_path),
+                    previous_nf4_gemm_custom_max_m=previous,
+                    head_implementation_boundary=head['patched_implementation']))
 
 
 def read_config(path):
@@ -47,7 +181,7 @@ def read_config(path):
     if cfg['base_family'] != 'gemma-4-31b-it-qat-q4_0-unquantized':
         raise TrainingError('This experiment is restricted to the provenance-checked 31B QAT-derived cache')
     rl = dict(clip_epsilon=0.2, kl_beta=0.02, logprob_chunk_size=16,
-              max_old_logprob_error=0.08)
+              max_old_logprob_error=0.08, rollout_correction='none', rollout_is_max=2.0)
     if set(raw.get('rl', {})) - set(rl):
         raise TrainingError('Unsupported VFARL objective setting')
     rl.update(raw.get('rl', {}))
@@ -58,6 +192,10 @@ def read_config(path):
         raise TrainingError('Invalid PPO clipping or KL coefficient')
     if not isinstance(rl['logprob_chunk_size'], int) or rl['logprob_chunk_size'] < 1:
         raise TrainingError('logprob_chunk_size must be positive')
+    if (rl['rollout_correction'] not in ('none','sequence_tis')
+            or type(rl['rollout_is_max']) not in (int,float)
+            or not math.isfinite(rl['rollout_is_max']) or rl['rollout_is_max'] < 1):
+        raise TrainingError('Unsupported rollout correction or invalid sequence IS cap')
     return cfg, rl
 
 
@@ -73,7 +211,9 @@ def identities(model, tokenizer, info, cfg):
                      tokenizer_sha256=tokenizer_fingerprint(tokenizer),
                      template_sha256=hashlib.sha256(tokenizer.chat_template.encode()).hexdigest(),
                      tool_schema_sha256=sha256_file(Path(cfg['tool_schema_path'])),
-                     reference='frozen-NF4-base-equivalent-to-zero-initialized-LoRA')
+                     reference='frozen-NF4-base-equivalent-to-zero-initialized-LoRA',
+                     probability_execution_sha256=digest(PROBABILITY_EXECUTION_PROFILE),
+                     probability_runtime_sha256=info['probability_execution']['identity_sha256'])
     policy = dict(reference, adapter_sha256=trainable_hash(model),
                   temperature=1.0, top_p=1.0, top_k=0, dropout=0.0)
     return dict(policy_id=digest(policy), reference_id=digest(reference),
@@ -254,6 +394,47 @@ def cached_selected_logprobs(base, input_ids, selected_mask, *,
     return torch.cat(pieces)
 
 
+def cached_teacher_forced_logprobs(model, prompt_ids, completion_token_ids, loss_mask, *,
+                                  prefill_chunk_size=PREFILL_CHUNK_SIZE):
+    """Score actual next tokens using the sampler's exact forward schedule.
+
+    The prompt is read in the same 256-token chunks as generation. Completion
+    tokens then use one-token KV forwards and the native last-position head,
+    including every forced control in the prefix. No token is sampled here.
+    Return one log probability per completion position, zero for mask=0.
+    """
+    import torch
+    if (torch.is_grad_enabled() or prompt_ids.ndim != 2 or prompt_ids.shape[0] != 1
+            or not prompt_ids.shape[1] or not completion_token_ids
+            or len(completion_token_ids) != len(loss_mask)
+            or any(type(token) is not int or token < 0 for token in completion_token_ids)
+            or any(type(keep) is not int or keep not in (0, 1) for keep in loss_mask)):
+        raise TrainingError('Teacher-forced cached scoring needs one real prefix, completion/mask and no gradients')
+    next_logits, past = cached_prefill(model, prompt_ids, chunk_size=prefill_chunk_size)
+    values = []
+    for index, (token, keep) in enumerate(zip(completion_token_ids, loss_mask)):
+        if index:
+            current = torch.tensor([[completion_token_ids[index - 1]]], dtype=torch.long,
+                                   device=prompt_ids.device)
+            attention = torch.ones((1, prompt_ids.shape[1] + index), dtype=torch.long,
+                                   device=prompt_ids.device)
+            result = model(input_ids=current, attention_mask=attention,
+                           past_key_values=past, use_cache=True, logits_to_keep=1,
+                           return_dict=True)
+            past = result.past_key_values
+            if past is None:
+                raise TrainingError('Teacher-forced scoring requested use_cache=True but returned no KV cache')
+            next_logits = result.logits[:, -1, :]
+            del result, current, attention
+        logits = next_logits[0].float()
+        del next_logits
+        logprobs = torch.log_softmax(logits, dim=-1)
+        values.append(logprobs[token].clone() if keep else logprobs.new_zeros(()))
+        del logits, logprobs
+    del past
+    return torch.stack(values)
+
+
 def install_logprob_forward(model, chunk_size=16):
     """Route selected-token forwards through PEFT and the outer FSDP hooks."""
     base = model.get_base_model()
@@ -293,6 +474,7 @@ class NF4Policy:
                      if inference_device_count == 2 else {})
         self.model, self.tokenizer, self.device, self.info = single.load_model_and_tokenizer(
             self.cfg, self.stack, resume=adapter_run, adapter_init_seed=seed, **placement)
+        self.info['probability_execution'] = install_probability_execution(self.model, self.stack)
         self.device = self.model.get_input_embeddings().weight.device
         self.cuda_devices = ([torch.device('cuda', index) for index in range(2)]
                              if inference_device_count == 2 else [self.device])
@@ -301,7 +483,10 @@ class NF4Policy:
             device_map=(self.info.get('inference_placement', {}).get('device_map')
                         or {'': str(self.device)}),
             max_memory=placement.get('inference_max_memory'),
-            adapter_initialization=self.info['adapter_initialization'])
+            adapter_initialization=self.info['adapter_initialization'],
+            probability_execution_profile=PROBABILITY_EXECUTION_PROFILE,
+            probability_execution_sha256=digest(PROBABILITY_EXECUTION_PROFILE),
+            probability_runtime=self.info['probability_execution'])
         if self.info.get('nf4_cache') is None:
             raise TrainingError('VFARL sampling requires the same validated cache as training')
         bind_template(self.tokenizer, self.cfg)
@@ -330,9 +515,70 @@ class NF4Policy:
             raise TrainingError('Expected one flat sequence of exact prompt token IDs')
         return ids
 
-    def sample(self, prompt_token_ids, *, max_new_tokens, seed,
-               thinking_budget=1024, stop_token_ids=None):
+    def _score_record(self, prompt_token_ids, completion_token_ids, loss_mask, *,
+                      frozen_reference=False, cached_reference=False):
         torch = self.torch
+        prompt, completion, mask = (list(prompt_token_ids), list(completion_token_ids),
+                                    list(loss_mask))
+        if (not prompt or not completion or len(completion) != len(mask)
+                or any(type(token) is not int or token < 0 for token in prompt + completion)
+                or any(type(keep) is not int or keep not in (0, 1) for keep in mask)
+                or len(prompt) + len(completion) > self.cfg['max_sequence_length']):
+            raise TrainingError('Invalid exact-token teacher-forced sequence or full context exceeds the run limit')
+        if cached_reference and not frozen_reference:
+            raise TrainingError('The legacy cached comparison is restricted to the frozen reference')
+        started = time.monotonic()
+        for device in self.cuda_devices:
+            torch.cuda.reset_peak_memory_stats(device)
+        self.model.eval()
+        with torch.inference_mode(), torch.autocast('cuda', dtype=torch.bfloat16):
+            with frozen_base_reference(self.model) if frozen_reference else nullcontext():
+                if cached_reference:
+                    ids = torch.tensor([prompt + completion], dtype=torch.long, device=self.device)
+                    selected = torch.tensor([[0] * len(prompt) + mask], dtype=torch.bool,
+                                            device=self.device)
+                    selected_values = cached_selected_logprobs(self.model.get_base_model(), ids,
+                        selected, projection_chunk_size=self.rl['logprob_chunk_size'])
+                    values, cursor = [], 0
+                    for keep in mask:
+                        values.append(float(selected_values[cursor].item()) if keep else 0.0)
+                        cursor += keep
+                    del ids, selected, selected_values
+                else:
+                    ids = torch.tensor([prompt], dtype=torch.long, device=self.device)
+                    scored = cached_teacher_forced_logprobs(self.model, ids, completion, mask)
+                    values = scored.float().cpu().tolist()
+                    del ids, scored
+            for device in self.cuda_devices:
+                torch.cuda.synchronize(device)
+        memory = [dict(device=str(device),
+                       peak_allocated_bytes=torch.cuda.max_memory_allocated(device),
+                       peak_reserved_bytes=torch.cuda.max_memory_reserved(device))
+                  for device in self.cuda_devices]
+        return dict(prompt_token_ids=prompt, completion_token_ids=completion,
+                    loss_mask=mask, logprobs=values,
+                    scoring=('legacy-cached-256-backbone-chunks-selected-head-chunks'
+                             if cached_reference else 'sampler-style-teacher-forced'),
+                    frozen_reference=frozen_reference,
+                    probability_execution_sha256=digest(PROBABILITY_EXECUTION_PROFILE),
+                    execution=self.execution, memory_by_device=memory,
+                    seconds=time.monotonic() - started, **self.identity)
+
+    def score_teacher_forced(self, prompt_token_ids, completion_token_ids, loss_mask, *,
+                            frozen_reference=False):
+        return self._score_record(prompt_token_ids, completion_token_ids, loss_mask,
+                                  frozen_reference=frozen_reference)
+
+    def score_cached_reference(self, prompt_token_ids, completion_token_ids, loss_mask):
+        """Keep the former reference schedule available for explicit diagnostics."""
+        return self._score_record(prompt_token_ids, completion_token_ids, loss_mask,
+                                  frozen_reference=True, cached_reference=True)
+
+    def sample(self, prompt_token_ids, *, max_new_tokens, seed,
+               thinking_budget=1024, stop_token_ids=None, compute_reference=True):
+        torch = self.torch
+        if type(compute_reference) is not bool:
+            raise TrainingError('compute_reference must explicitly be True or False')
         prompt = list(prompt_token_ids)
         if not prompt or max_new_tokens < 1 or thinking_budget < 1:
             raise TrainingError('Nonempty prompt and positive generation/thinking budgets required')
@@ -392,16 +638,15 @@ class NF4Policy:
                     reason = 'tool_calls' if token == self.tool_close else 'stop'
                     break
             del past
-            # A separate, actual reference forward, not a copy of behavior data.
-            ids = torch.tensor([prompt + generated], device=self.device, dtype=torch.long)
-            selected = torch.tensor([[0] * len(prompt) + mask], device=self.device, dtype=torch.bool)
-            with frozen_base_reference(self.model):
-                values = cached_selected_logprobs(self.model.get_base_model(), ids, selected,
-                    projection_chunk_size=self.rl['logprob_chunk_size'])
-            reference, cursor = [], 0
-            for chosen in mask:
-                reference.append(float(values[cursor].item()) if chosen else 0.0)
-                cursor += chosen
+            reference = None
+            if compute_reference:
+                # Only focal actions need a separate reference forward. A
+                # skipped score is absent, never behavior data or fake zeros.
+                ids = torch.tensor([prompt], device=self.device, dtype=torch.long)
+                with frozen_base_reference(self.model):
+                    values = cached_teacher_forced_logprobs(self.model, ids, generated, mask)
+                reference = values.float().cpu().tolist()
+                del ids, values
             for device in self.cuda_devices:
                 torch.cuda.synchronize(device)
         memory_by_device = [dict(device=str(device),
@@ -417,10 +662,16 @@ class NF4Policy:
                     thought_tokens=thought_count, forced_control_tokens=mask.count(0),
                     sampling=dict(temperature=1.0, top_p=1.0, top_k=0),
                     prefill_chunk_size=PREFILL_CHUNK_SIZE,
-                    reference_scoring='actual-cached-chunked-forward',
-                    reference_forward_performed=True, seconds=time.monotonic() - started,
+                    reference_scoring=('actual-independent-sampler-style-teacher-forced'
+                        if compute_reference else 'not-computed-nonfocal-action'),
+                    probability_execution_sha256=digest(PROBABILITY_EXECUTION_PROFILE),
+                    reference_forward_performed=compute_reference,
+                    seconds=time.monotonic() - started,
                     prompt_tokens=len(prompt), completion_tokens=len(generated),
-                    execution=self.execution, sampling_device=str(generator.device),
+                    execution=dict(self.execution,
+                        reference_scope=('current-sampled-focal-action'
+                            if compute_reference else 'not-computed-nonfocal-action')),
+                    sampling_device=str(generator.device),
                     memory_by_device=memory_by_device,
                     peak_memory_scope='maximum_of_model_cuda_devices',
                     peak_allocated_bytes=max(row['peak_allocated_bytes'] for row in memory_by_device),

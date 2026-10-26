@@ -6,11 +6,33 @@
 
 ## 最新已核实状态
 
-- **第四轮已完成 99 道真实任务：6 成功、93 失败、0 unknown。** 结论来自最终落盘的完整验收，详见 [第四轮结果与原始证据](results-v4.md)。两个采样器各跨两张 L4，已验证本轮 4K/r32/BF16 采样容量；四卡反向和 8K 容量仍未实测。
+北京时间 **12:19:12** 已实际提交主 [focal-recovery-16k/1](https://www.kaggle.com/code/qingyu1232/vfarl-l4x4-focal-recovery-16k)，[回执](kaggle/train-16k-v1-push.json)。冻结源码 **`a69c8a16ec92ce135de726a193b6600d81d93165c54e9a99579b8aa56d91f22b`**，显式 16K YAML SHA `0edfb4364395797314cf64cb9fb016120582ff12e619c8ca7df3c99362c7abe8`；固定八题、最多五个真实反馈后状态、每状态原动作重放＋两条新采样，开启上述 sequence_tis/cap2。平台回读 private/GPU=true、Internet=false、source SHA 一致，初始状态 QUEUED，配额起点 13.39h 已用 / 16.61h 剩余。[启动回读](kaggle/train-16k-evidence-v1/startup-readback.json)。提交不等于完成采样、16K 容量通过或参数更新。
+
+分叉选择已完成源代码修复及两次独立只读审阅：只在真实错误响应已序列化进入模型历史、且仍有恢复预算时保存状态。最终成功与失败的原轨迹均可提供这种状态，原轨迹终奖照实保存；不会用之后才发生的动作错误标记之前的前缀。尚待新模型轨迹验证修复后的状态产率。
+
+长动作评分额外修复了 scalar view 的存储保留：已计算出的选中 logprob 只复制标量，避免为每 token 持有整个词表的 FP32 log-softmax。一次性实际 Torch CPU 核对中，每 token 的保留 storage 从 1,048,576 bytes 降至 4 bytes，值逐位一致、mask/RNG 不变。这不更改 forward、概率计算或正在运行的 e1 冻结源码；新主臂源会包含它，16K GPU 容量仍需实测。
+
+第二次校准后已决定主臂显式启用 `sequence_tis`：保留真实 actor old，额外实际计算并冻结 learner old，PPO ratio 使用 current/learner old，整条 focal action 的 detached 权重为 learner old/actor old，使用此前预设上限 2。同一权重乘策略与 sampled k3 项，明确仅为截断的 focal surrogate，不作精确 current-policy KL 或完整任务无偏梯度的声明。loss dtype 下的权重若归零则各 rank 共同退出；实际更新证据按完整 action 留存 raw/used ESS。[决策、公式及来源](16k/probability-decision.json)已冻结，尚未获得新奖励或参数更新。
+
+北京时间 **11:22:57** 启动的第二次零更新校准 [aligned-16k/1](https://www.kaggle.com/code/qingyu1232/vfarl-l4x4-probability-aligned-16k)已实际 COMPLETE，[回执](kaggle/calibration-16k-v2-push.json)，冻结源码 `f1ece93424001e7af7e9b07c8b44ed71b734e7f62449b3d9f463a7ae96d05e03`。它采用统一 NF4 fallback、禁缩减精度累加、保留 BF16 tied 参数的分块 FP32 概率 head；三条真实源记录、原 old/参考数组均不改。按 source/行 SHA、精确 IDs 与 mask 对齐新 actor 和新 FSDP 后，最大差为 **0.061455 / 0.104961 / 0.852548**，MAE 为 0.005006 / 0.004132 / 0.002808；同端 repeat、grad/no-grad、reference/current 均差 0。跨端差异仍存在，因此不放宽原阈值，而使用明确的 rollout correction；也不能覆写 old 强行使 ratio=1。[完整实际结果](kaggle/calibration-16k-evidence-v2/result-summary.json)。
+
+e1 三条完整动作的未截断 importance weight 为 **0.96051 / 1.03878 / 4.31642**，cap2 后为 0.96051 / 1.03878 / 2，action ESS 从 1.933/3 变为 2.665/3；这是零奖励校准的描述，不能冒称训练样本覆盖或收益。actor 用时 2751.53 秒，四卡实际零损失反向 134.21 秒，optimizer 0、actor 与四 rank LoRA 哈希均未变。此次配额实际消耗 **1.76h**，累计已用 **13.39h**、剩余 **16.61h**。实际序列仍最长 3767 tokens，没有证明 16K 容量；不会再追加第三次精度校准。
+
+概率校准/1 已实际 COMPLETE：三条 actor 重评分、重复评分、独立参考与原 old 均逐 token 差 0；但四卡 FSDP 与同权重 actor 的最大 logprob 差仍为 0.2946 / 0.1099 / 2.1216，FSDP 自身 repeat、grad/no-grad 与 reference/current 均差 0。这表明残留是确定性的跨执行路径差异，不是本次优化或权重漂移。[完整校准结果](kaggle/calibration-16k-evidence-v1/result-summary.json)。实际 optimizer 为 0，actor 与四 rank LoRA 哈希均未变化；本次消耗 0.85h，累计 11.63h、剩余18.37h。
+
+据此暂停主16K采样提交，继续对齐主要数值路径：限定已核版本 bitsandbytes 0.50.2 的 CUDA NF4 统一走 dequant-linear，禁用BF16缩减精度累加；保留 tied BF16 参数，以分词表块 FP32 head/softcap 计算概率。新的执行profile与实际backend SHA将进入策略身份；不直接放宽0.08、不改写旧行为概率。此候选尚待第二次真实零更新校准，不冒称已修复四卡偏差。
+
+2026-10-26 新授权：以 **16K 优先**推进完整闭环，只有实际容量/序列计算失败才退 8K；继续 qingyu1232 L4×4。先修已见工具反馈之后的分叉状态选择，以及概率执行路径偏差。主任务批次为未采的 DVC 加原 4K 中按冻结全局顺序最先出现的七道真实上下文耗尽失败题，选择不读取分支成绩；计划见 [16K 固定清单](16k/arm-plan.json)。
+
+北京时间 **10:39:42** 已提交 [概率校准/1](https://www.kaggle.com/code/qingyu1232/vfarl-l4x4-probability-calibration-16k)，[实际回执](kaggle/calibration-16k-v1-push.json)。固定源码 `e0da8c31d7db300cff0f3c06f8c3e54c475b29b487fc8c487b3076c2887fa930`、context 配置 16384，起点配额 10.78h 已用 / 19.22h 剩余。这次只对三条实际原动作进行同路径评分、独立参考及四 rank FSDP 零优化校准；原 token、mask、行为概率、整文件/行 SHA 均冻结。没有新任务采样或 optimizer，本批输入实际最长约 4K，不能以“配置16K”冒称16K容量已通过。
+
+当前同路径 reference 已用独立的 256-token prefill＋逐 token decode/head 前向代替旧的 256-block参考评分，新的执行 profile 纳入策略身份；仍保留旧概率原件与原阈值。分叉仅允许真实工具反馈已经进入前缀且有恢复预算的状态，前缀已见错误与候选动作后才出现的错误分别记录。实际 31B 数值结果和新状态分叉产率仍待云端实测。
+
+- **第四轮已完成 99 道真实任务：6 成功、93 失败、0 unknown。** 结论来自最终落盘的完整验收，详见 [第四轮结果与原始证据](results-v4.md)。两个采样器各跨两张 L4，已验证本轮 4K/r32/BF16 采样容量；后续概率校准已完成实际四卡零损失反向，但奖励更新及 8K/16K 容量仍未实测。
 - **五个同状态分叉组均为 `[0,0,0]`，实际 optimizer step 为 0。** 状态恢复、真实分支和完整验收已跑通，但没有可用于本次奖励更新的异奖组，尚未完成 VFARL 奖励学习闭环。
 - **CPU 环境：v4 清单累计 100/100 可用，DVC 尚未 GPU 采样。** 原始版本完整验收 reward 0、参考修复 reward 1 的跨批次证据保留；CPU 环境可用不计作模型成功，GPU 成功率的分母仍为 99。
 - **第四轮墙钟 16669.047 秒；实际配额本轮消耗 9.26h，累计已用 10.78h、剩余 19.22h。** 这是[完成后平台实际读取](kaggle/completed-v4-readback.json)，没有按卡数推算 GPU-hours。
-- **8K 对照、DVC 补题、无 optimizer 的概率校准均尚未运行。** 代码准备与已完成实验结果分开记录。
+- **8K 对照与 DVC 模型补题尚未运行。** 两次无 optimizer 的概率校准均已完成；其短序列结果不作 16K 容量证据。
 
 下文保留所有阶段的原始过程记录；其中“正在运行／待结果”等表述是当时事实，最终状态以本节及 [第四轮结果](results-v4.md)为准。
 
