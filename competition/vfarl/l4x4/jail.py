@@ -7,6 +7,7 @@ The launcher is a fresh ``python -I -S`` process, not a preexec_fn in CUDA Pytho
 from __future__ import annotations
 
 import ast
+import bisect
 import ctypes
 import ctypes.util
 import errno
@@ -32,6 +33,11 @@ _RUNTIME_CACHE = {}
 _FILE_CACHE = {}
 _HIDDEN = []
 _PROBE = False
+_PUBLIC_CA_ROOTS = tuple(Path(value) for value in (
+    "/etc/ssl", "/usr/lib/ssl", "/etc/pki", "/etc/ca-certificates",
+    "/usr/share/ca-certificates", "/usr/local/share/ca-certificates",
+    "/var/lib/ca-certificates"))
+_TASK_CACHE_ALIASES = (("/var/tmp/dvc", "tmp/dvc-site-cache"),)
 _COMMANDS = "bash sh git cat head tail sed awk grep find xargs ls stat wc sort uniq cut tr diff patch tar gzip bzip2 xz unzip cp mv rm mkdir rmdir touch chmod ln pwd env printenv id date sleep timeout kill tee which realpath readlink basename dirname".split()
 
 
@@ -128,12 +134,166 @@ def _external_profiles(root):
     return sorted(profiles)
 
 
+def _task_native_elf(root):
+    """Identify copied venv native modules without moving them out of task state."""
+    files, records = [], []
+    for site in sorted(root.glob("venv/lib/python*/site-packages")):
+        for directory, dirs, names in os.walk(site, followlinks=False):
+            dirs[:] = sorted(name for name in dirs if name not in {"__pycache__", ".git"})
+            for name in sorted(names):
+                path = Path(directory) / name
+                if not path.is_file():
+                    continue
+                with path.open("rb") as stream:
+                    if stream.read(4) != b"\x7fELF":
+                        continue
+                files.append(path.resolve(strict=True))
+                records.append({"path": str(path.relative_to(root)), "sha256": sha(path),
+                                "bytes": path.stat().st_size})
+    records.sort(key=lambda row: row["path"])
+    fingerprint = hashlib.sha256(json.dumps(records, sort_keys=True).encode()).hexdigest()
+    return set(files), records, fingerprint
+
+
+def _system_public_ca(defaults):
+    """Package only effective system-default public PEM trust material."""
+    files, aliases, directories, skipped = {}, {}, set(), []
+    directory_aliases = {}
+
+    def public_path(path):
+        if (any(part.lower() in {"private", "privatekeys", "private-keys"} for part in path.parts)
+                or path.suffix.lower() in {".key", ".p12", ".pfx"}
+                or not any(path == root or path.is_relative_to(root) for root in _PUBLIC_CA_ROOTS)):
+            raise ValueError("OpenSSL trust source is not an allowed public system CA path: " + str(path))
+
+    def certificate(path, required=False):
+        logical = Path(os.path.abspath(path))
+        actual = logical.resolve(strict=True)
+        public_path(logical)
+        public_path(actual)
+        data = actual.read_bytes()
+        if b"PRIVATE KEY" in data:
+            raise ValueError("Private key material must never enter the runtime CA bundle: " + str(logical))
+        if not any(marker in data for marker in (b"-----BEGIN CERTIFICATE-----", b"-----BEGIN TRUSTED CERTIFICATE-----")):
+            if required:
+                raise ValueError("The effective system cafile is not public PEM certificate material: " + str(logical))
+            skipped.append(str(logical))
+            return False
+        files[str(actual)] = {"path": str(actual), "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
+        if logical != actual:
+            aliases[str(logical)] = str(actual)
+        return True
+
+    cafile, capath = defaults.get("cafile"), defaults.get("capath")
+    observed = {"cafile_exists": bool(cafile and Path(cafile).is_file()),
+                "capath_exists": bool(capath and Path(capath).is_dir())}
+    if cafile:
+        certificate(Path(cafile), required=True)
+    if capath:
+        logical = Path(os.path.abspath(capath))
+        actual = logical.resolve(strict=True)
+        public_path(logical)
+        public_path(actual)
+        admitted = 0
+        for entry in sorted(actual.iterdir(), key=lambda path: path.name):
+            # OpenSSL's hashed capath lookup uses files directly in this
+            # directory. Do not recurse into private or unrelated subtrees.
+            if entry.is_file():
+                admitted += int(certificate(entry))
+        if not admitted:
+            raise ValueError("The effective capath contains no supported public certificates; an empty directory is not a repair")
+        directories.add(str(actual))
+        if logical != actual:
+            aliases[str(logical)] = str(actual)
+            directory_aliases[str(logical)] = str(actual)
+    # A cafile may itself be below a directory alias used by capath. That
+    # logical name is already resolved by the directory alias; do not create
+    # another child symlink through it before chroot, where an absolute target
+    # would otherwise be interpreted in the host filesystem.
+    for parent, target in directory_aliases.items():
+        parent_path = Path(parent)
+        for name in list(aliases):
+            if name == parent or not Path(name).is_relative_to(parent_path):
+                continue
+            mapped = str(Path(target) / Path(name).relative_to(parent_path))
+            if mapped != aliases[name] and aliases.get(mapped) != aliases[name]:
+                raise ValueError("Unsupported nested public CA alias: " + name)
+            del aliases[name]
+    return {"defaults": defaults, "observed_on_host": observed,
+            "query_environment": "SSL_CERT_FILE and SSL_CERT_DIR removed, matching the official sanitized task shell; no certificate override is injected",
+            "files": [files[key] for key in sorted(files)],
+            "aliases": [{"path": key, "target": aliases[key]} for key in sorted(aliases)],
+            "directories": sorted(directories), "skipped_non_certificate_files": skipped}
+
+
+def _validate_runtime_layout(records):
+    paths = [row["path"] for row in records]
+    if (len(set(paths)) != len(paths) or any(not os.path.isabs(path) or os.path.normpath(path) != path
+                                           for path in paths)):
+        raise ValueError("Runtime paths must be unique normalized absolute paths")
+    ordered = sorted(paths)
+    for alias in (row for row in records if row.get("kind") == "symlink"):
+        prefix = alias["path"].rstrip("/") + "/"
+        index = bisect.bisect_left(ordered, prefix)
+        if index < len(ordered) and ordered[index].startswith(prefix):
+            raise ValueError("Runtime entries must not be written through an absolute directory alias: " + alias["path"])
+
+
+def _materialize_runtime(runtime, jail):
+    """Populate a fresh jail without traversing any previously created alias."""
+    _validate_runtime_layout(runtime["files"])
+    if any(jail.iterdir()):
+        raise ValueError("Runtime materialization requires a fresh empty jail")
+    for row in runtime["files"]:
+        destination = jail / row["path"].lstrip("/")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if row.get("kind") == "symlink":
+            destination.symlink_to(row["target"])
+        else:
+            _link_or_copy(Path(runtime["cache"]) / row["path"].lstrip("/"), destination)
+
+
+def _install_task_cache_aliases(jail, logical_root, physical_root):
+    """Expose the required DVC site cache only inside this task's saved root."""
+    aliases = []
+    for virtual, relative in _TASK_CACHE_ALIASES:
+        parent = jail
+        for part in Path(virtual).parts[1:-1]:
+            parent /= part
+            if parent.is_symlink():
+                raise ValueError("A task-cache alias parent must not traverse a runtime symlink")
+            parent.mkdir(mode=0o755, exist_ok=True)
+            details = parent.lstat()
+            if not stat.S_ISDIR(details.st_mode) or details.st_uid != os.geteuid():
+                raise ValueError("Task-cache alias parents must belong to the jail supervisor")
+            parent.chmod(0o755)
+        destination = jail / virtual.lstrip("/")
+        if destination.exists() or destination.is_symlink():
+            raise ValueError("The task-cache alias conflicts with an existing runtime path")
+        target = physical_root / relative
+        if target.parent.resolve(strict=True) != target.parent or target.is_symlink():
+            raise ValueError("The task-cache target must remain inside the real task root")
+        target.mkdir(mode=0o700, exist_ok=True)
+        if not target.resolve(strict=True).is_relative_to(physical_root.resolve(strict=True)):
+            raise ValueError("The task-cache target escapes the snapshotted task root")
+        target.chmod(0o700)
+        logical_target = str(logical_root / relative)
+        destination.symlink_to(logical_target, target_is_directory=True)
+        aliases.append({"path": virtual, "target": logical_target,
+                        "task_relative_target": relative, "writable_scope": "task_root"})
+    return aliases
+
+
 def _runtime(root):
     python = root / "venv/bin/python"
     if not python.exists():
         python = root / "venv/bin/python3"
+    metadata_env = {key: value for key, value in os.environ.items()
+                    if key not in {"SSL_CERT_FILE", "SSL_CERT_DIR"}}
     metadata = json.loads(subprocess.check_output([str(python), "-I", "-S", "-c",
-        "import json,sys,sysconfig; print(json.dumps({'executable':sys.executable,'stdlib':sysconfig.get_path('stdlib')}))"], text=True))
+        "import json,sys,sysconfig,ssl; print(json.dumps({'executable':sys.executable,'stdlib':sysconfig.get_path('stdlib'),'ssl_default_verify_paths':ssl.get_default_verify_paths()._asdict()}))"], text=True, env=metadata_env))
+    system_ca = _system_public_ca(metadata["ssl_default_verify_paths"])
+    system_ca_sha = hashlib.sha256(json.dumps(system_ca, sort_keys=True).encode()).hexdigest()
     profiles = _external_profiles(root)
     stdlib = Path(metadata["stdlib"]).resolve()
     executable = python.resolve(strict=True)
@@ -156,7 +316,28 @@ def _runtime(root):
             current = target
         if current.resolve(strict=True) != executable:
             raise ValueError("Task Python aliases do not share the declared base interpreter")
-    key = (str(executable), str(stdlib), tuple(map(str, profiles)), tuple(map(str, _HIDDEN)))
+    dynamic = subprocess.run(["readelf", "-d", str(executable)], capture_output=True, text=True, timeout=20)
+    if dynamic.returncode != 0:
+        raise RuntimeError("Cannot identify the actual Python ELF dependencies: " + dynamic.stderr[-1000:])
+    origin_needed = [name for name in re.findall(r"\(NEEDED\).*?\[([^\]]+)\]", dynamic.stdout)
+                     if "$ORIGIN" in name or "${ORIGIN}" in name]
+    origin_fallback = None
+    if origin_needed:
+        origin = str(executable.parent)
+        if any(character in origin for character in ("$", ":", ";", "\n", "\0")):
+            raise ValueError("Python ELF origin must be a literal absolute directory")
+        libraries = []
+        for name in origin_needed:
+            expanded = name.replace("${ORIGIN}", origin).replace("$ORIGIN", origin)
+            if "$" in expanded or not os.path.isabs(expanded):
+                raise ValueError("Unsupported dynamic token in the Python ELF dependency: " + name)
+            path = Path(os.path.abspath(expanded))
+            libraries.append({"needed": name, "path": str(path), "sha256": sha(path)})
+        origin_fallback = {"path": origin, "interpreter_sha256": sha(executable), "libraries": libraries,
+            "scope": "Main task Python has origin-bearing DT_NEEDED. With no /proc, set its actual base origin only in the isolated child. Other main ELF programs with different origin requirements are not proven compatible."}
+    mutable_elf, mutable_elf_records, mutable_elf_sha = _task_native_elf(root)
+    origin_sha = hashlib.sha256(json.dumps(origin_fallback, sort_keys=True).encode()).hexdigest()
+    key = (str(executable), str(stdlib), tuple(map(str, profiles)), tuple(map(str, _HIDDEN)), mutable_elf_sha, origin_sha, system_ca_sha)
     if key in _RUNTIME_CACHE:
         return _RUNTIME_CACHE[key]
     sources = {}
@@ -192,7 +373,16 @@ def _runtime(root):
     tree(stdlib)
     for profile in profiles:
         tree(profile)
+    # A copied module stays in the writable, snapshotted venv. Only an explicit
+    # symlink target outside that tree belongs to the immutable runtime.
+    for path in mutable_elf:
+        if not path.is_relative_to(root):
+            add(path)
     add(executable)
+    for certificate in system_ca["files"]:
+        add(Path(certificate["path"]))
+    for library in (origin_fallback or {}).get("libraries", []):
+        add(Path(library["path"]))
     for name in _COMMANDS:
         path = shutil.which(name)
         if path:
@@ -211,7 +401,7 @@ def _runtime(root):
     # extension modules. No host library directory is granted wholesale.
     inspected = set()
     while True:
-        pending = set(sources.values()) - inspected
+        pending = (set(sources.values()) | mutable_elf) - inspected
         if not pending:
             break
         for path in pending:
@@ -223,7 +413,14 @@ def _runtime(root):
             for match in re.finditer(r"(?:=>\s*)?(/[^\s()]+)", result.stdout):
                 dependency = Path(match.group(1))
                 if dependency.is_file():
-                    add(dependency)
+                    actual = dependency.resolve()
+                    if actual.is_relative_to(root):
+                        if actual not in mutable_elf:
+                            raise ValueError("A native task module depends on a mutable ELF outside the fingerprinted venv: " + str(actual))
+                        # Its transitive dependencies will be inspected, but
+                        # its own bytes remain in task state, never readonly.
+                    else:
+                        add(dependency)
     cache = Path(tempfile.mkdtemp(prefix="vfarl-readonly-runtime-"))
     records = []
     for destination, source in sorted(sources.items()):
@@ -244,9 +441,27 @@ def _runtime(root):
     for alias in ("/usr/bin/python3", "/usr/bin/python"):
         if alias != str(executable):
             records.append({"path": alias, "kind": "symlink", "target": str(executable)})
+    destinations = {row["path"] for row in records}
+    for alias in system_ca["aliases"]:
+        if alias["path"] in destinations:
+            raise ValueError("A CA alias conflicts with another declared runtime file: " + alias["path"])
+        records.append({"path": alias["path"], "kind": "symlink", "target": alias["target"]})
+        destinations.add(alias["path"])
+    _validate_runtime_layout(records)
     result = {"cache": str(cache), "files": records,
-              "manifest_sha256": hashlib.sha256(json.dumps(records, sort_keys=True).encode()).hexdigest(),
+              "manifest_sha256": hashlib.sha256(json.dumps({"readonly_files": records,
+                  "mutable_native_elf_inputs": mutable_elf_records,
+                  "elf_origin_fallback": origin_fallback, "system_public_ca": system_ca,
+                  "task_cache_aliases": _TASK_CACHE_ALIASES}, sort_keys=True).encode()).hexdigest(),
+              "system_public_ca": {"manifest_sha256": system_ca_sha, "defaults": system_ca["defaults"],
+                  "observed_on_host": system_ca["observed_on_host"], "certificate_file_count": len(system_ca["files"]),
+                  "alias_count": len(system_ca["aliases"]), "directories": system_ca["directories"]},
+              "elf_origin_fallback": origin_fallback,
+              "mutable_native_elf_manifest_sha256": mutable_elf_sha,
+              "mutable_native_elf_count": len(mutable_elf_records),
               "python_executable": str(executable), "dependency_profiles": list(map(str, profiles))}
+    print(json.dumps({"phase": "jail_system_public_ca", "python_executable": str(executable),
+                      **result["system_public_ca"]}, sort_keys=True), flush=True)
     _RUNTIME_CACHE[key] = result
     return result
 
@@ -263,13 +478,7 @@ def ensure(root):
     jail = Path(tempfile.mkdtemp(prefix="vfarl-task-jail-", dir=root.parent))
     _BUILDING[str(root)] = jail
     jail.chmod(0o755)
-    for row in runtime["files"]:
-        destination = jail / row["path"].lstrip("/")
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        if row.get("kind") == "symlink":
-            destination.symlink_to(row["target"])
-        else:
-            _link_or_copy(Path(runtime["cache"]) / row["path"].lstrip("/"), destination)
+    _materialize_runtime(runtime, jail)
     # The original absolute task path exists inside the chroot. Host-side tools
     # retain their original paths through this private symlink; no command-text
     # or Python .pth rewriting is needed for the ordinary official path mapping.
@@ -300,6 +509,7 @@ def ensure(root):
         root.rename(physical)
         root.symlink_to(physical, target_is_directory=True)
         (physical / "tmp" / "shm").mkdir(exist_ok=True)
+        task_cache_aliases = _install_task_cache_aliases(jail, root, physical)
         for directory, dirs, files in os.walk(physical, followlinks=False):
             for path in [Path(directory), *(Path(directory) / name for name in dirs + files)]:
                 details = path.lstat()
@@ -318,6 +528,11 @@ def ensure(root):
         raise
     info = {"logical_root": str(root), "physical_root": str(physical), "jail": str(jail), "uid": uid,
             "runtime_manifest_sha256": runtime["manifest_sha256"], "runtime_files": len(runtime["files"]),
+            "mutable_native_elf_manifest_sha256": runtime["mutable_native_elf_manifest_sha256"],
+            "mutable_native_elf_count": runtime["mutable_native_elf_count"],
+            "elf_origin_fallback": runtime["elf_origin_fallback"],
+            "system_public_ca": runtime["system_public_ca"],
+            "task_cache_aliases": task_cache_aliases,
             "runtime_cache": runtime["cache"], "python_executable": runtime["python_executable"],
             "dependency_profiles": runtime["dependency_profiles"], "successful_isolated_commands": 0,
             "quiescent": True, "launcher_sha256": sha(__file__)}
@@ -339,9 +554,8 @@ def execute(root, arguments, executor):
     os.close(receipt_fd)
     receipt = Path(receipt_name)
     call = dict(arguments)
-    env = dict(call["env"])
-    env.pop("LD_PRELOAD", None)
-    env.pop("LD_LIBRARY_PATH", None)
+    # No host loader override may affect the still-privileged launcher.
+    env = {key: value for key, value in call["env"].items() if not key.startswith("LD_")}
     env["TMPDIR"] = str(Path(info["logical_root"]) / "tmp")
     env["TMP"] = env["TMPDIR"]
     env["TEMP"] = env["TMPDIR"]
@@ -353,7 +567,8 @@ def execute(root, arguments, executor):
     env = {key: re.sub(pattern, info["logical_root"], value) for key, value in env.items()}
     cwd = re.sub(pattern, info["logical_root"], str(call["cwd"]))
     call["command"] = [sys.executable, "-I", "-S", str(Path(__file__).resolve()), "--launch",
-                       info["jail"], str(info["uid"]), cwd, str(receipt), *command]
+                       info["jail"], str(info["uid"]), cwd, str(receipt),
+                       json.dumps((info["elf_origin_fallback"] or {}).get("path")), *command]
     call["env"] = env
     info["quiescent"] = False
     try:
@@ -366,6 +581,7 @@ def execute(root, arguments, executor):
         receipt.unlink(missing_ok=True)
     if observed != {"uid": info["uid"], "gid": info["uid"], "capabilities_zero": True,
                     "bounding_and_ambient_zero": True,
+                    "elf_origin_path": (info["elf_origin_fallback"] or {}).get("path"),
                     "no_new_privs": True, "seccomp_loaded": True, "host_fds_closed": True}:
         raise RuntimeError("The isolated launcher did not provide a valid privilege/filter receipt")
     info["successful_isolated_commands"] += 1
@@ -377,8 +593,13 @@ def identity(root):
     if not info:
         return None
     quiesce(info)
+    for alias in info["task_cache_aliases"]:
+        path = Path(info["jail"]) / alias["path"].lstrip("/")
+        if not path.is_symlink() or os.readlink(path) != alias["target"]:
+            raise RuntimeError("The declared task-private cache alias changed")
     return {key: info[key] for key in ("logical_root", "physical_root", "uid", "runtime_manifest_sha256",
-            "runtime_files", "dependency_profiles", "launcher_sha256")}
+            "runtime_files", "dependency_profiles", "launcher_sha256",
+            "mutable_native_elf_manifest_sha256", "mutable_native_elf_count", "elf_origin_fallback", "system_public_ca", "task_cache_aliases")}
 
 
 def complete(root):
@@ -438,14 +659,15 @@ def configure(hidden_paths):
                 raise RuntimeError("chroot/filter/runtime/UID-cleanup probe failed: " + result.stderr[-3000:])
             _PROBE = True
             return {"effective_mode": "chroot", "probe_passed": True, "reason": "Actual chroot, privilege-drop, seccomp, gold exclusion, readonly-runtime and UID cleanup probe passed",
-                    "probe_uid": info["uid"], "runtime_files": info["runtime_files"], "launcher_sha256": sha(__file__)}
+                    "probe_uid": info["uid"], "runtime_files": info["runtime_files"],
+                    "system_public_ca": info["system_public_ca"], "launcher_sha256": sha(__file__)}
         except Exception as error:
             return {"effective_mode": "observable", "probe_passed": False, "reason": type(error).__name__ + ": " + str(error)}
         finally:
             cleanup(root)
 
 
-def _launch(jail, uid, cwd, receipt, command):
+def _launch(jail, uid, cwd, receipt, origin, command):
     libc = ctypes.CDLL(None, use_errno=True)
     # Avoid find_library(): it can invoke host helper commands using a PATH
     # that starts with the task venv while this launcher is still privileged.
@@ -522,15 +744,31 @@ def _launch(jail, uid, cwd, receipt, command):
         raise RuntimeError("The host rejected the additional seccomp filter")
     seccomp.seccomp_release(context)
     os.chdir(cwd)
+    env = {key: value for key, value in os.environ.items() if not key.startswith("LD_")}
+    if origin is not None:
+        if (not isinstance(origin, str) or not origin or not os.path.isabs(origin)
+                or os.path.normpath(origin) != origin or any(char in origin for char in ("$", ":", ";", "\n", "\0"))):
+            raise ValueError("Invalid declared ELF origin")
+        directory = Path(origin)
+        if directory.resolve(strict=True) != directory:
+            raise ValueError("Declared ELF origin must be the actual copied base directory")
+        for path in (directory, *directory.parents):
+            details = path.stat()
+            if not stat.S_ISDIR(details.st_mode) or details.st_uid != 0 or details.st_mode & 0o022:
+                raise ValueError("Declared ELF origin is not in the task-readonly runtime")
+        # This is deliberately after chroot, UID/capability drop and seccomp.
+        # LD_LIBRARY_PATH cannot resolve a DT_NEEDED containing $ORIGIN/slashes.
+        env["LD_ORIGIN_PATH"] = origin
     receipt_data = {"uid": os.getuid(), "gid": os.getgid(), "capabilities_zero": True,
                     "bounding_and_ambient_zero": True,
+                    "elf_origin_path": origin,
                     "no_new_privs": True, "seccomp_loaded": True, "host_fds_closed": True}
     os.write(fd, json.dumps(receipt_data).encode())
     os.close(fd)
-    os.execve(command[0], command, dict(os.environ))
+    os.execve(command[0], command, env)
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 7 or sys.argv[1] != "--launch":
+    if len(sys.argv) < 8 or sys.argv[1] != "--launch":
         raise SystemExit("This module is invoked by the VFARL task executor")
-    _launch(sys.argv[2], int(sys.argv[3]), sys.argv[4], sys.argv[5], sys.argv[6:])
+    _launch(sys.argv[2], int(sys.argv[3]), sys.argv[4], sys.argv[5], json.loads(sys.argv[6]), sys.argv[7:])

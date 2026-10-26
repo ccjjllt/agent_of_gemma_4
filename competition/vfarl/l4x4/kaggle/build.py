@@ -70,6 +70,7 @@ def build(out, selection_path):
             'site_packages_mode': historical.get('task_site_packages_mode') or 'pth',
             'source_console_scripts': ({'glom': 'glom.cli:console_main'} if instance.startswith('mahmoud__glom.')
                                        else {'dotenv': 'dotenv.__main__:cli'} if instance.startswith('theskumar__python-dotenv.')
+                                       else {'dvc': 'dvc.cli:main'} if instance.startswith('iterative__dvc.')
                                        else {}),
         }
         if instance.startswith('Instagram__MonkeyType.'):

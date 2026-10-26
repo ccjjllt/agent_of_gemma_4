@@ -20,6 +20,9 @@ from .encoding.gemma_tool_chat import tokenizer_fingerprint
 from .train_ddp import trainable_hash
 
 
+PREFILL_CHUNK_SIZE = 256
+
+
 def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
@@ -181,6 +184,76 @@ def selected_logprobs(base, input_ids, attention_mask, selected_mask, *, chunk_s
     return torch.cat(pieces)
 
 
+def cached_prefill(model, input_ids, *, chunk_size=PREFILL_CHUNK_SIZE):
+    """Read the entire unpadded prefix in bounded chunks and return its next logits.
+
+    Gemma's DynamicCache retains absolute positions and handles sliding/shared
+    KV state. Each chunk receives the attention mask for every token seen so
+    far; chunking changes computation scheduling, not the visible history.
+    """
+    import torch
+    if (torch.is_grad_enabled() or input_ids.ndim != 2 or input_ids.shape[0] != 1
+            or not input_ids.shape[1] or chunk_size < 1):
+        raise TrainingError('Cached prefill requires one nonempty prefix, no gradients and a positive chunk size')
+    past = None
+    for start in range(0, input_ids.shape[1], chunk_size):
+        end = min(start + chunk_size, input_ids.shape[1])
+        result = model(input_ids=input_ids[:, start:end],
+                       attention_mask=torch.ones((1, end), dtype=torch.long, device=input_ids.device),
+                       past_key_values=past, use_cache=True, logits_to_keep=1, return_dict=True)
+        past = result.past_key_values
+        if past is None:
+            raise TrainingError('Chunked prefill requested use_cache=True but returned no KV cache')
+        if end == input_ids.shape[1]:
+            return result.logits[:, -1, :], past
+        del result
+
+
+def cached_selected_logprobs(base, input_ids, selected_mask, *,
+                            prefill_chunk_size=PREFILL_CHUNK_SIZE, projection_chunk_size=16):
+    """Actual reference scoring with bounded backbone and vocabulary projections.
+
+    Feed all predictor tokens, including forced controls, through the same KV
+    cache. Only selected next-token targets enter the returned log probabilities.
+    This inference-only path is separate from the differentiable FSDP scorer.
+    """
+    import torch
+    if (torch.is_grad_enabled() or input_ids.ndim != 2 or input_ids.shape[0] != 1
+            or input_ids.shape != selected_mask.shape or input_ids.shape[1] < 2
+            or prefill_chunk_size < 1 or projection_chunk_size < 1):
+        raise TrainingError('Cached scoring requires matching single-sequence tokens/mask and no gradients')
+    if not bool(selected_mask[:, 1:].any()):
+        raise TrainingError('No sampled completion tokens selected for cached scoring')
+    cap = base.config.get_text_config().final_logit_softcapping
+    pieces, past = [], None
+    # Input position t predicts token t+1. The final target need not be cached.
+    for start in range(0, input_ids.shape[1] - 1, prefill_chunk_size):
+        end = min(start + prefill_chunk_size, input_ids.shape[1] - 1)
+        result = base.model(input_ids=input_ids[:, start:end],
+                            attention_mask=torch.ones((1, end), dtype=torch.long, device=input_ids.device),
+                            past_key_values=past, use_cache=True, return_dict=True)
+        past = result.past_key_values
+        if past is None:
+            raise TrainingError('Chunked reference scoring requested use_cache=True but returned no KV cache')
+        selection = selected_mask[:, start + 1:end + 1].bool()
+        batch_indices, positions = selection.nonzero(as_tuple=True)
+        targets = input_ids[:, start + 1:end + 1][selection]
+        for offset in range(0, targets.numel(), projection_chunk_size):
+            stop = offset + projection_chunk_size
+            hidden_device = result.last_hidden_state.device
+            hidden = result.last_hidden_state[batch_indices[offset:stop].to(hidden_device),
+                                              positions[offset:stop].to(hidden_device)]
+            logits = base.lm_head(hidden)
+            if cap is not None:
+                logits = torch.tanh(logits / cap) * cap
+            pieces.append(-torch.nn.functional.cross_entropy(
+                logits.float(), targets[offset:stop].to(logits.device), reduction='none'))
+            del hidden, logits
+        del result, selection, batch_indices, positions, targets
+    del past
+    return torch.cat(pieces)
+
+
 def install_logprob_forward(model, chunk_size=16):
     """Route selected-token forwards through PEFT and the outer FSDP hooks."""
     base = model.get_base_model()
@@ -200,7 +273,10 @@ def install_logprob_forward(model, chunk_size=16):
 
 
 class NF4Policy:
-    def __init__(self, config, *, seed=None, adapter_run=None, device=None):
+    def __init__(self, config, *, seed=None, adapter_run=None, device=None,
+                 inference_device_count=1):
+        if type(inference_device_count) is not int or inference_device_count not in (1, 2):
+            raise TrainingError('VFARL sampling supports one or two GPUs per policy')
         self.cfg, self.rl = read_config(config)
         if device is not None:
             self.cfg['device'] = device
@@ -212,8 +288,20 @@ class NF4Policy:
         random.seed(seed)
         torch.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
+        placement = ({'inference_device_map': 'balanced',
+                      'inference_max_memory': {0: '14GiB', 1: '14GiB'}}
+                     if inference_device_count == 2 else {})
         self.model, self.tokenizer, self.device, self.info = single.load_model_and_tokenizer(
-            self.cfg, self.stack, resume=adapter_run)
+            self.cfg, self.stack, resume=adapter_run, adapter_init_seed=seed, **placement)
+        self.device = self.model.get_input_embeddings().weight.device
+        self.cuda_devices = ([torch.device('cuda', index) for index in range(2)]
+                             if inference_device_count == 2 else [self.device])
+        self.execution = dict(inference_device_count=inference_device_count,
+            input_device=str(self.device),
+            device_map=(self.info.get('inference_placement', {}).get('device_map')
+                        or {'': str(self.device)}),
+            max_memory=placement.get('inference_max_memory'),
+            adapter_initialization=self.info['adapter_initialization'])
         if self.info.get('nf4_cache') is None:
             raise TrainingError('VFARL sampling requires the same validated cache as training')
         bind_template(self.tokenizer, self.cfg)
@@ -233,9 +321,14 @@ class NF4Policy:
         return ids[0]
 
     def render_prompt(self, messages, tools):
-        return self.tokenizer.apply_chat_template(
+        ids = self.tokenizer.apply_chat_template(
             messages, tools=tools, tokenize=True, add_generation_prompt=True,
-            enable_thinking=True, preserve_thinking=True)
+            enable_thinking=True, preserve_thinking=True, return_dict=False)
+        # Transformers 5 defaults to BatchEncoding. A state must bind the
+        # actual flat token sequence, never the mapping's string keys.
+        if not isinstance(ids, list) or not ids or any(type(token) is not int for token in ids):
+            raise TrainingError('Expected one flat sequence of exact prompt token IDs')
+        return ids
 
     def sample(self, prompt_token_ids, *, max_new_tokens, seed,
                thinking_budget=1024, stop_token_ids=None):
@@ -248,23 +341,37 @@ class NF4Policy:
             raise TrainingError('Full real prompt leaves no completion room; truncation is forbidden')
         limit = min(max_new_tokens, available)
         stop = set(stop_token_ids or [self.tool_close, self.turn_close])
-        generator = torch.Generator(device=self.device).manual_seed(seed)
+        generator = None
         generated, old, mask = [], [], []
         in_thought = False
         thought_count = 0
-        past = None
         started = time.monotonic()
+        for device in self.cuda_devices:
+            torch.cuda.reset_peak_memory_stats(device)
         reason = 'context_limit' if available < max_new_tokens else 'length'
         self.model.eval()
         with torch.inference_mode(), torch.autocast('cuda', dtype=torch.bfloat16):
+            ids = torch.tensor([prompt], dtype=torch.long, device=self.device)
+            next_logits, past = cached_prefill(self.model, ids)
+            del ids
             for index in range(limit):
-                current = prompt if past is None else [generated[-1]]
-                ids = torch.tensor([current], dtype=torch.long, device=self.device)
-                attention = torch.ones((1, len(prompt) + index), dtype=torch.long, device=self.device)
-                result = self.model(input_ids=ids, attention_mask=attention,
-                                    past_key_values=past, use_cache=True, logits_to_keep=1)
-                past = result.past_key_values
-                logits = result.logits[0, -1].float()
+                if index:
+                    ids = torch.tensor([[generated[-1]]], dtype=torch.long, device=self.device)
+                    attention = torch.ones((1, len(prompt) + index), dtype=torch.long, device=self.device)
+                    result = self.model(input_ids=ids, attention_mask=attention,
+                                        past_key_values=past, use_cache=True, logits_to_keep=1,
+                                        return_dict=True)
+                    past = result.past_key_values
+                    if past is None:
+                        raise TrainingError('Generation requested use_cache=True but returned no KV cache')
+                    next_logits = result.logits[:, -1, :]
+                    del result, ids, attention
+                logits = next_logits[0].float()
+                del next_logits
+                if generator is None:
+                    generator = torch.Generator(device=logits.device).manual_seed(seed)
+                elif generator.device != logits.device:
+                    raise TrainingError('Autoregressive logits changed devices during one sampled action')
                 logprobs = torch.log_softmax(logits, dim=-1)
                 forced = in_thought and thought_count >= thinking_budget
                 token = (self.thought_close if forced else
@@ -278,7 +385,7 @@ class NF4Policy:
                     in_thought = False
                 elif in_thought:
                     thought_count += 1
-                del result, logits, logprobs
+                del logits, logprobs
                 # A quoted control token inside actual thinking is not an
                 # emitted tool action or terminal assistant response.
                 if token in stop and not in_thought:
@@ -289,13 +396,19 @@ class NF4Policy:
             ids = torch.tensor([prompt + generated], device=self.device, dtype=torch.long)
             selected = torch.tensor([[0] * len(prompt) + mask], device=self.device, dtype=torch.bool)
             with frozen_base_reference(self.model):
-                values = selected_logprobs(self.model.get_base_model(), ids, torch.ones_like(ids),
-                                          selected, chunk_size=self.rl['logprob_chunk_size'])
+                values = cached_selected_logprobs(self.model.get_base_model(), ids, selected,
+                    projection_chunk_size=self.rl['logprob_chunk_size'])
             reference, cursor = [], 0
             for chosen in mask:
                 reference.append(float(values[cursor].item()) if chosen else 0.0)
                 cursor += chosen
-            torch.cuda.synchronize(self.device)
+            for device in self.cuda_devices:
+                torch.cuda.synchronize(device)
+        memory_by_device = [dict(device=str(device),
+            peak_allocated_bytes=torch.cuda.max_memory_allocated(device),
+            peak_reserved_bytes=torch.cuda.max_memory_reserved(device),
+            allocated_bytes=torch.cuda.memory_allocated(device),
+            reserved_bytes=torch.cuda.memory_reserved(device)) for device in self.cuda_devices]
         return dict(prompt_token_ids=prompt, completion_token_ids=generated,
                     behavior_logprobs=old, reference_logprobs=reference, loss_mask=mask,
                     raw_text=self.tokenizer.decode(generated, skip_special_tokens=False,
@@ -303,12 +416,21 @@ class NF4Policy:
                     finish_reason=reason, seed=seed, thinking_budget=thinking_budget,
                     thought_tokens=thought_count, forced_control_tokens=mask.count(0),
                     sampling=dict(temperature=1.0, top_p=1.0, top_k=0),
+                    prefill_chunk_size=PREFILL_CHUNK_SIZE,
+                    reference_scoring='actual-cached-chunked-forward',
                     reference_forward_performed=True, seconds=time.monotonic() - started,
                     prompt_tokens=len(prompt), completion_tokens=len(generated),
+                    execution=self.execution, sampling_device=str(generator.device),
+                    memory_by_device=memory_by_device,
+                    peak_memory_scope='maximum_of_model_cuda_devices',
+                    peak_allocated_bytes=max(row['peak_allocated_bytes'] for row in memory_by_device),
+                    peak_reserved_bytes=max(row['peak_reserved_bytes'] for row in memory_by_device),
                     **self.identity)
 
     def close(self):
         del self.model
         import gc
         gc.collect()
-        self.torch.cuda.empty_cache()
+        for device in self.cuda_devices:
+            with self.torch.cuda.device(device):
+                self.torch.cuda.empty_cache()

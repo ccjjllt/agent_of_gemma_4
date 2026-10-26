@@ -25,6 +25,10 @@ from pathlib import Path
 SIX_TOOLS = {'run_command', 'read_file', 'edit_file', 'write_file', 'get_status', 'submit_patch'}
 
 
+class PolicyProtocolError(RuntimeError):
+    """A shared sampling/state interface failed; do not retry it on every task."""
+
+
 def digest(value):
     return hashlib.sha256(value).hexdigest()
 
@@ -160,11 +164,38 @@ def tool_suffix(tokenizer, name, arguments, response):
          'content': json.dumps(response, ensure_ascii=False)},
     ]
     rendered = tokenizer.apply_chat_template(messages, tools=[], tokenize=False,
-                                            add_generation_prompt=True, enable_thinking=True)
+        return_dict=False, add_generation_prompt=True, enable_thinking=True)
     start = rendered.index('<|tool_response>')
     # Keep every original generated token intact, including genuine thoughts.
     # Only the actual new tool response is serialized by the pinned template.
     return tokenizer.encode(rendered[start:], add_special_tokens=False)
+
+
+def focal_order(item):
+    return (not item.get('has_recovery_budget', False),
+            not item.get('observed_tool_error', False),
+            len(item['action']['prompt_token_ids']))
+
+
+def final_patch(env):
+    """Use the official runner's unsubmitted-working-tree fallback semantics."""
+    from swegemma.harness.verification import strip_protected_files_from_patch
+    started = time.monotonic()
+    evidence = {'explicit_submit': env.ctx.patch_submitted, 'method': 'submit_patch'}
+    patch = env.ctx.submitted_patch or ''
+    if not env.ctx.patch_submitted:
+        evidence['method'] = 'official_unsubmitted_working_tree_fallback'
+        staged = env.manager.exec(env.sid, 'cd /workspace && git add -N .')
+        diff = env.manager.exec(env.sid,
+            'cd /workspace && (git diff --binary _swegemma_baseline 2>/dev/null || git diff --binary HEAD)')
+        evidence.update(add_intent_exit_code=staged.exit_code, diff_exit_code=diff.exit_code)
+        if diff.exit_code:
+            raise RuntimeError('Cannot collect actual final working-tree patch: '+(diff.stderr or diff.stdout))
+        patch = diff.stdout or ''
+    evidence['raw_patch_bytes'] = len(patch.encode())
+    patch = strip_protected_files_from_patch(patch, extra_protected_paths=env.task.test_files)
+    evidence.update(evaluated_patch_bytes=len(patch.encode()), seconds=time.monotonic()-started)
+    return patch, evidence
 
 
 class TaskEnvironment:
@@ -367,8 +398,7 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
         # Full venv copies are real state. Keep only the two best pre-action
         # checkpoints while collecting, rather than multiplying a large task
         # environment by every turn. Raw actions/tool evidence remain intact.
-        candidates.sort(key=lambda item: (not item.get('observed_tool_error', False),
-                                         len(item['action']['prompt_token_ids'])))
+        candidates.sort(key=focal_order)
         for item in candidates[2:]:
             shutil.rmtree(item['snapshot'])
         del candidates[2:]
@@ -378,33 +408,65 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
             stop = 'context_or_output_budget_exhausted'
             break
         state = None
-        if capture:
-            state = Snapshot.capture(env.manager, env.sid, env.ctx, ids, ledger,
-                policy.identity, out/f'state-{ledger["turns"]:03d}')
+        # An initial prompt has no observed task feedback. Focal recovery
+        # begins only after a real tool response has entered this prefix.
+        if capture and ledger.get('tool_observations', 0) > 0:
+            try:
+                state = Snapshot.capture(env.manager, env.sid, env.ctx, ids, ledger,
+                    policy.identity, out/f'state-{ledger["turns"]:03d}')
+            except Exception as exc:
+                raise PolicyProtocolError('Exact pre-action state capture failed') from exc
         env.ctx.record_llm_call()
         action_seed = first_seed if first_seed is not None and not actions else seed+ledger['turns']
-        action = first_action if first_action is not None else policy.sample(ids,
-            max_new_tokens=min(room, args.turn_tokens), thinking_budget=1024,
-            seed=action_seed, stop_token_ids=policy.vfarl_stop_ids)
+        print(json.dumps({'phase': 'policy_request', 'instance_id': env.task.instance_id,
+            'attempt': out.name, 'turn': ledger['turns'], 'prompt_tokens': len(ids),
+            'max_new_tokens': min(room, args.turn_tokens),
+            'original_action_replay': first_action is not None}), flush=True)
+        try:
+            action = first_action if first_action is not None else policy.sample(ids,
+                max_new_tokens=min(room, args.turn_tokens), thinking_budget=1024,
+                seed=action_seed, stop_token_ids=policy.vfarl_stop_ids)
+        except Exception as exc:
+            raise PolicyProtocolError('Current-policy sampling failed') from exc
         replayed = first_action is not None
         first_action = None
         if action['prompt_token_ids'] != ids:
-            raise ValueError('Action prompt differs from restored exact token prefix')
+            raise PolicyProtocolError('Action prompt differs from restored exact token prefix')
         actions.append(action)
         append(out/'actions.jsonl', dict(action, original_action_replay=replayed))
+        print(json.dumps({'phase': 'policy_action', 'instance_id': env.task.instance_id,
+            'attempt': out.name, 'turn': ledger['turns'], 'original_action_replay': replayed,
+            **{key: action.get(key) for key in ('prompt_tokens', 'completion_tokens',
+                'thought_tokens', 'finish_reason', 'seconds', 'peak_allocated_bytes')}}), flush=True)
         ids = ids + action['completion_token_ids']
         ledger['output_tokens'] += len(action['completion_token_ids'])
         ledger['turns'] += 1
         if state is not None:
             candidates.append({'snapshot': str(out/f'state-{ledger["turns"]-1:03d}'),
-                               'manifest': state, 'action': action})
+                               'manifest': state, 'action': action,
+                               'checkpoint_turn': ledger['turns']-1,
+                               'tool_observations': ledger['tool_observations'],
+                               'observed_tool_error': bool(ledger.get('last_tool_error', False)),
+                               'remaining_token_capacity': room,
+                               'has_recovery_budget': (room >= args.turn_tokens + 256
+                                   and args.turns-ledger['turns'] >= 1
+                                   and args.tool_calls-env.ctx.tool_calls_used >= 2)})
+        if action['finish_reason'] not in ('tool_calls', 'stop'):
+            if state is not None:
+                candidates[-1]['response_truncated'] = True
+            if len(ids) >= args.context:
+                stop = 'context_budget_exhausted'
+            elif ledger['output_tokens'] >= args.episode_tokens:
+                stop = 'episode_output_budget_exhausted'
+            else:
+                stop = 'single_response_token_budget_exhausted'
+            retain_candidates()
+            break
         try:
-            if action['finish_reason'] not in ('tool_calls', 'stop'):
-                raise ValueError('Model completion ended at a token/context limit')
             call = parse_call(action['raw_text'])
         except ValueError as exc:
             if state is not None:
-                candidates[-1]['observed_tool_error'] = True
+                candidates[-1]['action_protocol_error'] = True
             retain_candidates()
             stop = 'malformed_action: ' + str(exc)
             break
@@ -415,7 +477,7 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
         name, arguments = call
         if name not in env.tools:
             if state is not None:
-                candidates[-1]['observed_tool_error'] = True
+                candidates[-1]['action_protocol_error'] = True
             retain_candidates()
             stop = 'unknown_tool: ' + name
             break
@@ -431,37 +493,55 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
             append(out/'tool-events.jsonl', {'tool': name, 'arguments': arguments,
                    'exception': f'{type(exc).__name__}: {exc}'})
             if state is not None:
-                candidates[-1]['observed_tool_error'] = True
+                candidates[-1]['action_tool_error'] = True
             retain_candidates()
             stop = 'tool_exception'
             break
         append(out/'tool-events.jsonl', {'tool': name, 'arguments': arguments,
             'response': response, 'seconds': time.monotonic()-started,
             'tool_calls_used': env.ctx.tool_calls_used})
+        response_failed = isinstance(response, dict) and response.get('status') == 'error'
         if candidates and candidates[-1]['action'] is action:
-            candidates[-1]['observed_tool_error'] = isinstance(response, dict) and response.get('status') == 'error'
+            candidates[-1]['action_tool_error'] = response_failed
         retain_candidates()
-        ids += tool_suffix(policy.tokenizer, name, arguments, response)
+        try:
+            ids += tool_suffix(policy.tokenizer, name, arguments, response)
+        except Exception as exc:
+            raise PolicyProtocolError('Actual tool response serialization failed') from exc
+        ledger['tool_observations'] = ledger.get('tool_observations', 0) + 1
+        ledger['last_tool_error'] = response_failed
         if env.ctx.tool_calls_used >= args.tool_calls:
             stop = 'tool_budget_exhausted'
             break
     retain_candidates()
     env.ctx.stop_agent_session()
-    patch = env.ctx.submitted_patch or ''
-    (out/'submitted.patch').write_text(patch)
+    patch, patch_capture = final_patch(env)
+    (out/'submitted.patch').write_text(env.ctx.submitted_patch or '')
+    (out/'evaluated.patch').write_text(patch)
+    write(out/'patch-capture.json', patch_capture)
     result = await env.verify(patch, out.name)
     summary = {'instance_id': env.task.instance_id, 'reward': result['reward'],
         'verified': result['verification_complete'], 'termination': stop or 'submitted',
         'actions': len(actions), 'ledger': dict(ledger), 'policy_id': policy.identity['policy_id'],
         'verification': str(env.output/(out.name+'-result.json')),
-        'patch_submitted': env.ctx.patch_submitted}
+        'patch_submitted': env.ctx.patch_submitted, 'patch_capture': patch_capture,
+        'final_context_tokens': len(ids)}
     write(out/'episode.json', summary)
+    print(json.dumps({'phase': 'episode_result', 'attempt': out.name,
+        **{key: summary[key] for key in ('instance_id', 'reward', 'verified',
+            'termination', 'actions', 'patch_submitted', 'final_context_tokens')}}), flush=True)
     return summary, candidates, actions
 
 
 async def collect(args, entries, questions):
+    if not entries:
+        (args.out/'collection.jsonl').touch()
+        print(json.dumps({'phase': 'empty_partition', 'worker': args.worker_index,
+                          'selected_tasks': 0}), flush=True)
+        return
     from competition.vfarl.l4x4.state import Snapshot, configure_isolation
     from training.vfarl_policy import NF4Policy, read_config
+    from training.common import TrainingError
     model_config, _ = read_config(args.config)
     if model_config['max_sequence_length'] != args.context:
         raise ValueError('Sampling context and training config must match; use an explicit 8192 config for the 8K experiment')
@@ -471,7 +551,16 @@ async def collect(args, entries, questions):
     write(args.out/'isolation.json', isolation)
     if isolation['effective_mode'] == 'observable':
         raise RuntimeError('Task shell isolation is unavailable; do not load a GPU model while host judge assets are readable. '+str(isolation.get('reason')))
-    policy = NF4Policy(args.config, adapter_run=args.adapter_run)
+    print(json.dumps({'phase': 'model_loading', 'context': args.context,
+                      'policy_gpus': args.policy_gpus,
+                      'adapter_run': str(args.adapter_run) if args.adapter_run else None}), flush=True)
+    policy = NF4Policy(args.config, adapter_run=args.adapter_run,
+                       inference_device_count=args.policy_gpus)
+    print(json.dumps({'phase': 'model_ready', 'policy_id': policy.identity['policy_id'],
+                      'reference_id': policy.identity['reference_id'],
+                      'inference_device_count': policy.execution['inference_device_count'],
+                      'input_device': policy.execution['input_device']}), flush=True)
+    write(args.out/'policy-execution.json', policy.execution)
     # Identity contains exact base/cache, initialized LoRA, tokenizer/template
     # and sampler configuration. Tool schema is bound by the collector below.
     tools = json.loads(args.tools.read_text())
@@ -486,6 +575,7 @@ async def collect(args, entries, questions):
     write(args.out/'policy.json', policy.identity)
     preparation = {row['instance_id']: row for row in
                    (json.loads(line) for line in args.prevalidation.read_text().splitlines())}
+    global_indices = {row['instance_id']: i for i, row in enumerate(json.loads(args.selection.read_text())['tasks'])}
     usable = {key for key, row in preparation.items() if row.get('usable')}
     states = 0
     for position, entry in enumerate(entries):
@@ -504,6 +594,7 @@ async def collect(args, entries, questions):
             env = None
             retained_snapshot = None
             out = args.out/key/f'draw-{draw}'
+            phase = 'environment_setup'
             try:
                 env = TaskEnvironment(args.assets/key, out, tool_calls=args.tool_calls, turns=args.turns)
                 env.start()
@@ -521,23 +612,37 @@ async def collect(args, entries, questions):
                     'actual_prompt_sha256': digest(actual_prompt.encode()),
                     'change': 'Official build_agent_prompt with actual run budgets plus explicit token limits'})
                 (out/'actual-prompt.txt').write_text(actual_prompt)
+                phase = 'policy_prompt'
                 ids = policy.render_prompt([{'role': 'user', 'content': actual_prompt}], tools)
-                base_seed = 20261026 + position*10000 + draw*1000
+                base_seed = 20261026 + global_indices[key]*10000 + draw*1000
+                phase = 'policy_episode'
                 summary, candidates, _ = await episode(env, policy, ids, args, out/'original',
                     capture=states < args.max_states, seed=base_seed)
+                environment_control = None
+                if summary['reward'] == 0 and candidates and states < args.max_states:
+                    # Confirm this actual GPU worker's task environment before
+                    # turning a failure into an RL comparison. The reviewed
+                    # repair is host-only and never enters a policy prefix.
+                    control = await env.verify((env.asset/'submitted.patch').read_text(),
+                                               'focal-environment-control')
+                    environment_control = str(env.output/'focal-environment-control-result.json')
+                    summary['environment_control'] = environment_control
+                    if control['reward'] != 1:
+                        summary.update(reward=None, verified=False,
+                            reward_exclusion='Reviewed repair no longer verifies in the actual collection environment')
+                    write(out/'original'/'episode.json', summary)
                 append(args.out/'collection.jsonl', dict(summary, sampled=True, draw=draw))
                 # Choose a real pre-action state from a genuinely failed attempt;
                 # no teacher repair, damaged source or fabricated failure.
                 if summary['reward'] == 0 and candidates and states < args.max_states:
                     # Prefer an actual tool error with remaining context; a
                     # late exhausted prefix cannot meaningfully test recovery.
-                    candidate = min(candidates, key=lambda item: (
-                        not item.get('observed_tool_error', False),
-                        len(item['action']['prompt_token_ids'])))
+                    candidate = min(candidates, key=focal_order)
                     retained_snapshot = candidate['snapshot']
                     rows = []
                     for branch in range(args.branches):
                         ledger = {}
+                        phase = 'state_restoration'
                         restored = Snapshot.restore(Path(candidate['snapshot']), env.manager,
                             env.sid, env.ctx, ledger=ledger, policy_identity=policy.identity,
                             prompt_token_ids=candidate['action']['prompt_token_ids'])
@@ -545,6 +650,7 @@ async def collect(args, entries, questions):
                         restored_ids = candidate['action']['prompt_token_ids']
                         branch_dir = out/f'branch-{branch}'
                         write(branch_dir/'restore.json', restored)
+                        phase = 'branch_episode'
                         branch_summary, _, actions = await episode(env, policy, restored_ids, args,
                             branch_dir, ledger=ledger,
                             first_action=candidate['action'] if branch == 0 else None,
@@ -555,24 +661,42 @@ async def collect(args, entries, questions):
                                 kind='original_action_replay' if branch == 0 else 'sampled_focal_action',
                                 on_policy=branch != 0, verified=branch_summary['verified'],
                                 reward=branch_summary['reward'],
+                                environment_control_verified=True,
+                                environment_control_result=environment_control,
                                 restoration_scope=manifest['restoration_scope'],
                                 restored_state_evidence=str(branch_dir/'restore.json'),
                                 verification=branch_summary['verification'])
                             rows.append(row)
                             append(args.out/'focal.jsonl', row)
                     states += 1
-                    append(args.out/'state-results.jsonl', {'state_id': candidate['manifest']['state_id'],
+                    state_result = {'state_id': candidate['manifest']['state_id'],
                         'instance_id': key, 'branches': len(rows),
                         'rewards': [row['reward'] for row in rows],
-                        'restoration_scope': candidate['manifest']['restoration_scope']})
+                        'environment_control': environment_control,
+                        'checkpoint_observed_tool_error': candidate.get('observed_tool_error', False),
+                        'checkpoint_turn': candidate['checkpoint_turn'],
+                        'checkpoint_tool_observations': candidate['tool_observations'],
+                        'checkpoint_has_recovery_budget': candidate['has_recovery_budget'],
+                        'checkpoint_remaining_token_capacity': candidate['remaining_token_capacity'],
+                        'restoration_scope': candidate['manifest']['restoration_scope']}
+                    append(args.out/'state-results.jsonl', state_result)
+                    print(json.dumps(dict(state_result, phase='focal_group')), flush=True)
             except Exception as exc:
                 out.mkdir(parents=True, exist_ok=True)
                 (out/'exception.txt').write_text(traceback.format_exc())
-                append(args.out/'collection.jsonl', {'instance_id': key, 'draw': draw,
+                fatal = (isinstance(exc, (TrainingError, PolicyProtocolError))
+                    or phase in ('policy_prompt', 'state_restoration')
+                    or 'out of memory' in str(exc).lower())
+                failure = {'instance_id': key, 'draw': draw,
                     'sampled': any(out.rglob('actions.jsonl')), 'attempt_complete': False,
-                    'error': f'{type(exc).__name__}: {exc}'})
-                if 'out of memory' in str(exc).lower():
-                    raise  # Do not repeat a known capacity failure over 100 tasks.
+                    'error': f'{type(exc).__name__}: {exc}', 'failed_phase': phase,
+                    'fatal': fatal}
+                if exc.__cause__ is not None:
+                    failure['cause'] = f'{type(exc.__cause__).__name__}: {exc.__cause__}'
+                append(args.out/'collection.jsonl', failure)
+                print(json.dumps(dict(failure, phase='collection_error')), flush=True)
+                if fatal:
+                    raise  # Shared framework/capacity failures cannot yield valid RL data.
             finally:
                 if env is not None:
                     env.close()
@@ -590,6 +714,8 @@ def main():
     for name in ('selection', 'questions', 'assets', 'out'):
         parser.add_argument('--'+name, type=Path, required=True)
     parser.add_argument('--config', type=Path)
+    parser.add_argument('--policy-gpus', type=int, choices=(1, 2), default=1,
+                        help='Visible GPUs used by each real sampling model; FSDP training is separate')
     parser.add_argument('--adapter-run', type=Path,
                         help='Completed training run for a separate post-update rollout comparison')
     parser.add_argument('--tools', type=Path, default=Path('competition/vfarl/six-tools.json'))
@@ -597,7 +723,8 @@ def main():
     parser.add_argument('--prevalidation', type=Path)
     parser.add_argument('--context', type=int, choices=(4096, 8192), default=4096)
     parser.add_argument('--draws', type=int, choices=(1, 2), default=1)
-    parser.add_argument('--branches', type=int, choices=(2, 3), default=3)
+    parser.add_argument('--branches', type=int, choices=(2, 3), default=3,
+                        help='Total including original replay; use 3 for two independent sampled actions and a possible PPO advantage')
     parser.add_argument('--max-states', type=int, default=5)
     parser.add_argument('--turns', type=int, default=32)
     parser.add_argument('--tool-calls', type=int, default=32)
@@ -607,10 +734,14 @@ def main():
     parser.add_argument('--worker-count', type=int, default=1)
     parser.add_argument('--only-task', action='append', default=[],
                         help='Run named members of the frozen 100-task train pool, e.g. an environment repair or separate 8K continuation')
+    parser.add_argument('--task-limit', type=int,
+                        help='Optional first N selected tasks before worker partition, used for held-in post-update comparison')
     parser.add_argument('--isolation', choices=('bwrap', 'chroot', 'observable'), default='chroot')
     args = parser.parse_args()
     if not 0 <= args.worker_index < args.worker_count or args.max_states < 0:
         parser.error('Invalid worker or focal-state count')
+    if args.task_limit is not None and args.task_limit < 1:
+        parser.error('--task-limit must be positive')
     if args.out.exists():
         parser.error('Output already exists; preserve the previous real run')
     args.out.mkdir(parents=True)
@@ -637,6 +768,8 @@ def main():
         if not selected <= {row['instance_id'] for row in entries}:
             parser.error('--only-task must remain inside the frozen S600 train100 pool')
         entries = [row for row in entries if row['instance_id'] in selected]
+    if args.task_limit is not None:
+        entries = entries[:args.task_limit]
     entries = entries[args.worker_index::args.worker_count]
     write(args.out/'execution.json', {'arguments': {k: str(v) if isinstance(v, Path) else v for k,v in vars(args).items()},
                                     'selection_sha256': digest(args.selection.read_bytes())})

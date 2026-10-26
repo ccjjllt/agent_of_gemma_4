@@ -340,8 +340,22 @@ def validate_pinned_model_source(source, options, tok_source, tok_options, cfg, 
             "local_nf4_cache_manifest_checked": cached_nf4}
 
 
-def load_model_and_tokenizer(cfg, stack, resume=None, expected_provenance=None):
+def load_model_and_tokenizer(cfg, stack, resume=None, expected_provenance=None, *,
+                             inference_device_map=None, inference_max_memory=None,
+                             adapter_init_seed=None):
     torch, transformers, peft = stack["torch"], stack["transformers"], stack["peft"]
+    if adapter_init_seed is not None and (type(adapter_init_seed) is not int or adapter_init_seed < 0):
+        raise TrainingError("Explicit adapter initialization seed must be a nonnegative integer")
+    if inference_device_map is None and inference_max_memory is not None:
+        raise TrainingError("Inference memory limits require an explicit inference device map")
+    if inference_device_map is not None:
+        if (inference_device_map != "balanced" or cfg["quant_backend"] != "nf4"
+                or int(os.environ.get("WORLD_SIZE", "1")) != 1
+                or torch.distributed.is_initialized()):
+            raise TrainingError("Balanced inference placement is restricted to a standalone NF4 collector")
+        if (torch.cuda.device_count() != 2 or not isinstance(inference_max_memory, dict)
+                or set(inference_max_memory) != {0, 1}):
+            raise TrainingError("Balanced inference requires exactly two visible GPUs and limits for both")
     source, options = source_options(cfg["model_name_or_path"], cfg["model_revision"], cfg["local_files_only"])
     tok_source, tok_options = source_options(
         cfg["tokenizer_name_or_path"] or source,
@@ -385,7 +399,25 @@ def load_model_and_tokenizer(cfg, stack, resume=None, expected_provenance=None):
                 load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True,
                 bnb_4bit_compute_dtype=dtype)
         kwargs["device_map"] = {"": device.index if device.index is not None else torch.cuda.current_device()}
+        if inference_device_map is not None:
+            kwargs["device_map"] = inference_device_map
+            kwargs["max_memory"] = inference_max_memory
     model = model_class.from_pretrained(source, **kwargs)
+    inference_placement = None
+    if inference_device_map is not None:
+        actual_map = getattr(model, "hf_device_map", None)
+        if not actual_map:
+            raise TrainingError("Inference loader did not report its actual device map")
+        inference_placement = {}
+        for name, value in actual_map.items():
+            if value == "disk":
+                raise TrainingError("VFARL inference cannot offload model weights to disk")
+            placed = torch.device("cuda", value) if type(value) is int else torch.device(value)
+            if placed.type != "cuda" or placed.index not in {0, 1}:
+                raise TrainingError("VFARL inference cannot offload to CPU or another GPU: " + str(actual_map))
+            inference_placement[name] = str(placed)
+        if set(inference_placement.values()) != {"cuda:0", "cuda:1"}:
+            raise TrainingError("The requested two-GPU model must actually use both GPUs")
     if cfg["quant_backend"] == "nf4":
         if cfg["kbit_prepare"] == "norms_fp32":
             try:
@@ -420,7 +452,16 @@ def load_model_and_tokenizer(cfg, stack, resume=None, expected_provenance=None):
         adapter = peft.LoraConfig(r=cfg["rank"], lora_alpha=cfg["alpha"],
                                  lora_dropout=cfg["dropout"], bias="none",
                                  target_modules=targets, task_type=peft.TaskType.CAUSAL_LM)
-        model = peft.get_peft_model(model, adapter)
+        if adapter_init_seed is None:
+            model = peft.get_peft_model(model, adapter)
+        else:
+            # VFARL resets the seed after base loading and creates A/B on CPU
+            # before PEFT moves them to each base layer. Base dispatch and CUDA
+            # placement therefore cannot change the shared initial adapter.
+            random.seed(adapter_init_seed)
+            torch.manual_seed(adapter_init_seed)
+            with torch.device("cpu"):
+                model = peft.get_peft_model(model, adapter)
     if cfg["loss_backend"] == "selected_chunked":
         try:
             from .memory import install_selected_token_loss
@@ -431,6 +472,9 @@ def load_model_and_tokenizer(cfg, stack, resume=None, expected_provenance=None):
     if not trainable or any("lora_" not in name or any(x in name.lower() for x in FORBIDDEN)
                             for name, _ in trainable):
         raise TrainingError("unexpected trainable parameters outside language LoRA")
+    if inference_placement is not None and any(
+            p.device.type != "cuda" or p.device.index not in {0, 1} for p in model.parameters()):
+        raise TrainingError("All inference model parameters, including LoRA, must stay on the two GPUs")
     provenance = {"source": source, "requested_revision": cfg["model_revision"],
                   "model_type": model_type, "model_class": model_class.__name__, "pinned_source": pinned_source,
                   "resolved_commit": getattr(model_config, "_commit_hash", None),
@@ -438,6 +482,13 @@ def load_model_and_tokenizer(cfg, stack, resume=None, expected_provenance=None):
                   "tokenizer_source": tok_source, "target_modules": targets, "encoding_protocol": protocol_info,
                   "nf4_cache": cache_info, "kbit_prepare": cfg["kbit_prepare"], "loss_backend": cfg["loss_backend"],
                   "trainable_parameters": sum(p.numel() for _, p in trainable)}
+    if adapter_init_seed is not None:
+        provenance["adapter_initialization"] = {"seed": adapter_init_seed,
+            "boundary": "CPU LoRA creation after base loading", "resumed_adapter": bool(resume)}
+    if inference_placement is not None:
+        provenance["inference_placement"] = {"device_map": inference_placement,
+            "requested": inference_device_map, "max_memory": inference_max_memory,
+            "offload": False}
     return model, tokenizer, device, provenance
 
 

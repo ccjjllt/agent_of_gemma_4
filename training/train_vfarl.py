@@ -38,6 +38,7 @@ def prepare_rows(path, context_limit):
         seen.add(identity)
         if (row.get('kind') != 'sampled_focal_action' or row.get('on_policy') is not True
                 or row.get('verified') is not True or row.get('reward') not in (0, 1)
+                or row.get('environment_control_verified') is not True
                 or row.get('restoration_scope') != 'complete_declared_scope'):
             excluded.append(dict(branch_id=identity, reason='not-complete-verified-sampled-focal-action'))
             continue
@@ -129,7 +130,8 @@ def run(args):
     random.seed(cfg['seed'])
     torch.manual_seed(cfg['seed'])
     torch.cuda.manual_seed_all(cfg['seed'])
-    model, tokenizer, device, info = single.load_model_and_tokenizer(cfg, stack)
+    model, tokenizer, device, info = single.load_model_and_tokenizer(
+        cfg, stack, adapter_init_seed=cfg['seed'])
     bind_template(tokenizer, cfg)
     require_zero_lora(model, torch)
     identity = identities(model, tokenizer, info, cfg)
@@ -200,6 +202,7 @@ def run(args):
                                 ratio_mean=float(ratio.detach().mean()),
                                 clipped_fraction=float(((ratio.detach() - 1).abs() > rl['clip_epsilon']).float().mean()),
                                 old_logprob_max_abs_error=old_error, ref_logprob_max_abs_error=ref_error,
+                                sequence_tokens=len(row['prompt_token_ids']) + len(row['completion_token_ids']),
                                 selected_tokens=old.numel()))
         del current, loss, per_token, ratio, kl, batch
     grad_norm = wrapped.clip_grad_norm_(cfg['max_grad_norm'])
@@ -213,6 +216,57 @@ def run(args):
     dist.all_reduce(local_change, op=dist.ReduceOp.SUM)
     if float(local_change[0]) == 0:
         raise TrainingError('Optimizer returned without changing any LoRA parameter')
+    # Commit the actual updated adapter before optional post-update forwards.
+    # An OOM during diagnostics must not destroy the only copy of a completed
+    # update or cause the same behavior batch to be trained for a second time.
+    save_adapter(wrapped, model, output / 'adapter', torch, shapes)
+    committed_rank = dict(
+        rank=rank, optimizer_steps=1, grad_norm=float(grad_norm),
+        parameter_shard_before_sha256=initial_hash,
+        parameter_shard_after_sha256=snapshot_hash(after),
+        squared_delta_local=squared_delta, changed_parameters_local=changed,
+        metrics=metrics, before_logprobs=before_logprobs,
+        reference_logprobs=reference_logprobs,
+        peak_allocated_bytes_at_commit=torch.cuda.max_memory_allocated(device),
+        peak_reserved_bytes_at_commit=torch.cuda.max_memory_reserved(device))
+    collective_call(torch, lambda: atomic_json(
+        output / ('rank-%03d-update.json' % rank), committed_rank))
+
+    def commit_update():
+        if rank != 0:
+            return
+        adapter_files = {}
+        for name in ('adapter_config.json', 'adapter_model.safetensors'):
+            path = output / 'adapter' / name
+            adapter_files[name] = dict(sha256=sha256_file(path), bytes=path.stat().st_size)
+        committed = dict(
+            status='optimizer-step-and-adapter-committed', optimizer_steps=1,
+            post_update_diagnostics_completed=False,
+            post_update_diagnostics='not yet executed at the commit boundary',
+            source_data_sha256=sha256_file(Path(args.data)), config=cfg, rl=rl,
+            evidence=evidence, policy=identity, model=info, storage=storage,
+            checkpointed_decoder_layers=checkpoint_layers, rank0_wrap_units=units,
+            global_parameter_delta_l2=float(local_change[0].sqrt()),
+            global_changed_parameter_elements=int(local_change[1]),
+            grad_norm=float(grad_norm), adapter_files=adapter_files,
+            rank_update_files=[dict(path='rank-%03d-update.json' % r,
+                                    sha256=sha256_file(output / ('rank-%03d-update.json' % r)))
+                               for r in range(world)],
+            wall_seconds_to_commit=time.monotonic() - started,
+            frozen_reference='Actual separate zero-LoRA-scaling forwards; fixed base reference with unchanged FSDP traversal',
+            recovery='The optimizer step is already complete. Reuse this adapter and the saved exact-token behavior data for separate diagnostics; do not repeat the training update.',
+            limitation='Parameter changes are committed; post-update likelihood direction and re-rollout outcomes have not yet been measured.')
+        atomic_json(output / 'optimizer-step.json', committed)
+        # The carrier can distinguish an exported update from fully completed
+        # diagnostics even if the process later fails. optimizer-step.json is
+        # immutable evidence; the final manifest is replaced only on success.
+        atomic_json(output / 'training_manifest.json', committed)
+
+    collective_call(torch, commit_update)
+    if rank == 0:
+        print(json.dumps(dict(phase='optimizer_step_committed', optimizer_steps=1,
+                              manifest=str(output / 'optimizer-step.json'),
+                              post_update_diagnostics_completed=False)), flush=True)
     comparisons = []
     for start in range(0, len(rows), world):
         index = start + rank
@@ -225,13 +279,16 @@ def run(args):
             reference = torch.tensor(reference_logprobs[row['branch_id']])
             post_reference_ratio = reference - post
             comparisons.append(dict(branch_id=row['branch_id'], reward=row['reward'], advantage=row['advantage'],
-                                    before_logprobs=pre.tolist(), after_logprobs=post.tolist(),
+                                    baseline_source='Actual no-grad frozen-reference forward; equivalent to the required zero-B initial policy, not a substitute for behavior logprobs',
+                                    before_logprobs=reference.tolist(), after_logprobs=post.tolist(),
+                                    grad_forward_before_logprobs=pre.tolist(),
                                     reference_logprobs=reference.tolist(),
+                                    initial_grad_vs_nograd_mean_delta=float((pre - reference).mean()),
+                                    initial_grad_vs_nograd_max_abs_delta=float((pre - reference).abs().max()),
                                     post_reference_k3_on_behavior_tokens=float(
                                         (post_reference_ratio.exp() - post_reference_ratio - 1).mean()),
-                                    mean_logprob_delta=float((post - pre).mean()),
-                                    advantage_weighted_mean_delta=float((post - pre).mean()) * row['advantage']))
-    save_adapter(wrapped, model, output / 'adapter', torch, shapes)
+                                    mean_logprob_delta=float((post - reference).mean()),
+                                    advantage_weighted_mean_delta=float((post - reference).mean()) * row['advantage']))
     torch.cuda.synchronize(device)
     local = dict(rank=rank, optimizer_steps=1, grad_norm=float(grad_norm),
                  parameter_shard_before_sha256=initial_hash,
@@ -246,6 +303,9 @@ def run(args):
     if rank == 0:
         atomic_json(output / 'training_manifest.json', dict(
             status='one-verified-focal-PPO-update-completed', optimizer_steps=1,
+            post_update_diagnostics_completed=True,
+            optimizer_step_manifest='optimizer-step.json',
+            optimizer_step_manifest_sha256=sha256_file(output / 'optimizer-step.json'),
             source_data_sha256=sha256_file(Path(args.data)), config=cfg, rl=rl,
             evidence=evidence, policy=identity, model=info, storage=storage,
             checkpointed_decoder_layers=checkpoint_layers, rank0_wrap_units=units,
