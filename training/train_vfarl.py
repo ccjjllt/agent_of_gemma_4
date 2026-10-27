@@ -237,7 +237,30 @@ def actor_learner_binding(rows, identity, *, actor_backend, rollout_correction):
     if actor_backend != 'unsloth' or rollout_correction != 'sequence_tis':
         raise TrainingError('Unsloth actor/native learner requires explicit sequence_tis correction')
     from .vfarl_unsloth import UNSLOTH_EXECUTION_PROFILE
-    profile_hash = digest(UNSLOTH_EXECUTION_PROFILE)
+    # Preserve the already sampled auto-r3 behavior path. This literal is
+    # extracted from its frozen source bundle (vfarl_unsloth.py SHA256
+    # 2855de90b8b9aa3b3e1f007204d391a9dedfd5497ed639b1f8815f4920c9e77a).
+    # Historical dispatch labels remain historical metadata, not a claim that
+    # those kernels were active. Never relabel these probabilities as v2.
+    frozen_v1_profile = {
+        'backend': 'unsloth',
+        'version': 1,
+        'prompt_prefill': 'complete-prefix-contiguous-256-token-KV-chunks',
+        'completion': 'one-token-cached-autoregressive-forward',
+        'nf4_linear': 'Unsloth-loader-native-NF4-kernels-no-VFARL-fallback-override',
+        'head': 'Unsloth-native-tied-head-no-VFARL-FP32-head-override',
+        'logprob': 'actual-returned-logits-to-float32-log-softmax',
+        'reference': 'independent-same-autoregressive-path-with-zero-LoRA-scaling',
+        'forced_controls': 'preserve-in-prefix-and-mask-from-loss',
+        'compute_dtype': 'bfloat16',
+        'fast_inference': False,
+        'quantization': 'same-prequantized-official-QAT-derived-NF4-cache',
+        'adapter_initialization': 'copy-exact-native-PEFT-CPU-shadow-initialization',
+    }
+    known_profiles = {
+        digest(UNSLOTH_EXECUTION_PROFILE): UNSLOTH_EXECUTION_PROFILE,
+        '1f84b034b728b36dfb47466e34b2b5c0a667e40a36bf33a4d5fbff7263971c5b': frozen_v1_profile,
+    }
     execution_fields = {'probability_execution_sha256', 'probability_runtime_sha256'}
     without_execution = lambda value: {key: item for key, item in value.items()
                                        if key not in execution_fields}
@@ -249,6 +272,10 @@ def actor_learner_binding(rows, identity, *, actor_backend, rollout_correction):
             raise TrainingError('Missing complete Unsloth actor/reference identity')
         if digest(actor) != row['policy_id'] or digest(reference) != row['reference_id']:
             raise TrainingError('Recorded actor/reference identity digest differs from its payload')
+        profile_hash = actor.get('probability_execution_sha256')
+        profile = known_profiles.get(profile_hash)
+        if profile is None:
+            raise TrainingError('Focal data uses an unknown Unsloth probability profile')
         if (without_execution(actor) != without_execution(identity['policy_identity'])
                 or without_execution(reference) != without_execution(identity['reference_identity'])):
             raise TrainingError('Unsloth actor and native learner have different weights, adapter or protocol')
@@ -260,9 +287,9 @@ def actor_learner_binding(rows, identity, *, actor_backend, rollout_correction):
         recorded = execution.get('probability_runtime', {})
         runtime_identity = recorded.get('identity')
         if (execution.get('backend') != 'unsloth'
-                or execution.get('probability_execution_profile') != UNSLOTH_EXECUTION_PROFILE
+                or execution.get('probability_execution_profile') != profile
                 or not isinstance(runtime_identity, dict)
-                or runtime_identity.get('profile') != UNSLOTH_EXECUTION_PROFILE
+                or runtime_identity.get('profile') != profile
                 or recorded.get('identity_sha256') != digest(runtime_identity)
                 or actor.get('probability_runtime_sha256') != recorded['identity_sha256']
                 or reference.get('probability_runtime_sha256') != recorded['identity_sha256']):
@@ -273,6 +300,8 @@ def actor_learner_binding(rows, identity, *, actor_backend, rollout_correction):
         raise TrainingError('One update requires a single frozen Unsloth behavior/reference policy')
     behavior, reference = next(iter(policies))
     return dict(actor_backend='unsloth', learner_backend='native-fsdp',
+                actor_execution_profile_version=profile['version'],
+                actor_execution_profile_sha256=profile_hash,
                 behavior_policy_id=behavior, behavior_reference_id=reference,
                 behavior_policy_identity=rows[0]['policy_identity'],
                 behavior_reference_identity=rows[0]['reference_identity'],

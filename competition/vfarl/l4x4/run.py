@@ -316,6 +316,7 @@ def score_focal_rows(policy, args, data_path, *, stage):
     """
     from training.common import TrainingError
     from training.train_vfarl import prepare_rows
+    policy.clear_generation_cache(reason='focal-scoring')
     if stage not in ('before', 'after'):
         raise ValueError('Unknown actor scoring stage')
     if stage == 'after' and args.adapter_run is None:
@@ -599,6 +600,7 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
     out.mkdir(parents=True, exist_ok=True)
     ledger = ledger if ledger is not None else {'output_tokens': 0, 'turns': 0, 'context_limit': args.context}
     candidates, actions, stop = [], [], None
+    policy.clear_generation_cache(reason='episode-start')
 
     def retain_candidates():
         # Full venv copies are real state. Keep only the two best pre-action
@@ -639,6 +641,7 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
                 seed=action_seed, stop_token_ids=policy.vfarl_stop_ids,
                 compute_reference=train_focal_first_action and not actions)
         except Exception as exc:
+            policy.clear_generation_cache(reason='sampling-error')
             raise PolicyProtocolError('Current-policy sampling failed') from exc
         replayed = first_action is not None
         first_action = None
@@ -649,7 +652,8 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
         print(json.dumps({'phase': 'policy_action', 'instance_id': env.task.instance_id,
             'attempt': out.name, 'turn': ledger['turns'], 'original_action_replay': replayed,
             **{key: action.get(key) for key in ('prompt_tokens', 'completion_tokens',
-                'thought_tokens', 'finish_reason', 'seconds', 'peak_allocated_bytes')}}), flush=True)
+                'thought_tokens', 'finish_reason', 'seconds', 'peak_allocated_bytes')},
+            **({'prefill_cache': action['prefill_cache']} if 'prefill_cache' in action else {})}), flush=True)
         ids = ids + action['completion_token_ids']
         ledger['output_tokens'] += len(action['completion_token_ids'])
         ledger['turns'] += 1
@@ -730,6 +734,7 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
             stop = 'tool_budget_exhausted'
             break
     retain_candidates()
+    policy.clear_generation_cache(reason='episode-finished')
     env.ctx.stop_agent_session()
     patch, patch_capture = final_patch(env)
     (out/'submitted.patch').write_text(env.ctx.submitted_patch or '')
@@ -987,7 +992,7 @@ async def collect(args, entries, questions):
                               'focal_states': states}), flush=True)
         if queue is not None:
             queue.finish_task(key, args.worker_index)
-    if args.adapter_run is None:
+    if args.adapter_run is None and args.score_focal_before:
         score_focal_rows(policy, args, args.out/'focal.jsonl', stage='before')
 
 
@@ -1003,6 +1008,8 @@ def main():
                         help='Completed training run for a separate post-update rollout comparison')
     parser.add_argument('--score-focal-data', type=Path,
                         help='Merged real mixed focal rows to score with the loaded updated actor; no sampling or reward is manufactured')
+    parser.add_argument('--score-focal-before', action='store_true',
+                        help='Optional repeated actor drift measurement; sampled behavior probabilities are already stored verbatim')
     parser.add_argument('--tools', type=Path, default=Path('competition/vfarl/six-tools.json'))
     parser.add_argument('--prevalidate', action='store_true')
     parser.add_argument('--prevalidation', type=Path)

@@ -1,6 +1,10 @@
 # 新任务小轮研究材料
 
-实际进度（2026-10-27 12:57北京时间）：用户已授权先跑12＋4，有信号再考虑100题。私有CPU作业已完成16/16题的baseline 0／参考修复1，Unsloth运行时已实际组装。前两次GPU启动在动作生成前失败，均为0采集/0更新；tokenizer哈希域和LoRA初始化BF16舍入已分别修正。当前私有采集作业 [auto-r3](https://www.kaggle.com/code/jiyujia/vfarl-newtasks-collect-auto-r3) 的两个双卡模型均已就绪，已真实完成前三轮共6次工具动作，后台继续采集。尚无完整任务奖励、异奖组或新RL收益。逐次真实证据与配额见 `execution.md`、`execution-auto-r3/results.md`。
+实际进度（2026-10-27 15:45北京时间）：私有短作业 [Unsloth recovered reward update r1](https://www.kaggle.com/code/jiyujia/vfarl-unsloth-recovered-reward-update-r1) 已实际COMPLETE。找回的两个异奖组、4条动作在新Unsloth双GPU训练端执行了1步真实optimizer，梯度范数0.811325，LoRA变化L2为0.057921。没有重新采样；原始v1概率未改写。8K窗口完整保留5117–6495-token序列，更新计算/导出322.57秒，整作业815.60秒，消耗0.45776h配额、剩17.43349h。更新后的奖励方向指标略负，同路径重算目标loss从0.235803升至0.236187，不能宣称训练收益或泛化改善；16K反向也未验证。该SHA已训练，勿再次提交。权威原件及逐项记录见 `execution-gpu-short-r1/`。
+
+新版训练入口为 `training/train_vfarl_unsloth.py`，保留VFARL的真实focal奖励、PPO clip＋KL、sequence TIS与原始行为概率。`--learner-backend unsloth` 选择单进程双GPU训练；原生四进程FSDP入口仍可显式选择。新采样执行身份为v2，精确前缀追加时复用KV，任务/分支与评分边界清空。不能把新版身份改写进旧批次。
+
+`unsloth-v2-short-local/` 是未提交的4K单题计时载体，`--update-only` 在真实更新尝试后结束，不跑独立对照；仅用于后续决定短实验时审阅，不属于已运行结果。单题不保证产生异奖组，4K也不能证明16K容量。它不自动启动，不能当作12＋4正式轮。`unsloth-v2-local/` 为已被该短载体取代的本地草稿，也未提交。
 
 2026-10-27，北京时间。本轮已实际冻结并打包 **12 道采集任务＋4 道独立研究验证任务**，共16个仓库、16个repair family和16个snapshot group。采集与研究验证在 task、family、snapshot及仓库四个层面均无交叉。全部来自既有S600 train白名单；题目正文只保留官方初始用户提示，来源、参考补丁和完整验收要求保留在裁判侧。
 

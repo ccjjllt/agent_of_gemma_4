@@ -41,15 +41,21 @@ parser.add_argument('--collection-carrier-sha256',
                     help='SHA256 of the completed collection root vfarl-train/carrier.json.')
 parser.add_argument('--collection-focal-sha256',
                     help='SHA256 of its root vfarl-train/focal.jsonl; never a worker-local file.')
+parser.add_argument('--focal-data', type=Path,
+                    help='Local exact-token focal data recovered from a cancelled private collection; freeze it without resampling.')
+parser.add_argument('--focal-provenance', type=Path,
+                    help='Recovery record binding focal_sha256 to the original source files and collection version.')
 parser.add_argument('--title')
 parser.add_argument('--dataset-version', type=int, default=1)
 parser.add_argument('--export-runtime', action='store_true', help='Publish repaired runtime even for a CPU task subset.')
 parser.add_argument('--collect-only', action='store_true', help='Collect requested real rollouts/branches without optimizer or post-update runs.')
+parser.add_argument('--update-only', action='store_true',
+                    help='End a short real research run after the optimizer attempt; independent policy rollouts are deferred.')
 parser.add_argument('--focal-states', type=int, default=5, help='Maximum focal states across both collectors; zero means rollout coverage only.')
 parser.add_argument('--policy-backend', choices=('native', 'unsloth'), default='native',
-                    help='Actor execution backend; native FSDP remains the learner.')
-parser.add_argument('--learner-backend', choices=('native',), default='native',
-                    help='Explicit learner implementation; Unsloth backward is not yet measured.')
+                    help='Actor execution backend, selected independently of the learner.')
+parser.add_argument('--learner-backend', choices=('native', 'unsloth'), default='native',
+                    help='Native four-rank FSDP or experimental Unsloth two-GPU model-parallel PPO learner.')
 parser.add_argument('--dynamic-queue', action='store_true',
                     help='Two double-GPU actors claim whole tasks from a shared frozen-order queue.')
 parser.add_argument('--stop-after-mixed-groups', type=int, default=0,
@@ -68,6 +74,13 @@ parser.add_argument('--prevalidation-report', type=Path, action='append', defaul
                     help='Actual local CPU report to freeze; later reports supersede earlier task records.')
 parser.add_argument('--jail-source', type=Path, help='Explicit CPU candidate or already CPU-accepted historical GPU jail source to freeze.')
 args = parser.parse_args()
+if args.update_only and (args.mode != 'train' or args.collect_only or args.calibration_data or args.calibration_only):
+    parser.error('--update-only is for a real training run without collection-only or calibration mode')
+if args.focal_data or args.focal_provenance:
+    if not (args.focal_data and args.focal_provenance):
+        parser.error('Recovered focal data and provenance must be supplied together')
+    if args.mode != 'train' or args.collect_only or args.collection_kernel or args.calibration_data or args.calibration_only:
+        parser.error('Recovered focal data is for a direct update, without new collection or calibration')
 if args.mode == 'train' and (not (args.runtime_kernel or args.runtime_dataset) or not args.runtime_sha256):
     parser.error('GPU carrier requires a completed, versioned runtime input and archive SHA256')
 if args.runtime_kernel and args.runtime_dataset:
@@ -102,6 +115,9 @@ if args.dynamic_queue and (args.mode != 'train' or args.calibration_only):
     parser.error('--dynamic-queue is only for actual training collection')
 if args.policy_backend != 'native' and (args.mode != 'train' or args.calibration_data):
     parser.error('An alternate actor backend is for an explicit collection arm, not the old native calibration path')
+if args.learner_backend == 'unsloth' and (args.mode != 'train' or args.policy_backend != 'unsloth'
+                                         or args.calibration_data or args.calibration_only):
+    parser.error('The Unsloth learner is an explicit Unsloth-actor training arm, without native FSDP calibration')
 if args.calibration_only and (args.mode != 'train' or not args.calibration_data):
     parser.error('--calibration-only requires --mode train and --calibration-data')
 if args.calibration_data and args.mode != 'train':
@@ -145,6 +161,18 @@ if args.calibration_data:
         paths.append(resolved)
     calibration_path = str(args.calibration_data.resolve().relative_to(ROOT))
 bundle = {str(p.relative_to(ROOT)): p.read_text() for p in paths}
+focal_data_path, focal_provenance_path = None, None
+if args.focal_data:
+    for path in (args.focal_data, args.focal_provenance):
+        resolved = path.resolve(strict=True)
+        if not resolved.is_relative_to(ROOT) or not resolved.is_file():
+            parser.error('Recovered inputs must be existing files inside this research repository')
+        bundle[str(resolved.relative_to(ROOT))] = resolved.read_text()
+    focal_data_path = str(args.focal_data.resolve().relative_to(ROOT))
+    focal_provenance_path = str(args.focal_provenance.resolve().relative_to(ROOT))
+    recovery = json.loads(args.focal_provenance.read_text())
+    if recovery.get('focal_sha256') != hashlib.sha256(args.focal_data.read_bytes()).hexdigest():
+        parser.error('Recovered focal SHA differs from its provenance record')
 if args.jail_source:
     bundle['competition/vfarl/l4x4/jail.py'] = args.jail_source.read_text()
 prevalidation_paths = []
@@ -155,7 +183,10 @@ for index, path in enumerate(args.prevalidation_report):
 packed = base64.b64encode(zlib.compress(json.dumps(bundle).encode())).decode()
 source = f'MODE = {args.mode!r}\nMATERIAL_SHA256 = {material["sha256"]!r}\nMATERIAL_ARCHIVE_NAME = {material_archive_name!r}\nRUNTIME_SHA256 = {args.runtime_sha256!r}\nCONTEXT_LENGTH = {args.context!r}\nTRAINING_CONFIG = {training_config_path!r}\nONLY_TASKS = {args.only_task!r}\nEXPORT_RUNTIME = {args.export_runtime!r}\nCOLLECT_ONLY = {args.collect_only!r}\nFOCAL_STATES = {args.focal_states!r}\nPOLICY_BACKEND = {args.policy_backend!r}\nLEARNER_BACKEND = {args.learner_backend!r}\nDYNAMIC_QUEUE = {args.dynamic_queue!r}\nSTOP_AFTER_MIXED_GROUPS = {args.stop_after_mixed_groups!r}\nSTOP_AFTER_TASKS = {args.stop_after_tasks!r}\nCALIBRATION_DATA = {calibration_path!r}\nCALIBRATION_ONLY = {args.calibration_only!r}\nPREVALIDATION_REPORTS = {prevalidation_paths!r}\nSOURCE_BUNDLE = {packed!r}\n'
 source += (HERE / 'runner.py').read_text()
-source = (f'STOP_AFTER_SECONDS = {args.stop_after_seconds!r}\n'
+source = (f'FOCAL_DATA = {focal_data_path!r}\n'
+          f'FOCAL_PROVENANCE = {focal_provenance_path!r}\n'
+          f'UPDATE_ONLY = {args.update_only!r}\n'
+          f'STOP_AFTER_SECONDS = {args.stop_after_seconds!r}\n'
           f'COLLECTION_KERNEL = {args.collection_kernel!r}\n'
           f'COLLECTION_CARRIER_SHA256 = {args.collection_carrier_sha256!r}\n'
           f'COLLECTION_FOCAL_SHA256 = {args.collection_focal_sha256!r}\n') + source
@@ -241,6 +272,9 @@ manifest = {'source_sha256': hashlib.sha256(source.encode()).hexdigest(),
             'maximum_focal_states': args.focal_states,
             'policy_backend': args.policy_backend,
             'learner_backend': args.learner_backend,
+            'update_only': args.update_only,
+            'focal_data': focal_data_path,
+            'focal_provenance': focal_provenance_path,
             'dynamic_queue': args.dynamic_queue,
             'stop_after_mixed_groups': args.stop_after_mixed_groups,
             'stop_after_tasks': args.stop_after_tasks,

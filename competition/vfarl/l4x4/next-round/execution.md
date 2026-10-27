@@ -95,3 +95,32 @@ Kaggle API虽然返回r3版本提交成功，但同一回执明确指出失败�
 北京时间12:55，两worker实际model_ready，backend=unsloth，加载/附着/完整基座核对耗时分别231.53668和231.30421秒。policy_id均2a2ef326ead85fb99d291b04db710bfefdf2f5dcf1387fb3f1b4df13c522a6c9，reference_id均3c898a30594a651ddf5310952e73b42cab2522bd7e1fe26168e2fef3b54d35d9；每策略双GPU、原生adapter SHA12b4…一致。完整就绪证据在execution-auto-r3/observer-20261027T045523Z.log；真实动作仍待观察，不以model_ready计作采集/收益。
 
 北京时间12:57已确认真实采集：两worker均完成turn0/1/2共6次policy_action，finish_reason均tool_calls，并进入turn3请求。首动作55.216/45.294秒；随后24.080–34.388秒。原始日志observer-20261027T045641Z.log。尚未取得完整任务奖励、异奖组或更新，不宣称加速比/泛化收益。后台驱动继续collection-only；至少2个真实异奖组且余额≥6h时，才续办同一未训练batch的一次RL更新与4题独立前后对照。
+
+北京时间14:48状态实读：auto-r3/1仍RUNNING；两worker无退出，四L4均可见，无worker_failure/collection_error。14:47:43显存MiB/利用率分别卡0=9668/0%、卡1=12986/48%、卡2=10068/0%、卡3=13586/22%，每卡总23034MiB；多个相邻观测可见各卡利用率轮换，不能把瞬时0%判作掉卡。Funcy与Bottle两个新任务均已完整形成rewards=[1,0,1]的真实工具失败后分叉；第三题TextFSM正在分叉，另一采集器进入python-string-similarity新题。尚未提交RL更新，完整训练候选仍待采集结束后prepare_rows核对。账号实读GPU已用11.69480h、剩18.30520h。原始日志status-20261027T064829Z.log、配额quota-status-20261027T064835Z.json。
+
+北京时间14:54用户指出首步更新等待过长。确认原调度的采集停止目标为3异奖组、更新最低为2组；还需等全部在途分支与每个worker两次actor-before评分结束，驱动只在整个collection Notebook COMPLETE后切换。实时API输出列表为0，已知carrier/focal路径下载均404，无法从日志摘要重建精确行为token/logprob，当前不取消以免丢失真实batch。已修改尚未冻结的续办runner：先一次真实optimizer，之后用原始冻结base＋fresh seed0 adapter做4题未更新策略控制，再做4题更新策略；固定任务/种子/预算不变，measurement_order和actual_update_before_baseline明确记录墙钟顺序。一次性AST解析通过，当前采集绑定的actor/tool/source_files均未变化。未来采集目标下调为2组，auto-r3既有3组目标不热改、不重采。
+
+2026-10-27 ~15:01 Beijing: user cancelled auto-r3. The local driver read CANCEL_REQUESTED. Root verified PID64779 command and terminated only that owned continuation driver; exec exited143. No new GPU job was submitted. Final cancellation/output read encountered TLS EOF; exact focal data recovery remains unconfirmed.
+
+Unsloth audit: FastModel loading and for_inference were used, while train_vfarl remained native FSDP1. Pinned2026.10.9 block compilation bypasses eval/cached Gemma4 forwards; Gemma4 is absent from COMPILE_DECODE_MODELS, and L4 sm89 does not receive the default newer-bnb NF4 override. Startup compile messages do not prove inference speedup. Full-prefix prefill after every tool remained in the actual sampler. Fresh agents are implementing a real Unsloth backward/fused selected-logprob learner and exact cross-tool KV reuse locally. Neither GPU speedup nor16K backward capacity is established; no automatic restart.
+
+2026-10-27 15:17 Beijing: implemented training/train_vfarl_unsloth.py with Unsloth smart gradient checkpointing and fused selected-token logprobs, preserving real VFARL clip+KL/sequence-TIS. New sampler profilev2 reuses exact append-only actor KV across tools; independent reference caches remain fresh. Native sampler defaults remain unchanged. Carrier can select --learner-backend unsloth (one process/two GPUs); --update-only defers independent comparisons, optional actor drift repeats are now opt-in. AST/CLI/local freeze and one-off CPU cache-control observations completed, no GPU execution or speedup claim. unsloth-v2-short-local is an UNsubmitted4K one-task timing draft, not proof of16K capacity or guaranteed mixed-reward update.
+
+2026-10-27T07:24:34.908618+00:00：Authorized short GPU trial: exact recovered untrained batch,2 mixed groups/4 actions;8K complete context, Unsloth model-parallel backward on2 GPUs, one optimizer step only. No new collection or independent rollouts.
+
+2026-10-27T07:25:43.343350+00:00：Actual private GPU notebook URL verified from original submission receipt: jiyujia/vfarl-unsloth-recovered-reward-update-r1/1; no duplicate submission.
+
+2026-10-27 15:25 Beijing: actual private short GPU job submitted once as jiyujia/vfarl-unsloth-recovered-reward-update-r1/1 (title-derived URL from original successful receipt; no duplicate submission). Readback matches source/private/input settings. RUNNING. Uses recovered untrained SHA c1e7dd56322899e95773a972a1326be9a453b63ed7fac3244ccae9d05cec7c07:2mixed/4actions, complete6495/6456/5117/5127-token sequences under8K, original actor-v1 probabilities unchanged. No new collection and no independent task rollout. New Unsloth learner uses one process on visible GPUs0,1. Startup quota17.89125h. Result pending. Later local observability/topology-template edits do not alter this already-frozen cloud source.
+
+2026-10-27T07:43:19.169325+00:00：Actual completed Unsloth short update: {"kernel": "jiyujia/vfarl-unsloth-recovered-reward-update-r1/1", "platform_status": "COMPLETE", "optimizer_steps": 1, "source_data_sha256": "c1e7dd56322899e95773a972a1326be9a453b63ed7fac3244ccae9d05cec7c07", "grad_norm": 0.8113248348236084, "parameter_delta_l2": 0.05792091503185881, "actual_max_sequence_tokens": 6495, "wall_seconds_to_commit": 559.883736877, "update_seconds_to_commit": 322.57317009300004, "total_experiment_wall_seconds": 815.597628233, "post_update_diagnostics_completed": true, "mean_advantage_weighted_logprob_change": -0.00010989460001216945, "memory_by_device": [{"device": "cuda:0", "peak_allocated_bytes": 11769253376, "peak_reserved_bytes": 12977176576}, {"device": "cuda:1", "peak_allocated_bytes": 15232603136, "peak_reserved_bytes": 16852713472}], "importance_weights": {"actions": 4, "limitation": "Describes this selected focal batch; does not establish full-trajectory coverage or an unbiased task-level objective.", "raw_sequence_ess": 3.2977636049747283, "raw_sequence_ess_fraction": 0.8244409012436821, "sequence_log_weight_max": 0.6565549295714703, "sequence_log_weight_min": -0.7186607709394686, "unit": "One complete independently sampled focal action, not one token", "upper_capped_actions": 0, "used_sequence_ess": 3.29776360966802, "used_sequence_ess_fraction": 0.824440902417005, "used_weight_max": 1.928138256072998, "used_weight_min": 0.48740455508232117}, "remaining_gpu_h": 17.4334929825}
+
+
+## Completed short GPU result
+
+- Platform COMPLETE; real optimizer steps: 1. Recovered2 mixed groups/4 actions, no resampling.
+- Grad norm 0.81132483; LoRA delta L2 0.05792092.
+- Update computation/export 5.38min; model initialization237.31s; complete notebook 13.59min.
+- Actual longest backward sequence 6495tokens;2 GPUs. Peak allocated:11.0/14.2GiB.
+- Actual GPU quota consumed 0.45776h; remaining 17.43349h.
+- Direction metric is slightly negative: advantage-weighted -0.000109895, importance-weighted -0.000272025. Do not claim learning improvement.
+- No independent task comparison or16K backward was run. This exact batch SHA is committed; do not train it again.

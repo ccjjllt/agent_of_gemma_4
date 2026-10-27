@@ -325,19 +325,26 @@ def selected_logprobs(base, input_ids, attention_mask, selected_mask, *, chunk_s
     return torch.cat(pieces)
 
 
-def cached_prefill(model, input_ids, *, chunk_size=PREFILL_CHUNK_SIZE):
-    """Read the entire unpadded prefix in bounded chunks and return its next logits.
+def cached_prefill(model, input_ids, *, chunk_size=PREFILL_CHUNK_SIZE,
+                   past_key_values=None, prefix_length=0):
+    """Read uncached prefix tokens in bounded chunks and return next logits.
 
     Gemma's DynamicCache retains absolute positions and handles sliding/shared
     KV state. Each chunk receives the attention mask for every token seen so
-    far; chunking changes computation scheduling, not the visible history.
+    far. A supplied cache must cover exactly ``input_ids[:, :prefix_length]``;
+    callers own that exact-token comparison. Scoring uses the default fresh
+    cache and never borrows a sampler's retained actor state.
     """
     import torch
     if (torch.is_grad_enabled() or input_ids.ndim != 2 or input_ids.shape[0] != 1
-            or not input_ids.shape[1] or chunk_size < 1):
+            or not input_ids.shape[1] or chunk_size < 1
+            or type(prefix_length) is not int or not 0 <= prefix_length < input_ids.shape[1]
+            or (past_key_values is None) != (prefix_length == 0)):
         raise TrainingError('Cached prefill requires one nonempty prefix, no gradients and a positive chunk size')
-    past = None
-    for start in range(0, input_ids.shape[1], chunk_size):
+    past = past_key_values
+    if past is not None and int(past.get_seq_length()) != prefix_length:
+        raise TrainingError('Retained KV length differs from its exact token prefix')
+    for start in range(prefix_length, input_ids.shape[1], chunk_size):
         end = min(start + chunk_size, input_ids.shape[1])
         result = model(input_ids=input_ids[:, start:end],
                        attention_mask=torch.ones((1, end), dtype=torch.long, device=input_ids.device),
@@ -576,6 +583,16 @@ class NF4Policy:
         return self._score_record(prompt_token_ids, completion_token_ids, loss_mask,
                                   frozen_reference=True, cached_reference=True)
 
+    def clear_generation_cache(self, *, reason='explicit-reset'):
+        """Native policies retain no cross-action KV state."""
+
+    def _sample_prefill(self, prompt, input_ids):
+        next_logits, past = cached_prefill(self.model, input_ids)
+        return next_logits, past, {}
+
+    def _retain_sample_cache(self, prompt, completion, past):
+        return 0
+
     def sample(self, prompt_token_ids, *, max_new_tokens, seed,
                thinking_budget=1024, stop_token_ids=None, compute_reference=True):
         torch = self.torch
@@ -600,7 +617,7 @@ class NF4Policy:
         self.model.eval()
         with torch.inference_mode(), torch.autocast('cuda', dtype=torch.bfloat16):
             ids = torch.tensor([prompt], dtype=torch.long, device=self.device)
-            next_logits, past = cached_prefill(self.model, ids)
+            next_logits, past, prefill_cache = self._sample_prefill(prompt, ids)
             del ids
             for index in range(limit):
                 if index:
@@ -639,6 +656,9 @@ class NF4Policy:
                 if token in stop and not in_thought:
                     reason = 'tool_calls' if token == self.tool_close else 'stop'
                     break
+            retained = self._retain_sample_cache(prompt, generated, past)
+            if prefill_cache:
+                prefill_cache['retained_tokens_after'] = retained
             del past
             reference = None
             if compute_reference:
@@ -678,9 +698,11 @@ class NF4Policy:
                     peak_memory_scope='maximum_of_model_cuda_devices',
                     peak_allocated_bytes=max(row['peak_allocated_bytes'] for row in memory_by_device),
                     peak_reserved_bytes=max(row['peak_reserved_bytes'] for row in memory_by_device),
+                    **({'prefill_cache': prefill_cache} if prefill_cache else {}),
                     **self.identity)
 
     def close(self):
+        self.clear_generation_cache(reason='policy-close')
         del self.model
         import gc
         gc.collect()

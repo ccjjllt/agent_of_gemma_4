@@ -20,21 +20,23 @@ import os
 from pathlib import Path
 import random
 import re
+import time
 
 from . import train_sft as single
 from .common import TrainingError, sha256_file
 from .encoding.gemma_tool_chat import tokenizer_fingerprint
 from .train_ddp import trainable_hash
 from .vfarl_policy import (NF4Policy, bind_template, digest, identities,
-                          read_config, require_zero_lora, frozen_base_reference)
+                          read_config, require_zero_lora, frozen_base_reference,
+                          cached_prefill)
 
 
 UNSLOTH_EXECUTION_PROFILE = {
     'backend': 'unsloth',
-    'version': 1,
-    'prompt_prefill': 'complete-prefix-contiguous-256-token-KV-chunks',
+    'version': 2,
+    'prompt_prefill': 'exact-prefix-append-only-KV-reuse-with-256-token-delta-chunks',
     'completion': 'one-token-cached-autoregressive-forward',
-    'nf4_linear': 'Unsloth-loader-native-NF4-kernels-no-VFARL-fallback-override',
+    'nf4_linear': 'runtime-resolved-bitsandbytes-or-Unsloth-dispatch-no-VFARL-fallback-override',
     'head': 'Unsloth-native-tied-head-no-VFARL-FP32-head-override',
     'logprob': 'actual-returned-logits-to-float32-log-softmax',
     'reference': 'independent-same-autoregressive-path-with-zero-LoRA-scaling',
@@ -43,6 +45,9 @@ UNSLOTH_EXECUTION_PROFILE = {
     'fast_inference': False,
     'quantization': 'same-prequantized-official-QAT-derived-NF4-cache',
     'adapter_initialization': 'copy-exact-native-PEFT-CPU-shadow-initialization',
+    'cross_tool_kv': True,
+    'cache_boundary': 'explicit-episode-reset-or-exact-token-prefix-mismatch',
+    'teacher_forced_scoring': 'independent-fresh-full-prefix-cache-no-actor-cache-reuse',
 }
 NATIVE_SEED0_ADAPTER_SHA256 = '12b4e23d28fcc8ab2ea1581a9398edfd2105375e43f3fc795199f3d6b31b06dc'
 CT_V2_TOKENIZER_FILE_SHA256 = 'cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f'
@@ -213,6 +218,29 @@ def _versions():
     return result
 
 
+def resolved_nf4_dispatch(model):
+    """Record installed Python dispatch, without claiming measured kernel speed."""
+    paths = {}
+    for module in model.modules():
+        if type(module).__name__ != 'Linear4bit' or hasattr(module, 'base_layer'):
+            continue
+        forward = type(module).forward
+        name = type(module).__module__ + '.' + type(module).__qualname__
+        try:
+            source = Path(inspect.getfile(forward))
+            source_hash = sha256_file(source) if source.is_file() else None
+        except (TypeError, OSError):
+            source_hash = None
+        paths[name] = dict(forward_module=forward.__module__,
+            forward_qualname=forward.__qualname__, forward_source_sha256=source_hash,
+            unsloth_nf4_override=bool(getattr(forward, '_unsloth_nf4_override', False)),
+            unsloth_block_wrapper=bool(getattr(forward, '_unsloth_block_nf4', False)))
+    operations = importlib.import_module('bitsandbytes.backends.cuda.ops')
+    return dict(linear4bit_dispatch=paths,
+        bnb_gemm_4bit_custom_max_m=getattr(operations, '_gemm_4bit_custom_max_m', None),
+        interpretation='Installed Python forward identity; no kernel-level profiling or speedup claim')
+
+
 def validate_reference_scaling(model):
     """Confirm the installed fast-kernel accessor reads live LoRA scaling.
 
@@ -239,10 +267,13 @@ class UnslothPolicy(NF4Policy):
     """Unsloth model execution with the original VFARL exact-token sampler."""
 
     def __init__(self, config, *, seed=None, adapter_run=None, device=None,
-                 inference_device_count=1):
+                 inference_device_count=1, training=False):
         if inference_device_count not in (1, 2) or type(inference_device_count) is not int:
             raise TrainingError('Unsloth policy supports one or two visible CUDA devices')
+        if type(training) is not bool:
+            raise TrainingError('Unsloth training mode must be explicit')
         self.cfg, self.rl = read_config(config)
+        checkpointing = ('unsloth' if training and self.cfg['gradient_checkpointing'] else False)
         if device is not None:
             self.cfg['device'] = device
         if seed is not None and seed != self.cfg['seed']:
@@ -294,7 +325,7 @@ class UnslothPolicy(NF4Policy):
             load_in_4bit=True, full_finetuning=False, fast_inference=False,
             use_exact_model_name=True, local_files_only=True,
             fix_tokenizer=False, trust_remote_code=False, offload_embedding=False,
-            use_gradient_checkpointing=False, return_logits=True,
+            use_gradient_checkpointing=checkpointing, return_logits=True,
             attn_implementation=self.cfg['attn_implementation'], **placement)
         if type(self.model).__name__ != 'Gemma4ForConditionalGeneration':
             raise TrainingError('Unsloth changed the full cached model architecture')
@@ -327,7 +358,7 @@ class UnslothPolicy(NF4Policy):
             lora_dropout=0, bias='none', target_modules=target_pattern,
             finetune_vision_layers=False, finetune_language_layers=True,
             finetune_attention_modules=True, finetune_mlp_modules=True,
-            use_gradient_checkpointing=False, random_state=self.cfg['seed'])
+            use_gradient_checkpointing=checkpointing, random_state=self.cfg['seed'])
         # The already attached set is exact; retain ordinary explicit PEFT
         # targets for compatible plain-adapter exports and reloads.
         self.model.peft_config['default'].target_modules = set(targets)
@@ -365,8 +396,11 @@ class UnslothPolicy(NF4Policy):
                 actual_adapter_sha256=trainable_hash(self.model),
                 saved_parameter_tensors=len(weights), saved_tensors_byte_checked=True)
             del weights, loaded
-        FastModel.for_inference(self.model)
-        self.model.eval()
+        if training:
+            FastModel.for_training(self.model, use_gradient_checkpointing=checkpointing)
+        else:
+            FastModel.for_inference(self.model)
+            self.model.eval()
         for name, parameter in self.model.named_parameters():
             parameter.requires_grad_('lora_' in name)
         base = self.model.get_base_model()
@@ -382,9 +416,19 @@ class UnslothPolicy(NF4Policy):
         # nor LoRA preparation may silently rewrite the frozen quantized base.
         actual_base = validate_loaded_cache(base, source, torch)
         reference_scaling = validate_reference_scaling(self.model)
-        self.probability_profile = UNSLOTH_EXECUTION_PROFILE
+        self.probability_profile = (dict(
+            backend='unsloth', version=1, mode='vfarl-focal-training',
+            backbone='complete-untruncated-sequence-use_cache=False',
+            logprob='selected-hidden-states-Unsloth-fused-linear-logprobs',
+            head='same-tied-frozen-head-native-softcap-temperature1',
+            reference='separate-full-forward-zero-live-LoRA-scaling',
+            compute_dtype='bfloat16', trainable_dtype='float32',
+            gradient_checkpointing=checkpointing, cross_tool_kv=False,
+            quantization='same-prequantized-official-QAT-derived-NF4-cache')
+            if training else UNSLOTH_EXECUTION_PROFILE)
         runtime_identity = dict(profile=self.probability_profile, packages=_versions(),
             model_type=type(base).__name__, base_values=actual_base,
+            nf4_dispatch=resolved_nf4_dispatch(self.model),
             reference_scaling=reference_scaling,
             implementation_sha256=dict(
                 unsloth_loader=sha256_file(inspect.getfile(FastModel)),
@@ -397,6 +441,8 @@ class UnslothPolicy(NF4Policy):
         self.info = dict(source=source, model_type='gemma4',
             model_class=type(base).__name__, nf4_cache=cache_info,
             target_modules=targets, adapter_initialization=adapter_initialization,
+            execution_mode='training' if training else 'inference',
+            gradient_checkpointing=checkpointing,
             trainable_parameters=sum(p.numel() for p in self.model.parameters() if p.requires_grad),
             probability_execution=runtime,
             inference_placement=dict(device_map={key: str(value) for key, value in
@@ -405,6 +451,8 @@ class UnslothPolicy(NF4Policy):
         self.device = self.model.get_input_embeddings().weight.device
         self.cuda_devices = [torch.device('cuda', i) for i in range(inference_device_count)]
         self.execution = dict(backend='unsloth', inference_device_count=inference_device_count,
+            execution_mode='training' if training else 'inference',
+            gradient_checkpointing=checkpointing,
             input_device=str(self.device), device_map=self.info['inference_placement']['device_map'],
             max_memory=placement.get('max_memory'), adapter_initialization=adapter_initialization,
             probability_execution_profile=self.probability_profile,
@@ -416,3 +464,44 @@ class UnslothPolicy(NF4Policy):
         self.thought_close = self._special('<channel|>')
         self.tool_close = self._special('<tool_call|>')
         self.turn_close = self._special('<turn|>')
+
+    def clear_generation_cache(self, *, reason='explicit-reset'):
+        self._generation_cache = None
+        self._generation_cache_reset_reason = reason
+
+    def _sample_prefill(self, prompt, input_ids):
+        """Reuse actor KV only for a strictly longer, byte-exact token prefix."""
+        retained = getattr(self, '_generation_cache', None)
+        self._generation_cache = None  # transfer ownership before any forward
+        past, prefix_length = None, 0
+        reason = getattr(self, '_generation_cache_reset_reason', 'empty-cache')
+        if retained is not None:
+            tokens, candidate = retained
+            if len(tokens) < len(prompt) and tuple(prompt[:len(tokens)]) == tokens:
+                if int(candidate.get_seq_length()) != len(tokens):
+                    raise TrainingError('Retained actor KV/token length mismatch')
+                past, prefix_length, reason = candidate, len(tokens), None
+            else:
+                reason = 'prompt-is-not-a-strict-extension-of-cached-tokens'
+            del candidate, tokens, retained
+        started = time.monotonic()
+        next_logits, past = cached_prefill(self.model, input_ids,
+            past_key_values=past, prefix_length=prefix_length)
+        for device in self.cuda_devices:
+            self.torch.cuda.synchronize(device)
+        report = dict(enabled=True, hit=prefix_length > 0,
+            reused_tokens=prefix_length, new_prefill_tokens=len(prompt) - prefix_length,
+            reset_reason=reason, prefill_seconds=time.monotonic() - started)
+        return next_logits, past, report
+
+    def _retain_sample_cache(self, prompt, completion, past):
+        # The final selected token has not yet been forwarded. It will be read
+        # with the tool suffix on the next call. Reference scoring allocates a
+        # separate fresh cache and never receives this actor object.
+        tokens = tuple(prompt) + tuple(completion[:-1])
+        if not completion or int(past.get_seq_length()) != len(tokens):
+            self.clear_generation_cache(reason='unexpected-sampled-cache-length')
+            raise TrainingError('Sampled actor KV does not cover the exact forwarded tokens')
+        self._generation_cache = (tokens, past)
+        self._generation_cache_reset_reason = None
+        return len(tokens)

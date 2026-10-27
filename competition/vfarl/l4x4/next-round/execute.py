@@ -21,7 +21,7 @@ HERE = Path(__file__).resolve().parent
 ACCOUNT = 'jiyujia'
 DATASET = 'jiyujia/vfarl-newtasks-r1/1'
 CONFIG = ROOT / 'training/configs/vfarl_l4x4_16k.yaml'
-TERMINAL = {'COMPLETE', 'ERROR', 'CANCELLED', 'CANCELED'}
+TERMINAL = {'COMPLETE', 'ERROR', 'CANCELLED', 'CANCELED', 'CANCEL_REQUESTED'}
 
 
 def sha(path):
@@ -229,8 +229,9 @@ class Round:
             for task in self.selection['tasks']:
                 command += ['--only-task', task['instance_id']]
         else:
-            command += ['--policy-backend', 'unsloth', '--learner-backend', 'native',
-                '--dynamic-queue', '--focal-states', '6', '--stop-after-mixed-groups', '3',
+            command += ['--policy-backend', 'unsloth', '--learner-backend', self.plan['learner_backend'],
+                '--dynamic-queue', '--focal-states', '6', '--stop-after-mixed-groups',
+                str(self.plan['stop_after_mixed_groups']),
                 '--stop-after-tasks', '12', '--prevalidation-report', str(prevalidation)]
             if stage == 'collect':
                 command += ['--collect-only', '--stop-after-seconds', str(stop_seconds)]
@@ -267,7 +268,13 @@ class Round:
                 raise
             match = re.search(r'Kernel version (\d+) successfully pushed', result.stdout)
             if match:
-                receipt['kernel'] = metadata['id'] + '/' + match.group(1)
+                # Kaggle can derive a new notebook slug from the title even
+                # when an id was supplied. Follow its actual creation URL;
+                # never submit another version because the requested slug404s.
+                actual = re.search(r'https://www\.kaggle\.com/code/([A-Za-z0-9_-]+/[A-Za-z0-9_-]+)',
+                                   result.stdout)
+                receipt['requested_kernel_id'] = metadata['id']
+                receipt['kernel'] = (actual.group(1) if actual else metadata['id']) + '/' + match.group(1)
             save(receipt_path, receipt)
             if result.returncode or not match or 'not valid' in result.stdout.lower():
                 raise RuntimeError('Submission failed or an expected input was rejected; see ' + str(receipt_path))
@@ -401,8 +408,9 @@ class Round:
         update = self.build('update', runtime_sha, prevalidation, continuation=continuation)
         original_sources = load(collect / 'carrier-manifest.json')['source_files']
         update_sources = load(update / 'carrier-manifest.json')['source_files']
+        learner_sources = {'training/train_vfarl.py', 'training/train_vfarl_unsloth.py'}
         actor_sources = lambda values: {key: value for key, value in values.items()
-                                       if key != 'training/train_vfarl.py'}
+                                       if key not in learner_sources}
         if actor_sources(original_sources) != actor_sources(update_sources):
             raise RuntimeError('Actor/tool/preparation source changed since collection; preserve the batch and review before allocating another GPU job')
         update_ref = self.launch('update', update, gpu=True)

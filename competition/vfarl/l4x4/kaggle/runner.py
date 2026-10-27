@@ -200,7 +200,10 @@ def wait_workers(workers):
                         'policy_request', 'policy_action', 'episode_result', 'focal_group',
                         'empty_partition', 'jail_system_public_ca', 'actor_focal_scoring',
                         'actor_focal_score', 'probability_calibration', 'calibration_sample',
-                        'calibration_complete', 'actor_calibration_sample'):
+                        'calibration_complete', 'actor_calibration_sample',
+                        'training_model_loading', 'training_model_ready',
+                        'focal_backward_completed', 'optimizer_step_committed',
+                        'training_update_completed'):
                     print(json.dumps({'worker': index, **event}), flush=True)
         if MODE == 'train' and time.monotonic() - last_gpu_observation >= 60:
             last_gpu_observation = time.monotonic()
@@ -664,10 +667,11 @@ def reuse_collection(out, evidence):
     # A learner implementation repair must not force another expensive actor
     # collection. Preserve both revisions while binding all actor/tool sources.
     learner_source = 'training/train_vfarl.py'
+    learner_sources = {learner_source, 'training/train_vfarl_unsloth.py'}
     original_sources = original.get('source_sha256', {})
     current_sources = evidence.get('source_sha256', {})
-    if ({key: value for key, value in original_sources.items() if key != learner_source}
-            != {key: value for key, value in current_sources.items() if key != learner_source}):
+    if ({key: value for key, value in original_sources.items() if key not in learner_sources}
+            != {key: value for key, value in current_sources.items() if key not in learner_sources}):
         raise RuntimeError('Completed collection actor, tools or preparation sources differ')
     if original.get('actor_policy_backend') != POLICY_BACKEND:
         raise RuntimeError('Completed collection actor backend differs from this continuation')
@@ -693,6 +697,8 @@ def reuse_collection(out, evidence):
                   new_collection_performed=False, original_wall_seconds=original['wall_seconds'],
                   collection_learner_source_sha256=original_sources.get(learner_source),
                   current_learner_source_sha256=current_sources.get(learner_source),
+                  collection_learner_sources={key: original_sources.get(key) for key in sorted(learner_sources)},
+                  current_learner_sources={key: current_sources.get(key) for key in sorted(learner_sources)},
                   original_dynamic_stopping=original.get('dynamic_stopping'),
                   original_maximum_focal_states=original.get('maximum_focal_states'),
                   consumption_rule='One reward update for this exact behavior batch. Preserve this SHA in research records and never resubmit it after a committed optimizer step.')
@@ -921,16 +927,17 @@ def main():
                         rule='Stop new task claims and new state reservations only; complete active state groups and keep all results',
                         mixed_eligibility='The same prepare_rows complete/distinct-action criterion as the learner',
                         limitation='Stopping on observed mixed groups is an adaptive focal curriculum, not an unbiased task-population estimate'))
-    evidence['gpu_topology'] = {'collector_processes': 0 if CALIBRATION_ONLY else 2, 'gpus_per_policy': 2,
+    evidence['gpu_topology'] = {'collector_processes': 0 if CALIBRATION_ONLY or FOCAL_DATA or COLLECTION_KERNEL else 2, 'gpus_per_policy': 2,
                                'visible_device_groups': ['0,1', '2,3'],
                                'focal_state_quotas': list(focal_quotas),
                                'focal_quota_semantics': 'shared global reservations' if DYNAMIC_QUEUE else 'fixed per-worker quotas',
                                'branch_parallelism': 'Branches within one reserved task/state remain serial',
-                               'training_ranks': 0 if COLLECT_ONLY or CALIBRATION_ONLY else 4,
+                               'training_ranks': 0 if COLLECT_ONLY or CALIBRATION_ONLY else 1 if LEARNER_BACKEND == 'unsloth' else 4,
+                               'training_visible_gpus': 0 if COLLECT_ONLY or CALIBRATION_ONLY else 2 if LEARNER_BACKEND == 'unsloth' else 4,
                                'calibration_actor_gpus': 2 if CALIBRATION_DATA else 0,
                                'calibration_fsdp_ranks': 4 if CALIBRATION_DATA else 0,
-                               'post_update_task_limit': 0 if COLLECT_ONLY or CALIBRATION_ONLY else len(validation_ids) or 4,
-                               'post_update_collectors': 0 if COLLECT_ONLY or CALIBRATION_ONLY else 2}
+                               'post_update_task_limit': 0 if COLLECT_ONLY or CALIBRATION_ONLY or UPDATE_ONLY else len(validation_ids) or 4,
+                               'post_update_collectors': 0 if COLLECT_ONLY or CALIBRATION_ONLY or UPDATE_ONLY else 2}
     (out / 'carrier.json').write_text(json.dumps(evidence, indent=2) + '\n')
     caches = []
     for p in Path('/kaggle/input').rglob('cache-manifest.json'):
@@ -964,7 +971,28 @@ def main():
                         wall_seconds=time.monotonic() - started)
         (out / 'carrier.json').write_text(json.dumps(evidence, indent=2) + '\n')
         return
-    if COLLECTION_KERNEL:
+    if FOCAL_DATA:
+        from training.train_vfarl import prepare_rows
+        recovered = source / FOCAL_DATA
+        recovery = json.loads((source / FOCAL_PROVENANCE).read_text())
+        if sha(recovered) != recovery['focal_sha256']:
+            raise RuntimeError('Recovered focal data differs from its original byte-bound record')
+        if any(json.loads(line).get('instance_id') not in set(collection_ids)
+               for line in recovered.read_text().splitlines() if line.strip()):
+            raise RuntimeError('Recovered data contains a task outside the declared training scope')
+        reward_rows, recovered_groups = prepare_rows(recovered, CONTEXT_LENGTH)
+        if not reward_rows:
+            raise RuntimeError('Recovered data has no complete verified mixed state group')
+        focal = out / 'focal.jsonl'
+        shutil.copyfile(recovered, focal)
+        evidence['recovered_focal'] = recovery
+        evidence['focal_groups'] = recovered_groups
+        evidence['gpu_topology'].update(collector_processes=0, focal_state_quotas=[0, 0])
+        print(json.dumps(dict(phase='recovered_focal_loaded', focal_sha256=sha(focal),
+            mixed_groups=recovered_groups['mixed_group_count'], sampled_actions=len(reward_rows),
+            new_collection_performed=False)), flush=True)
+        (out / 'carrier.json').write_text(json.dumps(evidence, indent=2) + '\n')
+    elif COLLECTION_KERNEL:
         focal = reuse_collection(out, evidence)
     else:
         task_queue = out / 'task-queue.json'
@@ -1031,36 +1059,66 @@ def main():
         return
     evidence['training_behavior_batch_sha256'] = sha(focal)
     validation_before = []
-    if validation_ids:
+    validation_after_optimizer = bool(validation_ids and
+                                      (COLLECTION_KERNEL or LEARNER_BACKEND == 'unsloth'))
+    measurement_order = []
+    if validation_ids and not UPDATE_ONLY:
         # Spend comparison rollouts only after this collection produced actual
         # usable reward differences. These tasks never supplied focal rewards.
         from training.train_vfarl import prepare_rows
         reward_rows, group_summary = prepare_rows(focal, CONTEXT_LENGTH)
         evidence['focal_groups'] = group_summary
-        if reward_rows:
+        if reward_rows and not validation_after_optimizer:
             print(json.dumps({'phase': 'independent_validation_started', 'stage': 'before',
                               'task_ids': validation_ids}), flush=True)
             validation_before = fixed_rollouts(source, config_path, prevalidation, out, env,
                 common, validation_ids, 'research-before')
             evidence['independent_validation_before'] = validation_before
+            measurement_order.append('unupdated_policy_baseline')
+        elif reward_rows:
+            # The completed collection already fixes the data for this one
+            # update. Measure the independent control afterwards by loading
+            # the original base and fresh seed0 adapter, never the update.
+            evidence['independent_validation_note'] = (
+                'The unupdated-policy baseline is measured after the optimizer step; '
+                'research-before denotes policy identity, not wall-clock order. '
+                'It uses the same frozen base, fresh config-seed zero-B adapter, '
+                'task order, sampling seeds and budgets.')
         else:
             evidence['independent_validation_note'] = 'No mixed sampled-action group; no update comparison was requested.'
+        evidence['measurement_order'] = measurement_order
+        evidence['actual_update_before_baseline'] = False
         (out / 'carrier.json').write_text(json.dumps(evidence, indent=2) + '\n')
     # All rollout model processes have exited before allocating the FSDP model.
-    train_env = dict(env, FSDP_TRANSFORMER_CLS_TO_WRAP='Gemma4TextDecoderLayer',
-                     NCCL_DEBUG='WARN', TORCH_NCCL_ASYNC_ERROR_HANDLING='1')
-    command = [sys.executable, '-m', 'torch.distributed.run', '--standalone', '--nproc-per-node=4',
-               '--max-restarts=0', '-m', 'training.train_vfarl', '--config', str(config_path),
-               '--data', str(focal), '--out', str(out / 'update'),
-               '--actor-backend', POLICY_BACKEND, '--learner-backend', LEARNER_BACKEND]
+    if LEARNER_BACKEND == 'unsloth':
+        train_env = dict(env, CUDA_VISIBLE_DEVICES='0,1')
+        for key in ('RANK', 'LOCAL_RANK', 'WORLD_SIZE', 'LOCAL_WORLD_SIZE'):
+            train_env.pop(key, None)
+        command = [sys.executable, '-m', 'training.train_vfarl_unsloth',
+                   '--config', str(config_path), '--data', str(focal), '--out', str(out / 'update'),
+                   '--actor-backend', POLICY_BACKEND, '--learner-backend', 'unsloth', '--policy-gpus', '2']
+        learner_ranks, learner_gpus = 1, 2
+    else:
+        train_env = dict(env, FSDP_TRANSFORMER_CLS_TO_WRAP='Gemma4TextDecoderLayer',
+                         NCCL_DEBUG='WARN', TORCH_NCCL_ASYNC_ERROR_HANDLING='1')
+        command = [sys.executable, '-m', 'torch.distributed.run', '--standalone', '--nproc-per-node=4',
+                   '--max-restarts=0', '-m', 'training.train_vfarl', '--config', str(config_path),
+                   '--data', str(focal), '--out', str(out / 'update'),
+                   '--actor-backend', POLICY_BACKEND, '--learner-backend', LEARNER_BACKEND]
+        learner_ranks, learner_gpus = 4, 4
+    evidence['training_execution'] = dict(backend=LEARNER_BACKEND, processes=learner_ranks,
+                                          visible_gpus=learner_gpus)
     with (out / 'update.log').open('w') as log:
-        print(json.dumps({'phase': 'training_update_started', 'ranks': 4,
+        print(json.dumps({'phase': 'training_update_started', 'ranks': learner_ranks,
+                          'visible_gpus': learner_gpus, 'backend': LEARNER_BACKEND,
                           'focal_data': str(focal)}), flush=True)
         train_process = spawn(command, env=train_env, cwd=source, stdout=log, stderr=subprocess.STDOUT)
         wait_workers([(train_process, log)])
     manifest_path = out / 'update/training_manifest.json'
     updated = json.loads(manifest_path.read_text()) if manifest_path.is_file() else {}
     evidence['one_update_completed'] = updated.get('optimizer_steps') == 1
+    if validation_ids and evidence['one_update_completed']:
+        measurement_order.append('optimizer_update')
     evidence['training_process_exit_code'] = train_process.returncode
     evidence['post_update_diagnostics_completed'] = updated.get('post_update_diagnostics_completed', False)
     print(json.dumps({'phase': 'training_update_finished', 'exit_code': train_process.returncode,
@@ -1073,9 +1131,25 @@ def main():
         evidence['post_update_diagnostic_failure'] = (
             'The optimizer step and adapter were committed before the failed diagnostic phase. '
             'This batch is not trained again; only independent post-update rollout follows.')
+    if UPDATE_ONLY:
+        evidence['independent_validation_note'] = 'Deferred in this short real optimizer/timing run; no independent improvement is claimed.'
+        evidence['wall_seconds'] = time.monotonic() - started
+        (out / 'carrier.json').write_text(json.dumps(evidence, indent=2) + '\n')
+        return
     if evidence['one_update_completed']:
         post_ids = [task for task in collection_ids if task in usable][:4]
         if validation_ids:
+            if validation_after_optimizer:
+                evidence['actual_update_before_baseline'] = True
+                (out / 'carrier.json').write_text(json.dumps(evidence, indent=2) + '\n')
+                print(json.dumps({'phase': 'independent_validation_started', 'stage': 'before',
+                                  'wall_clock_stage': 'after_optimizer',
+                                  'policy': 'original-base-fresh-config-seed-zero-B-adapter',
+                                  'task_ids': validation_ids}), flush=True)
+                validation_before = fixed_rollouts(source, config_path, prevalidation, out, env,
+                    common, validation_ids, 'research-before')
+                evidence['independent_validation_before'] = validation_before
+                measurement_order.append('unupdated_policy_baseline')
             if len(validation_before) != len(validation_ids):
                 raise RuntimeError('Preserve the committed update; independent pre-update comparison is incomplete')
             post_ids = validation_ids
@@ -1099,6 +1173,7 @@ def main():
         validation_after = fixed_rollouts(source, config_path, prevalidation, out, env,
             common, post_ids, prefix, adapter_run=out / 'update', focal=focal)
         if validation_ids:
+            measurement_order.append('updated_policy_rollouts')
             pairs = []
             for before, after in zip(validation_before, validation_after):
                 pairs.append(dict(instance_id=before['instance_id'],
@@ -1109,6 +1184,9 @@ def main():
             comparison = dict(task_ids=validation_ids, pairs=pairs,
                 selection_sha256=sha(material / 'selection.json'),
                 context=CONTEXT_LENGTH, draws=1, focal_states=0,
+                measurement_order=measurement_order,
+                actual_update_before_baseline=validation_after_optimizer,
+                baseline_policy='Original frozen base and fresh config-seed zero-B adapter; research-before describes policy identity.',
                 limitation='Small independent research comparison within allowed train sources; no official heldout score.')
             (out / 'research-validation.json').write_text(json.dumps(comparison, indent=2) + '\n')
             evidence['independent_validation_after'] = validation_after
