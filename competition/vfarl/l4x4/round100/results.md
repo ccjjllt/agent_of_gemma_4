@@ -40,3 +40,19 @@ R2：每双卡副本4个独立任务session，生成action microbatch最大2，�
 17:38:23 GPU实际证据：两模型ready身份一致、16K/96题池，每副本4独立任务真实进入采集；两个副本均已完成真实B2。worker0首B2共453 tokens，prefill47.53秒、decode127.62秒（3.5495 token/s）；worker1首B2共512 tokens，prefill7.917秒、decode113.957秒（4.4929 token/s），含prefill整体4.2003 token/s。按唯一(worker,batch_index)计时，未将两条action的batch wall重复加总。任务与长度不同且仍含冷形状开销，只能视为初步吞吐信号，不是受控倍速或RL收益。最新显存9250/12692/9276/12728 MiB，无worker错误；尚未本轮optimizer更新。
 
 旧取消轮已正规API完整恢复：43研究文件、68动作，actual_optimizer_steps=0；唯一完整focal组无异奖。exact-token数据与队列SHA匹配。详细凭据见cancelled-r1/recovery-summary.json。
+
+18:25:27，R3 jiyujia/vfarl-train100-32k-session-r3/1 平台RUNNING，私有设置/输入/源码回读一致，source SHA 073af7857f11cb7f11fe886e67c5002c31d6c22e3f511e8dd8ec662779317afb。
+
+R3容量设置32K，未强制把任务填满；每副本6独立任务，max action batch4，padded active token预算32768、inactive session KV LRU预算32768；长请求自动拆批。单次响应1536、思考256、episode输出8192。原100题排除前两轮已领取16题，续84未领取，partial与completed分别保留。新claim预算16200秒、session23400秒，启动前实际剩余配额14.1809869小时。
+
+v4机制：各session按policy ID与严格prefix复用B1 KV，增量prefill新增工具后缀后合并B2/B4；行停止当步提取full/sliding缓存，避免dummy尾部挤掉有效sliding窗口；独立reference缓存，episode结束release、更新前aclose排空清缓存，保留真实old概率及mask。实际tiny Gemma4 CPU手工核对跨滑窗/不同prefix/B4尾部、下一turn命中与LRU/epoch，最大KV差约1.27e-5；这不是GPU吞吐或32K反传证据。
+
+本地官方31B配置的理论BF16 KV：50层1024滑窗+10层full，单序列16K约2.03GiB、32K约3.28GiB，未含权重/激活/allocator/打包克隆峰值；R3会直接记录实际cache layer类型。官方vLLM/PP2+NF4为后续独立引擎候选，当前并未接入。
+
+19:06:51 R3实际GPU证据：B4与v4 session缓存已跑通，两副本策略身份一致，32K上限/84题池/每副本6session。缓存类型实际50 Sliding+10 Full。33个唯一batch，B4 13/B3 15/B2 3/B1 2，排首形状后整体4.377 token/s；最近十分钟整体4.190、decode4.750 token/s（两副本unique batch时间相加口径，非整机墙钟tps），prefill占11.8%，cache87/105命中、复用306382 tokens。R2长上下文窗口2.565 token/s仅作粗参照，任务不同不是受控实验或RL收益。
+
+四卡最近十分钟均值26.2/64.9/16.0/62.9%，整体42.5%，显存13878/21288/13998/21088 MiB；无worker异常/OOM。长上下文自动缩B3、LRU出现淘汰重prefill；重卡接近容量，不能无依据扩大KV预算。每题请求还存在73–83秒队列等待及241–343秒总延迟，吞吐收益不代表单题反馈延迟下降。
+
+当前13题领取，仅1 episode结束且reward=null/verified=false，不能计失败或成功；focal0/update0。最长实际前缀约9.3K，不能声称实际32K前向或反传已被验证。
+
+R2取消结果后续已完整正常Range恢复：确认12领取/4完成/8中断、focal0/update0；此前publication_pending已解除。原始malformed为真实多余引号，旧严格parser未误拒规范参数。768截断两类分别是长工具脚本与重复^退化输出，增加单次预算只可能帮助前者。

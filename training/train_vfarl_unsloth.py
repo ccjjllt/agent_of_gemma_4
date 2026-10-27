@@ -121,6 +121,11 @@ def run(args, policy=None, optimizer=None):
                 optimizer.load_state_dict(torch.load(state_path, map_location='cpu', weights_only=True))
         elif {id(value) for group in optimizer.param_groups for value in group['params']} != {id(value) for value in parameters}:
             raise TrainingError('Resident optimizer does not own the active LoRA parameters')
+        loaded_learning_rates = [float(group['lr']) for group in optimizer.param_groups]
+        for group in optimizer.param_groups:
+            # load_state_dict restores the old param_groups too. Preserve Adam
+            # moments, but honor this run's explicit learning-rate declaration.
+            group['lr'] = cfg['learning_rate']
         optimizer_updates_before = optimizer_updates(optimizer)
         optimizer_state_reused = bool(optimizer.state) and optimizer_updates_before > 0
         optimizer.zero_grad(set_to_none=True)
@@ -133,6 +138,8 @@ def run(args, policy=None, optimizer=None):
             optimizer_object_reused=optimizer_object_reused,
             optimizer_state_reused=optimizer_state_reused,
             optimizer_updates_before=optimizer_updates_before,
+            loaded_learning_rates=loaded_learning_rates,
+            actual_learning_rates=[float(group['lr']) for group in optimizer.param_groups],
             selected_actions=len(rows), mixed_groups=evidence['mixed_group_count'],
             actual_max_sequence_tokens=max(len(r['prompt_token_ids']) +
                                           len(r['completion_token_ids']) for r in rows))), flush=True)
@@ -166,7 +173,10 @@ def run(args, policy=None, optimizer=None):
             policy_loss = -torch.minimum(ratio * advantage,
                 ratio.clamp(1 - rl['clip_epsilon'], 1 + rl['clip_epsilon']) * advantage)
             log_ref_ratio = reference - current
-            kl = log_ref_ratio.exp() - log_ref_ratio - 1
+            # The reference is usually very close to the actor. exp(x)-1
+            # loses the small k3 value around zero in FP32; expm1 keeps the
+            # same objective without that avoidable cancellation.
+            kl = torch.expm1(log_ref_ratio) - log_ref_ratio
             loss = (policy_loss + rl['kl_beta'] * kl).mean() * importance
             if not bool(torch.isfinite(loss)):
                 raise TrainingError('Nonfinite Unsloth PPO/KL loss')
@@ -201,12 +211,15 @@ def run(args, policy=None, optimizer=None):
                                                   error_if_nonfinite=True)
         if not bool(grad_norm > 0):
             raise TrainingError('Verified rewards produced no nonzero gradient')
+        gradient_clipping_scale = min(1.0, cfg['max_grad_norm'] / (float(grad_norm) + 1e-6))
         optimizer.step()
         step_taken = True
         after = shard_snapshot(model)
         squared_delta = sum(float((after[name] - before[name]).double().square().sum())
                             for name in before)
         changed = sum(int(torch.count_nonzero(after[name] - before[name])) for name in before)
+        parameter_count = sum(value.numel() for value in before.values())
+        parameter_step_rms = math.sqrt(squared_delta / parameter_count)
         # This is the observed clipped loss gradient dotted with the actual
         # parameter step. It adds tensor transfers, never a forward/backward.
         gradient_dot_parameter_delta = sum(float((
@@ -240,12 +253,19 @@ def run(args, policy=None, optimizer=None):
             optimizer_hyperparameters=[{key: group[key] for key in
                 ('lr', 'betas', 'eps', 'weight_decay') if key in group}
                 for group in optimizer.param_groups],
+            loaded_learning_rates=loaded_learning_rates,
+            learning_rate_policy='Current run declaration; Adam moments and step counters preserved',
             importance_weights=importance_summary(metrics),
             parameter_before_sha256=snapshot_hash(before),
             parameter_after_sha256=snapshot_hash(after),
             trainable_adapter_after_sha256=policy.identity['policy_identity']['adapter_sha256'],
             global_parameter_delta_l2=math.sqrt(squared_delta),
+            trainable_parameter_count=parameter_count,
+            parameter_step_rms=parameter_step_rms,
             gradient_dot_parameter_delta=gradient_dot_parameter_delta,
+            gradient_clipping_scale=gradient_clipping_scale,
+            unclipped_gradient_dot_parameter_delta_estimate=(
+                gradient_dot_parameter_delta / gradient_clipping_scale),
             gradient_step_interpretation='Observed clipped objective gradient dot the actual parameter change; negative predicts first-order descent but is not proof of measured objective improvement.',
             global_changed_parameter_elements=changed, grad_norm=float(grad_norm),
             adapter_files=adapter_files, memory_by_device=memory(torch, policy.cuda_devices),
@@ -300,6 +320,12 @@ def run(args, policy=None, optimizer=None):
             mean_optimized_objective_after=sum(item['optimized_objective_after']['weighted_objective']
                 for item in comparisons) / len(comparisons),
             wall_seconds=time.monotonic() - started)
+        final['optimized_objective_change'] = (final['mean_optimized_objective_after']
+                                               - final['mean_optimized_objective_before'])
+        final['first_order_predicted_objective_change'] = (
+            committed['unclipped_gradient_dot_parameter_delta_estimate'])
+        final['measured_minus_first_order_change'] = (final['optimized_objective_change']
+            - final['first_order_predicted_objective_change'])
         atomic_json(output / 'training_manifest.json', final)
         print(json.dumps(dict(phase='training_update_completed', optimizer_steps=1,
             post_update_diagnostics_completed=True,

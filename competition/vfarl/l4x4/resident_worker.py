@@ -38,7 +38,8 @@ def main():
     policy.switch_execution_mode('inference')
     from training.vfarl_batched import configure_batched_policy
     configure_batched_policy(policy, max_batch_size=setup.get('batch_size', 2),
-        max_batch_tokens=setup.get('batch_max_tokens', 32768))
+        max_batch_tokens=setup.get('batch_max_tokens', 32768),
+        session_cache_tokens=setup.get('session_cache_tokens', 0))
     selection = json.loads(Path(setup['selection']).read_text())
     entries = selection['tasks']
     if any(row['physical_split'] != 'train' for row in entries):
@@ -76,7 +77,8 @@ def main():
                         tools=Path(setup['tools']), prevalidation=Path(setup['prevalidation']),
                         policy_backend='unsloth', policy_gpus=2, adapter_run=None,
                         score_focal_data=None, score_focal_before=False,
-                        context=setup['context'], draws=1, branches=3,
+                        context=setup['context'], draws=1, branches=setup.get('branches', 3),
+                        collection_protocol=setup.get('collection_protocol', 'historical-three-branch'),
                         max_states=command['maximum_states'], worker_index=args.worker_index,
                         worker_count=2, task_queue=Path(command['task_queue']),
                         stop_after_mixed_groups=command['mixed_groups'],
@@ -103,7 +105,8 @@ def main():
                         service = BatchedPolicyService(policy,
                             max_batch_size=setup.get('batch_size', 2),
                             wait_ms=setup.get('batch_wait_ms', 10),
-                            max_batch_tokens=setup.get('batch_max_tokens', 32768))
+                            max_batch_tokens=setup.get('batch_max_tokens', 32768),
+                            session_cache_tokens=setup.get('session_cache_tokens', 0))
                         try:
                             await collect(SimpleNamespace(**values), subset, questions, policy=service)
                         finally:
@@ -123,6 +126,18 @@ def main():
                         if setup.get('optimizer_state'):
                             optimizer.load_state_dict(policy.torch.load(setup['optimizer_state'],
                                 map_location='cpu', weights_only=True))
+                    # Loading Adam state restores param-group learning rates as
+                    # well as moments. This run's declared rate takes priority;
+                    # keep the existing step counters and moment tensors intact.
+                    prior_learning_rates = [float(group['lr']) for group in optimizer.param_groups]
+                    for group in optimizer.param_groups:
+                        group['lr'] = policy.cfg['learning_rate']
+                    optimizer_learning_rate = dict(declared=policy.cfg['learning_rate'],
+                        before_assignment=prior_learning_rates,
+                        actual=[float(group['lr']) for group in optimizer.param_groups],
+                        policy='Current declared learning rate; Adam moments and step counters retained')
+                    print(json.dumps(dict(phase='resident_optimizer_learning_rate',
+                        **optimizer_learning_rate)), flush=True)
                     diagnostic_error = None
                     try:
                         run(SimpleNamespace(config=setup['config'], data=command['data'],
@@ -145,6 +160,7 @@ def main():
                     policy.switch_execution_mode('inference')
                     result = dict(out=command['out'], policy=policy.identity,
                         optimizer_state=str(latest), optimizer_state_sha256=sha256_file(latest),
+                        optimizer_learning_rate=optimizer_learning_rate,
                         diagnostic_error=diagnostic_error)
                 elif operation == 'sync':
                     policy.load_adapter_in_place(command['adapter_run'])

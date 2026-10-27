@@ -987,14 +987,20 @@ def main():
                 optimizer_state='Fresh Adam for this round; prior short run did not export moments')
         from competition.vfarl.l4x4.resident import run as resident_run
         evidence['resident_settings'] = RESIDENT_SETTINGS
+        live_pair = RESIDENT_SETTINGS.get('collection_protocol') == 'live-original-pair'
+        if live_pair:
+            evidence['resident_effective_settings'] = dict(RESIDENT_SETTINGS,
+                active_tasks=1, batch_task_limit=2, mixed_groups=1, maximum_states=2)
         evidence['gpu_topology'].update(collector_processes=2, resident_model_loads=2,
             training_ranks=1, training_visible_gpus=2, post_update_task_limit=0,
             post_update_collectors=0, initial_model_policy='Loaded once, adapter synchronized after each new batch update')
         evidence['gpu_topology'].update(
-            active_tasks_per_replica=RESIDENT_SETTINGS.get('active_tasks', 1),
+            active_tasks_per_replica=1 if live_pair else RESIDENT_SETTINGS.get('active_tasks', 1),
             maximum_generation_batch_size=RESIDENT_SETTINGS.get('batch_size', 1),
-            inference_scheduler='Action microbatch with fresh KV' if RESIDENT_SETTINGS.get('batch_size', 1) > 1
-                else 'Single-sequence cached sampler')
+            inference_scheduler=('Session-incremental prefill and action microbatch'
+                if RESIDENT_SETTINGS.get('session_cache_tokens', 0) else 'Action microbatch with fresh KV')
+                if RESIDENT_SETTINGS.get('batch_size', 1) > 1 else 'Single-sequence cached sampler',
+            retained_session_token_budget=RESIDENT_SETTINGS.get('session_cache_tokens', 0))
         (out / 'carrier.json').write_text(json.dumps(evidence, indent=2) + '\n')
         summary = resident_run(config=config_path, selection=material / 'selection.json',
             questions=material / 'questions.jsonl', assets=material / 'assets',
@@ -1031,16 +1037,20 @@ def main():
         focal = reuse_collection(out, evidence)
     else:
         task_queue = out / 'task-queue.json'
+        collection_protocol = globals().get('COLLECTION_PROTOCOL', 'historical-three-branch')
+        collection_branches = 2 if collection_protocol == 'live-original-pair' else 3
         if DYNAMIC_QUEUE:
             from competition.vfarl.l4x4.run import TaskQueue
             selected_entries = [row for row in selection['tasks'] if row['instance_id'] in usable]
+            execution_contract = dict(config_sha256=sha(config_path), policy_backend=POLICY_BACKEND,
+                context=CONTEXT_LENGTH, draws=1, branches=collection_branches, turns=32, tool_calls=32,
+                turn_tokens=1536, episode_tokens=8192)
+            if collection_protocol != 'historical-three-branch':
+                execution_contract['collection_protocol'] = collection_protocol
             TaskQueue(task_queue, [row['instance_id'] for row in selected_entries],
                 selection_sha256=sha(material / 'selection.json'), maximum_states=FOCAL_STATES,
                 stop_after_mixed_groups=STOP_AFTER_MIXED_GROUPS, stop_after_tasks=STOP_AFTER_TASKS,
-                stop_after_seconds=STOP_AFTER_SECONDS,
-                execution_contract=dict(config_sha256=sha(config_path), policy_backend=POLICY_BACKEND,
-                    context=CONTEXT_LENGTH, draws=1, branches=3, turns=32, tool_calls=32,
-                    turn_tokens=1536, episode_tokens=8192))
+                stop_after_seconds=STOP_AFTER_SECONDS, execution_contract=execution_contract)
             evidence['task_queue'] = dict(path=str(task_queue),
                 frozen_task_order=[row['instance_id'] for row in selected_entries],
                 unit='Whole task with its declared draws; branches remain serial within each reserved state')
@@ -1049,7 +1059,8 @@ def main():
         try:
             for rank, states in enumerate(focal_quotas):
                 command = common + ['--config', str(config_path), '--prevalidation', str(prevalidation),
-                    '--context', str(CONTEXT_LENGTH), '--draws', '1', '--branches', '3', '--max-states', str(states),
+                    '--context', str(CONTEXT_LENGTH), '--draws', '1', '--branches', str(collection_branches),
+                    '--collection-protocol', collection_protocol, '--max-states', str(states),
                     '--policy-gpus', '2', '--worker-index', str(rank), '--worker-count', '2',
                     '--policy-backend', POLICY_BACKEND,
                     '--out', str(out / f'worker-{rank}')]

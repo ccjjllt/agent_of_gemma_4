@@ -2,8 +2,10 @@
 
 No rollout or reward is manufactured here. Only independently sampled focal
 actions with complete terminal verification, restored declared state and mixed
-rewards contribute. Original-action replays and all continuation tokens are
-excluded. Launch with torchrun --standalone --nproc-per-node=4 -m training.train_vfarl.
+rewards contribute. A live original action can be one sample when its pre-action
+capture and independently restored partner are bound below. Forced original-action
+replays and all continuation tokens are excluded. Launch with
+torchrun --standalone --nproc-per-node=4 -m training.train_vfarl.
 An Unsloth actor uses --actor-backend unsloth with the native FSDP learner and
 sequence_tis; --calibrate fsdp-focal scores a fresh focal batch without updating.
 """
@@ -29,6 +31,61 @@ from .vfarl_policy import (bind_template, identities, install_eval_checkpointing
                           digest)
 
 
+def live_focal_sample_sha256(row):
+    """Bind actual sampled tokens/probabilities independently of reference scoring."""
+    fields = ('prompt_token_ids', 'completion_token_ids', 'loss_mask',
+              'behavior_logprobs', 'policy_id', 'reference_id')
+    value = {key: row[key] for key in fields}
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
+        separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+
+
+def _live_capture_binding(row):
+    """Require provenance from the live pre-action capture, never a forced replay."""
+    evidence = row.get('live_capture_evidence')
+    if not isinstance(evidence, dict):
+        raise TrainingError('Missing live-capture evidence: ' + row['branch_id'])
+    prompt_hash = hashlib.sha256(json.dumps(row['prompt_token_ids'], ensure_ascii=False,
+        sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+    hashes = ('selection_evidence_sha256', 'snapshot_manifest_sha256', 'original_action_line_sha256',
+              'original_episode_sha256', 'same_state_restore_sha256',
+              'captured_ledger_sha256', 'restored_ledger_sha256')
+    paths = ('selection_evidence_path', 'snapshot_manifest_path', 'original_actions_path',
+             'original_episode_path', 'same_state_restore_evidence')
+    valid = (
+        evidence.get('format') == 'vfarl-live-capture-v1'
+        and evidence.get('selected_by_prefix_only') is True
+        and evidence.get('selection_rule') ==
+            'first-real-tool-failure-with-recovery-budget-before-action'
+        and row.get('original_action_replay') is False
+        and evidence.get('original_action_replay') is False
+        and evidence.get('original_behavior_preserved') is True
+        and evidence.get('original_verified') is True
+        and evidence.get('original_terminal_reward') == row['reward']
+        and row.get('origin_episode_reward') == row['reward']
+        and evidence.get('state_id') == row['state_id']
+        and evidence.get('restored_state_id') == row['state_id']
+        and evidence.get('restored_policy_id') == row['policy_id']
+        and evidence.get('prompt_token_ids_sha256') == prompt_hash
+        and evidence.get('restored_prompt_token_ids_sha256') == prompt_hash
+        and evidence.get('original_action_sha256') == live_focal_sample_sha256(row)
+        and type(evidence.get('original_action_index')) is int
+        and evidence.get('original_action_index') == row['checkpoint_turn']
+        and type(evidence.get('original_action_line')) is int
+        and evidence.get('original_action_line') == row['checkpoint_turn'] + 1
+        and evidence.get('captured_ledger_sha256') == evidence.get('restored_ledger_sha256')
+        and evidence.get('same_state_restore_evidence') == row.get('restored_state_evidence')
+        and isinstance(evidence.get('paired_branch_id'), str)
+        and bool(evidence['paired_branch_id'])
+        and evidence['paired_branch_id'] != row['branch_id']
+        and all(isinstance(evidence.get(key), str) and bool(evidence[key]) for key in paths)
+        and all(isinstance(evidence.get(key), str) and len(evidence[key]) == 64
+                and all(char in '0123456789abcdef' for char in evidence[key]) for key in hashes)
+    )
+    if not valid:
+        raise TrainingError('Unbound live-captured original action: ' + row['branch_id'])
+
+
 def prepare_rows(path, context_limit):
     groups, excluded = {}, []
     seen = set()
@@ -40,7 +97,8 @@ def prepare_rows(path, context_limit):
         if not identity or identity in seen:
             raise TrainingError('Missing/duplicate branch identity on line %d' % number)
         seen.add(identity)
-        if (row.get('kind') != 'sampled_focal_action' or row.get('on_policy') is not True
+        if (row.get('kind') not in ('sampled_focal_action', 'live_captured_original_action')
+                or row.get('on_policy') is not True
                 or row.get('verified') is not True or row.get('reward') not in (0, 1)
                 or row.get('environment_control_verified') is not True
                 or row.get('restoration_scope') != 'complete_declared_scope'):
@@ -75,9 +133,29 @@ def prepare_rows(path, context_limit):
         if row.get('finish_reason') not in ('tool_calls', 'stop'):
             excluded.append(dict(branch_id=identity, reason='incomplete-focal-response'))
             continue
+        if row['kind'] == 'live_captured_original_action':
+            _live_capture_binding(row)
         groups.setdefault(row['state_id'], []).append(row)
     rows, summary = [], []
     for state_id, members in groups.items():
+        originals = [row for row in members if row['kind'] == 'live_captured_original_action']
+        if len(originals) > 1:
+            raise TrainingError('Multiple live originals in one state group ' + state_id)
+        if originals:
+            original = originals[0]
+            evidence = original['live_capture_evidence']
+            partner = next((row for row in members
+                if row['branch_id'] == evidence['paired_branch_id']), None)
+            if partner is None:
+                excluded.append(dict(branch_id=original['branch_id'],
+                    reason='missing-complete-independent-restored-partner'))
+                members = [row for row in members if row is not original]
+                if not members:
+                    continue
+            elif (partner['kind'] != 'sampled_focal_action'
+                    or partner.get('original_action_replay') is True
+                    or partner.get('restored_state_evidence') != evidence['same_state_restore_evidence']):
+                raise TrainingError('Live original has no independently restored partner: ' + state_id)
         if len({(r['policy_id'], r['reference_id']) for r in members}) != 1:
             raise TrainingError('Different policies in same-state group ' + state_id)
         if len({tuple(r['prompt_token_ids']) for r in members}) != 1:
@@ -98,7 +176,7 @@ def prepare_rows(path, context_limit):
                 rows.append(row)
     return rows, dict(groups=summary, excluded=excluded,
                       objective='same-state mean-centered terminal reward; focal action only',
-                      valid_group_count=len(groups), mixed_group_count=sum(s['mixed_outcomes'] for s in summary))
+                      valid_group_count=len(summary), mixed_group_count=sum(s['mixed_outcomes'] for s in summary))
 
 
 def batch_for(row, torch, device):
@@ -237,7 +315,7 @@ def actor_learner_binding(rows, identity, *, actor_backend, rollout_correction):
     if actor_backend != 'unsloth' or rollout_correction != 'sequence_tis':
         raise TrainingError('Unsloth actor/native learner requires explicit sequence_tis correction')
     from .vfarl_unsloth import UNSLOTH_EXECUTION_PROFILE
-    from .vfarl_batched import BATCHED_UNSLOTH_EXECUTION_PROFILE
+    from .vfarl_batched import BATCHED_UNSLOTH_EXECUTION_PROFILE, SESSION_BATCHED_EXECUTION_PROFILE
     # Preserve the already sampled auto-r3 behavior path. This literal is
     # extracted from its frozen source bundle (vfarl_unsloth.py SHA256
     # 2855de90b8b9aa3b3e1f007204d391a9dedfd5497ed639b1f8815f4920c9e77a).
@@ -261,6 +339,7 @@ def actor_learner_binding(rows, identity, *, actor_backend, rollout_correction):
     known_profiles = {
         digest(UNSLOTH_EXECUTION_PROFILE): UNSLOTH_EXECUTION_PROFILE,
         digest(BATCHED_UNSLOTH_EXECUTION_PROFILE): BATCHED_UNSLOTH_EXECUTION_PROFILE,
+        digest(SESSION_BATCHED_EXECUTION_PROFILE): SESSION_BATCHED_EXECUTION_PROFILE,
         '1f84b034b728b36dfb47466e34b2b5c0a667e40a36bf33a4d5fbff7263971c5b': frozen_v1_profile,
     }
     execution_fields = {'probability_execution_sha256', 'probability_runtime_sha256'}
@@ -587,7 +666,7 @@ def run(args):
         policy_loss = -torch.minimum(ratio * advantage,
                                     ratio.clamp(1 - rl['clip_epsilon'], 1 + rl['clip_epsilon']) * advantage)
         log_ref_ratio = ref - current
-        kl = log_ref_ratio.exp() - log_ref_ratio - 1
+        kl = torch.expm1(log_ref_ratio) - log_ref_ratio
         per_token = policy_loss + rl['kl_beta'] * kl
         importance = per_token.new_tensor(is_weight)
         if corrected:

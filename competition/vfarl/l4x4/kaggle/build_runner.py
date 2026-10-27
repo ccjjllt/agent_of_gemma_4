@@ -17,7 +17,7 @@ parser.add_argument('--mode', choices=('capabilities', 'jail-probe', 'prevalidat
 parser.add_argument('--out', type=Path, required=True)
 parser.add_argument('--runtime-kernel', help='Explicit completed owner/kernel/version to mount.')
 parser.add_argument('--runtime-sha256', help='Expected archive SHA256, mandatory for a GPU carrier.')
-parser.add_argument('--context', type=int, choices=(4096, 8192, 16384), default=4096)
+parser.add_argument('--context', type=int, choices=(4096, 8192, 16384, 32768), default=4096)
 parser.add_argument('--training-config', type=Path,
                     default=ROOT / 'training/configs/vfarl_l4x4.yaml',
                     help='Explicit model/RL configuration to freeze; runtime context follows --context.')
@@ -56,14 +56,20 @@ parser.add_argument('--policy-backend', choices=('native', 'unsloth'), default='
                     help='Actor execution backend, selected independently of the learner.')
 parser.add_argument('--learner-backend', choices=('native', 'unsloth'), default='native',
                     help='Native four-rank FSDP or experimental Unsloth two-GPU model-parallel PPO learner.')
+parser.add_argument('--collection-protocol',
+                    choices=('historical-three-branch', 'live-original-pair'),
+                    default='historical-three-branch',
+                    help='Live pair reuses the original sampled focal action and collects one independent continuation.')
 parser.add_argument('--resident-rl', action='store_true',
                     help='Keep two Unsloth replicas resident; collect small batches, update, synchronize, then continue.')
 parser.add_argument('--resident-batch-tasks', type=int, default=4,
                     help='Task claim cap per frozen-policy window; zero dynamically uses all remaining tasks until the mixed-group target.')
 parser.add_argument('--resident-active-tasks', type=int, default=1)
-parser.add_argument('--resident-generation-batch-size', type=int, choices=(1, 2), default=1)
+parser.add_argument('--resident-generation-batch-size', type=int, choices=(1, 2, 4), default=1)
 parser.add_argument('--resident-batch-wait-ms', type=float, default=50)
 parser.add_argument('--resident-batch-max-tokens', type=int, default=32768)
+parser.add_argument('--resident-session-cache-tokens', type=int, default=0,
+                    help='LRU token budget for exact-prefix per-session KV; zero preserves fresh-action profile3.')
 parser.add_argument('--resident-exclude-task', action='append', default=[],
                     help='Previously claimed original-inventory task to preserve without resampling after cancellation.')
 parser.add_argument('--resident-task-order', choices=('frozen', 'mixed-course'), default='frozen')
@@ -100,7 +106,7 @@ if args.resident_rl:
             or args.collect_only or args.update_only or args.focal_data or args.collection_kernel
             or args.calibration_data or args.calibration_only):
         parser.error('Resident RL is an Unsloth actor/learner training run without an existing behavior batch')
-    if (args.resident_batch_tasks < 0 or min(args.resident_mixed_groups, args.resident_max_states,
+    if (min(args.resident_batch_tasks, args.resident_session_cache_tokens) < 0 or min(args.resident_mixed_groups, args.resident_max_states,
             args.resident_active_tasks, args.resident_batch_max_tokens,
             args.resident_thinking_budget, args.resident_turn_tokens, args.resident_episode_tokens) < 1
             or not math.isfinite(args.resident_seconds) or args.resident_seconds <= 0
@@ -229,8 +235,12 @@ resident_settings = dict(batch_task_limit=args.resident_batch_tasks,
     turn_tokens=args.resident_turn_tokens, episode_tokens=args.resident_episode_tokens,
     active_tasks=args.resident_active_tasks, batch_size=args.resident_generation_batch_size,
     batch_wait_ms=args.resident_batch_wait_ms, batch_max_tokens=args.resident_batch_max_tokens,
+    session_cache_tokens=args.resident_session_cache_tokens,
     excluded_task_ids=args.resident_exclude_task, task_order=args.resident_task_order)
+if args.collection_protocol != 'historical-three-branch':
+    resident_settings['collection_protocol'] = args.collection_protocol
 source = (f'RESIDENT_RL = {args.resident_rl!r}\n'
+          f'COLLECTION_PROTOCOL = {args.collection_protocol!r}\n'
           f'RESIDENT_SETTINGS = {resident_settings!r}\n'
           f'INITIAL_ADAPTER_KERNEL = {args.initial_adapter_kernel!r}\n'
           f'INITIAL_ADAPTER_SHA256 = {args.initial_adapter_sha256!r}\n'
@@ -326,6 +336,7 @@ manifest = {'source_sha256': hashlib.sha256(source.encode()).hexdigest(),
             'maximum_focal_states': args.focal_states,
             'policy_backend': args.policy_backend,
             'learner_backend': args.learner_backend,
+            'collection_protocol': args.collection_protocol,
             'update_only': args.update_only,
             'resident_rl': args.resident_rl,
             'resident_settings': resident_settings if args.resident_rl else None,

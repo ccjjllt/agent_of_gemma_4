@@ -74,8 +74,21 @@ def run(*, config, selection, questions, assets, prevalidation, tools, out,
         mixed_groups=2, maximum_states=4, turns=32, tool_calls=32,
         turn_tokens=768, episode_tokens=8192, thinking_budget=256, isolation='chroot',
         worker_env=None, active_tasks=1, batch_size=1, batch_wait_ms=50,
-        batch_max_tokens=32768, excluded_task_ids=None, task_order='frozen'):
+        batch_max_tokens=32768, session_cache_tokens=0, excluded_task_ids=None, task_order='frozen',
+        collection_protocol='historical-three-branch'):
     from training.train_vfarl import prepare_rows
+    if collection_protocol not in {'historical-three-branch', 'live-original-pair'}:
+        raise ValueError('Unknown resident focal collection protocol')
+    requested_schedule = dict(batch_task_limit=batch_task_limit, mixed_groups=mixed_groups,
+        maximum_states=maximum_states, active_tasks_per_replica=active_tasks)
+    live_original_pair = collection_protocol == 'live-original-pair'
+    if live_original_pair:
+        # This opt-in protocol is a fixed small-cohort experiment. Both models
+        # retain one behavior policy until at most two tasks finish. A complete
+        # mixed pair is sufficient; never replenish a cohort with the remaining
+        # inventory while other episodes are still running.
+        batch_task_limit, mixed_groups, maximum_states, active_tasks = 2, 1, 2, 1
+    branches = 2 if live_original_pair else 3
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     selected = json.loads(Path(selection).read_text())['tasks']
@@ -103,7 +116,8 @@ def run(*, config, selection, questions, assets, prevalidation, tools, out,
         turns=turns, tool_calls=tool_calls, turn_tokens=turn_tokens,
         episode_tokens=episode_tokens, thinking_budget=thinking_budget, isolation=isolation,
         active_tasks=active_tasks, batch_size=batch_size, batch_wait_ms=batch_wait_ms,
-        batch_max_tokens=batch_max_tokens)
+        batch_max_tokens=batch_max_tokens, session_cache_tokens=session_cache_tokens,
+        collection_protocol=collection_protocol, branches=branches)
     bootstrap = out / 'resident-bootstrap.json'
     write(bootstrap, setup)
     started = time.monotonic()
@@ -114,8 +128,16 @@ def run(*, config, selection, questions, assets, prevalidation, tools, out,
         initial_adapter=setup['initial_adapter'], model_loads=2,
         excluded_prior_claimed_task_ids=sorted(excluded), declared_task_order=task_ids,
         active_tasks_per_replica=active_tasks, maximum_generation_batch_size=batch_size,
+        maximum_retained_session_tokens=session_cache_tokens,
         sampling_window='All remaining tasks until mixed-group target' if not batch_task_limit else batch_task_limit,
         budget_seconds=stop_after_seconds, stopping='Stop new claims; retain in-flight work and committed updates')
+    summary.update(collection_protocol=collection_protocol,
+        requested_sampling_schedule=requested_schedule,
+        actual_sampling_schedule=dict(batch_task_limit=batch_task_limit,
+            mixed_groups=mixed_groups, maximum_states=maximum_states,
+            active_tasks_per_replica=active_tasks, focal_members_per_state=branches),
+        update_boundary='Complete the fixed cohort and close both inference services before updating and synchronizing adapters'
+            if live_original_pair else 'Complete the declared collection window before updating and synchronizing adapters')
     workers, sequences, positions, partial = [], [0, 0], [0, 0], ['', '']
     last_observation = 0.0
 
@@ -228,6 +250,11 @@ def run(*, config, selection, questions, assets, prevalidation, tools, out,
             raise RuntimeError('Resident replicas initialized different policies')
         emit('resident_ready', context=context, task_pool=len(task_ids),
              policy_id=ready[0]['policy']['policy_id'])
+        if live_original_pair:
+            emit('resident_collection_protocol', collection_protocol=collection_protocol,
+                 requested_schedule=requested_schedule,
+                 actual_schedule=summary['actual_sampling_schedule'],
+                 update_boundary=summary['update_boundary'])
         while len(summary['claimed_task_ids']) < len(task_ids):
             elapsed = time.monotonic() - started
             if stop_after_seconds and elapsed >= stop_after_seconds:
@@ -241,11 +268,14 @@ def run(*, config, selection, questions, assets, prevalidation, tools, out,
             seconds = max(0.001, stop_after_seconds - elapsed) if stop_after_seconds else 0
             target = max(1, mixed_groups - pending_mixed)
             ids = remaining[:batch_task_limit] if batch_task_limit else remaining
+            execution_contract = dict(config_sha256=sha(config), policy_backend='unsloth',
+                context=context, draws=1, branches=branches, turns=turns, tool_calls=tool_calls,
+                turn_tokens=turn_tokens, episode_tokens=episode_tokens)
+            if live_original_pair:
+                execution_contract['collection_protocol'] = collection_protocol
             TaskQueue(queue, ids, selection_sha256=sha(selection), maximum_states=maximum_states,
                 stop_after_mixed_groups=target, stop_after_tasks=len(ids), stop_after_seconds=seconds,
-                execution_contract=dict(config_sha256=sha(config), policy_backend='unsloth',
-                    context=context, draws=1, branches=3, turns=turns, tool_calls=tool_calls,
-                    turn_tokens=turn_tokens, episode_tokens=episode_tokens))
+                execution_contract=execution_contract)
             emit('resident_batch_started', batch=batch_number, task_ids=ids,
                  needed_mixed_groups=target, context=context)
             replies = wait([command(index, 'collect', out=str(batch / f'worker-{index}'),
@@ -354,6 +384,9 @@ def main():
     parser.add_argument('--batch-task-limit', type=int, default=4)
     parser.add_argument('--mixed-groups', type=int, default=2)
     parser.add_argument('--maximum-states', type=int, default=4)
+    parser.add_argument('--collection-protocol',
+        choices=('historical-three-branch', 'live-original-pair'), default='historical-three-branch',
+        help='live-original-pair uses a fixed two-task cohort, one session per replica and one mixed pair per update')
     args = parser.parse_args()
     run(**vars(args))
 

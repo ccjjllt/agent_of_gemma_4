@@ -314,10 +314,113 @@ def tool_suffix(tokenizer, name, arguments, response):
     return tokenizer.encode(rendered[start:], add_special_tokens=False)
 
 
+def continuation_suffix(tokenizer, message, *, assistant_ended=False):
+    """Append a real harness message without re-rendering sampled tokens."""
+    boundary = '__vfarl_assistant_feedback_boundary_20261027__'
+    rendered = tokenizer.apply_chat_template([
+        {'role': 'user', 'content': 'Earlier task context.'},
+        {'role': 'assistant', 'content': boundary},
+        {'role': 'user', 'content': message},
+    ], tools=[], tokenize=False, return_dict=False,
+        add_generation_prompt=True, enable_thinking=True)
+    if rendered.count(boundary) != 1:
+        raise PolicyProtocolError('Cannot locate the actual template feedback boundary')
+    suffix = rendered.split(boundary, 1)[1]
+    if assistant_ended and suffix.startswith('<turn|>'):
+        suffix = suffix[len('<turn|>'):]
+    return tokenizer.encode(suffix, add_special_tokens=False)
+
+
 def focal_order(item):
     return (not item.get('has_recovery_budget', False),
             not item.get('observed_tool_error', False),
             len(item['action']['prompt_token_ids']))
+
+
+def canonical_digest(value):
+    return digest(json.dumps(value, ensure_ascii=False, sort_keys=True,
+                             separators=(',', ':'), allow_nan=False).encode())
+
+
+def live_original_evidence(candidate, summary, restored, restore_path, original_dir,
+                           paired_branch_id):
+    """Bind a real precommitted live sample to its own original suffix return.
+
+    The forced original-action replay is deliberately absent. Both the action
+    and its behavior probabilities must already be present in the original
+    action log; a frozen-reference score is not a replacement for behavior.
+    """
+    action, manifest = candidate['action'], candidate['manifest']
+    state = manifest['state']
+    index = candidate['checkpoint_turn']
+    selection_path = original_dir/'live-capture-selection.json'
+    selection = json.loads(selection_path.read_text())
+    action_path = original_dir/'actions.jsonl'
+    source_line = action_path.read_bytes().splitlines()[index]
+    source_action = json.loads(source_line)
+    fields = ('prompt_token_ids', 'completion_token_ids', 'loss_mask',
+              'behavior_logprobs', 'policy_id', 'reference_id')
+    sample_hash = canonical_digest({key: action[key] for key in fields})
+    source_hash = canonical_digest({key: source_action[key] for key in fields})
+    prefix_hash = canonical_digest(action['prompt_token_ids'])
+    captured_ledger_hash = canonical_digest(state['ledger'])
+    restored_ledger_hash = canonical_digest(restored['ledger'])
+    if (summary.get('verified') is not True or summary.get('reward') not in (0, 1)
+            or source_action.get('original_action_replay') is not False
+            or sample_hash != source_hash
+            or action.get('reference_forward_performed') is not True
+            or state['prompt_token_ids'] != action['prompt_token_ids']
+            or restored['prompt_token_ids'] != action['prompt_token_ids']
+            or restored['state_id'] != manifest['state_id']
+            or restored['policy_identity']['policy_id'] != action['policy_id']
+            or state['policy_identity']['policy_id'] != action['policy_id']
+            or captured_ledger_hash != restored_ledger_hash
+            or selection.get('selected_before_sampling') is not True
+            or selection.get('state_id') != manifest['state_id']
+            or selection.get('original_action_index') != index
+            or selection.get('prompt_token_ids_sha256') != prefix_hash):
+        raise PolicyProtocolError('Live original sample does not match its pre-action capture and restored branch')
+    snapshot_path = Path(candidate['snapshot'])/'manifest.json'
+    episode_path = original_dir/'episode.json'
+    return dict(format='vfarl-live-capture-v1', state_id=manifest['state_id'],
+        prompt_token_ids_sha256=prefix_hash, original_action_sha256=sample_hash,
+        original_action_index=index, original_action_replay=False,
+        original_terminal_reward=summary['reward'], original_verified=True,
+        original_behavior_preserved=True, selected_by_prefix_only=True,
+        selection_rule='first-real-tool-failure-with-recovery-budget-before-action',
+        selection_evidence_path=str(selection_path),
+        selection_evidence_sha256=digest(selection_path.read_bytes()),
+        snapshot_manifest_path=str(snapshot_path),
+        snapshot_manifest_sha256=digest(snapshot_path.read_bytes()),
+        original_actions_path=str(action_path), original_action_line=index+1,
+        original_action_line_sha256=digest(source_line),
+        original_episode_path=str(episode_path),
+        original_episode_sha256=digest(episode_path.read_bytes()),
+        captured_ledger_sha256=captured_ledger_hash,
+        restored_ledger_sha256=restored_ledger_hash,
+        restored_state_id=restored['state_id'],
+        restored_prompt_token_ids_sha256=canonical_digest(restored['prompt_token_ids']),
+        restored_policy_id=restored['policy_identity']['policy_id'],
+        same_state_restore_evidence=str(restore_path),
+        same_state_restore_sha256=digest(restore_path.read_bytes()),
+        paired_branch_id=paired_branch_id,
+        reward_source='complete-verified-original-suffix; never a forced replay return')
+
+
+def focal_record(action, candidate, branch_summary, original_summary, *, branch_id,
+                 instance_id, kind, on_policy, restore_path, environment_control):
+    return dict(action, state_id=candidate['manifest']['state_id'],
+        branch_id=branch_id, instance_id=instance_id, kind=kind, on_policy=on_policy,
+        verified=branch_summary['verified'], reward=branch_summary['reward'],
+        origin_episode_reward=original_summary['reward'],
+        focal_selection_basis='observed tool failure, regardless of original final result',
+        environment_control_verified=True, environment_control_result=environment_control,
+        checkpoint_turn=candidate['checkpoint_turn'],
+        checkpoint_tool_observations=candidate['tool_observations'],
+        checkpoint_tool_failures_observed=candidate['tool_failures_observed'],
+        checkpoint_last_tool_feedback=candidate['last_tool_feedback'],
+        restoration_scope=candidate['manifest']['restoration_scope'],
+        restored_state_evidence=str(restore_path), verification=branch_summary['verification'])
 
 
 def score_focal_rows(policy, args, data_path, *, stage):
@@ -619,7 +722,13 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
     out.mkdir(parents=True, exist_ok=True)
     ledger = ledger if ledger is not None else {'output_tokens': 0, 'turns': 0, 'context_limit': args.context}
     candidates, actions, stop = [], [], None
-    policy.clear_generation_cache(reason='episode-start')
+    live_pair = getattr(args, 'collection_protocol', 'historical-three-branch') == 'live-original-pair'
+    def release_episode_cache(reason):
+        if hasattr(policy, 'release_session'):
+            policy.release_session(env.sid)
+        else:
+            policy.clear_generation_cache(reason=reason)
+    release_episode_cache('episode-start')
 
     async def retain_candidates():
         # Full venv copies are real state. Keep only the two best pre-action
@@ -629,6 +738,41 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
         for item in candidates[2:]:
             await blocking_call(shutil.rmtree, item['snapshot'])
         del candidates[2:]
+
+    async def continue_with_feedback(action, *, error=None):
+        """Match the official opportunity to recover, within the same budget.
+
+        This is a host observation, never a synthetic tool execution or reward.
+        Old experiments keep their historical termination semantics.
+        """
+        nonlocal ids
+        count = ledger.get('continuation_nudges', 0)
+        if (not live_pair or env.ctx.patch_submitted or count >= 3
+                or ledger['turns'] >= args.turns
+                or ledger['output_tokens'] >= args.episode_tokens):
+            return False
+        if error:
+            message = (f'Your previous tool call could not be parsed: {error}. '
+                'Emit a corrected call using the declared tools and arguments. '
+                'Do not repeat your previous reasoning.')
+        elif action['finish_reason'] == 'length':
+            message = ('Your previous response reached the token limit before the tool call '
+                'was completed. Do not repeat your analysis. Emit the next tool call '
+                'immediately; split long edits into smaller incremental edits.')
+        else:
+            message = ('Please continue your work using the available tools, or call '
+                'submit_patch when you have completed and verified your changes.')
+        suffix = continuation_suffix(policy.tokenizer, message,
+            assistant_ended=bool(ids and ids[-1] == policy.turn_close))
+        if len(ids) + len(suffix) + 16 > args.context:
+            return False
+        ids += suffix
+        ledger['continuation_nudges'] = count + 1
+        ledger['harness_feedback_count'] = ledger.get('harness_feedback_count', 0) + 1
+        append(out/'harness-feedback.jsonl', dict(kind='continuation_nudge',
+            message=message, after_turn=ledger['turns'], consecutive=count+1,
+            parse_error=error, source='actual-agent-loop-feedback'))
+        return True
     while ledger['turns'] < args.turns:
         room = min(args.context-len(ids), args.episode_tokens-ledger['output_tokens'])
         if room < 16:
@@ -642,10 +786,22 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
             and args.turns-ledger['turns'] >= 2
             and args.tool_calls-env.ctx.tool_calls_used >= 2)
         if (capture and recovery_budget and ledger.get('tool_observations', 0) > 0
-                and ledger.get('tool_failures_observed', 0) > 0):
+                and ledger.get('tool_failures_observed', 0) > 0
+                and (not live_pair or (not candidates and ledger.get('last_tool_error') is True))):
             try:
                 state = await blocking_call(Snapshot.capture, env.manager, env.sid, env.ctx, ids, ledger,
                     policy.identity, out/f'state-{ledger["turns"]:03d}')
+                if live_pair:
+                    # Fix the state before the next action or its outcome is
+                    # observed. Its actual original suffix is sample one.
+                    write(out/'live-capture-selection.json', dict(
+                        format='vfarl-live-selection-v1', state_id=state['state_id'],
+                        selected_before_sampling=True, selected_by_prefix_only=True,
+                        selection_rule='first-real-tool-failure-with-recovery-budget-before-action',
+                        original_action_index=len(actions), checkpoint_turn=ledger['turns'],
+                        prompt_token_ids_sha256=canonical_digest(ids),
+                        captured_ledger_sha256=canonical_digest(state['state']['ledger']),
+                        policy_id=policy.identity['policy_id']))
             except Exception as exc:
                 raise PolicyProtocolError('Exact pre-action state capture failed') from exc
         env.ctx.record_llm_call()
@@ -661,13 +817,14 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
                 sampling = dict(max_new_tokens=min(room, args.turn_tokens),
                     thinking_budget=getattr(args, 'thinking_budget', 1024),
                     seed=action_seed, stop_token_ids=policy.vfarl_stop_ids,
-                    compute_reference=train_focal_first_action and not actions)
+                    compute_reference=((train_focal_first_action and not actions)
+                                       or (live_pair and state is not None)))
                 if hasattr(policy, 'sample_async'):
                     action = await policy.sample_async(ids, session_id=env.sid, **sampling)
                 else:
                     action = policy.sample(ids, **sampling)
         except Exception as exc:
-            policy.clear_generation_cache(reason='sampling-error')
+            release_episode_cache('sampling-error')
             raise PolicyProtocolError('Current-policy sampling failed') from exc
         replayed = first_action is not None
         first_action = None
@@ -679,7 +836,8 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
             'attempt': out.name, 'turn': ledger['turns'], 'original_action_replay': replayed,
             **{key: action.get(key) for key in ('prompt_tokens', 'completion_tokens',
                 'thought_tokens', 'finish_reason', 'seconds', 'peak_allocated_bytes')},
-            **({'prefill_cache': action['prefill_cache']} if 'prefill_cache' in action else {})}), flush=True)
+            **({'prefill_cache': action['prefill_cache']} if 'prefill_cache' in action else {}),
+            **({'batching': action['batching']} if 'batching' in action else {})}), flush=True)
         ids = ids + action['completion_token_ids']
         ledger['output_tokens'] += len(action['completion_token_ids'])
         ledger['turns'] += 1
@@ -703,6 +861,9 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
             else:
                 stop = 'single_response_token_budget_exhausted'
             await retain_candidates()
+            if await continue_with_feedback(action):
+                stop = None
+                continue
             break
         try:
             call = parse_call(action['raw_text'])
@@ -711,13 +872,19 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
                 candidates[-1]['action_protocol_error'] = True
             await retain_candidates()
             stop = 'malformed_action: ' + str(exc)
+            if await continue_with_feedback(action, error=str(exc)):
+                stop = None
+                continue
             break
         if call is None:
             await retain_candidates()
             stop = 'model_text_termination'
+            if await continue_with_feedback(action):
+                stop = None
+                continue
             break
         name, arguments = call
-        if name not in env.tools:
+        if name not in env.tools and not live_pair:
             if state is not None:
                 candidates[-1]['action_protocol_error'] = True
             await retain_candidates()
@@ -730,15 +897,18 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
         try:
             response = await blocking_call(env.tools[name], **arguments)
         except Exception as exc:
-            # An actually raised tool exception is an observed failure, not a
-            # fabricated success/return. Retain it and end this attempt.
             append(out/'tool-events.jsonl', {'tool': name, 'arguments': arguments,
                    'exception': f'{type(exc).__name__}: {exc}'})
-            if state is not None:
-                candidates[-1]['action_tool_error'] = True
-            await retain_candidates()
-            stop = 'tool_exception'
-            break
+            if live_pair:
+                # Same error fields as the official ToolErrorPlugin. The
+                # exception really occurred; let the agent act on its feedback.
+                response = dict(status='error', error_type=type(exc).__name__, error=str(exc))
+            else:
+                if state is not None:
+                    candidates[-1]['action_tool_error'] = True
+                await retain_candidates()
+                stop = 'tool_exception'
+                break
         append(out/'tool-events.jsonl', {'tool': name, 'arguments': arguments,
             'response': response, 'seconds': time.monotonic()-started,
             'tool_calls_used': env.ctx.tool_calls_used})
@@ -756,11 +926,18 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
         ledger['last_tool_feedback'] = dict(tool=name, failed=response_failed,
             response_sha256=digest(json.dumps(response, ensure_ascii=False).encode()),
             observation_index=ledger['tool_observations'], observed_after_turn=ledger['turns'])
+        if live_pair:
+            ledger['continuation_nudges'] = 0
+            if env.ctx.patch_submitted:
+                # Official execution stops immediately on submission. Sampling
+                # one more assistant turn used to waste a full GPU request.
+                stop = 'submitted'
+                break
         if env.ctx.tool_calls_used >= args.tool_calls:
             stop = 'tool_budget_exhausted'
             break
     await retain_candidates()
-    policy.clear_generation_cache(reason='episode-finished')
+    release_episode_cache('episode-finished')
     env.ctx.stop_agent_session()
     patch, patch_capture = await blocking_call(final_patch, env)
     (out/'submitted.patch').write_text(env.ctx.submitted_patch or '')
@@ -781,6 +958,12 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
 
 
 async def collect(args, entries, questions, *, policy=None):
+    protocol = getattr(args, 'collection_protocol', 'historical-three-branch')
+    if protocol not in ('historical-three-branch', 'live-original-pair'):
+        raise ValueError('Unknown focal collection protocol')
+    live_pair = protocol == 'live-original-pair'
+    if live_pair and args.branches != 2:
+        raise ValueError('Live-original pairing requires two samples: original plus one independent branch')
     if not entries and args.score_focal_data is None:
         (args.out/'collection.jsonl').touch()
         print(json.dumps({'phase': 'empty_partition', 'worker': args.worker_index,
@@ -844,15 +1027,25 @@ async def collect(args, entries, questions, *, policy=None):
     global_indices = {row['instance_id']: i for i, row in enumerate(json.loads(args.selection.read_text())['tasks'])}
     usable = {key for key, row in preparation.items() if row.get('usable')}
     queue_entries = [row for row in entries if row['instance_id'] in usable]
+    execution_contract = dict(config_sha256=digest(args.config.read_bytes()),
+        policy_backend=args.policy_backend, context=args.context, draws=args.draws,
+        branches=args.branches, turns=args.turns, tool_calls=args.tool_calls,
+        turn_tokens=args.turn_tokens, episode_tokens=args.episode_tokens)
+    if live_pair:
+        execution_contract['collection_protocol'] = protocol
+        write(args.out/'collection-protocol.json', dict(
+            collection_protocol=protocol, format='vfarl-live-capture-v1',
+            state_selection='First real tool failure with recovery budget; fixed before sampling',
+            samples='One real original focal action and one independently sampled restored action',
+            original_behavior='Original tokens, masks and behavior probabilities are preserved',
+            reference='Actual frozen reference computed by the model owner at original focal sampling',
+            reward='Each sample uses its own complete verified terminal return; invalid remains null'))
     queue = (TaskQueue(args.task_queue, [row['instance_id'] for row in queue_entries],
         selection_sha256=digest(args.selection.read_bytes()), maximum_states=args.max_states,
         stop_after_mixed_groups=args.stop_after_mixed_groups,
         stop_after_tasks=args.stop_after_tasks,
         stop_after_seconds=args.stop_after_seconds,
-        execution_contract=dict(config_sha256=digest(args.config.read_bytes()),
-            policy_backend=args.policy_backend, context=args.context, draws=args.draws,
-            branches=args.branches, turns=args.turns, tool_calls=args.tool_calls,
-            turn_tokens=args.turn_tokens, episode_tokens=args.episode_tokens)) if args.task_queue else None)
+        execution_contract=execution_contract) if args.task_queue else None)
     if queue is not None:
         queue.bind_policy(policy.identity)
         entries = queue.entries(args.worker_index, {row['instance_id']: row for row in queue_entries})
@@ -935,16 +1128,29 @@ async def collect(args, entries, questions, *, policy=None):
                 if fork:
                     retained_snapshot = candidate['snapshot']
                     rows = []
-                    for branch in range(args.branches):
+                    for branch in ([1] if live_pair else range(args.branches)):
                         ledger = {}
                         phase = 'state_restoration'
                         restored = await blocking_call(Snapshot.restore, Path(candidate['snapshot']), env.manager,
                             env.sid, env.ctx, ledger=ledger, policy_identity=policy.identity,
                             prompt_token_ids=candidate['action']['prompt_token_ids'])
-                        manifest = candidate['manifest']
                         restored_ids = candidate['action']['prompt_token_ids']
                         branch_dir = out/f'branch-{branch}'
-                        write(branch_dir/'restore.json', restored)
+                        restore_path = branch_dir/'restore.json'
+                        write(restore_path, restored)
+                        if live_pair:
+                            evidence = live_original_evidence(candidate, summary, restored,
+                                restore_path, out/'original', f'{key}-{draw}-{branch}')
+                            write(out/'live-original-evidence.json', evidence)
+                            original_row = focal_record(candidate['action'], candidate,
+                                summary, summary, branch_id=f'{key}-{draw}-original',
+                                instance_id=key, kind='live_captured_original_action',
+                                on_policy=True, restore_path=restore_path,
+                                environment_control=environment_control)
+                            original_row.update(original_action_replay=False,
+                                collection_protocol=protocol, live_capture_evidence=evidence)
+                            rows.append(original_row)
+                            append(args.out/'focal.jsonl', original_row)
                         phase = 'branch_episode'
                         branch_summary, _, actions = await episode(env, policy, restored_ids, args,
                             branch_dir, ledger=ledger,
@@ -952,22 +1158,13 @@ async def collect(args, entries, questions, *, policy=None):
                             seed=base_seed+500, first_seed=base_seed+500+branch*100,
                             train_focal_first_action=branch != 0)
                         if actions:
-                            row = dict(actions[0], state_id=manifest['state_id'],
+                            row = focal_record(actions[0], candidate, branch_summary, summary,
                                 branch_id=f'{key}-{draw}-{branch}', instance_id=key,
                                 kind='original_action_replay' if branch == 0 else 'sampled_focal_action',
-                                on_policy=branch != 0, verified=branch_summary['verified'],
-                                reward=branch_summary['reward'],
-                                origin_episode_reward=summary['reward'],
-                                focal_selection_basis='observed tool failure, regardless of original final result',
-                                environment_control_verified=True,
-                                environment_control_result=environment_control,
-                                checkpoint_turn=candidate['checkpoint_turn'],
-                                checkpoint_tool_observations=candidate['tool_observations'],
-                                checkpoint_tool_failures_observed=candidate['tool_failures_observed'],
-                                checkpoint_last_tool_feedback=candidate['last_tool_feedback'],
-                                restoration_scope=manifest['restoration_scope'],
-                                restored_state_evidence=str(branch_dir/'restore.json'),
-                                verification=branch_summary['verification'])
+                                on_policy=branch != 0, restore_path=restore_path,
+                                environment_control=environment_control)
+                            if live_pair:
+                                row['collection_protocol'] = protocol
                             rows.append(row)
                             append(args.out/'focal.jsonl', row)
                     states += 1
@@ -1073,10 +1270,14 @@ def main():
     parser.add_argument('--tools', type=Path, default=Path('competition/vfarl/six-tools.json'))
     parser.add_argument('--prevalidate', action='store_true')
     parser.add_argument('--prevalidation', type=Path)
-    parser.add_argument('--context', type=int, choices=(4096, 8192, 16384), default=4096)
+    parser.add_argument('--context', type=int, choices=(4096, 8192, 16384, 32768), default=4096)
     parser.add_argument('--draws', type=int, choices=(1, 2), default=1)
-    parser.add_argument('--branches', type=int, choices=(2, 3), default=3,
-                        help='Total including original replay; use 3 for two independent sampled actions and a possible PPO advantage')
+    parser.add_argument('--collection-protocol',
+                        choices=('historical-three-branch', 'live-original-pair'),
+                        default='historical-three-branch',
+                        help='Opt in to reuse a precommitted real original sample plus one independent restored branch')
+    parser.add_argument('--branches', type=int, choices=(2, 3),
+                        help='Historical: replay plus fresh samples (default 3); live-original-pair: original plus one fresh sample (2)')
     parser.add_argument('--max-states', type=int, default=5)
     parser.add_argument('--turns', type=int, default=32)
     parser.add_argument('--tool-calls', type=int, default=32)
@@ -1101,6 +1302,10 @@ def main():
                         help='Optional first N selected tasks before worker partition, used for held-in post-update comparison')
     parser.add_argument('--isolation', choices=('bwrap', 'chroot', 'observable'), default='chroot')
     args = parser.parse_args()
+    if args.branches is None:
+        args.branches = 2 if args.collection_protocol == 'live-original-pair' else 3
+    if args.collection_protocol == 'live-original-pair' and args.branches != 2:
+        parser.error('--collection-protocol live-original-pair uses exactly two samples; set --branches 2 or omit it')
     if not 0 <= args.worker_index < args.worker_count or args.max_states < 0 or args.active_tasks < 1:
         parser.error('Invalid worker or focal-state count')
     if (min(args.stop_after_mixed_groups, args.stop_after_tasks, args.stop_after_seconds) < 0
