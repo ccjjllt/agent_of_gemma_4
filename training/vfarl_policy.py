@@ -206,13 +206,14 @@ def bind_template(tokenizer, cfg):
         raise TrainingError('VFARL requires one explicit deployment chat template')
 
 
-def identities(model, tokenizer, info, cfg):
+def identities(model, tokenizer, info, cfg, *, profile=None):
+    profile = PROBABILITY_EXECUTION_PROFILE if profile is None else profile
     reference = dict(nf4_cache_manifest_sha256=info['nf4_cache']['manifest_sha256'],
                      tokenizer_sha256=tokenizer_fingerprint(tokenizer),
                      template_sha256=hashlib.sha256(tokenizer.chat_template.encode()).hexdigest(),
                      tool_schema_sha256=sha256_file(Path(cfg['tool_schema_path'])),
                      reference='frozen-NF4-base-equivalent-to-zero-initialized-LoRA',
-                     probability_execution_sha256=digest(PROBABILITY_EXECUTION_PROFILE),
+                     probability_execution_sha256=digest(profile),
                      probability_runtime_sha256=info['probability_execution']['identity_sha256'])
     policy = dict(reference, adapter_sha256=trainable_hash(model),
                   temperature=1.0, top_p=1.0, top_k=0, dropout=0.0)
@@ -459,6 +460,7 @@ class NF4Policy:
         if type(inference_device_count) is not int or inference_device_count not in (1, 2):
             raise TrainingError('VFARL sampling supports one or two GPUs per policy')
         self.cfg, self.rl = read_config(config)
+        self.probability_profile = PROBABILITY_EXECUTION_PROFILE
         if device is not None:
             self.cfg['device'] = device
         self.stack = single.require_stack('nf4')
@@ -484,8 +486,8 @@ class NF4Policy:
                         or {'': str(self.device)}),
             max_memory=placement.get('inference_max_memory'),
             adapter_initialization=self.info['adapter_initialization'],
-            probability_execution_profile=PROBABILITY_EXECUTION_PROFILE,
-            probability_execution_sha256=digest(PROBABILITY_EXECUTION_PROFILE),
+            probability_execution_profile=self.probability_profile,
+            probability_execution_sha256=digest(self.probability_profile),
             probability_runtime=self.info['probability_execution'])
         if self.info.get('nf4_cache') is None:
             raise TrainingError('VFARL sampling requires the same validated cache as training')
@@ -560,7 +562,7 @@ class NF4Policy:
                     scoring=('legacy-cached-256-backbone-chunks-selected-head-chunks'
                              if cached_reference else 'sampler-style-teacher-forced'),
                     frozen_reference=frozen_reference,
-                    probability_execution_sha256=digest(PROBABILITY_EXECUTION_PROFILE),
+                    probability_execution_sha256=digest(self.probability_profile),
                     execution=self.execution, memory_by_device=memory,
                     seconds=time.monotonic() - started, **self.identity)
 
@@ -664,7 +666,7 @@ class NF4Policy:
                     prefill_chunk_size=PREFILL_CHUNK_SIZE,
                     reference_scoring=('actual-independent-sampler-style-teacher-forced'
                         if compute_reference else 'not-computed-nonfocal-action'),
-                    probability_execution_sha256=digest(PROBABILITY_EXECUTION_PROFILE),
+                    probability_execution_sha256=digest(self.probability_profile),
                     reference_forward_performed=compute_reference,
                     seconds=time.monotonic() - started,
                     prompt_tokens=len(prompt), completion_tokens=len(generated),
@@ -685,3 +687,13 @@ class NF4Policy:
         for device in self.cuda_devices:
             with self.torch.cuda.device(device):
                 self.torch.cuda.empty_cache()
+
+
+def build_policy(config, *, backend='native', **kwargs):
+    """Select an explicitly recorded execution backend without importing both."""
+    if backend == 'native':
+        return NF4Policy(config, **kwargs)
+    if backend == 'unsloth':
+        from .vfarl_unsloth import UnslothPolicy
+        return UnslothPolicy(config, **kwargs)
+    raise TrainingError('Unsupported VFARL policy backend: '+str(backend))

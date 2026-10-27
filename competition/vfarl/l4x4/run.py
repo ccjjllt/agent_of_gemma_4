@@ -10,10 +10,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import dataclasses
+import fcntl
 import hashlib
 import importlib.metadata
 import json
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -21,6 +23,7 @@ import tarfile
 import time
 import traceback
 import xml.etree.ElementTree as ET
+from contextlib import contextmanager
 from pathlib import Path
 
 SIX_TOOLS = {'run_command', 'read_file', 'edit_file', 'write_file', 'get_status', 'submit_patch'}
@@ -55,6 +58,119 @@ def safe_id(value):
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", value):
         raise ValueError("Unexpected training task ID")
     return value
+
+
+class TaskQueue:
+    """Host-only, process-safe claims in the frozen task order.
+
+    A claim is never silently retried after a worker failure. Every started
+    task and focal group remains evidence, including failures and unknowns.
+    Stopping affects future claims/state reservations, never an active branch.
+    """
+    def __init__(self, path, task_ids, *, selection_sha256, maximum_states,
+                 stop_after_mixed_groups=0, stop_after_tasks=0, execution_contract=None):
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.contract = dict(format='vfarl-shared-task-queue-v1',
+            task_ids=list(task_ids), selection_sha256=selection_sha256,
+            maximum_states=maximum_states,
+            execution_contract=execution_contract,
+            stop_after_mixed_groups=stop_after_mixed_groups,
+            stop_after_tasks=stop_after_tasks,
+            unit='One task including its predeclared draws and complete reserved state groups',
+            stopping='Stop new claims and new state reservations; retain every in-flight result')
+        with self.locked() as state:
+            if state:
+                if state.get('contract') != self.contract:
+                    raise ValueError('The shared queue belongs to different frozen tasks or stopping rules')
+            else:
+                state.update(contract=self.contract, claimed=[], completed=[], states={}, mixed_groups={})
+
+    def bind_policy(self, identity):
+        actual = {key: identity[key] for key in ('policy_id', 'reference_id')}
+        with self.locked() as state:
+            if 'policy' in state and state['policy'] != actual:
+                raise ValueError('Dynamic workers initialized different actual policies or references')
+            state['policy'] = actual
+
+    @contextmanager
+    def locked(self):
+        # The separate lock inode remains stable while the JSON is atomically
+        # replaced. Locking the replaced JSON itself would permit split locks.
+        with self.path.with_suffix(self.path.suffix+'.lock').open('a+') as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            try:
+                state = json.loads(self.path.read_text()) if self.path.exists() else {}
+                yield state
+                temporary = self.path.with_name(self.path.name+'.%d.tmp'%os.getpid())
+                with temporary.open('w') as stream:
+                    json.dump(state, stream, ensure_ascii=False, indent=2, allow_nan=False)
+                    stream.write('\n'); stream.flush(); os.fsync(stream.fileno())
+                os.replace(temporary, self.path)
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+    def stop_reason(self, state):
+        mixed = self.contract['stop_after_mixed_groups']
+        if mixed and len(state['mixed_groups']) >= mixed:
+            return 'declared-mixed-group-target-reached'
+        tasks = self.contract['stop_after_tasks']
+        if tasks and len(state['claimed']) >= tasks:
+            return 'declared-task-claim-budget-reached'
+        if len(state['claimed']) >= len(self.contract['task_ids']):
+            return 'frozen-task-queue-exhausted'
+        return None
+
+    def claim(self, worker):
+        with self.locked() as state:
+            reason = self.stop_reason(state)
+            if reason:
+                return None
+            task_id = self.contract['task_ids'][len(state['claimed'])]
+            state['claimed'].append(dict(instance_id=task_id, worker=worker, claimed_at=time.time()))
+            return task_id
+
+    def state_available(self):
+        with self.locked() as state:
+            # A task budget limits task claims, not the states of those tasks.
+            mixed = self.contract['stop_after_mixed_groups']
+            return (len(state['states']) < self.contract['maximum_states']
+                    and not (mixed and len(state['mixed_groups']) >= mixed))
+
+    def reserve_state(self, state_id, task_id, draw, worker):
+        with self.locked() as state:
+            if state_id in state['states']:
+                raise ValueError('A focal state was already reserved in this run')
+            mixed = self.contract['stop_after_mixed_groups']
+            if (len(state['states']) >= self.contract['maximum_states']
+                    or (mixed and len(state['mixed_groups']) >= mixed)):
+                return False
+            state['states'][state_id] = dict(instance_id=task_id, draw=draw, worker=worker,
+                                             reserved_at=time.time(), completed=False)
+            return True
+
+    def finish_state(self, state_id, *, mixed, branches, evidence_path, evidence_sha256):
+        with self.locked() as state:
+            state['states'][state_id].update(completed=True, finished_at=time.time(),
+                mixed_outcomes=mixed, branches=branches,
+                evidence_path=str(evidence_path), evidence_sha256_at_registration=evidence_sha256)
+            if mixed:
+                state['mixed_groups'][state_id] = dict(branches=branches, registered_at=time.time())
+
+    def finish_task(self, task_id, worker):
+        with self.locked() as state:
+            if any(row['instance_id'] == task_id for row in state['completed']):
+                raise ValueError('Task completion was registered twice')
+            state['completed'].append(dict(instance_id=task_id, worker=worker, completed_at=time.time()))
+
+    def entries(self, worker, by_id):
+        while True:
+            task_id = self.claim(worker)
+            if task_id is None:
+                return
+            print(json.dumps(dict(phase='task_claimed', worker=worker, instance_id=task_id,
+                                  task_queue=str(self.path))), flush=True)
+            yield by_id[task_id]
 
 
 class NativeArguments:
@@ -628,7 +744,7 @@ async def collect(args, entries, questions):
                           'selected_tasks': 0}), flush=True)
         return
     from competition.vfarl.l4x4.state import Snapshot, configure_isolation
-    from training.vfarl_policy import NF4Policy, read_config
+    from training.vfarl_policy import build_policy, read_config
     from training.common import TrainingError
     model_config, _ = read_config(args.config)
     if model_config['max_sequence_length'] != args.context:
@@ -642,10 +758,15 @@ async def collect(args, entries, questions):
     print(json.dumps({'phase': 'model_loading', 'context': args.context,
                       'policy_gpus': args.policy_gpus,
                       'adapter_run': str(args.adapter_run) if args.adapter_run else None}), flush=True)
-    policy = NF4Policy(args.config, adapter_run=args.adapter_run,
-                       inference_device_count=args.policy_gpus)
+    policy = build_policy(args.config, backend=args.policy_backend,
+                          adapter_run=args.adapter_run,
+                          inference_device_count=args.policy_gpus)
     print(json.dumps({'phase': 'model_ready', 'policy_id': policy.identity['policy_id'],
                       'reference_id': policy.identity['reference_id'],
+                      'backend': args.policy_backend,
+                      'adapter_sha256': policy.identity['policy_identity']['adapter_sha256'],
+                      'nf4_cache_manifest_sha256': policy.identity['policy_identity']['nf4_cache_manifest_sha256'],
+                      'probability_execution_sha256': policy.identity['policy_identity']['probability_execution_sha256'],
                       'inference_device_count': policy.execution['inference_device_count'],
                       'input_device': policy.execution['input_device']}), flush=True)
     write(args.out/'policy-execution.json', policy.execution)
@@ -672,12 +793,28 @@ async def collect(args, entries, questions):
                    (json.loads(line) for line in args.prevalidation.read_text().splitlines())}
     global_indices = {row['instance_id']: i for i, row in enumerate(json.loads(args.selection.read_text())['tasks'])}
     usable = {key for key, row in preparation.items() if row.get('usable')}
+    queue_entries = [row for row in entries if row['instance_id'] in usable]
+    queue = (TaskQueue(args.task_queue, [row['instance_id'] for row in queue_entries],
+        selection_sha256=digest(args.selection.read_bytes()), maximum_states=args.max_states,
+        stop_after_mixed_groups=args.stop_after_mixed_groups,
+        stop_after_tasks=args.stop_after_tasks,
+        execution_contract=dict(config_sha256=digest(args.config.read_bytes()),
+            policy_backend=args.policy_backend, context=args.context, draws=args.draws,
+            branches=args.branches, turns=args.turns, tool_calls=args.tool_calls,
+            turn_tokens=args.turn_tokens, episode_tokens=args.episode_tokens)) if args.task_queue else None)
+    if queue is not None:
+        queue.bind_policy(policy.identity)
+        entries = queue.entries(args.worker_index, {row['instance_id']: row for row in queue_entries})
     states = 0
+    def can_start_state():
+        return states < args.max_states and (queue is None or queue.state_available())
     for position, entry in enumerate(entries):
         key = safe_id(entry['instance_id'])
         if key not in usable:
             append(args.out/'collection.jsonl', {'instance_id': key, 'sampled': False,
                 'reason': 'Linux original baseline/reviewed-repair verification not usable'})
+            if queue is not None:
+                queue.finish_task(key, args.worker_index)
             continue
         if preparation[key].get('execution_isolation') != isolation['effective_mode']:
             raise ValueError('Task was not verified in the actual collection isolation environment: '+key)
@@ -712,10 +849,10 @@ async def collect(args, entries, questions):
                 base_seed = 20261026 + global_indices[key]*10000 + draw*1000
                 phase = 'policy_episode'
                 summary, candidates, _ = await episode(env, policy, ids, args, out/'original',
-                    capture=states < args.max_states, seed=base_seed)
+                    capture=can_start_state(), seed=base_seed)
                 environment_control = None
                 if (summary['verified'] and summary['reward'] in (0, 1)
-                        and candidates and states < args.max_states):
+                        and candidates and can_start_state()):
                     # Confirm this actual GPU worker's task environment before
                     # comparing an observed tool-failure state. The original
                     # task may later recover and succeed; its terminal reward
@@ -733,11 +870,16 @@ async def collect(args, entries, questions):
                 # Every candidate prefix already contains a real tool error.
                 # Include naturally recovered original episodes as well as
                 # terminal failures; do not choose states by branch outcomes.
-                if (summary['verified'] and summary['reward'] in (0, 1)
-                        and candidates and states < args.max_states):
+                fork = (summary['verified'] and summary['reward'] in (0, 1)
+                        and candidates and can_start_state())
+                if fork:
                     # Prefer feedback immediately after an actual error with
                     # remaining recovery budget.
                     candidate = min(candidates, key=focal_order)
+                    if queue is not None:
+                        fork = queue.reserve_state(candidate['manifest']['state_id'], key,
+                                                   draw, args.worker_index)
+                if fork:
                     retained_snapshot = candidate['snapshot']
                     rows = []
                     for branch in range(args.branches):
@@ -791,6 +933,16 @@ async def collect(args, entries, questions):
                         'checkpoint_remaining_token_capacity': candidate['remaining_token_capacity'],
                         'restoration_scope': candidate['manifest']['restoration_scope']}
                     append(args.out/'state-results.jsonl', state_result)
+                    if queue is not None:
+                        from training.train_vfarl import prepare_rows
+                        _, prepared = prepare_rows(args.out/'focal.jsonl', args.context)
+                        accepted = next((row for row in prepared['groups']
+                            if row['state_id'] == state_result['state_id']), None)
+                        queue.finish_state(state_result['state_id'],
+                            mixed=bool(accepted and accepted['mixed_outcomes']),
+                            branches=accepted['branches'] if accepted else [],
+                            evidence_path=args.out/'focal.jsonl',
+                            evidence_sha256=digest((args.out/'focal.jsonl').read_bytes()))
                     print(json.dumps(dict(state_result, phase='focal_group')), flush=True)
             except Exception as exc:
                 out.mkdir(parents=True, exist_ok=True)
@@ -818,6 +970,8 @@ async def collect(args, entries, questions):
                         shutil.rmtree(checkpoint)
             print(json.dumps({'phase': 'collection', 'instance_id': key, 'draw': draw,
                               'focal_states': states}), flush=True)
+        if queue is not None:
+            queue.finish_task(key, args.worker_index)
     if args.adapter_run is None:
         score_focal_rows(policy, args, args.out/'focal.jsonl', stage='before')
 
@@ -827,6 +981,7 @@ def main():
     for name in ('selection', 'questions', 'assets', 'out'):
         parser.add_argument('--'+name, type=Path, required=True)
     parser.add_argument('--config', type=Path)
+    parser.add_argument('--policy-backend', choices=('native', 'unsloth'), default='native')
     parser.add_argument('--policy-gpus', type=int, choices=(1, 2), default=1,
                         help='Visible GPUs used by each real sampling model; FSDP training is separate')
     parser.add_argument('--adapter-run', type=Path,
@@ -847,6 +1002,12 @@ def main():
     parser.add_argument('--episode-tokens', type=int, default=8192)
     parser.add_argument('--worker-index', type=int, default=0)
     parser.add_argument('--worker-count', type=int, default=1)
+    parser.add_argument('--task-queue', type=Path,
+                        help='Shared host-only dynamic queue; all workers receive the same frozen task list')
+    parser.add_argument('--stop-after-mixed-groups', type=int, default=0,
+                        help='Dynamic queue: stop new task/state claims after N valid distinct-action mixed groups; retain in-flight results')
+    parser.add_argument('--stop-after-tasks', type=int, default=0,
+                        help='Dynamic queue: maximum globally claimed tasks, including in-flight tasks; zero means the full fixed queue')
     parser.add_argument('--only-task', action='append', default=[],
                         help='Run named members of the frozen 100-task train pool, e.g. an environment repair or separate 8K continuation')
     parser.add_argument('--task-limit', type=int,
@@ -855,6 +1016,12 @@ def main():
     args = parser.parse_args()
     if not 0 <= args.worker_index < args.worker_count or args.max_states < 0:
         parser.error('Invalid worker or focal-state count')
+    if min(args.stop_after_mixed_groups, args.stop_after_tasks) < 0:
+        parser.error('Dynamic stopping budgets must be nonnegative')
+    if (args.stop_after_mixed_groups or args.stop_after_tasks) and not args.task_queue:
+        parser.error('Dynamic stopping budgets require --task-queue')
+    if args.task_queue and (args.prevalidate or args.adapter_run is not None):
+        parser.error('The dynamic training queue is not used for CPU preparation or fixed post-update comparisons')
     if args.task_limit is not None and args.task_limit < 1:
         parser.error('--task-limit must be positive')
     if args.score_focal_data is not None and (args.prevalidate or args.adapter_run is None):
@@ -887,7 +1054,8 @@ def main():
         entries = [row for row in entries if row['instance_id'] in selected]
     if args.task_limit is not None:
         entries = entries[:args.task_limit]
-    entries = entries[args.worker_index::args.worker_count]
+    if args.task_queue is None:
+        entries = entries[args.worker_index::args.worker_count]
     write(args.out/'execution.json', {'arguments': {k: str(v) if isinstance(v, Path) else v for k,v in vars(args).items()},
                                     'selection_sha256': digest(args.selection.read_bytes())})
     if args.prevalidate:

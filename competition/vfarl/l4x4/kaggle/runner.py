@@ -746,13 +746,23 @@ def main():
     evidence.update(planned_task_pool=100, usable_task_ids=sorted(usable), usable_task_count=len(usable),
                     unavailable_task_count=100 - len({r['instance_id'] for r in valid if r.get('usable')}),
                     sampling_scope='Only individually CPU-accepted tasks; other pool members are not claimed as sampled.')
-    focal_quotas = ((FOCAL_STATES + 1) // 2, FOCAL_STATES // 2)
+    focal_quotas = ((FOCAL_STATES, FOCAL_STATES) if DYNAMIC_QUEUE else
+                    ((FOCAL_STATES + 1) // 2, FOCAL_STATES // 2))
     evidence.update(collect_only=COLLECT_ONLY, maximum_focal_states=FOCAL_STATES,
                     calibration_only=CALIBRATION_ONLY,
-                    calibration_manifest=CALIBRATION_DATA)
+                    calibration_manifest=CALIBRATION_DATA,
+                    actor_policy_backend=POLICY_BACKEND,
+                    dynamic_queue=DYNAMIC_QUEUE,
+                    dynamic_stopping=dict(stop_after_mixed_groups=STOP_AFTER_MIXED_GROUPS,
+                        stop_after_tasks=STOP_AFTER_TASKS,
+                        rule='Stop new task claims and new state reservations only; complete active state groups and keep all results',
+                        mixed_eligibility='The same prepare_rows complete/distinct-action criterion as the learner',
+                        limitation='Stopping on observed mixed groups is an adaptive focal curriculum, not an unbiased task-population estimate'))
     evidence['gpu_topology'] = {'collector_processes': 0 if CALIBRATION_ONLY else 2, 'gpus_per_policy': 2,
                                'visible_device_groups': ['0,1', '2,3'],
                                'focal_state_quotas': list(focal_quotas),
+                               'focal_quota_semantics': 'shared global reservations' if DYNAMIC_QUEUE else 'fixed per-worker quotas',
+                               'branch_parallelism': 'Branches within one reserved task/state remain serial',
                                'training_ranks': 0 if COLLECT_ONLY or CALIBRATION_ONLY else 4,
                                'calibration_actor_gpus': 2 if CALIBRATION_DATA else 0,
                                'calibration_fsdp_ranks': 4 if CALIBRATION_DATA else 0,
@@ -790,13 +800,33 @@ def main():
                         wall_seconds=time.monotonic() - started)
         (out / 'carrier.json').write_text(json.dumps(evidence, indent=2) + '\n')
         return
+    task_queue = out / 'task-queue.json'
+    if DYNAMIC_QUEUE:
+        from competition.vfarl.l4x4.run import TaskQueue
+        selected_entries = json.loads((material / 'selection.json').read_text())['tasks']
+        selected_entries = [row for row in selected_entries if row['instance_id'] in usable]
+        TaskQueue(task_queue, [row['instance_id'] for row in selected_entries],
+            selection_sha256=sha(material / 'selection.json'), maximum_states=FOCAL_STATES,
+            stop_after_mixed_groups=STOP_AFTER_MIXED_GROUPS, stop_after_tasks=STOP_AFTER_TASKS,
+            execution_contract=dict(config_sha256=sha(config_path), policy_backend=POLICY_BACKEND,
+                context=CONTEXT_LENGTH, draws=1, branches=3, turns=32, tool_calls=32,
+                turn_tokens=1536, episode_tokens=8192))
+        evidence['task_queue'] = dict(path=str(task_queue),
+            frozen_task_order=[row['instance_id'] for row in selected_entries],
+            unit='Whole task with its declared draws; branches remain serial within each reserved state')
+        (out / 'carrier.json').write_text(json.dumps(evidence, indent=2) + '\n')
     active = []
     try:
         for rank, states in enumerate(focal_quotas):
             command = common + ['--config', str(config_path), '--prevalidation', str(prevalidation),
                 '--context', str(CONTEXT_LENGTH), '--draws', '1', '--branches', '3', '--max-states', str(states),
                 '--policy-gpus', '2', '--worker-index', str(rank), '--worker-count', '2',
+                '--policy-backend', POLICY_BACKEND,
                 '--out', str(out / f'worker-{rank}')]
+            if DYNAMIC_QUEUE:
+                command += ['--task-queue', str(task_queue),
+                    '--stop-after-mixed-groups', str(STOP_AFTER_MIXED_GROUPS),
+                    '--stop-after-tasks', str(STOP_AFTER_TASKS)]
             log = (out / f'worker-{rank}.log').open('w')
             proc = spawn(command, env=dict(env, CUDA_VISIBLE_DEVICES=('0,1' if rank == 0 else '2,3')),
                                     cwd=source, stdout=log, stderr=subprocess.STDOUT)
@@ -858,12 +888,39 @@ def main():
             'The optimizer step and adapter were committed before the failed diagnostic phase. '
             'This batch is not trained again; only independent post-update rollout follows.')
     if evidence['one_update_completed']:
+        post_common = common
+        if DYNAMIC_QUEUE:
+            # Pair post-update rollouts only with originals that actually
+            # completed before adaptive stopping, preserving frozen order.
+            completed_before = set()
+            for rank in range(2):
+                path = out / f'worker-{rank}/collection.jsonl'
+                if path.is_file():
+                    completed_before.update(row['instance_id'] for row in
+                        (json.loads(line) for line in path.read_text().splitlines() if line.strip())
+                        if row.get('verified') is True and row.get('reward') in (0, 1))
+            post_ids = [row['instance_id'] for row in
+                json.loads((material / 'selection.json').read_text())['tasks']
+                if row['instance_id'] in completed_before][:4]
+            post_common, index = [], 0
+            while index < len(common):
+                if common[index] == '--only-task':
+                    index += 2
+                else:
+                    post_common.append(common[index]); index += 1
+            for task in post_ids:
+                post_common += ['--only-task', task]
+            if not post_ids:
+                raise RuntimeError('A committed focal update has no complete original task for a paired post-update run')
+            evidence['post_update_task_ids'] = post_ids
+            (out / 'carrier.json').write_text(json.dumps(evidence, indent=2) + '\n')
         post = []
         try:
             for rank in range(2):
-                command = common + ['--config', str(config_path), '--prevalidation', str(prevalidation),
+                command = post_common + ['--config', str(config_path), '--prevalidation', str(prevalidation),
                     '--adapter-run', str(out / 'update'), '--context', str(CONTEXT_LENGTH), '--draws', '1',
                     '--max-states', '0', '--policy-gpus', '2', '--task-limit', '4',
+                    '--policy-backend', POLICY_BACKEND,
                     '--score-focal-data', str(focal),
                     '--worker-index', str(rank), '--worker-count', '2',
                     '--out', str(out / f'post-worker-{rank}')]

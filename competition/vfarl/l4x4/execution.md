@@ -1,10 +1,30 @@
 # 实际执行记录
 
-日期：2026-10-26（北京时间）。本页只记已发生的结果，不把准备或 CPU 数值验证记作模型训练。
+执行日期：2026-10-26；结果回收与后续准备更新至 2026-10-27（北京时间）。本页只记已发生的结果，不把准备或 CPU 数值验证记作模型训练。
 
 用户续办授权：已明确要求睡觉期间自主继续研究、不等待其回答。延续既有 qingyu1232 GPU 配额、私有训练材料和实验 Notebook 上传/运行/更新授权；不切换账号或新增付费资源。
 
 ## 最新已核实状态
+
+**10月27日回收已完成的16K作业，首次实际 VFARL 奖励更新闭环已成立。** 平台 COMPLETE；下载目录共列2402项，已回收258份非快照森林的动作、恢复、验收与训练证据，0下载错误。[完整摘要](kaggle/train-16k-evidence-v1/result-summary.json)、[下载来源与SHA](kaggle/train-16k-evidence-v1/download-manifest.json)。八道原始任务为 **5成功／3失败／0 unknown**，两个状态共六分支；Bottle随机分支[0,1]进入训练，Hydra随机分支[1,1]不产生优势，原动作重放均排除。
+
+实际 optimizer=**1 step**，非零有限 grad norm=0.9819849，LoRA delta L2=0.05789324、135,247,395个元素改变；约979.6MB adapter权重与配置SHA均匹配已提交manifest。实际更新与FSDP前后诊断仅 **131.81秒**，本轮总墙钟 **36292.36秒（10小时4分52秒）**，主要时间花在采样和等待。更新训练序列为5651／5653 tokens；16K采样前向已实测，但不能称为16K奖励反向。
+
+同一精确prefix/completion/mask、同一路径的实际前后评分显示：失败动作 learner mean Δlogp=−0.00133754、actor=−0.00088605；成功动作 learner=+0.00214810、actor=+0.00703521。`D_full=0.00087141`、`D_beh=0.00198031`，所有before重复评分漂移均0；这构成该训练状态的局部奖励一致似然信号。sequence TIS实际权重约1.04119／1.00738，无cap，ESS=1.99946/2。四个固定训练题重跑从2/4到3/4，Dominate由0到1；该小样本属于held-in实际行为验证，不能当作泛化成绩。不得再次训练同一旧batch。
+
+实际cleanup确认全部worker退出、无残留任务UID、临时输入与本地NF4副本已删。qingyu1232完成后平台实际余额：已用33.56h、剩0h（本轮相对起点消耗20.17h）；先前余额归零并未立即终止该已运行会话。
+
+**新一轮准备：用户已明确改用jiyujia GPU，并要求只确认正常启动、不持续监控。** 已实读认证账号jiyujia、GPU剩22.87h；旧私有train100对该账号403，因此本地准备了字节相同的私有转存包。Unsloth独立后端、动态任务队列和原子全局状态额度已实现；下一轮[固定计划](16k/unsloth-arm-plan.json)为16K/r32/1024 thinking、两道已知训练机制题、最多一状态、collection-only，不重训旧batch。组内分支仍串行；跨工具KV暂不启用，以便隔离执行路径变化。当前没有Unsloth GPU运行或性能结果。
+
+CPU运行时与私有材料上传在进程创建前被自动审批拒绝，系统认为“使用jiyujia GPU配额”未明确覆盖把具体代码／运行时／材料传往该账号。已向用户发出明确上传与CPU/GPU运行授权问题；没有上传、CPU作业或新GPU作业，也没有改目的地绕过。可审阅源为 [CPU准备程序](kaggle/prepare_unsloth_runtime.py)、[私有CPU载体配置](kaggle/unsloth-runtime-v1/kernel-metadata.json)；同一训练包124,593,514 bytes、SHA `4b3792470dd1dacc73e1899ba38a3d96f2054bfad916d4a9b51b7e4db4333504`。下方运行中表述均保留为历史阶段事实。
+
+**2026-10-26 20:43 北京时间中途审计：作业仍 RUNNING，qingyu1232 GPU 配额已用 30.02h、剩余 0.00h。** 当前输出目录 API 尚列 0 文件，不能声称已下载 adapter 或完成更新；[平台实读](kaggle/train-16k-evidence-v1/runtime-readback-20261026-2042.json)。零余额与 RUNNING 同时存在，不能据此推断平台已停止当前会话。
+
+本次重新附着取得的[实时日志](kaggle/train-16k-evidence-v1/live-readback-20261026-2039.log)最新到 20:39:33；按完整事件去重，八个 original 已全部完整验收，**5 成功、3 失败**。Bottle f94 的真实反馈后 state（turn5、已见一次 run_command error）三分支终奖为 **[0,0,1]**；其中 branch0 为强制重放，两个新采样分支为 [0,1]，完整原始 token/恢复/验收文件仍待作业发布后核对。Hydra original、branch0、branch1 均验收 1，当前仍在 branch2（turn5、prefix5101）；日志中尚无 optimizer-step 事件。
+
+**16K 采样容量已有实际证据**：Hydra 在真实 prefix14931 上生成1453 tokens，总序列 **16384**，allocated 峰值 22,488,274,944 bytes，无 OOM。该证据不代表已完成 16K 四卡奖励反向或 LoRA 更新。
+
+长时间并非已有的卡死证据：最新遥测剩余 worker 仍为 R 态、GPU0/1 持续计算；但调度和吞吐确有问题。worker1 在 14:04 已完成，GPU2/3 至少空闲至20:39，超过6.5小时；worker0 内的完整分支串行，四卡训练要等所有采样及 before 评分结束才启动。每次工具动作重新预填充整段历史，概率对齐的统一 NF4 fallback/FP32 head 另有吞吐成本，长动作实际约1 token/s。因此不能把这八小时称作八小时参数训练，也不能以16K通过替代学习闭环。未对正在运行的冻结作业作停止、重启或源码更改。
 
 北京时间 **12:19:12** 已实际提交主 [focal-recovery-16k/1](https://www.kaggle.com/code/qingyu1232/vfarl-l4x4-focal-recovery-16k)，[回执](kaggle/train-16k-v1-push.json)。冻结源码 **`a69c8a16ec92ce135de726a193b6600d81d93165c54e9a99579b8aa56d91f22b`**，显式 16K YAML SHA `0edfb4364395797314cf64cb9fb016120582ff12e619c8ca7df3c99362c7abe8`；固定八题、最多五个真实反馈后状态、每状态原动作重放＋两条新采样，开启上述 sequence_tis/cap2。平台回读 private/GPU=true、Internet=false、source SHA 一致，初始状态 QUEUED，配额起点 13.39h 已用 / 16.61h 剩余。[启动回读](kaggle/train-16k-evidence-v1/startup-readback.json)。提交不等于完成采样、16K 容量通过或参数更新。
 
