@@ -990,6 +990,11 @@ def main():
         evidence['gpu_topology'].update(collector_processes=2, resident_model_loads=2,
             training_ranks=1, training_visible_gpus=2, post_update_task_limit=0,
             post_update_collectors=0, initial_model_policy='Loaded once, adapter synchronized after each new batch update')
+        evidence['gpu_topology'].update(
+            active_tasks_per_replica=RESIDENT_SETTINGS.get('active_tasks', 1),
+            maximum_generation_batch_size=RESIDENT_SETTINGS.get('batch_size', 1),
+            inference_scheduler='Action microbatch with fresh KV' if RESIDENT_SETTINGS.get('batch_size', 1) > 1
+                else 'Single-sequence cached sampler')
         (out / 'carrier.json').write_text(json.dumps(evidence, indent=2) + '\n')
         summary = resident_run(config=config_path, selection=material / 'selection.json',
             questions=material / 'questions.jsonl', assets=material / 'assets',

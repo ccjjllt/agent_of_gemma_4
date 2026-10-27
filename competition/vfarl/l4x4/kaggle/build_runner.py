@@ -58,7 +58,15 @@ parser.add_argument('--learner-backend', choices=('native', 'unsloth'), default=
                     help='Native four-rank FSDP or experimental Unsloth two-GPU model-parallel PPO learner.')
 parser.add_argument('--resident-rl', action='store_true',
                     help='Keep two Unsloth replicas resident; collect small batches, update, synchronize, then continue.')
-parser.add_argument('--resident-batch-tasks', type=int, default=4)
+parser.add_argument('--resident-batch-tasks', type=int, default=4,
+                    help='Task claim cap per frozen-policy window; zero dynamically uses all remaining tasks until the mixed-group target.')
+parser.add_argument('--resident-active-tasks', type=int, default=1)
+parser.add_argument('--resident-generation-batch-size', type=int, choices=(1, 2), default=1)
+parser.add_argument('--resident-batch-wait-ms', type=float, default=50)
+parser.add_argument('--resident-batch-max-tokens', type=int, default=32768)
+parser.add_argument('--resident-exclude-task', action='append', default=[],
+                    help='Previously claimed original-inventory task to preserve without resampling after cancellation.')
+parser.add_argument('--resident-task-order', choices=('frozen', 'mixed-course'), default='frozen')
 parser.add_argument('--resident-mixed-groups', type=int, default=2)
 parser.add_argument('--resident-max-states', type=int, default=4)
 parser.add_argument('--resident-seconds', type=float, default=0,
@@ -92,9 +100,11 @@ if args.resident_rl:
             or args.collect_only or args.update_only or args.focal_data or args.collection_kernel
             or args.calibration_data or args.calibration_only):
         parser.error('Resident RL is an Unsloth actor/learner training run without an existing behavior batch')
-    if (min(args.resident_batch_tasks, args.resident_mixed_groups, args.resident_max_states,
+    if (args.resident_batch_tasks < 0 or min(args.resident_mixed_groups, args.resident_max_states,
+            args.resident_active_tasks, args.resident_batch_max_tokens,
             args.resident_thinking_budget, args.resident_turn_tokens, args.resident_episode_tokens) < 1
-            or not math.isfinite(args.resident_seconds) or args.resident_seconds <= 0):
+            or not math.isfinite(args.resident_seconds) or args.resident_seconds <= 0
+            or not math.isfinite(args.resident_batch_wait_ms) or args.resident_batch_wait_ms < 0):
         parser.error('Resident run requires positive batch/token budgets and a finite positive wall budget')
 if args.initial_adapter_kernel:
     if not re.fullmatch(r'[A-Za-z0-9_-]+/[A-Za-z0-9_-]+/[0-9]+', args.initial_adapter_kernel):
@@ -216,7 +226,10 @@ source += (HERE / 'runner.py').read_text()
 resident_settings = dict(batch_task_limit=args.resident_batch_tasks,
     mixed_groups=args.resident_mixed_groups, maximum_states=args.resident_max_states,
     stop_after_seconds=args.resident_seconds, thinking_budget=args.resident_thinking_budget,
-    turn_tokens=args.resident_turn_tokens, episode_tokens=args.resident_episode_tokens)
+    turn_tokens=args.resident_turn_tokens, episode_tokens=args.resident_episode_tokens,
+    active_tasks=args.resident_active_tasks, batch_size=args.resident_generation_batch_size,
+    batch_wait_ms=args.resident_batch_wait_ms, batch_max_tokens=args.resident_batch_max_tokens,
+    excluded_task_ids=args.resident_exclude_task, task_order=args.resident_task_order)
 source = (f'RESIDENT_RL = {args.resident_rl!r}\n'
           f'RESIDENT_SETTINGS = {resident_settings!r}\n'
           f'INITIAL_ADAPTER_KERNEL = {args.initial_adapter_kernel!r}\n'

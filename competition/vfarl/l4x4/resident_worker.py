@@ -36,6 +36,9 @@ def main():
     policy = UnslothPolicy(setup['config'], training=True, inference_device_count=2,
                            adapter_run=setup.get('initial_adapter'))
     policy.switch_execution_mode('inference')
+    from training.vfarl_batched import configure_batched_policy
+    configure_batched_policy(policy, max_batch_size=setup.get('batch_size', 2),
+        max_batch_tokens=setup.get('batch_max_tokens', 32768))
     selection = json.loads(Path(setup['selection']).read_text())
     entries = selection['tasks']
     if any(row['physical_split'] != 'train' for row in entries):
@@ -82,14 +85,32 @@ def main():
                         turns=setup['turns'], tool_calls=setup['tool_calls'],
                         turn_tokens=setup['turn_tokens'], episode_tokens=setup['episode_tokens'],
                         thinking_budget=setup['thinking_budget'], isolation=setup['isolation'],
+                        active_tasks=setup.get('active_tasks', 4),
                         resident_hidden_root=Path(setup['out']))
-                    wanted = set(command['task_ids'])
-                    subset = [row for row in entries if row['instance_id'] in wanted]
-                    if len(subset) != len(wanted):
+                    task_ids = command['task_ids']
+                    wanted = set(task_ids)
+                    by_id = {row['instance_id']: row for row in entries}
+                    if len(wanted) != len(task_ids) or not wanted <= by_id.keys():
                         raise ValueError('Resident batch contains an undeclared task')
+                    # Queue task order is part of its frozen contract; a
+                    # metadata-interleaved window must not fall back to the
+                    # original selection-file order inside each worker.
+                    subset = [by_id[task_id] for task_id in task_ids]
                     write(output / 'execution.json', dict(arguments={key: str(value)
                         if isinstance(value, Path) else value for key, value in values.items()}))
-                    asyncio.run(collect(SimpleNamespace(**values), subset, questions, policy=policy))
+                    async def collect_sessions():
+                        from training.vfarl_batched import BatchedPolicyService
+                        service = BatchedPolicyService(policy,
+                            max_batch_size=setup.get('batch_size', 2),
+                            wait_ms=setup.get('batch_wait_ms', 10),
+                            max_batch_tokens=setup.get('batch_max_tokens', 32768))
+                        try:
+                            await collect(SimpleNamespace(**values), subset, questions, policy=service)
+                        finally:
+                            # The single model owner must finish before this
+                            # worker changes adapters or enters training.
+                            await service.aclose()
+                    asyncio.run(collect_sessions())
                     result = dict(out=str(output), policy=policy.identity)
                 elif operation == 'update':
                     from training.train_vfarl_unsloth import run

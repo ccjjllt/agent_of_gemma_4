@@ -54,6 +54,20 @@ def append(path, value):
         handle.flush()
 
 
+async def blocking_call(function, *args, **kwargs):
+    """Run host work off the agent loop and drain it before task cleanup.
+
+    Cancelling asyncio.to_thread does not stop its thread. Waiting for the
+    owned operation prevents workspace teardown racing a live tool/verifier.
+    """
+    pending = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+    try:
+        return await asyncio.shield(pending)
+    except asyncio.CancelledError:
+        await pending
+        raise
+
+
 def safe_id(value):
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", value):
         raise ValueError("Unexpected training task ID")
@@ -521,6 +535,11 @@ class TaskEnvironment:
         return self.ctx
 
     async def verify(self, patch, label):
+        # The official async verifier contains synchronous sandbox setup and
+        # filesystem work. Give each independent task its own worker thread.
+        return await blocking_call(lambda: asyncio.run(self._verify(patch, label)))
+
+    async def _verify(self, patch, label):
         from swegemma.harness.verification import verify_task
         self.phase = label
         result = await verify_task(self.manager, self.config, self.task,
@@ -602,13 +621,13 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
     candidates, actions, stop = [], [], None
     policy.clear_generation_cache(reason='episode-start')
 
-    def retain_candidates():
+    async def retain_candidates():
         # Full venv copies are real state. Keep only the two best pre-action
         # checkpoints while collecting, rather than multiplying a large task
         # environment by every turn. Raw actions/tool evidence remain intact.
         candidates.sort(key=focal_order)
         for item in candidates[2:]:
-            shutil.rmtree(item['snapshot'])
+            await blocking_call(shutil.rmtree, item['snapshot'])
         del candidates[2:]
     while ledger['turns'] < args.turns:
         room = min(args.context-len(ids), args.episode_tokens-ledger['output_tokens'])
@@ -625,7 +644,7 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
         if (capture and recovery_budget and ledger.get('tool_observations', 0) > 0
                 and ledger.get('tool_failures_observed', 0) > 0):
             try:
-                state = Snapshot.capture(env.manager, env.sid, env.ctx, ids, ledger,
+                state = await blocking_call(Snapshot.capture, env.manager, env.sid, env.ctx, ids, ledger,
                     policy.identity, out/f'state-{ledger["turns"]:03d}')
             except Exception as exc:
                 raise PolicyProtocolError('Exact pre-action state capture failed') from exc
@@ -636,10 +655,17 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
             'max_new_tokens': min(room, args.turn_tokens),
             'original_action_replay': first_action is not None}), flush=True)
         try:
-            action = first_action if first_action is not None else policy.sample(ids,
-                max_new_tokens=min(room, args.turn_tokens), thinking_budget=getattr(args, 'thinking_budget', 1024),
-                seed=action_seed, stop_token_ids=policy.vfarl_stop_ids,
-                compute_reference=train_focal_first_action and not actions)
+            if first_action is not None:
+                action = first_action
+            else:
+                sampling = dict(max_new_tokens=min(room, args.turn_tokens),
+                    thinking_budget=getattr(args, 'thinking_budget', 1024),
+                    seed=action_seed, stop_token_ids=policy.vfarl_stop_ids,
+                    compute_reference=train_focal_first_action and not actions)
+                if hasattr(policy, 'sample_async'):
+                    action = await policy.sample_async(ids, session_id=env.sid, **sampling)
+                else:
+                    action = policy.sample(ids, **sampling)
         except Exception as exc:
             policy.clear_generation_cache(reason='sampling-error')
             raise PolicyProtocolError('Current-policy sampling failed') from exc
@@ -676,25 +702,25 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
                 stop = 'episode_output_budget_exhausted'
             else:
                 stop = 'single_response_token_budget_exhausted'
-            retain_candidates()
+            await retain_candidates()
             break
         try:
             call = parse_call(action['raw_text'])
         except ValueError as exc:
             if state is not None:
                 candidates[-1]['action_protocol_error'] = True
-            retain_candidates()
+            await retain_candidates()
             stop = 'malformed_action: ' + str(exc)
             break
         if call is None:
-            retain_candidates()
+            await retain_candidates()
             stop = 'model_text_termination'
             break
         name, arguments = call
         if name not in env.tools:
             if state is not None:
                 candidates[-1]['action_protocol_error'] = True
-            retain_candidates()
+            await retain_candidates()
             stop = 'unknown_tool: ' + name
             break
         if env.ctx.patch_submitted:
@@ -702,7 +728,7 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
             break
         started = time.monotonic()
         try:
-            response = env.tools[name](**arguments)
+            response = await blocking_call(env.tools[name], **arguments)
         except Exception as exc:
             # An actually raised tool exception is an observed failure, not a
             # fabricated success/return. Retain it and end this attempt.
@@ -710,7 +736,7 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
                    'exception': f'{type(exc).__name__}: {exc}'})
             if state is not None:
                 candidates[-1]['action_tool_error'] = True
-            retain_candidates()
+            await retain_candidates()
             stop = 'tool_exception'
             break
         append(out/'tool-events.jsonl', {'tool': name, 'arguments': arguments,
@@ -719,7 +745,7 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
         response_failed = isinstance(response, dict) and response.get('status') == 'error'
         if candidates and candidates[-1]['action'] is action:
             candidates[-1]['action_tool_error'] = response_failed
-        retain_candidates()
+        await retain_candidates()
         try:
             ids += tool_suffix(policy.tokenizer, name, arguments, response)
         except Exception as exc:
@@ -733,10 +759,10 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
         if env.ctx.tool_calls_used >= args.tool_calls:
             stop = 'tool_budget_exhausted'
             break
-    retain_candidates()
+    await retain_candidates()
     policy.clear_generation_cache(reason='episode-finished')
     env.ctx.stop_agent_session()
-    patch, patch_capture = final_patch(env)
+    patch, patch_capture = await blocking_call(final_patch, env)
     (out/'submitted.patch').write_text(env.ctx.submitted_patch or '')
     (out/'evaluated.patch').write_text(patch)
     write(out/'patch-capture.json', patch_capture)
@@ -833,14 +859,15 @@ async def collect(args, entries, questions, *, policy=None):
     states = 0
     def can_start_state():
         return states < args.max_states and (queue is None or queue.state_available())
-    for position, entry in enumerate(entries):
+    async def collect_entry(entry):
+        nonlocal states
         key = safe_id(entry['instance_id'])
         if key not in usable:
             append(args.out/'collection.jsonl', {'instance_id': key, 'sampled': False,
                 'reason': 'Linux original baseline/reviewed-repair verification not usable'})
             if queue is not None:
                 queue.finish_task(key, args.worker_index)
-            continue
+            return
         if preparation[key].get('execution_isolation') != isolation['effective_mode']:
             raise ValueError('Task was not verified in the actual collection isolation environment: '+key)
         for filename, field in [('task.json', 'task_input_sha256'),
@@ -853,8 +880,9 @@ async def collect(args, entries, questions, *, policy=None):
             out = args.out/key/f'draw-{draw}'
             phase = 'environment_setup'
             try:
-                env = TaskEnvironment(args.assets/key, out, tool_calls=args.tool_calls, turns=args.turns)
-                env.start()
+                env = await blocking_call(TaskEnvironment, args.assets/key, out,
+                    tool_calls=args.tool_calls, turns=args.turns)
+                await blocking_call(env.start)
                 from swegemma.harness.agent_runner import build_agent_prompt
                 # The source issue stays fixed. Rebuild only the official
                 # runtime/budget instructions so 60min/100tools/500turns from
@@ -910,7 +938,7 @@ async def collect(args, entries, questions, *, policy=None):
                     for branch in range(args.branches):
                         ledger = {}
                         phase = 'state_restoration'
-                        restored = Snapshot.restore(Path(candidate['snapshot']), env.manager,
+                        restored = await blocking_call(Snapshot.restore, Path(candidate['snapshot']), env.manager,
                             env.sid, env.ctx, ledger=ledger, policy_identity=policy.identity,
                             prompt_token_ids=candidate['action']['prompt_token_ids'])
                         manifest = candidate['manifest']
@@ -987,16 +1015,43 @@ async def collect(args, entries, questions, *, policy=None):
                     raise  # Shared framework/capacity failures cannot yield valid RL data.
             finally:
                 if env is not None:
-                    env.close()
+                    await blocking_call(env.close)
                 # Only the chosen focal state needs a durable full environment
                 # copy; keep all real action/tool/verifier records for every draw.
                 for checkpoint in (out/'original').glob('state-*'):
                     if checkpoint.is_dir() and str(checkpoint) != retained_snapshot:
-                        shutil.rmtree(checkpoint)
+                        await blocking_call(shutil.rmtree, checkpoint)
             print(json.dumps({'phase': 'collection', 'instance_id': key, 'draw': draw,
                               'focal_states': states}), flush=True)
         if queue is not None:
             queue.finish_task(key, args.worker_index)
+    active_tasks = int(getattr(args, 'active_tasks', 1))
+    if active_tasks < 1:
+        raise ValueError('The number of active task sessions must be positive')
+    if active_tasks > 1 and (queue is None or not hasattr(policy, 'sample_async')):
+        raise ValueError('Concurrent task sessions require a shared queue and an async inference service')
+    inventory = iter(entries)
+    async def consume(slot):
+        while True:
+            # Queue iteration and claiming happen only on this event-loop
+            # thread, so no task can be yielded to two sessions.
+            entry = next(inventory, None)
+            if entry is None:
+                return
+            print(json.dumps(dict(phase='active_task_started', slot=slot,
+                instance_id=entry['instance_id'], active_tasks=active_tasks)), flush=True)
+            await collect_entry(entry)
+            print(json.dumps(dict(phase='active_task_finished', slot=slot,
+                instance_id=entry['instance_id'])), flush=True)
+    consumers = [asyncio.create_task(consume(slot)) for slot in range(active_tasks)]
+    try:
+        await asyncio.gather(*consumers)
+    except BaseException:
+        for consumer in consumers:
+            consumer.cancel()
+        # blocking_call drains owned tools before a session closes its env.
+        await asyncio.gather(*consumers, return_exceptions=True)
+        raise
     if args.adapter_run is None and args.score_focal_before:
         score_focal_rows(policy, args, args.out/'focal.jsonl', stage='before')
 
@@ -1027,6 +1082,8 @@ def main():
     parser.add_argument('--tool-calls', type=int, default=32)
     parser.add_argument('--turn-tokens', type=int, default=1536)
     parser.add_argument('--thinking-budget', type=int, default=1024)
+    parser.add_argument('--active-tasks', type=int, default=1,
+                        help='Independent async task sessions per model; requires an async inference service')
     parser.add_argument('--episode-tokens', type=int, default=8192)
     parser.add_argument('--worker-index', type=int, default=0)
     parser.add_argument('--worker-count', type=int, default=1)
@@ -1044,7 +1101,7 @@ def main():
                         help='Optional first N selected tasks before worker partition, used for held-in post-update comparison')
     parser.add_argument('--isolation', choices=('bwrap', 'chroot', 'observable'), default='chroot')
     args = parser.parse_args()
-    if not 0 <= args.worker_index < args.worker_count or args.max_states < 0:
+    if not 0 <= args.worker_index < args.worker_count or args.max_states < 0 or args.active_tasks < 1:
         parser.error('Invalid worker or focal-state count')
     if (min(args.stop_after_mixed_groups, args.stop_after_tasks, args.stop_after_seconds) < 0
             or not math.isfinite(args.stop_after_seconds)):

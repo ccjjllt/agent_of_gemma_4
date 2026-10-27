@@ -20,3 +20,23 @@
 16:33，两个resident模型均ready，完整策略ID一致，16K上下文、100题池。首批开始领取任务。16:35，Dominate首个真实动作完整返回127 tokens，finish_reason=tool_calls，耗时90.19秒（首次prefill39.61秒）。权重加载进度中的1188指张量条目。
 
 16:35:31实读剩余GPU配额17.042468小时，启动消耗0.391025小时。当前只有真实采样证据，尚未观察到本轮optimizer step；常驻采样—更新循环继续运行。精确事件见startup-evidence.json及live-events.jsonl。
+
+北京时间17:10:05的实时日志观察：首批仍在采集，尚无本轮optimizer事件。剔除原动作replay后63动作、8699输出token；sample累计3863.87秒（两worker相加），原episode扣prefill热decode约2.525 token/s。KV55/63命中（87.3%），命中prefill中位0.723秒；动作到下次请求中位间隔约0–1秒。Dominate唯一已完成focal组奖励[1,1,1]，无异奖。worker1已结束后因4题批屏障空等约209秒；当时GPU 0–3利用率21/6/0/0%。原始事件及计算见utilization-live-events.jsonl、utilization-evidence-summary.json。
+
+源码核对：Unsloth loader的fast_inference=False，沿用单序列Python逐token sampler，每token有host同步；两卡balanced层分片非TP，focal reference也逐token评分。async episode内部sample与工具均同步阻塞，分支顺序执行。当前低吞吐主要证据指向decode实现及整批屏障，慢工具与跨题prefill不是本观察段主因。
+
+工具边界：六基础工具取自官方create_tools(ctx)，使用官方SubprocessManager、SwegemmaContext与verify_task；研究循环为自写VFARL，executor外包chroot/UID/seccomp，未完整复刻官方默认Docker的4GiB/2vCPU限制，不能声称完整官方Docker环境等价。
+
+后续优化优先：真正的批量推理backend与独立session/KV；冻结采样窗口内动态补任务以减少短任务等待；工具移出事件循环与独立sandbox进程池；分支公共前缀缓存。更新前仍排空本策略在途动作，保留真实token/logprob/mask及权重身份，不能事后改写已采样命令或把旧验证结果当新奖励。
+
+17:25:20，新作业 jiyujia/vfarl-train100-16k-batched-r2/1 平台RUNNING，私有输入与冻结源码SHA 0cbe7709007822a2ad68f04a124b697f2587e00cbbf9370f53ca8fd4b1a28572 回读一致。
+
+R2：每双卡副本4个独立任务session，生成action microbatch最大2，共用单owner推理线程；采用metadata-only共同/专科交错及repo轮转，动态补未领取任务直到2组真实异奖或时间预算。原100任务保持，排除旧轮已领取4题，续未领取96题；旧轮3完整＋1中途取消分别记录，不能算100题全部完成。
+
+奖励/PPO+KL目标不变，actor执行profile更新为v3；保留实际生成token、概率、forced mask、batch/padding和配置来源。工具、验证、快照移出event loop并按独立task root锁；不同任务workspace/context互不共享。更新前排空在途请求，Adam在本轮各步持续复用。reference改为256-token backbone块与16-token head投影，独立zeroLoRA评分。
+
+实现取舍：当前并非continuous slot refill；早结束行等待同batch，action batch之间不保留KV。一次性tiny Gemma4 CPU结构核对误差小于5e-7不代表真实NF4 GPU速度或16K显存证据，待实际batch日志。GPU实读启动配额15.728333小时；新claim预算18000秒、平台session时限25200秒。
+
+17:38:23 GPU实际证据：两模型ready身份一致、16K/96题池，每副本4独立任务真实进入采集；两个副本均已完成真实B2。worker0首B2共453 tokens，prefill47.53秒、decode127.62秒（3.5495 token/s）；worker1首B2共512 tokens，prefill7.917秒、decode113.957秒（4.4929 token/s），含prefill整体4.2003 token/s。按唯一(worker,batch_index)计时，未将两条action的batch wall重复加总。任务与长度不同且仍含冷形状开销，只能视为初步吞吐信号，不是受控倍速或RL收益。最新显存9250/12692/9276/12728 MiB，无worker错误；尚未本轮optimizer更新。
+
+旧取消轮已正规API完整恢复：43研究文件、68动作，actual_optimizer_steps=0；唯一完整focal组无异奖。exact-token数据与队列SHA匹配。详细凭据见cancelled-r1/recovery-summary.json。

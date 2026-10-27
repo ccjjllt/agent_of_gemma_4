@@ -5,6 +5,7 @@ collect, then one trains while the other waits. Every batch keeps one frozen
 behavior policy. A committed adapter is synchronized before the next batch.
 """
 import argparse
+from collections import defaultdict, deque
 import hashlib
 import json
 import os
@@ -36,11 +37,44 @@ def atomic(path, value):
     temporary.replace(path)
 
 
+def mixed_course_order(entries):
+    """Interleave two common tasks with one specialist using metadata only."""
+    by_adapter = defaultdict(lambda: defaultdict(deque))
+    for row in entries:
+        by_adapter[row['primary_adapter']][row['canonical_repo']].append(row['instance_id'])
+
+    def repository_round_robin(repositories):
+        result = deque()
+        queues = list(repositories.values())
+        while any(queues):
+            for queue in queues:
+                if queue:
+                    result.append(queue.popleft())
+        return result
+
+    common = repository_round_robin(by_adapter.pop('G', {}))
+    specialists = [repository_round_robin(by_adapter[key]) for key in sorted(by_adapter)]
+    specialist = deque()
+    while any(specialists):
+        for queue in specialists:
+            if queue:
+                specialist.append(queue.popleft())
+    ordered = []
+    while common or specialist:
+        for _ in range(2):
+            if common:
+                ordered.append(common.popleft())
+        if specialist:
+            ordered.append(specialist.popleft())
+    return ordered
+
+
 def run(*, config, selection, questions, assets, prevalidation, tools, out,
         initial_adapter=None, optimizer_state=None, stop_after_seconds=0, batch_task_limit=4,
         mixed_groups=2, maximum_states=4, turns=32, tool_calls=32,
         turn_tokens=768, episode_tokens=8192, thinking_budget=256, isolation='chroot',
-        worker_env=None):
+        worker_env=None, active_tasks=1, batch_size=1, batch_wait_ms=50,
+        batch_max_tokens=32768, excluded_task_ids=None, task_order='frozen'):
     from training.train_vfarl import prepare_rows
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
@@ -51,7 +85,14 @@ def run(*, config, selection, questions, assets, prevalidation, tools, out,
         raise ValueError('Resident training permits train inventory only')
     usable = {row['instance_id'] for row in (json.loads(line) for line in
         Path(prevalidation).read_text().splitlines() if line.strip()) if row.get('usable')}
-    task_ids = [row['instance_id'] for row in selected if row['instance_id'] in usable]
+    excluded = set(excluded_task_ids or [])
+    if not excluded <= {row['instance_id'] for row in selected}:
+        raise ValueError('Resume exclusions must belong to the original frozen task inventory')
+    eligible = [row for row in selected if row['instance_id'] in usable and row['instance_id'] not in excluded]
+    task_ids = (mixed_course_order(eligible) if task_order == 'mixed-course'
+                else [row['instance_id'] for row in eligible])
+    if task_order not in {'frozen', 'mixed-course'}:
+        raise ValueError('Unknown metadata-only task ordering')
     cfg = json.loads(Path(config).read_text())
     context = cfg['model']['max_sequence_length']
     setup = dict(config=str(Path(config).resolve()), selection=str(Path(selection).resolve()),
@@ -60,15 +101,20 @@ def run(*, config, selection, questions, assets, prevalidation, tools, out,
         initial_adapter=str(Path(initial_adapter).resolve()) if initial_adapter else None, context=context,
         optimizer_state=str(Path(optimizer_state).resolve()) if optimizer_state else None,
         turns=turns, tool_calls=tool_calls, turn_tokens=turn_tokens,
-        episode_tokens=episode_tokens, thinking_budget=thinking_budget, isolation=isolation)
+        episode_tokens=episode_tokens, thinking_budget=thinking_budget, isolation=isolation,
+        active_tasks=active_tasks, batch_size=batch_size, batch_wait_ms=batch_wait_ms,
+        batch_max_tokens=batch_max_tokens)
     bootstrap = out / 'resident-bootstrap.json'
     write(bootstrap, setup)
     started = time.monotonic()
-    summary = dict(format='vfarl-resident-rl-v1', context=context,
+    summary = dict(format='vfarl-resident-rl-v2' if batch_size > 1 else 'vfarl-resident-rl-v1', context=context,
         frozen_task_ids=[row['instance_id'] for row in selected],
         unusable_task_ids=[row['instance_id'] for row in selected if row['instance_id'] not in usable],
         claimed_task_ids=[], completed_task_ids=[], batches=[], optimizer_steps=0,
         initial_adapter=setup['initial_adapter'], model_loads=2,
+        excluded_prior_claimed_task_ids=sorted(excluded), declared_task_order=task_ids,
+        active_tasks_per_replica=active_tasks, maximum_generation_batch_size=batch_size,
+        sampling_window='All remaining tasks until mixed-group target' if not batch_task_limit else batch_task_limit,
         budget_seconds=stop_after_seconds, stopping='Stop new claims; retain in-flight work and committed updates')
     workers, sequences, positions, partial = [], [0, 0], [0, 0], ['', '']
     last_observation = 0.0
@@ -194,7 +240,7 @@ def run(*, config, selection, questions, assets, prevalidation, tools, out,
             queue = batch / 'task-queue.json'
             seconds = max(0.001, stop_after_seconds - elapsed) if stop_after_seconds else 0
             target = max(1, mixed_groups - pending_mixed)
-            ids = remaining[:batch_task_limit]
+            ids = remaining[:batch_task_limit] if batch_task_limit else remaining
             TaskQueue(queue, ids, selection_sha256=sha(selection), maximum_states=maximum_states,
                 stop_after_mixed_groups=target, stop_after_tasks=len(ids), stop_after_seconds=seconds,
                 execution_contract=dict(config_sha256=sha(config), policy_backend='unsloth',

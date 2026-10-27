@@ -28,7 +28,7 @@ def now():
     return dt.datetime.now(dt.timezone.utc).isoformat()
 
 
-def connect():
+def connect(out=None):
     spec = importlib.util.spec_from_file_location('vfarl_round_helper', HERE.parent / 'next-round/execute.py')
     helper = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(helper)
@@ -41,7 +41,8 @@ def connect():
         return original(session, request, **kwargs)
     requests.Session.send = bounded
     run = helper.Round.__new__(helper.Round)
-    run.out, run.notes, run.requests = HERE, [], requests
+    run.out, run.notes, run.requests = Path(out or HERE), [], requests
+    run.out.mkdir(parents=True, exist_ok=True)
     run.args = argparse.Namespace(poll_seconds=60)
     run.api = KaggleApi()
     run.api.config_values[run.api.CONFIG_NAME_USER] = 'jiyujia'
@@ -64,7 +65,7 @@ def dataset_ready(run):
     record = dict(at_utc=now(), dataset=slug, status=state,
                   is_private=actual.is_private, current_version=actual.current_version_number,
                   files=[dict(name=row.name, bytes=row.total_bytes) for row in files.files or []])
-    save(HERE / 'dataset-readback.json', record)
+    save(run.out / 'dataset-readback.json', record)
     if (state['status'] != 'ready' or actual.current_version_number != 1 or not actual.is_private
             or record['files'] != [dict(name='vfarl-train100.bin', bytes=124593514)]):
         raise RuntimeError('Actual dataset is not the authorized private version and material size')
@@ -72,7 +73,7 @@ def dataset_ready(run):
 
 
 def launch(run):
-    receipt_path = HERE / 'gpu-push.json'
+    receipt_path = run.out / 'gpu-push.json'
     if receipt_path.exists():
         receipt = json.loads(receipt_path.read_text())
         if not receipt.get('kernel'):
@@ -80,17 +81,17 @@ def launch(run):
         return receipt['kernel']
     dataset_ready(run)
     quota = run.quota('before-resident-r1')
-    if quota['remaining_h'] < 16:
+    if quota['remaining_h'] < run.minimum_quota:
         raise RuntimeError('Actual remaining quota is below the frozen seven-hour new-claim plan')
-    carrier = HERE / 'carrier-r1'
+    carrier = run.carrier
     receipt = dict(at_utc=now(), status='single-submission-started',
                    source_sha256=hashlib.sha256((carrier / 'run.py').read_bytes()).hexdigest(),
-                   accelerator='NvidiaL4', session_timeout_seconds=30000)
+                   accelerator='NvidiaL4', session_timeout_seconds=run.session_seconds)
     save(receipt_path, receipt)
     try:
         # Never retry this mutation automatically: a lost response may still
         # correspond to a live four-card session.
-        result = run.api.kernels_push(str(carrier), timeout='30000', acc='NvidiaL4')
+        result = run.api.kernels_push(str(carrier), timeout=str(run.session_seconds), acc='NvidiaL4')
         receipt.update(error=result.error, url=result.url, version=result.version_number,
             invalid_dataset_sources=list(result.invalid_dataset_sources or []),
             invalid_kernel_sources=list(result.invalid_kernel_sources or []),
@@ -121,15 +122,15 @@ def observe(run, ref):
             result = run.sdk('get_kernel_session_status', run.request(ref, 'status'))
             state = getattr(result.status, 'name', str(result.status).rsplit('.', 1)[-1])
             record = dict(at_utc=now(), kernel=ref, status=state, failure_message=result.failure_message)
-            save(HERE / 'status.json', record)
-            with (HERE / 'status-history.jsonl').open('a') as stream:
+            save(run.out / 'status.json', record)
+            with (run.out / 'status-history.jsonl').open('a') as stream:
                 stream.write(json.dumps(record) + '\n')
             if state != previous:
                 print(json.dumps(record), flush=True)
                 previous = state
             failures = 0
             if state in {'COMPLETE', 'ERROR', 'CANCELLED', 'CANCELED', 'CANCEL_REQUESTED'}:
-                run.download(ref, HERE / 'actual-output', full=True)
+                run.download(ref, run.out / 'actual-output', full=True)
                 run.quota('after-resident-r1')
                 print(json.dumps(dict(phase='actual_outputs_retained', kernel=ref, status=state)), flush=True)
                 return
@@ -145,9 +146,16 @@ def observe(run, ref):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--launch', action='store_true')
+    parser.add_argument('--run-name', default='')
+    parser.add_argument('--carrier', type=Path, default=HERE / 'carrier-r1')
+    parser.add_argument('--minimum-quota', type=float, default=16)
+    parser.add_argument('--session-seconds', type=int, default=30000)
     args = parser.parse_args()
-    run = connect()
-    ref = launch(run) if args.launch else json.loads((HERE / 'gpu-push.json').read_text())['kernel']
+    if args.run_name and not re.fullmatch(r'[a-z0-9-]+', args.run_name):
+        parser.error('Run name must be a simple experiment directory name')
+    run = connect(HERE / args.run_name if args.run_name else HERE)
+    run.carrier, run.minimum_quota, run.session_seconds = args.carrier, args.minimum_quota, args.session_seconds
+    ref = launch(run) if args.launch else json.loads((run.out / 'gpu-push.json').read_text())['kernel']
     observe(run, ref)
 
 

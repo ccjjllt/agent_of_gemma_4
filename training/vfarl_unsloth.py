@@ -491,7 +491,7 @@ class UnslothPolicy(NF4Policy):
         else:
             FastModel.for_inference(self.model)
             self.model.eval()
-            profile = UNSLOTH_EXECUTION_PROFILE
+            profile = getattr(self, '_inference_profile', UNSLOTH_EXECUTION_PROFILE)
         for name, parameter in self.model.named_parameters():
             parameter.requires_grad_('lora_' in name)
         # The learner adds its fused-head implementation hash. Rebuild the
@@ -500,6 +500,14 @@ class UnslothPolicy(NF4Policy):
         runtime_identity = copy.deepcopy(self._runtime_template)
         runtime_identity['profile'] = profile
         runtime_identity['implementation_sha256'].pop('fused_linear_logprobs', None)
+        if mode == 'inference' and getattr(self, '_inference_runtime', None):
+            runtime_identity['batched_sampling'] = dict(self._inference_runtime)
+            runtime_identity['implementation_sha256']['batched_sampler'] = self._inference_runtime['sampler_sha256']
+            runtime_identity['implementation_sha256']['batched_reference_scorer'] = self._inference_runtime['reference_scorer_sha256']
+        else:
+            runtime_identity.pop('batched_sampling', None)
+            runtime_identity['implementation_sha256'].pop('batched_sampler', None)
+            runtime_identity['implementation_sha256'].pop('batched_reference_scorer', None)
         math_mode = runtime_identity['math']
         torch = self.torch
         torch.set_float32_matmul_precision(math_mode['float32_matmul_precision'])

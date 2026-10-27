@@ -237,6 +237,7 @@ def actor_learner_binding(rows, identity, *, actor_backend, rollout_correction):
     if actor_backend != 'unsloth' or rollout_correction != 'sequence_tis':
         raise TrainingError('Unsloth actor/native learner requires explicit sequence_tis correction')
     from .vfarl_unsloth import UNSLOTH_EXECUTION_PROFILE
+    from .vfarl_batched import BATCHED_UNSLOTH_EXECUTION_PROFILE
     # Preserve the already sampled auto-r3 behavior path. This literal is
     # extracted from its frozen source bundle (vfarl_unsloth.py SHA256
     # 2855de90b8b9aa3b3e1f007204d391a9dedfd5497ed639b1f8815f4920c9e77a).
@@ -259,6 +260,7 @@ def actor_learner_binding(rows, identity, *, actor_backend, rollout_correction):
     }
     known_profiles = {
         digest(UNSLOTH_EXECUTION_PROFILE): UNSLOTH_EXECUTION_PROFILE,
+        digest(BATCHED_UNSLOTH_EXECUTION_PROFILE): BATCHED_UNSLOTH_EXECUTION_PROFILE,
         '1f84b034b728b36dfb47466e34b2b5c0a667e40a36bf33a4d5fbff7263971c5b': frozen_v1_profile,
     }
     execution_fields = {'probability_execution_sha256', 'probability_runtime_sha256'}

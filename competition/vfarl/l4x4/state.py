@@ -1,7 +1,7 @@
 """Real task-root snapshots and bounded shell isolation for VFARL collection.
 
 Call configure_isolation before creating/using a manager. The collector must
-serialize its tool requests and capture between completed calls. A bwrap probe
+serialize each task's tool requests and capture between its completed calls. A bwrap probe
 failure is an observable-only fallback, never evidence of complete restoration.
 Host clock/entropy and filesystem inode/ctime are explicitly outside the scope.
 """
@@ -28,6 +28,7 @@ import time
 
 
 _LOCK = threading.RLock()
+_TASK_LOCKS = {}
 _ORIGINAL = None
 _ORIGINAL_STOP = None
 _MODULE = None
@@ -191,8 +192,19 @@ def _stop(manager, sandbox_id):
     if paths:
         from competition.vfarl.l4x4 import jail
         # Cleanup must happen while the original root symlink is still known.
-        jail.cleanup(paths["root"])
+        with _task_lock(paths["root"]):
+            jail.cleanup(paths["root"])
+            return _ORIGINAL_STOP(manager, sandbox_id)
     return _ORIGINAL_STOP(manager, sandbox_id)
+
+
+def _task_lock(root):
+    # Manager paths retain the logical root when chroot materialization moves
+    # its contents behind a symlink. Do not resolve that symlink into a second
+    # lock identity. Independent task roots can run official tools in parallel.
+    key = os.path.abspath(root)
+    with _LOCK:
+        return _TASK_LOCKS.setdefault(key, threading.RLock())
 
 
 def _execute(*args, **kwargs):
@@ -203,22 +215,24 @@ def _execute(*args, **kwargs):
     if cwd.name != "workspace" or not (root / "venv").is_dir() or not (root / "tmp").is_dir():
         raise ValueError("Cannot establish the official task root for shell isolation")
     with _LOCK:
-        if _CONFIG["effective_mode"] == "chroot":
+        config = dict(_CONFIG)
+    logical_root = Path(bound.arguments["cwd"]).absolute().parent
+    with _task_lock(logical_root):
+        if config["effective_mode"] == "chroot":
             from competition.vfarl.l4x4 import jail
             if bound.arguments.get("shell") or not isinstance(bound.arguments["command"], (list, tuple)):
                 raise ValueError("Expected the official shell=False argument-vector executor")
-            logical_root = Path(bound.arguments["cwd"]).absolute().parent
             result, info = jail.execute(logical_root, bound.arguments, _ORIGINAL)
             actual_root = info["physical_root"]
             _ROOT_CALLS[actual_root] = _ROOT_CALLS.get(actual_root, 0) + 1
             return result
         _ROOT_CALLS[str(root)] = _ROOT_CALLS.get(str(root), 0) + 1
-        if _CONFIG["effective_mode"] == "bwrap":
+        if config["effective_mode"] == "bwrap":
             command = bound.arguments["command"]
             if bound.arguments.get("shell") or not isinstance(command, (list, tuple)):
                 raise ValueError("Expected the official shell=False argument-vector executor")
-            bound.arguments["command"] = _bwrap_command(_CONFIG["binary"], root, command,
-                                                        _CONFIG.get("hidden_paths", []))
+            bound.arguments["command"] = _bwrap_command(config["binary"], root, command,
+                                                        config.get("hidden_paths", []))
         else:
             _OBSERVABLE_ROOTS.add(str(root))
         return _ORIGINAL(*bound.args, **bound.kwargs)
@@ -413,9 +427,10 @@ def _restore_context(ctx, saved):
     ctx.agent_end_time = now if saved["agent_stopped"] else None
 
 
-def _locks(stack, manager, ctx):
+def _locks(stack, manager, ctx, sandbox_id):
     # Official tools hold tool_lock before invoking the manager executor.
-    for lock in (getattr(ctx, "tool_lock", None), getattr(manager, "_lock", None), _LOCK,
+    for lock in (getattr(ctx, "tool_lock", None), getattr(manager, "_lock", None),
+                 _task_lock(manager.sandboxes[sandbox_id]["root"]),
                  getattr(ctx, "_lock", None)):
         if lock is not None:
             stack.enter_context(lock)
@@ -427,7 +442,7 @@ class Snapshot:
         """Capture at a completed-tool boundary; return the persisted manifest."""
         destination = Path(destination).resolve()
         with ExitStack() as stack:
-            _locks(stack, manager, ctx)
+            _locks(stack, manager, ctx, sandbox_id)
             paths = manager.sandboxes[sandbox_id]
             root = Path(paths["root"]).resolve()
             if destination == root or destination.is_relative_to(root) or root.is_relative_to(destination):
@@ -466,7 +481,7 @@ class Snapshot:
                      "declared_components": ["Full writable task root including workspace/.git/index, ignored/untracked files, tmp, wheels and venv; chroot immutable runtime is separately identified and not copied per snapshot", "File bytes, modes, owners, mtime, symlinks and internal hardlink relationships", "Exact model-visible token prefix, context tool/LLM counters, submitted patch and logical budgets", "Same-path task bindings, official tool/executor source hashes, Python and installed package identity including external task profiles referenced by venv .pth files", "No surviving child task processes: bwrap PID namespace termination or chroot unique-UID kill and quiescence verification", "Host asset/output/code visibility excluded by actual bwrap masks or by an allowlisted chroot runtime plus capability/UID/seccomp restrictions"],
                      "unrestorable_components": ["Host absolute clock, kernel entropy, scheduling and external read-only files not covered by runtime bindings", "Filesystem inode numbers, ctime and atime; copied file bytes/modes/mtime are restored", *reasons],
                      "external_runtime_boundary": "The host runtime is mounted read-only to task commands. Package versions/RECORD hashes identify dependencies; they are not a byte-for-byte snapshot of the entire host filesystem. The collector must not mutate host dependencies during this experiment.",
-                     "caller_contract": "Collector serializes model/tool requests; capture occurs with no in-flight model or tool request. Branch seeds are intervention metadata. Clock/entropy-sensitive tasks are outside complete declared scope.",
+                     "caller_contract": "Collector serializes requests within each independent task; capture occurs with no in-flight model or tool request for this task. Other task roots may execute concurrently. Branch seeds are intervention metadata. Clock/entropy-sensitive tasks are outside complete declared scope.",
                      "competition_Docker_environment_equivalent": False}
             destination.mkdir(parents=True, exist_ok=False)
             destination.chmod(0o700)
@@ -490,7 +505,7 @@ class Snapshot:
             raise ValueError("Snapshot manifest/state ID mismatch")
         stored = Path(snapshot["snapshot_directory"]) / "root"
         with ExitStack() as stack:
-            _locks(stack, manager, ctx)
+            _locks(stack, manager, ctx, sandbox_id)
             paths = manager.sandboxes[sandbox_id]
             root = Path(paths["root"]).resolve()
             if str(root) != state["task_root"] or ctx.container_id != sandbox_id:
