@@ -56,6 +56,19 @@ parser.add_argument('--policy-backend', choices=('native', 'unsloth'), default='
                     help='Actor execution backend, selected independently of the learner.')
 parser.add_argument('--learner-backend', choices=('native', 'unsloth'), default='native',
                     help='Native four-rank FSDP or experimental Unsloth two-GPU model-parallel PPO learner.')
+parser.add_argument('--resident-rl', action='store_true',
+                    help='Keep two Unsloth replicas resident; collect small batches, update, synchronize, then continue.')
+parser.add_argument('--resident-batch-tasks', type=int, default=4)
+parser.add_argument('--resident-mixed-groups', type=int, default=2)
+parser.add_argument('--resident-max-states', type=int, default=4)
+parser.add_argument('--resident-seconds', type=float, default=0,
+                    help='Wall-time budget for resident new claims; complete in-flight work and its last update.')
+parser.add_argument('--resident-thinking-budget', type=int, default=256)
+parser.add_argument('--resident-turn-tokens', type=int, default=768)
+parser.add_argument('--resident-episode-tokens', type=int, default=8192)
+parser.add_argument('--initial-adapter-kernel', help='Completed owner/kernel/version containing the initial plain LoRA adapter.')
+parser.add_argument('--initial-adapter-sha256', help='SHA256 of that adapter_model.safetensors.')
+parser.add_argument('--initial-adapter-config-sha256', help='SHA256 of its adapter_config.json.')
 parser.add_argument('--dynamic-queue', action='store_true',
                     help='Two double-GPU actors claim whole tasks from a shared frozen-order queue.')
 parser.add_argument('--stop-after-mixed-groups', type=int, default=0,
@@ -74,6 +87,23 @@ parser.add_argument('--prevalidation-report', type=Path, action='append', defaul
                     help='Actual local CPU report to freeze; later reports supersede earlier task records.')
 parser.add_argument('--jail-source', type=Path, help='Explicit CPU candidate or already CPU-accepted historical GPU jail source to freeze.')
 args = parser.parse_args()
+if args.resident_rl:
+    if (args.mode != 'train' or args.policy_backend != 'unsloth' or args.learner_backend != 'unsloth'
+            or args.collect_only or args.update_only or args.focal_data or args.collection_kernel
+            or args.calibration_data or args.calibration_only):
+        parser.error('Resident RL is an Unsloth actor/learner training run without an existing behavior batch')
+    if (min(args.resident_batch_tasks, args.resident_mixed_groups, args.resident_max_states,
+            args.resident_thinking_budget, args.resident_turn_tokens, args.resident_episode_tokens) < 1
+            or not math.isfinite(args.resident_seconds) or args.resident_seconds <= 0):
+        parser.error('Resident run requires positive batch/token budgets and a finite positive wall budget')
+if args.initial_adapter_kernel:
+    if not re.fullmatch(r'[A-Za-z0-9_-]+/[A-Za-z0-9_-]+/[0-9]+', args.initial_adapter_kernel):
+        parser.error('Initial adapter source requires an explicit owner/kernel/version')
+    if any(not re.fullmatch(r'[0-9a-f]{64}', value or '') for value in
+           (args.initial_adapter_sha256, args.initial_adapter_config_sha256)):
+        parser.error('Initial adapter source requires weight and config SHA256')
+elif args.initial_adapter_sha256 or args.initial_adapter_config_sha256:
+    parser.error('Initial adapter hashes require its completed kernel source')
 if args.update_only and (args.mode != 'train' or args.collect_only or args.calibration_data or args.calibration_only):
     parser.error('--update-only is for a real training run without collection-only or calibration mode')
 if args.focal_data or args.focal_provenance:
@@ -183,7 +213,16 @@ for index, path in enumerate(args.prevalidation_report):
 packed = base64.b64encode(zlib.compress(json.dumps(bundle).encode())).decode()
 source = f'MODE = {args.mode!r}\nMATERIAL_SHA256 = {material["sha256"]!r}\nMATERIAL_ARCHIVE_NAME = {material_archive_name!r}\nRUNTIME_SHA256 = {args.runtime_sha256!r}\nCONTEXT_LENGTH = {args.context!r}\nTRAINING_CONFIG = {training_config_path!r}\nONLY_TASKS = {args.only_task!r}\nEXPORT_RUNTIME = {args.export_runtime!r}\nCOLLECT_ONLY = {args.collect_only!r}\nFOCAL_STATES = {args.focal_states!r}\nPOLICY_BACKEND = {args.policy_backend!r}\nLEARNER_BACKEND = {args.learner_backend!r}\nDYNAMIC_QUEUE = {args.dynamic_queue!r}\nSTOP_AFTER_MIXED_GROUPS = {args.stop_after_mixed_groups!r}\nSTOP_AFTER_TASKS = {args.stop_after_tasks!r}\nCALIBRATION_DATA = {calibration_path!r}\nCALIBRATION_ONLY = {args.calibration_only!r}\nPREVALIDATION_REPORTS = {prevalidation_paths!r}\nSOURCE_BUNDLE = {packed!r}\n'
 source += (HERE / 'runner.py').read_text()
-source = (f'FOCAL_DATA = {focal_data_path!r}\n'
+resident_settings = dict(batch_task_limit=args.resident_batch_tasks,
+    mixed_groups=args.resident_mixed_groups, maximum_states=args.resident_max_states,
+    stop_after_seconds=args.resident_seconds, thinking_budget=args.resident_thinking_budget,
+    turn_tokens=args.resident_turn_tokens, episode_tokens=args.resident_episode_tokens)
+source = (f'RESIDENT_RL = {args.resident_rl!r}\n'
+          f'RESIDENT_SETTINGS = {resident_settings!r}\n'
+          f'INITIAL_ADAPTER_KERNEL = {args.initial_adapter_kernel!r}\n'
+          f'INITIAL_ADAPTER_SHA256 = {args.initial_adapter_sha256!r}\n'
+          f'INITIAL_ADAPTER_CONFIG_SHA256 = {args.initial_adapter_config_sha256!r}\n'
+          f'FOCAL_DATA = {focal_data_path!r}\n'
           f'FOCAL_PROVENANCE = {focal_provenance_path!r}\n'
           f'UPDATE_ONLY = {args.update_only!r}\n'
           f'STOP_AFTER_SECONDS = {args.stop_after_seconds!r}\n'
@@ -235,6 +274,8 @@ kernel_sources += ([args.runtime_kernel] if args.runtime_kernel else [] if args.
                    [f'{args.kernel_owner}/vfarl-l4x4-cpu-stage/2'])
 if args.collection_kernel:
     kernel_sources.append(args.collection_kernel)
+if args.initial_adapter_kernel:
+    kernel_sources.append(args.initial_adapter_kernel)
 kernel_sources = list(dict.fromkeys(kernel_sources))
 metadata = {'id': args.kernel_owner + '/vfarl-l4x4-' + args.mode, 'title': 'VFARL L4x4 ' + args.mode.title(),
             'code_file': 'run.py', 'language': 'python', 'kernel_type': 'script',
@@ -273,6 +314,11 @@ manifest = {'source_sha256': hashlib.sha256(source.encode()).hexdigest(),
             'policy_backend': args.policy_backend,
             'learner_backend': args.learner_backend,
             'update_only': args.update_only,
+            'resident_rl': args.resident_rl,
+            'resident_settings': resident_settings if args.resident_rl else None,
+            'initial_adapter_kernel': args.initial_adapter_kernel,
+            'initial_adapter_sha256': args.initial_adapter_sha256,
+            'initial_adapter_config_sha256': args.initial_adapter_config_sha256,
             'focal_data': focal_data_path,
             'focal_provenance': focal_provenance_path,
             'dynamic_queue': args.dynamic_queue,

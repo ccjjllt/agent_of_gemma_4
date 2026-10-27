@@ -971,6 +971,36 @@ def main():
                         wall_seconds=time.monotonic() - started)
         (out / 'carrier.json').write_text(json.dumps(evidence, indent=2) + '\n')
         return
+    if RESIDENT_RL:
+        initial_adapter = None
+        if INITIAL_ADAPTER_KERNEL:
+            matches = [path for path in Path('/kaggle/input').rglob('adapter_model.safetensors')
+                       if path.parent.name == 'adapter' and sha(path) == INITIAL_ADAPTER_SHA256]
+            if len(matches) != 1:
+                raise RuntimeError('Require one mounted initial adapter with the declared SHA256')
+            weights = matches[0]
+            if sha(weights.parent / 'adapter_config.json') != INITIAL_ADAPTER_CONFIG_SHA256:
+                raise RuntimeError('Initial adapter config differs from its declared source')
+            initial_adapter = weights.parent.parent
+            evidence['initial_adapter'] = dict(kernel=INITIAL_ADAPTER_KERNEL,
+                weights_sha256=INITIAL_ADAPTER_SHA256, config_sha256=INITIAL_ADAPTER_CONFIG_SHA256,
+                optimizer_state='Fresh Adam for this round; prior short run did not export moments')
+        from competition.vfarl.l4x4.resident import run as resident_run
+        evidence['resident_settings'] = RESIDENT_SETTINGS
+        evidence['gpu_topology'].update(collector_processes=2, resident_model_loads=2,
+            training_ranks=1, training_visible_gpus=2, post_update_task_limit=0,
+            post_update_collectors=0, initial_model_policy='Loaded once, adapter synchronized after each new batch update')
+        (out / 'carrier.json').write_text(json.dumps(evidence, indent=2) + '\n')
+        summary = resident_run(config=config_path, selection=material / 'selection.json',
+            questions=material / 'questions.jsonl', assets=material / 'assets',
+            prevalidation=prevalidation, tools=source / 'competition/vfarl/six-tools.json',
+            out=out / 'resident', initial_adapter=initial_adapter,
+            isolation=isolation, worker_env=env, **RESIDENT_SETTINGS)
+        evidence.update(resident_summary=summary, optimizer_steps=summary['optimizer_steps'],
+            one_update_completed=summary['optimizer_steps'] > 0,
+            wall_seconds=time.monotonic() - started)
+        (out / 'carrier.json').write_text(json.dumps(evidence, indent=2) + '\n')
+        return
     if FOCAL_DATA:
         from training.train_vfarl import prepare_rows
         recovered = source / FOCAL_DATA

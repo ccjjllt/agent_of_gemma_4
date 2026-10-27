@@ -12,6 +12,7 @@ https://github.com/unslothai/unsloth/blob/main/unsloth/models/loader.py
 https://github.com/unslothai/unsloth/blob/main/unsloth/models/vision.py
 """
 import hashlib
+import copy
 import importlib
 import importlib.metadata
 import inspect
@@ -438,6 +439,17 @@ class UnslothPolicy(NF4Policy):
                 allow_bf16_reduced_precision_reduction=bool(
                     torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction)))
         runtime = dict(identity=runtime_identity, identity_sha256=digest(runtime_identity))
+        self._runtime_template = copy.deepcopy(runtime_identity)
+        self._training_checkpointing = checkpointing
+        self._training_profile = dict(
+            backend='unsloth', version=1, mode='vfarl-focal-training',
+            backbone='complete-untruncated-sequence-use_cache=False',
+            logprob='selected-hidden-states-Unsloth-fused-linear-logprobs',
+            head='same-tied-frozen-head-native-softcap-temperature1',
+            reference='separate-full-forward-zero-live-LoRA-scaling',
+            compute_dtype='bfloat16', trainable_dtype='float32',
+            gradient_checkpointing=checkpointing, cross_tool_kv=False,
+            quantization='same-prequantized-official-QAT-derived-NF4-cache')
         self.info = dict(source=source, model_type='gemma4',
             model_class=type(base).__name__, nf4_cache=cache_info,
             target_modules=targets, adapter_initialization=adapter_initialization,
@@ -464,6 +476,71 @@ class UnslothPolicy(NF4Policy):
         self.thought_close = self._special('<channel|>')
         self.tool_close = self._special('<tool_call|>')
         self.turn_close = self._special('<turn|>')
+
+    def switch_execution_mode(self, mode):
+        """Switch a resident model without changing base or adapter tensors."""
+        if mode not in ('inference', 'training'):
+            raise TrainingError('Unknown resident policy execution mode')
+        from unsloth import FastModel
+        self.clear_generation_cache(reason='execution-mode-change')
+        if mode == 'training':
+            if self.cfg['gradient_checkpointing'] and not self._training_checkpointing:
+                raise TrainingError('Resident training checkpointing must be installed during loading')
+            FastModel.for_training(self.model, use_gradient_checkpointing=self._training_checkpointing)
+            profile = self._training_profile
+        else:
+            FastModel.for_inference(self.model)
+            self.model.eval()
+            profile = UNSLOTH_EXECUTION_PROFILE
+        for name, parameter in self.model.named_parameters():
+            parameter.requires_grad_('lora_' in name)
+        # The learner adds its fused-head implementation hash. Rebuild the
+        # actor runtime from its loaded, weight-independent template so both
+        # workers bind the same inference identity after synchronization.
+        runtime_identity = copy.deepcopy(self._runtime_template)
+        runtime_identity['profile'] = profile
+        runtime_identity['implementation_sha256'].pop('fused_linear_logprobs', None)
+        math_mode = runtime_identity['math']
+        torch = self.torch
+        torch.set_float32_matmul_precision(math_mode['float32_matmul_precision'])
+        torch.backends.cuda.matmul.allow_tf32 = math_mode['allow_tf32']
+        torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = math_mode['allow_bf16_reduced_precision_reduction']
+        runtime_identity['nf4_dispatch'] = resolved_nf4_dispatch(self.model)
+        runtime = dict(identity=runtime_identity, identity_sha256=digest(runtime_identity))
+        self.probability_profile = profile
+        self.info.update(execution_mode=mode, probability_execution=runtime,
+                         gradient_checkpointing=self._training_checkpointing if mode == 'training' else False)
+        self.execution.update(execution_mode=mode, probability_runtime=runtime,
+            gradient_checkpointing=self.info['gradient_checkpointing'],
+            probability_execution_profile=profile, probability_execution_sha256=digest(profile))
+        self.identity = identities(self.model, self.tokenizer, self.info, self.cfg, profile=profile)
+        return self.identity
+
+    def load_adapter_in_place(self, adapter_run):
+        """Copy one exported plain adapter into existing Parameter objects."""
+        from safetensors.torch import load_file
+        from .export_peft import inspect_adapter
+        adapter_path = Path(adapter_run) / 'adapter'
+        inspect_adapter(adapter_path, self.cfg['rank'], self.cfg['target_text_modules'])
+        peft, torch = self.stack['peft'], self.torch
+        weights = load_file(str(adapter_path / 'adapter_model.safetensors'), device='cpu')
+        current = peft.get_peft_model_state_dict(self.model, adapter_name='default')
+        if set(current) != set(weights) or any(current[k].shape != weights[k].shape or
+                current[k].dtype != weights[k].dtype for k in current):
+            raise TrainingError('Resident adapter synchronization differs in keys/shapes/dtypes')
+        result = peft.set_peft_model_state_dict(self.model, weights, adapter_name='default')
+        if getattr(result, 'unexpected_keys', []) or any('lora_' in key for key in getattr(result, 'missing_keys', [])):
+            raise TrainingError('Resident adapter synchronization is incomplete')
+        loaded = peft.get_peft_model_state_dict(self.model, adapter_name='default')
+        if any(_tensor_digest(loaded[k], torch) != _tensor_digest(weights[k], torch) for k in weights):
+            raise TrainingError('Resident adapter synchronization changed saved values')
+        self.info['adapter_initialization'] = dict(resumed_adapter=True,
+            adapter_file_sha256=sha256_file(adapter_path / 'adapter_model.safetensors'),
+            actual_adapter_sha256=trainable_hash(self.model),
+            boundary='Resident in-place synchronization from committed adapter')
+        self.execution['adapter_initialization'] = self.info['adapter_initialization']
+        del weights, current, loaded
+        return self.switch_execution_mode('inference')
 
     def clear_generation_cache(self, *, reason='explicit-reset'):
         self._generation_cache = None

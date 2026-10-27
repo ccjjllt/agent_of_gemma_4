@@ -637,7 +637,7 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
             'original_action_replay': first_action is not None}), flush=True)
         try:
             action = first_action if first_action is not None else policy.sample(ids,
-                max_new_tokens=min(room, args.turn_tokens), thinking_budget=1024,
+                max_new_tokens=min(room, args.turn_tokens), thinking_budget=getattr(args, 'thinking_budget', 1024),
                 seed=action_seed, stop_token_ids=policy.vfarl_stop_ids,
                 compute_reference=train_focal_first_action and not actions)
         except Exception as exc:
@@ -754,7 +754,7 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
     return summary, candidates, actions
 
 
-async def collect(args, entries, questions):
+async def collect(args, entries, questions, *, policy=None):
     if not entries and args.score_focal_data is None:
         (args.out/'collection.jsonl').touch()
         print(json.dumps({'phase': 'empty_partition', 'worker': args.worker_index,
@@ -768,20 +768,25 @@ async def collect(args, entries, questions):
         raise ValueError('Sampling context and training config must match; use an explicit context-specific config')
     source_root = Path(__file__).resolve().parents[3]
     isolation = configure_isolation(args.isolation,
-        hidden_paths=[args.assets.resolve(), args.out.resolve(), source_root])
+        hidden_paths=[args.assets.resolve(),
+                      Path(getattr(args, 'resident_hidden_root', args.out)).resolve(), source_root])
     write(args.out/'isolation.json', isolation)
     if isolation['effective_mode'] == 'observable':
         raise RuntimeError('Task shell isolation is unavailable; do not load a GPU model while host judge assets are readable. '+str(isolation.get('reason')))
+    reused_policy = policy is not None
     print(json.dumps({'phase': 'model_loading', 'context': args.context,
                       'policy_gpus': args.policy_gpus,
+                      'resident_reuse': reused_policy,
                       'adapter_run': str(args.adapter_run) if args.adapter_run else None}), flush=True)
     model_loading_started = time.monotonic()
-    policy = build_policy(args.config, backend=args.policy_backend,
-                          adapter_run=args.adapter_run,
-                          inference_device_count=args.policy_gpus)
+    if policy is None:
+        policy = build_policy(args.config, backend=args.policy_backend,
+                              adapter_run=args.adapter_run,
+                              inference_device_count=args.policy_gpus)
     print(json.dumps({'phase': 'model_ready', 'policy_id': policy.identity['policy_id'],
                       'reference_id': policy.identity['reference_id'],
                       'model_loading_seconds': time.monotonic() - model_loading_started,
+                      'resident_reuse': reused_policy,
                       'backend': args.policy_backend,
                       'adapter_sha256': policy.identity['policy_identity']['adapter_sha256'],
                       'nf4_cache_manifest_sha256': policy.identity['policy_identity']['nf4_cache_manifest_sha256'],
@@ -859,7 +864,7 @@ async def collect(args, entries, questions):
                 actual_prompt += (f'\n\n## This training run\nThe total context limit is {args.context} tokens, '
                     f'including all history and the next response. The session output budget is '
                     f'{args.episode_tokens} tokens; each response allows at most {args.turn_tokens} tokens, '
-                    'including up to 1024 thought tokens. Full histories are never truncated.\n')
+                    f'including up to {getattr(args, "thinking_budget", 1024)} thought tokens. Full histories are never truncated.\n')
                 write(out/'prompt-provenance.json', {'original_prompt_sha256': digest(questions[key].encode()),
                     'actual_prompt_sha256': digest(actual_prompt.encode()),
                     'change': 'Official build_agent_prompt with actual run budgets plus explicit token limits'})
@@ -1021,6 +1026,7 @@ def main():
     parser.add_argument('--turns', type=int, default=32)
     parser.add_argument('--tool-calls', type=int, default=32)
     parser.add_argument('--turn-tokens', type=int, default=1536)
+    parser.add_argument('--thinking-budget', type=int, default=1024)
     parser.add_argument('--episode-tokens', type=int, default=8192)
     parser.add_argument('--worker-index', type=int, default=0)
     parser.add_argument('--worker-count', type=int, default=1)
