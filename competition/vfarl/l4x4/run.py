@@ -68,7 +68,8 @@ class TaskQueue:
     Stopping affects future claims/state reservations, never an active branch.
     """
     def __init__(self, path, task_ids, *, selection_sha256, maximum_states,
-                 stop_after_mixed_groups=0, stop_after_tasks=0, execution_contract=None):
+                 stop_after_mixed_groups=0, stop_after_tasks=0, stop_after_seconds=0,
+                 execution_contract=None):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.contract = dict(format='vfarl-shared-task-queue-v1',
@@ -77,6 +78,7 @@ class TaskQueue:
             execution_contract=execution_contract,
             stop_after_mixed_groups=stop_after_mixed_groups,
             stop_after_tasks=stop_after_tasks,
+            stop_after_seconds=stop_after_seconds,
             unit='One task including its predeclared draws and complete reserved state groups',
             stopping='Stop new claims and new state reservations; retain every in-flight result')
         with self.locked() as state:
@@ -84,7 +86,8 @@ class TaskQueue:
                 if state.get('contract') != self.contract:
                     raise ValueError('The shared queue belongs to different frozen tasks or stopping rules')
             else:
-                state.update(contract=self.contract, claimed=[], completed=[], states={}, mixed_groups={})
+                state.update(contract=self.contract, started_at=time.monotonic(),
+                             claimed=[], completed=[], states={}, mixed_groups={})
 
     def bind_policy(self, identity):
         actual = {key: identity[key] for key in ('policy_id', 'reference_id')}
@@ -111,6 +114,8 @@ class TaskQueue:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
     def stop_reason(self, state):
+        if self.time_budget_reached(state):
+            return 'declared-collection-time-budget-reached'
         mixed = self.contract['stop_after_mixed_groups']
         if mixed and len(state['mixed_groups']) >= mixed:
             return 'declared-mixed-group-target-reached'
@@ -121,10 +126,15 @@ class TaskQueue:
             return 'frozen-task-queue-exhausted'
         return None
 
+    def time_budget_reached(self, state):
+        seconds = self.contract['stop_after_seconds']
+        return bool(seconds and time.monotonic() - state['started_at'] >= seconds)
+
     def claim(self, worker):
         with self.locked() as state:
             reason = self.stop_reason(state)
             if reason:
+                state['stop_reason'] = reason
                 return None
             task_id = self.contract['task_ids'][len(state['claimed'])]
             state['claimed'].append(dict(instance_id=task_id, worker=worker, claimed_at=time.time()))
@@ -135,6 +145,7 @@ class TaskQueue:
             # A task budget limits task claims, not the states of those tasks.
             mixed = self.contract['stop_after_mixed_groups']
             return (len(state['states']) < self.contract['maximum_states']
+                    and not self.time_budget_reached(state)
                     and not (mixed and len(state['mixed_groups']) >= mixed))
 
     def reserve_state(self, state_id, task_id, draw, worker):
@@ -143,6 +154,7 @@ class TaskQueue:
                 raise ValueError('A focal state was already reserved in this run')
             mixed = self.contract['stop_after_mixed_groups']
             if (len(state['states']) >= self.contract['maximum_states']
+                    or self.time_budget_reached(state)
                     or (mixed and len(state['mixed_groups']) >= mixed)):
                 return False
             state['states'][state_id] = dict(instance_id=task_id, draw=draw, worker=worker,
@@ -758,11 +770,13 @@ async def collect(args, entries, questions):
     print(json.dumps({'phase': 'model_loading', 'context': args.context,
                       'policy_gpus': args.policy_gpus,
                       'adapter_run': str(args.adapter_run) if args.adapter_run else None}), flush=True)
+    model_loading_started = time.monotonic()
     policy = build_policy(args.config, backend=args.policy_backend,
                           adapter_run=args.adapter_run,
                           inference_device_count=args.policy_gpus)
     print(json.dumps({'phase': 'model_ready', 'policy_id': policy.identity['policy_id'],
                       'reference_id': policy.identity['reference_id'],
+                      'model_loading_seconds': time.monotonic() - model_loading_started,
                       'backend': args.policy_backend,
                       'adapter_sha256': policy.identity['policy_identity']['adapter_sha256'],
                       'nf4_cache_manifest_sha256': policy.identity['policy_identity']['nf4_cache_manifest_sha256'],
@@ -798,6 +812,7 @@ async def collect(args, entries, questions):
         selection_sha256=digest(args.selection.read_bytes()), maximum_states=args.max_states,
         stop_after_mixed_groups=args.stop_after_mixed_groups,
         stop_after_tasks=args.stop_after_tasks,
+        stop_after_seconds=args.stop_after_seconds,
         execution_contract=dict(config_sha256=digest(args.config.read_bytes()),
             policy_backend=args.policy_backend, context=args.context, draws=args.draws,
             branches=args.branches, turns=args.turns, tool_calls=args.tool_calls,
@@ -1008,17 +1023,20 @@ def main():
                         help='Dynamic queue: stop new task/state claims after N valid distinct-action mixed groups; retain in-flight results')
     parser.add_argument('--stop-after-tasks', type=int, default=0,
                         help='Dynamic queue: maximum globally claimed tasks, including in-flight tasks; zero means the full fixed queue')
+    parser.add_argument('--stop-after-seconds', type=float, default=0,
+                        help='Dynamic queue: stop new tasks/states after this elapsed collection time; finish in-flight work')
     parser.add_argument('--only-task', action='append', default=[],
-                        help='Run named members of the frozen 100-task train pool, e.g. an environment repair or separate 8K continuation')
+                        help='Run named members of this frozen S600 train selection')
     parser.add_argument('--task-limit', type=int,
                         help='Optional first N selected tasks before worker partition, used for held-in post-update comparison')
     parser.add_argument('--isolation', choices=('bwrap', 'chroot', 'observable'), default='chroot')
     args = parser.parse_args()
     if not 0 <= args.worker_index < args.worker_count or args.max_states < 0:
         parser.error('Invalid worker or focal-state count')
-    if min(args.stop_after_mixed_groups, args.stop_after_tasks) < 0:
+    if (min(args.stop_after_mixed_groups, args.stop_after_tasks, args.stop_after_seconds) < 0
+            or not math.isfinite(args.stop_after_seconds)):
         parser.error('Dynamic stopping budgets must be nonnegative')
-    if (args.stop_after_mixed_groups or args.stop_after_tasks) and not args.task_queue:
+    if (args.stop_after_mixed_groups or args.stop_after_tasks or args.stop_after_seconds) and not args.task_queue:
         parser.error('Dynamic stopping budgets require --task-queue')
     if args.task_queue and (args.prevalidate or args.adapter_run is not None):
         parser.error('The dynamic training queue is not used for CPU preparation or fixed post-update comparisons')
@@ -1031,8 +1049,8 @@ def main():
     args.out.mkdir(parents=True)
     selection = json.loads(args.selection.read_text())
     entries = selection['tasks']
-    if len(entries) != 100 or len({x['instance_id'] for x in entries}) != 100:
-        parser.error('Expected the frozen 100 unique S600 training tasks')
+    if not entries or len({x['instance_id'] for x in entries}) != len(entries):
+        parser.error('Expected a nonempty frozen selection of unique S600 training tasks')
     if any(x['physical_split'] != 'train' for x in entries):
         parser.error('Only train tasks are permitted')
     questions = {}
@@ -1050,7 +1068,7 @@ def main():
     if args.only_task:
         selected = set(args.only_task)
         if not selected <= {row['instance_id'] for row in entries}:
-            parser.error('--only-task must remain inside the frozen S600 train100 pool')
+            parser.error('--only-task must remain inside this frozen S600 train selection')
         entries = [row for row in entries if row['instance_id'] in selected]
     if args.task_limit is not None:
         entries = entries[:args.task_limit]

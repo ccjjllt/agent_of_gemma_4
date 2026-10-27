@@ -14,6 +14,8 @@
 
 实际cleanup确认全部worker退出、无残留任务UID、临时输入与本地NF4副本已删。qingyu1232完成后平台实际余额：已用33.56h、剩0h（本轮相对起点消耗20.17h）；先前余额归零并未立即终止该已运行会话。
 
+**10月27日新任务小轮已开始准备。** 用户在本会话明确批准12道新采集题＋4道独立研究验证题的私有材料/代码上传及jiyujia现有配额内CPU/GPU研究。新材料已上传，目标账号CPU运行时重建作业已实际RUNNING；尚无本轮GPU采样或更新结果。选题、源码接线和真实执行进度见 [新任务轮](next-round/execution.md)。以下两段保留此前准备阶段的事实。
+
 **新一轮准备：用户已明确改用jiyujia GPU，并要求只确认正常启动、不持续监控。** 已实读认证账号jiyujia、GPU剩22.87h；旧私有train100对该账号403，因此本地准备了字节相同的私有转存包。Unsloth独立后端、动态任务队列和原子全局状态额度已实现；下一轮[固定计划](16k/unsloth-arm-plan.json)为16K/r32/1024 thinking、两道已知训练机制题、最多一状态、collection-only，不重训旧batch。组内分支仍串行；跨工具KV暂不启用，以便隔离执行路径变化。当前没有Unsloth GPU运行或性能结果。
 
 CPU运行时与私有材料上传在进程创建前被自动审批拒绝，系统认为“使用jiyujia GPU配额”未明确覆盖把具体代码／运行时／材料传往该账号。已向用户发出明确上传与CPU/GPU运行授权问题；没有上传、CPU作业或新GPU作业，也没有改目的地绕过。可审阅源为 [CPU准备程序](kaggle/prepare_unsloth_runtime.py)、[私有CPU载体配置](kaggle/unsloth-runtime-v1/kernel-metadata.json)；同一训练包124,593,514 bytes、SHA `4b3792470dd1dacc73e1899ba38a3d96f2054bfad916d4a9b51b7e4db4333504`。下方运行中表述均保留为历史阶段事实。

@@ -4,6 +4,8 @@ No rollout or reward is manufactured here. Only independently sampled focal
 actions with complete terminal verification, restored declared state and mixed
 rewards contribute. Original-action replays and all continuation tokens are
 excluded. Launch with torchrun --standalone --nproc-per-node=4 -m training.train_vfarl.
+An Unsloth actor uses --actor-backend unsloth with the native FSDP learner and
+sequence_tis; --calibrate fsdp-focal scores a fresh focal batch without updating.
 """
 import argparse
 from datetime import timedelta
@@ -23,7 +25,8 @@ from .fsdp_checkpoint import collective_call
 from .fsdp_qlora import pack_floating_nf4_storage, wrap_fsdp, save_adapter
 from .vfarl_policy import (bind_template, identities, install_eval_checkpointing,
                           install_logprob_forward, read_config, require_zero_lora,
-                          frozen_base_reference, install_probability_execution)
+                          frozen_base_reference, install_probability_execution,
+                          digest)
 
 
 def prepare_rows(path, context_limit):
@@ -153,7 +156,9 @@ def importance_summary(metrics):
     used = [row['sequence_importance_weight_loss_dtype'] for row in metrics]
     scale = max(logs)
     normalized = [math.exp(value-scale) for value in logs]
-    ess = lambda values: sum(values)**2 / sum(value*value for value in values)
+    def ess(values):
+        squared = sum(value*value for value in values)
+        return sum(values)**2 / squared if squared else 0.0
     return dict(actions=len(metrics), raw_sequence_ess=ess(normalized),
         raw_sequence_ess_fraction=ess(normalized)/len(metrics),
         used_sequence_ess=ess(used), used_sequence_ess_fraction=ess(used)/len(metrics),
@@ -210,12 +215,85 @@ def require_calibration_weights(rows, identity):
             raise TrainingError('Calibration tokens belong to different weights or protocol')
 
 
+def actor_learner_binding(rows, identity, *, actor_backend, rollout_correction):
+    """Bind identical weights/protocol while naming both execution paths.
+
+    Native collection retains the original exact identity requirement. An
+    explicitly selected Unsloth actor may differ only in probability execution;
+    its real behavior probabilities remain the importance-sampling denominator.
+    This does not make the native FSDP learner an Unsloth training backend.
+    """
+    if actor_backend == 'native':
+        for row in rows:
+            if (row['policy_id'] != identity['policy_id']
+                    or row['reference_id'] != identity['reference_id']):
+                raise TrainingError('Sampled behavior/reference policy differs from actual initial trainer')
+        return dict(actor_backend='native', learner_backend='native-fsdp',
+                    behavior_policy_id=identity['policy_id'],
+                    behavior_reference_id=identity['reference_id'],
+                    learner_policy_id=identity['policy_id'],
+                    learner_reference_id=identity['reference_id'],
+                    same_execution_identity=True)
+    if actor_backend != 'unsloth' or rollout_correction != 'sequence_tis':
+        raise TrainingError('Unsloth actor/native learner requires explicit sequence_tis correction')
+    from .vfarl_unsloth import UNSLOTH_EXECUTION_PROFILE
+    profile_hash = digest(UNSLOTH_EXECUTION_PROFILE)
+    execution_fields = {'probability_execution_sha256', 'probability_runtime_sha256'}
+    without_execution = lambda value: {key: item for key, item in value.items()
+                                       if key not in execution_fields}
+    policies = set()
+    runtime = None
+    for row in rows:
+        actor, reference = row.get('policy_identity'), row.get('reference_identity')
+        if not isinstance(actor, dict) or not isinstance(reference, dict):
+            raise TrainingError('Missing complete Unsloth actor/reference identity')
+        if digest(actor) != row['policy_id'] or digest(reference) != row['reference_id']:
+            raise TrainingError('Recorded actor/reference identity digest differs from its payload')
+        if (without_execution(actor) != without_execution(identity['policy_identity'])
+                or without_execution(reference) != without_execution(identity['reference_identity'])):
+            raise TrainingError('Unsloth actor and native learner have different weights, adapter or protocol')
+        if (actor.get('probability_execution_sha256') != profile_hash
+                or reference.get('probability_execution_sha256') != profile_hash
+                or row.get('probability_execution_sha256') != profile_hash):
+            raise TrainingError('Focal data does not use the declared Unsloth probability profile')
+        execution = row.get('execution', {})
+        recorded = execution.get('probability_runtime', {})
+        runtime_identity = recorded.get('identity')
+        if (execution.get('backend') != 'unsloth'
+                or execution.get('probability_execution_profile') != UNSLOTH_EXECUTION_PROFILE
+                or not isinstance(runtime_identity, dict)
+                or runtime_identity.get('profile') != UNSLOTH_EXECUTION_PROFILE
+                or recorded.get('identity_sha256') != digest(runtime_identity)
+                or actor.get('probability_runtime_sha256') != recorded['identity_sha256']
+                or reference.get('probability_runtime_sha256') != recorded['identity_sha256']):
+            raise TrainingError('Unsloth actor runtime provenance differs from its policy identity')
+        policies.add((row['policy_id'], row['reference_id']))
+        runtime = recorded
+    if len(policies) != 1:
+        raise TrainingError('One update requires a single frozen Unsloth behavior/reference policy')
+    behavior, reference = next(iter(policies))
+    return dict(actor_backend='unsloth', learner_backend='native-fsdp',
+                behavior_policy_id=behavior, behavior_reference_id=reference,
+                behavior_policy_identity=rows[0]['policy_identity'],
+                behavior_reference_identity=rows[0]['reference_identity'],
+                behavior_runtime=runtime,
+                learner_policy_id=identity['policy_id'],
+                learner_reference_id=identity['reference_id'],
+                same_execution_identity=False, rollout_correction=rollout_correction,
+                identity_difference='Probability execution profile/runtime only; all other fields match exactly',
+                reference_interpretation='Actor reference probabilities are preserved as diagnostics; the KL target is a separate frozen native learner reference forward')
+
+
 def calibrate_actor(args, cfg):
     from .vfarl_policy import NF4Policy
+    policy_class = NF4Policy
+    if args.actor_backend == 'unsloth':
+        from .vfarl_unsloth import UnslothPolicy
+        policy_class = UnslothPolicy
     rows, manifest = calibration_rows(args.data, cfg['max_sequence_length'])
     output = Path(args.out)
     output.mkdir(parents=True, exist_ok=False)
-    policy = NF4Policy(args.config, inference_device_count=2)
+    policy = policy_class(args.config, inference_device_count=2)
     initial = trainable_actor_hash = policy.identity['policy_identity']['adapter_sha256']
     results = []
     try:
@@ -259,7 +337,17 @@ def calibrate_actor(args, cfg):
 
 
 def calibrate_fsdp(args, cfg):
-    rows, manifest = calibration_rows(args.data, cfg['max_sequence_length'])
+    focal = args.calibrate == 'fsdp-focal'
+    if focal:
+        rows, evidence = prepare_rows(args.data, cfg['max_sequence_length'])
+        manifest = dict(format='vfarl-focal-probability-calibration-v1', evidence=evidence)
+        if not rows:
+            print(json.dumps(dict(optimizer_steps=0, reason='No verified mixed-outcome focal groups',
+                                  **evidence)), flush=True)
+            return 0
+    else:
+        rows, manifest = calibration_rows(args.data, cfg['max_sequence_length'])
+    _, rl = read_config(args.config)
     stack = single.require_stack('nf4')
     torch, dist = stack['torch'], stack['torch'].distributed
     if int(os.environ.get('WORLD_SIZE','1')) != 4:
@@ -276,10 +364,18 @@ def calibrate_fsdp(args, cfg):
     bind_template(tokenizer, cfg);require_zero_lora(model, torch)
     info['probability_execution'] = install_probability_execution(model,stack)
     identity = identities(model, tokenizer, info, cfg)
-    collective_call(torch,lambda: require_calibration_weights(rows,identity))
+    binding = None
+    def bind_sources():
+        nonlocal binding
+        if focal:
+            binding = actor_learner_binding(rows, identity, actor_backend=args.actor_backend,
+                                           rollout_correction=rl['rollout_correction'])
+        else:
+            require_calibration_weights(rows, identity)
+    collective_call(torch, bind_sources)
     model.eval()
     checkpoint_layers = install_eval_checkpointing(model) if cfg['gradient_checkpointing'] else 0
-    install_logprob_forward(model)
+    install_logprob_forward(model, rl['logprob_chunk_size'])
     storage = pack_floating_nf4_storage(model, torch, stack['bitsandbytes'], torch.bfloat16)
     os.environ.setdefault('FSDP_TRANSFORMER_CLS_TO_WRAP','Gemma4TextDecoderLayer')
     wrapped, units = wrap_fsdp(model, torch, device);wrapped.eval()
@@ -301,11 +397,19 @@ def calibrate_fsdp(args, cfg):
         wrapped.zero_grad(set_to_none=True)
         if real:
             baseline=first.cpu().tolist()
-            records.append(dict(source=row['calibration_source'],
+            sequence_log_is = float((first.double()-old.double()).sum())
+            used_is = math.exp(min(sequence_log_is, math.log(rl['rollout_is_max'])))
+            records.append(dict(source=(dict(branch_id=row['branch_id'], state_id=row['state_id'],
+                    instance_id=row.get('instance_id')) if focal else row['calibration_source']),
                 original_behavior_logprobs=old.cpu().tolist(),
                 original_reference_logprobs=stored_reference.cpu().tolist(),
                 active_first=baseline, active_repeat=repeated.cpu().tolist(),
                 frozen_reference=reference.cpu().tolist(), grad_enabled=values,
+                sequence_log_importance_weight=sequence_log_is,
+                sequence_importance_weight_raw=(math.exp(sequence_log_is) if sequence_log_is<700 else None),
+                sequence_importance_weight_loss_dtype=used_is,
+                sequence_importance_weight_capped=sequence_log_is>math.log(rl['rollout_is_max']),
+                sequence_tokens=len(row['prompt_token_ids'])+len(row['completion_token_ids']),
                 comparisons=dict(current_vs_original_behavior=probability_comparison(baseline,old.cpu().tolist()),
                     repeat_vs_first=probability_comparison(repeated.cpu().tolist(),baseline),
                     reference_vs_current=probability_comparison(reference.cpu().tolist(),baseline),
@@ -320,9 +424,13 @@ def calibrate_fsdp(args, cfg):
         peak_reserved_bytes=torch.cuda.max_memory_reserved(device),records=records)
     atomic_json(output/('rank-%03d.json'%rank),local)
     gathered=[None]*world;dist.all_gather_object(gathered,local)
-    if rank==0:atomic_json(output/'calibration_manifest.json',dict(mode='fsdp',optimizer_steps=0,
+    if rank==0:atomic_json(output/'calibration_manifest.json',dict(mode=args.calibrate,optimizer_steps=0,
         source_manifest=manifest,source_manifest_sha256=sha256_file(Path(args.data)),
-        policy=identity,model=info,storage=storage,checkpointed_decoder_layers=checkpoint_layers,
+        policy=identity,actor_learner_binding=binding,model=info,storage=storage,
+        importance_weights=importance_summary([record for result in gathered for record in result['records']]),
+        rollout_correction=rl['rollout_correction'], rollout_is_max=rl['rollout_is_max'],
+        importance_interpretation='Diagnostic complete-focal-action learner/actor ratios; no optimizer or weighted reward loss is executed in calibration',
+        checkpointed_decoder_layers=checkpoint_layers,
         rank0_wrap_units=units,ranks=gathered,
         limitation='No reward, optimizer, or LoRA update. Measured differences apply only to the frozen source records.'))
     dist.barrier();dist.destroy_process_group()
@@ -333,7 +441,7 @@ def run(args):
     cfg, rl = read_config(args.config)
     if args.calibrate == 'actor':
         return calibrate_actor(args,cfg)
-    if args.calibrate == 'fsdp':
+    if args.calibrate in ('fsdp', 'fsdp-focal'):
         return calibrate_fsdp(args,cfg)
     rows, evidence = prepare_rows(args.data, cfg['max_sequence_length'])
     if not rows:
@@ -367,10 +475,11 @@ def run(args):
     info['probability_execution'] = install_probability_execution(model,stack)
     identity = identities(model, tokenizer, info, cfg)
 
+    binding = None
     def verify_identity():
-        for row in rows:
-            if row['policy_id'] != identity['policy_id'] or row['reference_id'] != identity['reference_id']:
-                raise TrainingError('Sampled behavior/reference policy differs from actual initial trainer')
+        nonlocal binding
+        binding = actor_learner_binding(rows, identity, actor_backend=args.actor_backend,
+                                       rollout_correction=rl['rollout_correction'])
         if any(max(r['prompt_token_ids'] + r['completion_token_ids']) >=
                model.get_input_embeddings().num_embeddings for r in rows):
             raise TrainingError('Sample contains an out-of-vocabulary token')
@@ -481,6 +590,7 @@ def run(args):
                                 sequence_importance_weight_dtype=str(importance.dtype),
                                 sequence_importance_weight_capped=(corrected and sequence_log_is>math.log(rl['rollout_is_max'])),
                                 actor_behavior_logprobs=old.cpu().tolist(),
+                                actor_reference_logprobs=stored_ref.cpu().tolist(),
                                 frozen_learner_old_logprobs=learner_old.cpu().tolist(),
                                 learner_grad_vs_nograd_max_abs_error=same_path_error,
                                 learner_repeat_max_abs_error=repeat_error,
@@ -534,7 +644,7 @@ def run(args):
             post_update_diagnostics_completed=False,
             post_update_diagnostics='not yet executed at the commit boundary',
             source_data_sha256=sha256_file(Path(args.data)), config=cfg, rl=rl,
-            evidence=evidence, policy=identity, model=info, storage=storage,
+            evidence=evidence, policy=identity, actor_learner_binding=binding, model=info, storage=storage,
             checkpointed_decoder_layers=checkpoint_layers, rank0_wrap_units=units,
             global_parameter_delta_l2=float(local_change[0].sqrt()),
             global_changed_parameter_elements=int(local_change[1]),
@@ -612,7 +722,7 @@ def run(args):
             optimizer_step_manifest='optimizer-step.json',
             optimizer_step_manifest_sha256=sha256_file(output / 'optimizer-step.json'),
             source_data_sha256=sha256_file(Path(args.data)), config=cfg, rl=rl,
-            evidence=evidence, policy=identity, model=info, storage=storage,
+            evidence=evidence, policy=identity, actor_learner_binding=binding, model=info, storage=storage,
             checkpointed_decoder_layers=checkpoint_layers, rank0_wrap_units=units,
             global_parameter_delta_l2=float(local_change[0].sqrt()),
             global_changed_parameter_elements=int(local_change[1]),
@@ -631,7 +741,11 @@ def main():
     parser.add_argument('--config', required=True)
     parser.add_argument('--data', required=True)
     parser.add_argument('--out', required=True)
-    parser.add_argument('--calibrate', choices=('actor','fsdp'),
+    parser.add_argument('--actor-backend', choices=('native', 'unsloth'), default='native',
+                        help='Actual sampling backend; Unsloth/native-FSDP uses explicit execution identities and sequence_tis')
+    parser.add_argument('--learner-backend', choices=('native',), default='native',
+                        help='The memory-sharded native FSDP learner; Unsloth training kernels are not yet integrated')
+    parser.add_argument('--calibrate', choices=('actor','fsdp','fsdp-focal'),
                         help='Score real source tokens without a reward or optimizer step')
     args = parser.parse_args()
     try:

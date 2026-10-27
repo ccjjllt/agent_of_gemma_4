@@ -5,6 +5,7 @@ import ast
 import base64
 import hashlib
 import json
+import math
 import re
 import zlib
 
@@ -34,19 +35,29 @@ parser.add_argument('--nf4-dataset',
                     help='Explicit owner/dataset/version carrying the unchanged, producer-hashed NF4 cache.')
 parser.add_argument('--extra-dataset-source', action='append', default=[],
                     help='Additional explicitly versioned private input, e.g. exported adapters or runtime support.')
+parser.add_argument('--collection-kernel',
+                    help='Completed owner/kernel/version containing an untrained collection-only focal batch; reuse it without collecting again.')
+parser.add_argument('--collection-carrier-sha256',
+                    help='SHA256 of the completed collection root vfarl-train/carrier.json.')
+parser.add_argument('--collection-focal-sha256',
+                    help='SHA256 of its root vfarl-train/focal.jsonl; never a worker-local file.')
 parser.add_argument('--title')
 parser.add_argument('--dataset-version', type=int, default=1)
 parser.add_argument('--export-runtime', action='store_true', help='Publish repaired runtime even for a CPU task subset.')
 parser.add_argument('--collect-only', action='store_true', help='Collect requested real rollouts/branches without optimizer or post-update runs.')
 parser.add_argument('--focal-states', type=int, default=5, help='Maximum focal states across both collectors; zero means rollout coverage only.')
 parser.add_argument('--policy-backend', choices=('native', 'unsloth'), default='native',
-                    help='Actor backend only; the existing native/FSDP learner remains explicit.')
+                    help='Actor execution backend; native FSDP remains the learner.')
+parser.add_argument('--learner-backend', choices=('native',), default='native',
+                    help='Explicit learner implementation; Unsloth backward is not yet measured.')
 parser.add_argument('--dynamic-queue', action='store_true',
                     help='Two double-GPU actors claim whole tasks from a shared frozen-order queue.')
 parser.add_argument('--stop-after-mixed-groups', type=int, default=0,
                     help='Dynamic queue: stop new task/state claims after N valid mixed groups; keep in-flight groups complete.')
 parser.add_argument('--stop-after-tasks', type=int, default=0,
                     help='Dynamic queue: cap total globally claimed tasks; zero uses the complete declared task list.')
+parser.add_argument('--stop-after-seconds', type=float, default=0,
+                    help='Stop new dynamic task/state claims after this collection time, retaining in-flight results.')
 parser.add_argument('--calibration-data', type=Path,
                     help='Manifest of real, source-bound actions for an explicit zero-update actor/FSDP probability study.')
 parser.add_argument('--calibration-action-file', type=Path, action='append', default=[],
@@ -63,6 +74,16 @@ if args.runtime_kernel and args.runtime_dataset:
     parser.error('Specify one completed runtime kernel or runtime dataset, not both')
 if args.runtime_kernel and len(args.runtime_kernel.split('/')) != 3:
     parser.error('--runtime-kernel must include an explicit completed version')
+if args.collection_kernel:
+    if not re.fullmatch(r'[A-Za-z0-9_-]+/[A-Za-z0-9_-]+/[0-9]+', args.collection_kernel):
+        parser.error('--collection-kernel must name an explicit completed owner/kernel/version')
+    if args.mode != 'train' or args.collect_only or args.calibration_data or args.calibration_only:
+        parser.error('Completed collection reuse is a training-only continuation, without new collection or calibration')
+    if any(not re.fullmatch(r'[0-9a-f]{64}', value or '') for value in
+           (args.collection_carrier_sha256, args.collection_focal_sha256)):
+        parser.error('Collection reuse requires the reviewed completed carrier and focal SHA256 values')
+elif args.collection_carrier_sha256 or args.collection_focal_sha256:
+    parser.error('Collection output hashes require --collection-kernel')
 if args.focal_states < 0:
     parser.error('--focal-states must be nonnegative')
 if not re.fullmatch(r'[A-Za-z0-9_-]+', args.kernel_owner):
@@ -72,16 +93,15 @@ if args.kernel_id and not args.kernel_id.startswith(args.kernel_owner+'/'):
 for dataset in [args.dataset_source, args.runtime_dataset, args.nf4_dataset, *args.extra_dataset_source]:
     if dataset and not re.fullmatch(r'[A-Za-z0-9_-]+/[A-Za-z0-9_-]+/[0-9]+', dataset):
         parser.error('Dataset inputs must use an explicit owner/dataset/version')
-if min(args.stop_after_mixed_groups, args.stop_after_tasks) < 0:
+if (min(args.stop_after_mixed_groups, args.stop_after_tasks, args.stop_after_seconds) < 0
+        or not math.isfinite(args.stop_after_seconds)):
     parser.error('Dynamic stopping budgets must be nonnegative')
-if (args.stop_after_mixed_groups or args.stop_after_tasks) and not args.dynamic_queue:
+if (args.stop_after_mixed_groups or args.stop_after_tasks or args.stop_after_seconds) and not args.dynamic_queue:
     parser.error('Dynamic stopping rules require --dynamic-queue')
 if args.dynamic_queue and (args.mode != 'train' or args.calibration_only):
     parser.error('--dynamic-queue is only for actual training collection')
 if args.policy_backend != 'native' and (args.mode != 'train' or args.calibration_data):
     parser.error('An alternate actor backend is for an explicit collection arm, not the old native calibration path')
-if args.policy_backend == 'unsloth' and not args.collect_only:
-    parser.error('This Unsloth migration arm requires --collect-only; the native FSDP learner does not yet accept the new execution identity')
 if args.calibration_only and (args.mode != 'train' or not args.calibration_data):
     parser.error('--calibration-only requires --mode train and --calibration-data')
 if args.calibration_data and args.mode != 'train':
@@ -106,6 +126,7 @@ if args.jail_source:
     jail_override = {'path': str(args.jail_source), 'sha256': jail_hash,
                      'accepted_evidence': accepted_gpu_jails.get(jail_hash, 'CPU candidate: acceptance not yet claimed')}
 material = json.loads(args.material_build.read_text())
+material_archive_name = Path(material['archive']).name
 paths = list((ROOT / 'training').glob('*.py')) + list((ROOT / 'training/encoding').glob('*.py'))
 paths += list((ROOT / 'competition/vfarl/l4x4').glob('*.py'))
 paths += [ROOT / 'competition/vfarl/replay/run_official.py', ROOT / 'competition/vfarl/six-tools.json',
@@ -132,8 +153,12 @@ for index, path in enumerate(args.prevalidation_report):
     bundle[name] = path.read_text()
     prevalidation_paths.append(name)
 packed = base64.b64encode(zlib.compress(json.dumps(bundle).encode())).decode()
-source = f'MODE = {args.mode!r}\nMATERIAL_SHA256 = {material["sha256"]!r}\nRUNTIME_SHA256 = {args.runtime_sha256!r}\nCONTEXT_LENGTH = {args.context!r}\nTRAINING_CONFIG = {training_config_path!r}\nONLY_TASKS = {args.only_task!r}\nEXPORT_RUNTIME = {args.export_runtime!r}\nCOLLECT_ONLY = {args.collect_only!r}\nFOCAL_STATES = {args.focal_states!r}\nPOLICY_BACKEND = {args.policy_backend!r}\nDYNAMIC_QUEUE = {args.dynamic_queue!r}\nSTOP_AFTER_MIXED_GROUPS = {args.stop_after_mixed_groups!r}\nSTOP_AFTER_TASKS = {args.stop_after_tasks!r}\nCALIBRATION_DATA = {calibration_path!r}\nCALIBRATION_ONLY = {args.calibration_only!r}\nPREVALIDATION_REPORTS = {prevalidation_paths!r}\nSOURCE_BUNDLE = {packed!r}\n'
+source = f'MODE = {args.mode!r}\nMATERIAL_SHA256 = {material["sha256"]!r}\nMATERIAL_ARCHIVE_NAME = {material_archive_name!r}\nRUNTIME_SHA256 = {args.runtime_sha256!r}\nCONTEXT_LENGTH = {args.context!r}\nTRAINING_CONFIG = {training_config_path!r}\nONLY_TASKS = {args.only_task!r}\nEXPORT_RUNTIME = {args.export_runtime!r}\nCOLLECT_ONLY = {args.collect_only!r}\nFOCAL_STATES = {args.focal_states!r}\nPOLICY_BACKEND = {args.policy_backend!r}\nLEARNER_BACKEND = {args.learner_backend!r}\nDYNAMIC_QUEUE = {args.dynamic_queue!r}\nSTOP_AFTER_MIXED_GROUPS = {args.stop_after_mixed_groups!r}\nSTOP_AFTER_TASKS = {args.stop_after_tasks!r}\nCALIBRATION_DATA = {calibration_path!r}\nCALIBRATION_ONLY = {args.calibration_only!r}\nPREVALIDATION_REPORTS = {prevalidation_paths!r}\nSOURCE_BUNDLE = {packed!r}\n'
 source += (HERE / 'runner.py').read_text()
+source = (f'STOP_AFTER_SECONDS = {args.stop_after_seconds!r}\n'
+          f'COLLECTION_KERNEL = {args.collection_kernel!r}\n'
+          f'COLLECTION_CARRIER_SHA256 = {args.collection_carrier_sha256!r}\n'
+          f'COLLECTION_FOCAL_SHA256 = {args.collection_focal_sha256!r}\n') + source
 if args.mode == 'capabilities':
     # This CPU preparation step uploads only generic stdlib capability reads.
     # It contains no repository/training source, task material or data manifest.
@@ -177,6 +202,8 @@ dataset_sources = list(dict.fromkeys(dataset_sources))
 kernel_sources = ([args.nf4_kernel] if gpu and not args.nf4_dataset else [])
 kernel_sources += ([args.runtime_kernel] if args.runtime_kernel else [] if args.runtime_dataset else
                    [f'{args.kernel_owner}/vfarl-l4x4-cpu-stage/2'])
+if args.collection_kernel:
+    kernel_sources.append(args.collection_kernel)
 kernel_sources = list(dict.fromkeys(kernel_sources))
 metadata = {'id': args.kernel_owner + '/vfarl-l4x4-' + args.mode, 'title': 'VFARL L4x4 ' + args.mode.title(),
             'code_file': 'run.py', 'language': 'python', 'kernel_type': 'script',
@@ -197,9 +224,13 @@ if args.mode in ('capabilities', 'jail-probe'):
 manifest = {'source_sha256': hashlib.sha256(source.encode()).hexdigest(),
             'source_files': {name: hashlib.sha256(content.encode()).hexdigest() for name,content in bundle.items()},
             'material_sha256': material['sha256'], 'mode': args.mode,
+            'material_archive_name': material_archive_name,
             'runtime_kernel': args.runtime_kernel,
             'runtime_dataset': args.runtime_dataset,
             'runtime_sha256': args.runtime_sha256,
+            'collection_kernel': args.collection_kernel,
+            'collection_carrier_sha256': args.collection_carrier_sha256,
+            'collection_focal_sha256': args.collection_focal_sha256,
             'context_length': args.context,
             'training_config': {'path': training_config_path,
                                 'sha256': hashlib.sha256(training_config.read_bytes()).hexdigest()},
@@ -209,9 +240,11 @@ manifest = {'source_sha256': hashlib.sha256(source.encode()).hexdigest(),
             'collect_only': args.collect_only,
             'maximum_focal_states': args.focal_states,
             'policy_backend': args.policy_backend,
+            'learner_backend': args.learner_backend,
             'dynamic_queue': args.dynamic_queue,
             'stop_after_mixed_groups': args.stop_after_mixed_groups,
             'stop_after_tasks': args.stop_after_tasks,
+            'stop_after_seconds': args.stop_after_seconds,
             'kernel_owner': metadata['id'].split('/')[0],
             'dataset_sources': metadata['dataset_sources'],
             'kernel_sources': metadata['kernel_sources'],

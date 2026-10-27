@@ -562,6 +562,147 @@ def run_probability_calibration(source, config_path, out, env, evidence):
     (out / 'carrier.json').write_text(json.dumps(evidence, indent=2) + '\n')
 
 
+def task_scopes(selection):
+    """Keep independent research comparison tasks outside reward collection."""
+    task_ids = [row['instance_id'] for row in selection['tasks']]
+    if not task_ids or len(task_ids) != len(set(task_ids)):
+        raise RuntimeError('The frozen task selection must be nonempty and unique')
+    split = selection.get('research_split')
+    if split is None:
+        return task_ids, task_ids, []
+    collection = split['collection_task_ids']
+    validation = split['validation_task_ids']
+    if (not collection or len(collection) != len(set(collection))
+            or len(validation) != len(set(validation))
+            or set(collection) & set(validation)
+            or set(collection) | set(validation) != set(task_ids)):
+        raise RuntimeError('Research collection/validation identities must partition the frozen tasks')
+    return task_ids, collection, validation
+
+
+def named_tasks(common, task_ids):
+    arguments, index = [], 0
+    while index < len(common):
+        if common[index] == '--only-task':
+            index += 2
+        else:
+            arguments.append(common[index])
+            index += 1
+    for task in task_ids:
+        arguments += ['--only-task', task]
+    return arguments
+
+
+def fixed_rollouts(source, config_path, prevalidation, out, env, common, task_ids,
+                   prefix, *, adapter_run=None, focal=None, task_limit=None):
+    """Use the same frozen task order, policy budget and seeds before/after."""
+    workers = []
+    try:
+        for rank in range(2):
+            command = named_tasks(common, task_ids) + [
+                '--config', str(config_path), '--prevalidation', str(prevalidation),
+                '--context', str(CONTEXT_LENGTH), '--draws', '1', '--max-states', '0',
+                '--policy-gpus', '2', '--policy-backend', POLICY_BACKEND,
+                '--worker-index', str(rank), '--worker-count', '2',
+                '--out', str(out / f'{prefix}-{rank}')]
+            if adapter_run is not None:
+                command += ['--adapter-run', str(adapter_run)]
+            if focal is not None:
+                command += ['--score-focal-data', str(focal)]
+            if task_limit is not None:
+                command += ['--task-limit', str(task_limit)]
+            log = (out / f'{prefix}-{rank}.log').open('w')
+            process = spawn(command, env=dict(env, CUDA_VISIBLE_DEVICES=('0,1' if rank == 0 else '2,3')),
+                            cwd=source, stdout=log, stderr=subprocess.STDOUT)
+            workers.append((process, log))
+        failures = wait_workers(workers)
+        if failures:
+            raise RuntimeError('Fixed policy comparison failed in ' + prefix + ': ' + str(failures))
+    finally:
+        for process, log in workers:
+            if process.poll() is None:
+                stop_worker(process)
+            if not log.closed:
+                log.close()
+    results = []
+    for rank in range(2):
+        path = out / f'{prefix}-{rank}/collection.jsonl'
+        if path.is_file():
+            results.extend(json.loads(line) for line in path.read_text().splitlines() if line.strip())
+    by_id = {row['instance_id']: row for row in results}
+    expected = task_ids[:task_limit] if task_limit is not None else task_ids
+    if set(by_id) != set(expected) or len(results) != len(expected):
+        raise RuntimeError('Fixed policy comparison did not return exactly the requested task identities')
+    return [by_id[task] for task in expected]
+
+
+def reuse_collection(out, evidence):
+    """Copy one reviewed, untrained root focal batch without new sampling.
+
+    The immutable source cannot mark itself consumed. The new update records
+    this exact batch SHA, and the research coordinator must not submit it again.
+    """
+    carriers = [path for path in Path('/kaggle/input').rglob('carrier.json')
+                if path.parent.name == 'vfarl-train'
+                and sha(path) == COLLECTION_CARRIER_SHA256]
+    if len(carriers) != 1:
+        raise RuntimeError('Require one mounted completed collection with the reviewed carrier SHA256')
+    carrier = carriers[0]
+    root = carrier.parent
+    original = json.loads(carrier.read_text())
+    if (original.get('mode') != 'train' or original.get('collect_only') is not True
+            or original.get('one_update_completed') is not False
+            or original.get('optimizer_requested') is not False
+            or 'wall_seconds' not in original
+            or any((root / 'update' / name).exists() for name in
+                   ('optimizer-step.json', 'training_manifest.json'))):
+        raise RuntimeError('Only a completed collection-only batch with no prior update may be continued')
+    for key in ('material_sha256', 'runtime_sha256',
+                'collection_task_ids', 'independent_validation_task_ids', 'training_config'):
+        if original.get(key) != evidence.get(key):
+            raise RuntimeError('Completed collection differs from this frozen continuation: ' + key)
+    # A learner implementation repair must not force another expensive actor
+    # collection. Preserve both revisions while binding all actor/tool sources.
+    learner_source = 'training/train_vfarl.py'
+    original_sources = original.get('source_sha256', {})
+    current_sources = evidence.get('source_sha256', {})
+    if ({key: value for key, value in original_sources.items() if key != learner_source}
+            != {key: value for key, value in current_sources.items() if key != learner_source}):
+        raise RuntimeError('Completed collection actor, tools or preparation sources differ')
+    if original.get('actor_policy_backend') != POLICY_BACKEND:
+        raise RuntimeError('Completed collection actor backend differs from this continuation')
+    focal = root / 'focal.jsonl'
+    if not focal.is_file() or sha(focal) != COLLECTION_FOCAL_SHA256:
+        raise RuntimeError('Completed root focal batch differs from the reviewed SHA256')
+    allowed = set(evidence['collection_task_ids'])
+    for line in focal.read_text().splitlines():
+        if line.strip() and json.loads(line).get('instance_id') not in allowed:
+            raise RuntimeError('Reused focal record is outside the frozen collection task scope')
+    shutil.copyfile(focal, out / 'focal.jsonl')
+    before = root / 'actor-before.jsonl'
+    if before.is_file():
+        shutil.copyfile(before, out / 'actor-before.jsonl')
+    for rank in range(2):
+        previous = root / f'worker-{rank}' / 'collection.jsonl'
+        if previous.is_file():
+            target = out / f'worker-{rank}' / 'collection.jsonl'
+            target.parent.mkdir(exist_ok=True)
+            shutil.copyfile(previous, target)
+    record = dict(kernel=COLLECTION_KERNEL, carrier_sha256=COLLECTION_CARRIER_SHA256,
+                  focal_sha256=COLLECTION_FOCAL_SHA256, focal_bytes=focal.stat().st_size,
+                  new_collection_performed=False, original_wall_seconds=original['wall_seconds'],
+                  collection_learner_source_sha256=original_sources.get(learner_source),
+                  current_learner_source_sha256=current_sources.get(learner_source),
+                  original_dynamic_stopping=original.get('dynamic_stopping'),
+                  original_maximum_focal_states=original.get('maximum_focal_states'),
+                  consumption_rule='One reward update for this exact behavior batch. Preserve this SHA in research records and never resubmit it after a committed optimizer step.')
+    evidence['reused_collection'] = record
+    evidence['gpu_topology'].update(collector_processes=0, focal_state_quotas=[0, 0])
+    print(json.dumps({'phase': 'completed_collection_reused', **record}), flush=True)
+    (out / 'carrier.json').write_text(json.dumps(evidence, indent=2) + '\n')
+    return out / 'focal.jsonl'
+
+
 def main():
     global _OUTPUT
     started = time.monotonic()
@@ -571,17 +712,29 @@ def main():
     if MODE == 'capabilities':
         record_capabilities(out)
         return
-    material_archive = unique('vfarl-train100.bin')
+    material_archive = unique(MATERIAL_ARCHIVE_NAME)
     if sha(material_archive) != MATERIAL_SHA256:
-        raise RuntimeError('Frozen train100 archive identity changed')
+        raise RuntimeError('Frozen task material archive identity changed')
     own_input_tree(Path('/kaggle/working/vfarl-input'))
     material_filter = None
     if ONLY_TASKS:
-        prefixes = tuple('vfarl-input/assets/' + task + '/' for task in ONLY_TASKS)
+        with tarfile.open(material_archive) as archive:
+            frozen_selection = json.load(archive.extractfile('vfarl-input/selection.json'))
+        _, _, comparison_ids = task_scopes(frozen_selection)
+        included_ids = set(ONLY_TASKS) | (set(comparison_ids) if MODE == 'train' and not COLLECT_ONLY else set())
+        prefixes = tuple('vfarl-input/assets/' + task + '/' for task in included_ids)
         material_filter = lambda name: (name.endswith(('.json', '.jsonl')) or '/src/' in name
                                          or name.startswith(prefixes))
     unpack(material_archive, Path('/kaggle/working'), include=material_filter)
     material = Path('/kaggle/working/vfarl-input')
+    selection = json.loads((material / 'selection.json').read_text())
+    task_ids, collection_ids, validation_ids = task_scopes(selection)
+    if not set(ONLY_TASKS) <= set(task_ids):
+        raise RuntimeError('Requested task is outside the frozen material selection')
+    if MODE == 'train' and ONLY_TASKS:
+        if not set(ONLY_TASKS) <= set(collection_ids):
+            raise RuntimeError('Reward collection cannot include independent validation tasks')
+        collection_ids = [task for task in collection_ids if task in ONLY_TASKS]
     runtime_archive = unique('vfarl-cpu-stage.bin')
     actual_runtime_sha = sha(runtime_archive)
     if RUNTIME_SHA256 and actual_runtime_sha != RUNTIME_SHA256:
@@ -617,9 +770,12 @@ def main():
             if prepared['source_profile'] != 'stock' and prepared['source_profile'] in selected:
                 prepared['tasks'] = list(selected[prepared['source_profile']]['tasks'])
     by_task = {task: p for p in prep['task_environments'] for task in p['tasks']}
+    by_profile = {p['id']: p for p in prep['task_environments']}
+    selected_entries = {row['instance_id']: row for row in selection['tasks']}
     for asset in (material / 'assets').iterdir():
         task = json.loads((asset / 'task.json').read_text())
-        actual = by_task.get(task['instance_id'])
+        declared_profile = selected_entries[task['instance_id']].get('linux_environment_profile_id')
+        actual = by_profile.get(declared_profile) if declared_profile else by_task.get(task['instance_id'])
         config = json.loads((asset / 'runtime.json').read_text())
         historical = json.loads((asset / 'run-summary.json').read_text())
         config['site_packages_mode'] = historical.get('task_site_packages_mode') or 'pth'
@@ -663,7 +819,9 @@ def main():
         common.extend(['--only-task', task])
     evidence = {'mode': MODE, 'material_sha256': MATERIAL_SHA256, 'runtime_sha256': actual_runtime_sha,
                 'source_sha256': {p: hashlib.sha256(s.encode()).hexdigest() for p,s in bundle.items()},
-                'isolation': isolation, 'started_at': time.time()}
+                'isolation': isolation, 'started_at': time.time(),
+                'frozen_task_count': len(task_ids),
+                'collection_task_ids': collection_ids, 'independent_validation_task_ids': validation_ids}
     if MODE == 'train':
         evidence['torch_allocator_configuration'] = env['PYTORCH_ALLOC_CONF']
     (out / 'carrier.json').write_text(json.dumps(evidence, indent=2) + '\n')
@@ -717,7 +875,7 @@ def main():
                        if p.parent.name == 'vfarl-prevalidate'])
     if not merged_reports or (not PREVALIDATION_REPORTS and len(merged_reports) != 1):
         raise RuntimeError('Require explicitly frozen CPU reports or one mounted merged report')
-    selected_ids = {row['instance_id'] for row in json.loads((material / 'selection.json').read_text())['tasks']}
+    selected_ids = set(task_ids)
     by_id, source_records = {}, []
     for report in merged_reports:
         rows = [json.loads(line) for line in report.read_text().splitlines() if line.strip()]
@@ -736,15 +894,18 @@ def main():
     prevalidation = out / 'reused-prevalidation.jsonl'
     prevalidation.write_text(''.join(json.dumps(row) + '\n' for row in valid))
     (out / 'prevalidation-reuse-sources.json').write_text(json.dumps(source_records, indent=2) + '\n')
-    if len(valid) != 100 or len({r['instance_id'] for r in valid}) != 100:
-        raise RuntimeError('Require actual Linux prevalidation records for the frozen 100-task pool')
-    usable = {r['instance_id'] for r in valid if r.get('usable')}
-    if ONLY_TASKS:
-        usable &= set(ONLY_TASKS)
+    if set(by_id) != selected_ids:
+        raise RuntimeError('Missing actual Linux prevalidation records for frozen tasks: ' +
+                           ', '.join(sorted(selected_ids - set(by_id))))
+    all_usable = {r['instance_id'] for r in valid if r.get('usable')}
+    usable = all_usable & set(collection_ids)
     if not usable:
         raise RuntimeError('No requested task has a real usable baseline/repaired environment')
-    evidence.update(planned_task_pool=100, usable_task_ids=sorted(usable), usable_task_count=len(usable),
-                    unavailable_task_count=100 - len({r['instance_id'] for r in valid if r.get('usable')}),
+    if not COLLECT_ONLY and not CALIBRATION_ONLY and not set(validation_ids) <= all_usable:
+        raise RuntimeError('Independent comparison requires usable CPU environments for every frozen validation task')
+    common = named_tasks(common, [task for task in collection_ids if task in usable])
+    evidence.update(planned_task_pool=len(task_ids), usable_task_ids=sorted(usable), usable_task_count=len(usable),
+                    unavailable_task_count=len(task_ids) - len(all_usable),
                     sampling_scope='Only individually CPU-accepted tasks; other pool members are not claimed as sampled.')
     focal_quotas = ((FOCAL_STATES, FOCAL_STATES) if DYNAMIC_QUEUE else
                     ((FOCAL_STATES + 1) // 2, FOCAL_STATES // 2))
@@ -752,9 +913,11 @@ def main():
                     calibration_only=CALIBRATION_ONLY,
                     calibration_manifest=CALIBRATION_DATA,
                     actor_policy_backend=POLICY_BACKEND,
+                    learner_backend=LEARNER_BACKEND,
                     dynamic_queue=DYNAMIC_QUEUE,
                     dynamic_stopping=dict(stop_after_mixed_groups=STOP_AFTER_MIXED_GROUPS,
                         stop_after_tasks=STOP_AFTER_TASKS,
+                        stop_after_seconds=STOP_AFTER_SECONDS,
                         rule='Stop new task claims and new state reservations only; complete active state groups and keep all results',
                         mixed_eligibility='The same prepare_rows complete/distinct-action criterion as the learner',
                         limitation='Stopping on observed mixed groups is an adaptive focal curriculum, not an unbiased task-population estimate'))
@@ -766,7 +929,7 @@ def main():
                                'training_ranks': 0 if COLLECT_ONLY or CALIBRATION_ONLY else 4,
                                'calibration_actor_gpus': 2 if CALIBRATION_DATA else 0,
                                'calibration_fsdp_ranks': 4 if CALIBRATION_DATA else 0,
-                               'post_update_task_limit': 0 if COLLECT_ONLY or CALIBRATION_ONLY else 4,
+                               'post_update_task_limit': 0 if COLLECT_ONLY or CALIBRATION_ONLY else len(validation_ids) or 4,
                                'post_update_collectors': 0 if COLLECT_ONLY or CALIBRATION_ONLY else 2}
     (out / 'carrier.json').write_text(json.dumps(evidence, indent=2) + '\n')
     caches = []
@@ -779,6 +942,7 @@ def main():
     model_cache = local_nf4_cache(caches[0], out)
     # Use the stage's dependency path in this coordinator only for config loading.
     sys.path.insert(0, str(stage / 'runtime'))
+    sys.path.insert(0, str(source))
     import yaml
     training_config_path = source / TRAINING_CONFIG
     config = yaml.safe_load(training_config_path.read_text())
@@ -800,58 +964,62 @@ def main():
                         wall_seconds=time.monotonic() - started)
         (out / 'carrier.json').write_text(json.dumps(evidence, indent=2) + '\n')
         return
-    task_queue = out / 'task-queue.json'
-    if DYNAMIC_QUEUE:
-        from competition.vfarl.l4x4.run import TaskQueue
-        selected_entries = json.loads((material / 'selection.json').read_text())['tasks']
-        selected_entries = [row for row in selected_entries if row['instance_id'] in usable]
-        TaskQueue(task_queue, [row['instance_id'] for row in selected_entries],
-            selection_sha256=sha(material / 'selection.json'), maximum_states=FOCAL_STATES,
-            stop_after_mixed_groups=STOP_AFTER_MIXED_GROUPS, stop_after_tasks=STOP_AFTER_TASKS,
-            execution_contract=dict(config_sha256=sha(config_path), policy_backend=POLICY_BACKEND,
-                context=CONTEXT_LENGTH, draws=1, branches=3, turns=32, tool_calls=32,
-                turn_tokens=1536, episode_tokens=8192))
-        evidence['task_queue'] = dict(path=str(task_queue),
-            frozen_task_order=[row['instance_id'] for row in selected_entries],
-            unit='Whole task with its declared draws; branches remain serial within each reserved state')
-        (out / 'carrier.json').write_text(json.dumps(evidence, indent=2) + '\n')
-    active = []
-    try:
-        for rank, states in enumerate(focal_quotas):
-            command = common + ['--config', str(config_path), '--prevalidation', str(prevalidation),
-                '--context', str(CONTEXT_LENGTH), '--draws', '1', '--branches', '3', '--max-states', str(states),
-                '--policy-gpus', '2', '--worker-index', str(rank), '--worker-count', '2',
-                '--policy-backend', POLICY_BACKEND,
-                '--out', str(out / f'worker-{rank}')]
-            if DYNAMIC_QUEUE:
-                command += ['--task-queue', str(task_queue),
-                    '--stop-after-mixed-groups', str(STOP_AFTER_MIXED_GROUPS),
-                    '--stop-after-tasks', str(STOP_AFTER_TASKS)]
-            log = (out / f'worker-{rank}.log').open('w')
-            proc = spawn(command, env=dict(env, CUDA_VISIBLE_DEVICES=('0,1' if rank == 0 else '2,3')),
-                                    cwd=source, stdout=log, stderr=subprocess.STDOUT)
-            active.append((proc, log))
-        failed = wait_workers(active)
-        if failed:
-            raise RuntimeError('Collection process failed; retain partial evidence: ' + str(failed))
-    finally:
-        for proc, log in active:
-            if proc.poll() is None:
-                stop_worker(proc)
-            if not log.closed:
-                log.close()
-    focal = out / 'focal.jsonl'
-    with focal.open('w') as merged:
-        for rank in range(2):
-            path = out / f'worker-{rank}/focal.jsonl'
-            if path.is_file():
-                merged.write(path.read_text())
-    actor_before = out / 'actor-before.jsonl'
-    with actor_before.open('w') as merged:
-        for rank in range(2):
-            path = out / f'worker-{rank}/actor-before.jsonl'
-            if path.is_file():
-                merged.write(path.read_text())
+    if COLLECTION_KERNEL:
+        focal = reuse_collection(out, evidence)
+    else:
+        task_queue = out / 'task-queue.json'
+        if DYNAMIC_QUEUE:
+            from competition.vfarl.l4x4.run import TaskQueue
+            selected_entries = [row for row in selection['tasks'] if row['instance_id'] in usable]
+            TaskQueue(task_queue, [row['instance_id'] for row in selected_entries],
+                selection_sha256=sha(material / 'selection.json'), maximum_states=FOCAL_STATES,
+                stop_after_mixed_groups=STOP_AFTER_MIXED_GROUPS, stop_after_tasks=STOP_AFTER_TASKS,
+                stop_after_seconds=STOP_AFTER_SECONDS,
+                execution_contract=dict(config_sha256=sha(config_path), policy_backend=POLICY_BACKEND,
+                    context=CONTEXT_LENGTH, draws=1, branches=3, turns=32, tool_calls=32,
+                    turn_tokens=1536, episode_tokens=8192))
+            evidence['task_queue'] = dict(path=str(task_queue),
+                frozen_task_order=[row['instance_id'] for row in selected_entries],
+                unit='Whole task with its declared draws; branches remain serial within each reserved state')
+            (out / 'carrier.json').write_text(json.dumps(evidence, indent=2) + '\n')
+        active = []
+        try:
+            for rank, states in enumerate(focal_quotas):
+                command = common + ['--config', str(config_path), '--prevalidation', str(prevalidation),
+                    '--context', str(CONTEXT_LENGTH), '--draws', '1', '--branches', '3', '--max-states', str(states),
+                    '--policy-gpus', '2', '--worker-index', str(rank), '--worker-count', '2',
+                    '--policy-backend', POLICY_BACKEND,
+                    '--out', str(out / f'worker-{rank}')]
+                if DYNAMIC_QUEUE:
+                    command += ['--task-queue', str(task_queue),
+                        '--stop-after-mixed-groups', str(STOP_AFTER_MIXED_GROUPS),
+                        '--stop-after-tasks', str(STOP_AFTER_TASKS),
+                        '--stop-after-seconds', str(STOP_AFTER_SECONDS)]
+                log = (out / f'worker-{rank}.log').open('w')
+                proc = spawn(command, env=dict(env, CUDA_VISIBLE_DEVICES=('0,1' if rank == 0 else '2,3')),
+                                        cwd=source, stdout=log, stderr=subprocess.STDOUT)
+                active.append((proc, log))
+            failed = wait_workers(active)
+            if failed:
+                raise RuntimeError('Collection process failed; retain partial evidence: ' + str(failed))
+        finally:
+            for proc, log in active:
+                if proc.poll() is None:
+                    stop_worker(proc)
+                if not log.closed:
+                    log.close()
+        focal = out / 'focal.jsonl'
+        with focal.open('w') as merged:
+            for rank in range(2):
+                path = out / f'worker-{rank}/focal.jsonl'
+                if path.is_file():
+                    merged.write(path.read_text())
+        actor_before = out / 'actor-before.jsonl'
+        with actor_before.open('w') as merged:
+            for rank in range(2):
+                path = out / f'worker-{rank}/actor-before.jsonl'
+                if path.is_file():
+                    merged.write(path.read_text())
     if CALIBRATION_DATA:
         run_probability_calibration(source, config_path, out, env, evidence)
     if COLLECT_ONLY:
@@ -861,12 +1029,30 @@ def main():
         print(json.dumps({'phase': 'collection_only_complete', 'optimizer_requested': False,
                           'maximum_focal_states': FOCAL_STATES}), flush=True)
         return
+    evidence['training_behavior_batch_sha256'] = sha(focal)
+    validation_before = []
+    if validation_ids:
+        # Spend comparison rollouts only after this collection produced actual
+        # usable reward differences. These tasks never supplied focal rewards.
+        from training.train_vfarl import prepare_rows
+        reward_rows, group_summary = prepare_rows(focal, CONTEXT_LENGTH)
+        evidence['focal_groups'] = group_summary
+        if reward_rows:
+            print(json.dumps({'phase': 'independent_validation_started', 'stage': 'before',
+                              'task_ids': validation_ids}), flush=True)
+            validation_before = fixed_rollouts(source, config_path, prevalidation, out, env,
+                common, validation_ids, 'research-before')
+            evidence['independent_validation_before'] = validation_before
+        else:
+            evidence['independent_validation_note'] = 'No mixed sampled-action group; no update comparison was requested.'
+        (out / 'carrier.json').write_text(json.dumps(evidence, indent=2) + '\n')
     # All rollout model processes have exited before allocating the FSDP model.
     train_env = dict(env, FSDP_TRANSFORMER_CLS_TO_WRAP='Gemma4TextDecoderLayer',
                      NCCL_DEBUG='WARN', TORCH_NCCL_ASYNC_ERROR_HANDLING='1')
     command = [sys.executable, '-m', 'torch.distributed.run', '--standalone', '--nproc-per-node=4',
                '--max-restarts=0', '-m', 'training.train_vfarl', '--config', str(config_path),
-               '--data', str(focal), '--out', str(out / 'update')]
+               '--data', str(focal), '--out', str(out / 'update'),
+               '--actor-backend', POLICY_BACKEND, '--learner-backend', LEARNER_BACKEND]
     with (out / 'update.log').open('w') as log:
         print(json.dumps({'phase': 'training_update_started', 'ranks': 4,
                           'focal_data': str(focal)}), flush=True)
@@ -888,8 +1074,12 @@ def main():
             'The optimizer step and adapter were committed before the failed diagnostic phase. '
             'This batch is not trained again; only independent post-update rollout follows.')
     if evidence['one_update_completed']:
-        post_common = common
-        if DYNAMIC_QUEUE:
+        post_ids = [task for task in collection_ids if task in usable][:4]
+        if validation_ids:
+            if len(validation_before) != len(validation_ids):
+                raise RuntimeError('Preserve the committed update; independent pre-update comparison is incomplete')
+            post_ids = validation_ids
+        elif DYNAMIC_QUEUE:
             # Pair post-update rollouts only with originals that actually
             # completed before adaptive stopping, preserving frozen order.
             completed_before = set()
@@ -899,48 +1089,33 @@ def main():
                     completed_before.update(row['instance_id'] for row in
                         (json.loads(line) for line in path.read_text().splitlines() if line.strip())
                         if row.get('verified') is True and row.get('reward') in (0, 1))
-            post_ids = [row['instance_id'] for row in
-                json.loads((material / 'selection.json').read_text())['tasks']
+            post_ids = [row['instance_id'] for row in selection['tasks']
                 if row['instance_id'] in completed_before][:4]
-            post_common, index = [], 0
-            while index < len(common):
-                if common[index] == '--only-task':
-                    index += 2
-                else:
-                    post_common.append(common[index]); index += 1
-            for task in post_ids:
-                post_common += ['--only-task', task]
-            if not post_ids:
-                raise RuntimeError('A committed focal update has no complete original task for a paired post-update run')
-            evidence['post_update_task_ids'] = post_ids
-            (out / 'carrier.json').write_text(json.dumps(evidence, indent=2) + '\n')
-        post = []
-        try:
-            for rank in range(2):
-                command = post_common + ['--config', str(config_path), '--prevalidation', str(prevalidation),
-                    '--adapter-run', str(out / 'update'), '--context', str(CONTEXT_LENGTH), '--draws', '1',
-                    '--max-states', '0', '--policy-gpus', '2', '--task-limit', '4',
-                    '--policy-backend', POLICY_BACKEND,
-                    '--score-focal-data', str(focal),
-                    '--worker-index', str(rank), '--worker-count', '2',
-                    '--out', str(out / f'post-worker-{rank}')]
-                log = (out / f'post-worker-{rank}.log').open('w')
-                proc = spawn(command, env=dict(env, CUDA_VISIBLE_DEVICES=('0,1' if rank == 0 else '2,3')),
-                                        cwd=source, stdout=log, stderr=subprocess.STDOUT)
-                post.append((proc, log))
-            failures = wait_workers(post)
-            evidence['post_update_process_failures'] = failures
-            if failures:
-                raise RuntimeError('Post-update collection failed: ' + str(failures))
-        finally:
-            for proc, log in post:
-                if proc.poll() is None:
-                    stop_worker(proc)
-                if not log.closed:
-                    log.close()
+        if not post_ids:
+            raise RuntimeError('A committed focal update has no task for a paired post-update run')
+        evidence['post_update_task_ids'] = post_ids
+        prefix = 'research-after' if validation_ids else 'post-worker'
+        (out / 'carrier.json').write_text(json.dumps(evidence, indent=2) + '\n')
+        validation_after = fixed_rollouts(source, config_path, prevalidation, out, env,
+            common, post_ids, prefix, adapter_run=out / 'update', focal=focal)
+        if validation_ids:
+            pairs = []
+            for before, after in zip(validation_before, validation_after):
+                pairs.append(dict(instance_id=before['instance_id'],
+                    before_reward=before['reward'], after_reward=after['reward'],
+                    before_verified=before['verified'], after_verified=after['verified'],
+                    before_verification=before['verification'], after_verification=after['verification'],
+                    before_policy_id=before['policy_id'], after_policy_id=after['policy_id']))
+            comparison = dict(task_ids=validation_ids, pairs=pairs,
+                selection_sha256=sha(material / 'selection.json'),
+                context=CONTEXT_LENGTH, draws=1, focal_states=0,
+                limitation='Small independent research comparison within allowed train sources; no official heldout score.')
+            (out / 'research-validation.json').write_text(json.dumps(comparison, indent=2) + '\n')
+            evidence['independent_validation_after'] = validation_after
+            evidence['independent_validation_comparison'] = str(out / 'research-validation.json')
         with (out / 'actor-after.jsonl').open('w') as merged:
             for rank in range(2):
-                path = out / f'post-worker-{rank}/actor-after.jsonl'
+                path = out / f'{prefix}-{rank}/actor-after.jsonl'
                 if path.is_file():
                     merged.write(path.read_text())
     else:

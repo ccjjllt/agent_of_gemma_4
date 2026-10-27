@@ -4,6 +4,7 @@ This prepares an offline GPU runtime. It never imports Unsloth, loads a model,
 or claims that CUDA kernels or the VFARL integration have been exercised.
 """
 from pathlib import Path
+import argparse
 import copy
 import hashlib
 import importlib
@@ -29,6 +30,11 @@ BASE_RUNTIME_SHA256 = '9475d9a2617135c276d3b4ad87884b28425f871e806c07b62bfc62d4a
 EXPECTED = {'transformers': '5.13.1', 'peft': '0.21.2',
             'bitsandbytes': '0.50.2', 'accelerate': '1.15.0',
             'tokenizers': '0.22.2'}
+UNSLOTH_PINS = {'unsloth': '2026.10.9', 'unsloth-zoo': '2026.10.9',
+                'torchao': '0.16.0', 'datasets': '4.8.5', 'certifi': '2026.10.23'}
+# Official 2026.10.9 metadata conflicts with stock torchao, datasets and certifi.
+# Only these helpers may be shadowed; CUDA and the model stack stay put.
+OVERLAY_REPLACEMENTS = {'torchao', 'datasets', 'certifi'}
 STARTED = time.monotonic()
 REPORT = {'purpose': 'CPU-only dependency resolution and offline runtime assembly',
           'gpu_model_loaded': False, 'unsloth_import_attempted': False,
@@ -94,7 +100,11 @@ def command(arguments, env, log):
                            (result.returncode, log.name))
 
 
-def main():
+def main(base_runtime_sha256=None):
+    expected_base = base_runtime_sha256 or BASE_RUNTIME_SHA256
+    if not re.fullmatch(r'[0-9a-f]{64}', expected_base):
+        raise ValueError('Expected an explicit lowercase SHA256 for the base runtime')
+    REPORT['base_runtime_sha256'] = expected_base
     EVIDENCE.mkdir(parents=True, exist_ok=False)
     import torch
     if torch.cuda.is_available() or torch.cuda.device_count():
@@ -106,7 +116,7 @@ def main():
     record('cpu_environment', python=sys.version, platform=platform.platform(),
            stock_torch=torch.__version__, stock_triton=metadata.version('triton'))
     archives = list(Path('/kaggle/input').rglob('vfarl-cpu-stage.bin'))
-    if len(archives) != 1 or digest(archives[0]) != BASE_RUNTIME_SHA256:
+    if len(archives) != 1 or digest(archives[0]) != expected_base:
         raise RuntimeError('Missing or changed accepted base runtime archive')
     unpack(archives[0], WORK)
     runtime = STAGE / 'runtime'
@@ -123,13 +133,17 @@ def main():
         if initial.get(name) != expected:
             raise RuntimeError('Accepted runtime version differs: %s=%r, expected %s' %
                                (name, initial.get(name), expected))
-    # Freeze all already installed packages. The extension may add packages,
-    # but may not silently upgrade the accepted model/task runtime.
+    # Preserve the accepted runtime while repairing the three declared helper
+    # conflicts in a new overlay. Task venvs are never changed.
     constraints = EVIDENCE / 'existing-constraints.txt'
-    constraints.write_text(''.join('%s==%s\n' % item for item in sorted(initial.items())))
+    preserved = {name: version for name, version in initial.items()
+                 if name not in OVERLAY_REPLACEMENTS}
+    constraints.write_text(''.join('%s==%s\n' % item for item in sorted(preserved.items())))
     record('base_runtime_ready', base_archive_bytes=archives[0].stat().st_size,
            base_preparation_sha256=base_preparation_sha,
-           preserved_packages=initial, constraints_sha256=digest(constraints))
+           base_packages=initial, preserved_packages=preserved,
+           allowed_overlay_replacements={name: initial.get(name) for name in sorted(OVERLAY_REPLACEMENTS)},
+           unsloth_pins=UNSLOTH_PINS, constraints_sha256=digest(constraints))
     tokenizer = STAGE / 'tokenizer'
     original_tokenizer = {p.name: digest(p) for p in tokenizer.iterdir() if p.is_file()}
     roots = [p.parent for p in Path('/kaggle/input').rglob('tokenizer.json')
@@ -152,13 +166,15 @@ def main():
     resolver_report = EVIDENCE / 'pip-resolver-report.json'
     command([sys.executable, '-m', 'pip', 'install', '--dry-run', '--report',
              str(resolver_report), '--constraint', str(constraints),
-             'unsloth', 'unsloth_zoo'], environment, EVIDENCE / 'pip-resolver.log')
+             *[name + '==' + version for name, version in UNSLOTH_PINS.items()]],
+            environment, EVIDENCE / 'pip-resolver.log')
     resolved = json.loads(resolver_report.read_text())
     proposals = resolved.get('install', [])
     forbidden = []
     for proposal in proposals:
         name = canonical(proposal['metadata']['name'])
-        if name in initial or name in ('torch', 'triton', 'pytorch-triton') or name.startswith('nvidia-'):
+        if ((name in initial and name not in OVERLAY_REPLACEMENTS)
+                or name in ('torch', 'triton', 'pytorch-triton') or name.startswith('nvidia-')):
             forbidden.append({'name': name, 'version': proposal['metadata']['version']})
     if forbidden:
         record('dependency_conflict', forbidden_replacements=forbidden)
@@ -166,7 +182,9 @@ def main():
     selected = {canonical(p['metadata']['name']): p['metadata']['version'] for p in proposals}
     if not all(name in selected or name in initial for name in ('unsloth', 'unsloth-zoo')):
         raise RuntimeError('Resolver did not supply both Unsloth packages')
-    record('dependencies_resolved', newly_selected=selected,
+    replacements = {name: {'previous_version': initial[name], 'overlay_version': version}
+                    for name, version in selected.items() if name in initial}
+    record('dependencies_resolved', newly_selected=selected, overlay_replacements=replacements,
            resolver_report_sha256=digest(resolver_report))
     wheelhouse = WORK / 'vfarl-unsloth-wheels'
     wheelhouse.mkdir(exist_ok=False)
@@ -186,29 +204,33 @@ def main():
         wheels.append({'package': canonical(proposal['metadata']['name']),
                        'version': proposal['metadata']['version'], 'wheel': name,
                        'bytes': path.stat().st_size, 'sha256': actual, 'url': url})
+        upgrade = ['--upgrade'] if canonical(proposal['metadata']['name']) in replacements else []
         command([sys.executable, '-m', 'pip', 'install', '--no-deps', '--no-compile',
-                 '--target', str(runtime), str(path)], environment,
+                 *upgrade, '--target', str(runtime), str(path)], environment,
                 EVIDENCE / ('install-%s.log' % canonical(proposal['metadata']['name'])))
     subprocess_code = (
-        'import importlib.metadata as m,json,torch,transformers,peft,bitsandbytes,accelerate,trl; '
+        'import importlib.metadata as m,json,torch,transformers,peft,bitsandbytes,accelerate,trl,torchao,xformers,datasets; '
         'names=("torch","triton","transformers","peft","bitsandbytes","accelerate",'
-        '"tokenizers","trl","unsloth","unsloth_zoo"); '
+        '"tokenizers","trl","unsloth","unsloth_zoo","torchao","xformers","datasets","certifi"); '
         'print(json.dumps({"versions":{n:m.version(n) for n in names},'
         '"cuda_available":torch.cuda.is_available(),'
         '"unsloth_import_attempted":False}))')
     command([sys.executable, '-c', subprocess_code], environment,
             EVIDENCE / 'cpu-module-imports.log')
     # Read metadata only; importing Unsloth on CPU would incorrectly require GPU.
+    expected_final = dict(EXPECTED, torch=initial['torch'], triton=initial['triton'], **UNSLOTH_PINS)
+    expected_final.update({name: value['overlay_version'] for name, value in replacements.items()})
     final_output = subprocess.run([sys.executable, '-c',
-        'import importlib.metadata as m,json;print(json.dumps({n:m.version(n) for n in '+repr(list(EXPECTED))+ '}))'],
+        'import importlib.metadata as m,json;print(json.dumps({n:m.version(n) for n in '+repr(list(expected_final))+ '}))'],
         env=environment, text=True, capture_output=True, check=True)
     final_versions = json.loads(final_output.stdout)
-    for name, expected in EXPECTED.items():
+    for name, expected in expected_final.items():
         if final_versions.get(name) != expected:
-            raise RuntimeError('Frozen runtime package changed after installation: ' + name)
-    extension = {'base_runtime_sha256': BASE_RUNTIME_SHA256,
+            raise RuntimeError('Runtime package differs from resolved assembly: ' + name)
+    extension = {'base_runtime_sha256': expected_base,
                  'base_preparation_sha256': base_preparation_sha,
                  'new_packages': wheels, 'original_tokenizer_files': original_tokenizer,
+                 'overlay_replacements': replacements, 'final_versions': final_versions,
                  'added_processor_files': added, 'gpu_verified': False,
                  'unsloth_import_attempted': False,
                  'limitation': 'Only CPU dependency assembly and ordinary module imports ran. CUDA, model load, kernels, FSDP and VFARL remain unmeasured.'}
@@ -223,16 +245,23 @@ def main():
     with tarfile.open(target, 'w:gz', compresslevel=1) as archive:
         archive.add(STAGE, arcname=STAGE.name)
     archive_record = {'path': target.name, 'bytes': target.stat().st_size,
-                      'sha256': digest(target), 'base_runtime_sha256': BASE_RUNTIME_SHA256,
+                      'sha256': digest(target), 'base_runtime_sha256': expected_base,
                       'gpu_verified': False, 'new_packages': selected,
+                      'overlay_replacements': replacements,
                       'wall_seconds': time.monotonic() - STARTED}
     write(WORK / 'runtime-archive.json', archive_record)
     record('archive_completed', **archive_record, success=True)
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--base-runtime-sha256', default=BASE_RUNTIME_SHA256,
+                        help='Actual SHA256 of the mounted accepted CPU archive; historical default retained')
+    args = parser.parse_args()
+    if not re.fullmatch(r'[0-9a-f]{64}', args.base_runtime_sha256):
+        parser.error('--base-runtime-sha256 must be a lowercase SHA256')
     try:
-        main()
+        main(args.base_runtime_sha256)
     except BaseException:
         EVIDENCE.mkdir(exist_ok=True)
         (EVIDENCE / 'exception.txt').write_text(traceback.format_exc())

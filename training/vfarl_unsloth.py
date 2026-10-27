@@ -45,8 +45,17 @@ UNSLOTH_EXECUTION_PROFILE = {
     'adapter_initialization': 'copy-exact-native-PEFT-CPU-shadow-initialization',
 }
 NATIVE_SEED0_ADAPTER_SHA256 = '12b4e23d28fcc8ab2ea1581a9398edfd2105375e43f3fc795199f3d6b31b06dc'
-CT_V2_TOKENIZER_SHA256 = 'cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f'
+CT_V2_TOKENIZER_FILE_SHA256 = 'cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f'
+CT_V2_TOKENIZER_FINGERPRINT = 'd001718145f4980b65e70b5ffa1dfce93b3eca5a5d8de2446b8c483f2b4b8927'
 CT_V2_TEMPLATE_SHA256 = '94899c0f917d93f6fe81c95744d1e8ddab2d21d39228d2e4aec1fb2a25bff413'
+
+
+def ct_tokenizer_identity(tokenizer, source):
+    """Keep serialized file bytes separate from the shared behavior hash."""
+    return dict(tokenizer_class=type(tokenizer).__name__,
+        tokenizer_file_sha256=sha256_file(Path(source) / 'tokenizer.json'),
+        tokenizer_fingerprint=tokenizer_fingerprint(tokenizer),
+        template_sha256=hashlib.sha256(tokenizer.chat_template.encode()).hexdigest())
 
 
 def _tensor_digest(tensor, torch, *, chunk_elements=4 * 1024 * 1024):
@@ -152,6 +161,11 @@ def native_cpu_adapter(model, targets, cfg, torch, peft):
         storage = torch.empty(1, device='cpu', dtype=torch.float32)
         linear.weight = torch.nn.Parameter(storage.as_strided(
             (module.out_features, module.in_features), (0, 0)), requires_grad=False)
+        # PEFT first moves fresh A/B to a bnb projection's compute_dtype,
+        # then its model wrapper promotes trainable adapters back to FP32.
+        # Preserve that BF16 rounding as well as the RNG draws: a plain FP32
+        # shadow otherwise has different A values from the native NF4 loader.
+        linear.compute_dtype = module.compute_dtype
         parent.add_module(pieces[-1], linear)
     config = peft.LoraConfig(r=cfg['rank'], lora_alpha=cfg['alpha'],
         lora_dropout=cfg['dropout'], bias='none', target_modules=targets,
@@ -190,7 +204,7 @@ def copy_native_cpu_adapter(model, shadow, torch):
 
 def _versions():
     result = {}
-    for name in ('unsloth', 'unsloth_zoo', 'torch', 'transformers', 'peft',
+    for name in ('unsloth', 'unsloth_zoo', 'torchao', 'xformers', 'datasets', 'trl', 'torch', 'transformers', 'peft',
                  'bitsandbytes', 'triton', 'accelerate'):
         try:
             result[name] = importlib.metadata.version(name)
@@ -259,6 +273,17 @@ class UnslothPolicy(NF4Policy):
         tok_source, tok_options = single.source_options(
             self.cfg['tokenizer_name_or_path'] or source,
             self.cfg['tokenizer_revision'] or self.cfg['model_revision'], True)
+        # Check the staged protocol before allocating the 31B model. The raw
+        # tokenizer.json SHA is not tokenizer_fingerprint(), which also binds
+        # the loaded backend, tokenizer class and special-token map.
+        self.tokenizer = transformers.AutoTokenizer.from_pretrained(tok_source, **tok_options)
+        bind_template(self.tokenizer, self.cfg)
+        tokenizer_identity = ct_tokenizer_identity(self.tokenizer, tok_source)
+        if (tokenizer_identity['tokenizer_file_sha256'] != CT_V2_TOKENIZER_FILE_SHA256
+                or tokenizer_identity['tokenizer_fingerprint'] != CT_V2_TOKENIZER_FINGERPRINT
+                or tokenizer_identity['template_sha256'] != CT_V2_TEMPLATE_SHA256):
+            raise TrainingError('Pinned CT v2 tokenizer/template differs before model load: '
+                                + json.dumps(tokenizer_identity, sort_keys=True))
         placement = ({'device_map': 'balanced', 'max_memory': {0: '14GiB', 1: '14GiB'}}
                      if inference_device_count == 2 else {'device_map': {'': 0}})
         random.seed(self.cfg['seed']); torch.manual_seed(self.cfg['seed'])
@@ -273,18 +298,25 @@ class UnslothPolicy(NF4Policy):
             attn_implementation=self.cfg['attn_implementation'], **placement)
         if type(self.model).__name__ != 'Gemma4ForConditionalGeneration':
             raise TrainingError('Unsloth changed the full cached model architecture')
-        self.tokenizer = transformers.AutoTokenizer.from_pretrained(tok_source, **tok_options)
-        bind_template(self.tokenizer, self.cfg)
-        if (tokenizer_fingerprint(self.tokenizer) != CT_V2_TOKENIZER_SHA256
-                or hashlib.sha256(self.tokenizer.chat_template.encode()).hexdigest() != CT_V2_TEMPLATE_SHA256):
-            raise TrainingError('Unsloth arm changed the pinned CT v2 tokenizer or chat template')
+        loaded_tokenizer_identity = ct_tokenizer_identity(self.tokenizer, tok_source)
+        if loaded_tokenizer_identity != tokenizer_identity:
+            raise TrainingError('Unsloth changed the pinned CT v2 tokenizer/template during model load: '
+                                + json.dumps(loaded_tokenizer_identity, sort_keys=True))
         self.model.requires_grad_(False)
         targets = single.resolve_target_modules(dict(self.model.named_modules()),
                                                 self.cfg['target_text_modules'])
         if adapter_run is None:
             shadow = native_cpu_adapter(self.model, targets, self.cfg, torch, peft)
-            if self.cfg['seed'] == 0 and trainable_hash(shadow) != NATIVE_SEED0_ADAPTER_SHA256:
-                raise TrainingError('31B CPU shadow initialization differs from the actual native r32/alpha64 seed0 adapter; inspect target topology/order before sampling')
+            shadow_hash = trainable_hash(shadow)
+            print(json.dumps(dict(phase='native_adapter_initialization',
+                actual_adapter_sha256=shadow_hash,
+                expected_adapter_sha256=NATIVE_SEED0_ADAPTER_SHA256,
+                target_count=len(targets), default_dtype=str(torch.get_default_dtype()),
+                projection_compute_dtypes=sorted({str(dict(self.model.named_modules())[name].compute_dtype)
+                                                  for name in targets}))), flush=True)
+            if self.cfg['seed'] == 0 and shadow_hash != NATIVE_SEED0_ADAPTER_SHA256:
+                raise TrainingError('31B CPU shadow initialization differs from the actual native r32/alpha64 seed0 adapter: '
+                                    + shadow_hash + '; inspect target topology/order/dtypes before sampling')
         random.seed(self.cfg['seed']); torch.manual_seed(self.cfg['seed'])
         # Unsloth's layer-family filter treats an explicit list as projection
         # leaf names. A regex of exact qualified paths bypasses that widening

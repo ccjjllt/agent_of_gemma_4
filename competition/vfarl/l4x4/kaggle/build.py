@@ -1,4 +1,4 @@
-"""Package only the frozen S600 train100 task assets and current VFARL source."""
+"""Package a frozen S600 train-only task inventory and current VFARL source."""
 from pathlib import Path
 import argparse
 import hashlib
@@ -23,17 +23,25 @@ def safe_id(value):
     return re.sub(r'[^A-Za-z0-9_.-]', '_', value)
 
 
-def build(out, selection_path):
+def build(out, selection_path, *, dataset_id='qingyu1232/vfarl-l4x4-train100',
+          dataset_title='VFARL L4x4 Train100'):
+    if not re.fullmatch(r'[A-Za-z0-9_-]+/[A-Za-z0-9_-]+', dataset_id):
+        raise ValueError('Dataset identity must be an explicit owner/dataset')
     selection_path = selection_path.resolve()
     selection = json.loads(selection_path.read_text())
+    tasks = selection['tasks']
+    if not tasks or len({task['instance_id'] for task in tasks}) != len(tasks):
+        raise ValueError('Expected a nonempty frozen inventory with unique task identities')
     profiles = json.loads((HERE / 'environment-profiles.json').read_text())['profiles']
     by_task = {task: (i, profile) for i, profile in enumerate(profiles) for task in profile['tasks']}
     material = out / 'material'
     assets = material / 'assets'
     assets.mkdir(parents=True, exist_ok=False)
     rows = []
-    for task in selection['tasks']:
+    for task in tasks:
         instance = task['instance_id']
+        if task.get('physical_split') != 'train':
+            raise ValueError('Only the declared S600 train inventory may be packaged: ' + instance)
         canonical = ROOT / task['actual_replay_result']
         if sha(canonical) != task['actual_replay_result_sha256']:
             raise ValueError('Changed canonical result: ' + instance)
@@ -49,7 +57,17 @@ def build(out, selection_path):
             shutil.copy2(parent / name, dest / name)
         if sha(dest / 'source-snapshot.tgz') != report['snapshot_sha256']:
             raise ValueError('Source snapshot identity changed: ' + instance)
-        index, profile = by_task[instance]
+        declared_profile = task.get('linux_environment_profile_id')
+        if declared_profile is None:
+            index, profile = by_task[instance]
+        else:
+            match_profile = re.fullmatch(r'profile-([0-9]{2})', declared_profile)
+            if not match_profile or int(match_profile.group(1)) >= len(profiles):
+                raise ValueError('Unknown frozen Linux environment profile: ' + str(declared_profile))
+            index = int(match_profile.group(1))
+            profile = profiles[index]
+            if (report.get('task_site_packages_profile') or 'stock') != profile['source_profile']:
+                raise ValueError('Selected Linux profile differs from task source environment: ' + instance)
         historical = json.loads((parent / 'run-summary.json').read_text())
         match = re.search(r'/python(3\.\d+)/', profile['source_profile'])
         version = match.group(1) if match else '3.12'
@@ -107,11 +125,12 @@ def build(out, selection_path):
     archive = dataset / 'vfarl-train100.bin'
     with tarfile.open(archive, 'w:gz') as tar:
         tar.add(material, arcname='vfarl-input')
-    metadata = {'id': 'qingyu1232/vfarl-l4x4-train100', 'title': 'VFARL L4x4 Train100',
+    metadata = {'id': dataset_id, 'title': dataset_title,
                 'licenses': [{'name': 'other'}],
                 'description': 'Private frozen S600 train-only tasks, original source snapshots and judged demonstration patches for Linux prevalidation. No heldout data. Source licenses remain in original snapshots. Reference patches stay outside agent workspaces.'}
     (dataset / 'dataset-metadata.json').write_text(json.dumps(metadata, indent=2) + '\n')
-    result = {'tasks': len(rows), 'archive': str(archive), 'bytes': archive.stat().st_size,
+    result = {'tasks': len(rows), 'dataset_id': dataset_id,
+              'archive': str(archive), 'bytes': archive.stat().st_size,
               'sha256': sha(archive), 'selection_sha256': sha(selection_path),
               'source_files': manifest['source_files']}
     (out / 'material-build.json').write_text(json.dumps(result, indent=2) + '\n')
@@ -122,5 +141,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--selection-path', type=Path, default=ROOT / 'competition/vfarl/l4x4/selection.json')
+    parser.add_argument('--dataset-id', default='qingyu1232/vfarl-l4x4-train100')
+    parser.add_argument('--dataset-title', default='VFARL L4x4 Train100')
     args = parser.parse_args()
-    build(args.out.resolve(), args.selection_path)
+    build(args.out.resolve(), args.selection_path, dataset_id=args.dataset_id,
+          dataset_title=args.dataset_title)
