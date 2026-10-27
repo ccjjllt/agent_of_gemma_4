@@ -387,7 +387,9 @@ def live_original_evidence(candidate, summary, restored, restore_path, original_
         original_action_index=index, original_action_replay=False,
         original_terminal_reward=summary['reward'], original_verified=True,
         original_behavior_preserved=True, selected_by_prefix_only=True,
-        selection_rule='first-real-tool-failure-with-recovery-budget-before-action',
+        selection_rule=selection['selection_rule'],
+        focal_trigger=selection.get('focal_trigger', 'any-tool-failure'),
+        trigger_feedback=selection.get('trigger_feedback', {}),
         selection_evidence_path=str(selection_path),
         selection_evidence_sha256=digest(selection_path.read_bytes()),
         snapshot_manifest_path=str(snapshot_path),
@@ -719,10 +721,14 @@ async def prevalidate(args, entries):
 async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None,
                   capture=False, seed=0, first_seed=None, train_focal_first_action=False):
     from competition.vfarl.l4x4.state import Snapshot
+    from competition.vfarl.l4x4.feedback import (FOCAL_SELECTION_RULES,
+        classify_tool_feedback, focal_feedback_ready)
     out.mkdir(parents=True, exist_ok=True)
     ledger = ledger if ledger is not None else {'output_tokens': 0, 'turns': 0, 'context_limit': args.context}
     candidates, actions, stop = [], [], None
     live_pair = getattr(args, 'collection_protocol', 'historical-three-branch') == 'live-original-pair'
+    focal_trigger = getattr(args, 'focal_trigger', 'any-tool-failure')
+    selection_rule = FOCAL_SELECTION_RULES[focal_trigger]
     def release_episode_cache(reason):
         if hasattr(policy, 'release_session'):
             policy.release_session(env.sid)
@@ -785,9 +791,12 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
         recovery_budget = (room >= args.turn_tokens + 256
             and args.turns-ledger['turns'] >= 2
             and args.tool_calls-env.ctx.tool_calls_used >= 2)
+        if focal_trigger == 'execution-recovery':
+            recovery_budget = (recovery_budget and args.turns-ledger['turns'] >= 4
+                               and args.tool_calls-env.ctx.tool_calls_used >= 3)
         if (capture and recovery_budget and ledger.get('tool_observations', 0) > 0
                 and ledger.get('tool_failures_observed', 0) > 0
-                and (not live_pair or (not candidates and ledger.get('last_tool_error') is True))):
+                and (not live_pair or (not candidates and focal_feedback_ready(ledger, focal_trigger)))):
             try:
                 state = await blocking_call(Snapshot.capture, env.manager, env.sid, env.ctx, ids, ledger,
                     policy.identity, out/f'state-{ledger["turns"]:03d}')
@@ -797,7 +806,8 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
                     write(out/'live-capture-selection.json', dict(
                         format='vfarl-live-selection-v1', state_id=state['state_id'],
                         selected_before_sampling=True, selected_by_prefix_only=True,
-                        selection_rule='first-real-tool-failure-with-recovery-budget-before-action',
+                        selection_rule=selection_rule, focal_trigger=focal_trigger,
+                        trigger_feedback=dict(ledger.get('last_tool_feedback', {})),
                         original_action_index=len(actions), checkpoint_turn=ledger['turns'],
                         prompt_token_ids_sha256=canonical_digest(ids),
                         captured_ledger_sha256=canonical_digest(state['state']['ledger']),
@@ -909,9 +919,12 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
                 await retain_candidates()
                 stop = 'tool_exception'
                 break
+        classification = (classify_tool_feedback(name, arguments, response, ledger)
+                          if live_pair else None)
         append(out/'tool-events.jsonl', {'tool': name, 'arguments': arguments,
             'response': response, 'seconds': time.monotonic()-started,
-            'tool_calls_used': env.ctx.tool_calls_used})
+            'tool_calls_used': env.ctx.tool_calls_used,
+            **({'classification': classification} if classification else {})})
         response_failed = isinstance(response, dict) and response.get('status') == 'error'
         if candidates and candidates[-1]['action'] is action:
             candidates[-1]['action_tool_error'] = response_failed
@@ -927,6 +940,13 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
             response_sha256=digest(json.dumps(response, ensure_ascii=False).encode()),
             observation_index=ledger['tool_observations'], observed_after_turn=ledger['turns'])
         if live_pair:
+            ledger['last_tool_feedback']['classification'] = classification
+            categories = ledger.setdefault('feedback_categories', {})
+            category = classification['category']
+            categories[category] = categories.get(category, 0) + 1
+            if classification['mutation_observation']:
+                ledger['successful_mutation_observations'] = (
+                    ledger.get('successful_mutation_observations', 0) + 1)
             ledger['continuation_nudges'] = 0
             if env.ctx.patch_submitted:
                 # Official execution stops immediately on submission. Sampling
@@ -962,6 +982,11 @@ async def collect(args, entries, questions, *, policy=None):
     if protocol not in ('historical-three-branch', 'live-original-pair'):
         raise ValueError('Unknown focal collection protocol')
     live_pair = protocol == 'live-original-pair'
+    focal_trigger = getattr(args, 'focal_trigger', 'any-tool-failure')
+    if focal_trigger not in ('any-tool-failure', 'execution-recovery'):
+        raise ValueError('Unknown focal trigger')
+    if focal_trigger != 'any-tool-failure' and not live_pair:
+        raise ValueError('Execution-recovery selection requires live-original-pair')
     if live_pair and args.branches != 2:
         raise ValueError('Live-original pairing requires two samples: original plus one independent branch')
     if not entries and args.score_focal_data is None:
@@ -1033,9 +1058,14 @@ async def collect(args, entries, questions, *, policy=None):
         turn_tokens=args.turn_tokens, episode_tokens=args.episode_tokens)
     if live_pair:
         execution_contract['collection_protocol'] = protocol
+        if focal_trigger != 'any-tool-failure':
+            execution_contract['focal_trigger'] = focal_trigger
         write(args.out/'collection-protocol.json', dict(
             collection_protocol=protocol, format='vfarl-live-capture-v1',
-            state_selection='First real tool failure with recovery budget; fixed before sampling',
+            state_selection=focal_trigger+'; fixed by visible feedback before sampling',
+            focal_trigger=focal_trigger,
+            recovery_budget_minimum=dict(remaining_turns=4, remaining_tool_calls=3)
+                if focal_trigger == 'execution-recovery' else dict(remaining_turns=2, remaining_tool_calls=2),
             samples='One real original focal action and one independently sampled restored action',
             original_behavior='Original tokens, masks and behavior probabilities are preserved',
             reference='Actual frozen reference computed by the model owner at original focal sampling',
@@ -1182,12 +1212,17 @@ async def collect(args, entries, questions, *, policy=None):
                         'checkpoint_has_recovery_budget': candidate['has_recovery_budget'],
                         'checkpoint_remaining_token_capacity': candidate['remaining_token_capacity'],
                         'restoration_scope': candidate['manifest']['restoration_scope']}
+                    from training.train_vfarl import prepare_rows
+                    prepared = {'groups': []}
+                    if (args.out/'focal.jsonl').exists():
+                        _, prepared = prepare_rows(args.out/'focal.jsonl', args.context)
+                    accepted = next((row for row in prepared['groups']
+                        if row['state_id'] == state_result['state_id']), None)
+                    state_result.update(
+                        eligible_sampled_actions=accepted['count'] if accepted else 0,
+                        mixed_outcomes=bool(accepted and accepted['mixed_outcomes']))
                     append(args.out/'state-results.jsonl', state_result)
                     if queue is not None:
-                        from training.train_vfarl import prepare_rows
-                        _, prepared = prepare_rows(args.out/'focal.jsonl', args.context)
-                        accepted = next((row for row in prepared['groups']
-                            if row['state_id'] == state_result['state_id']), None)
                         queue.finish_state(state_result['state_id'],
                             mixed=bool(accepted and accepted['mixed_outcomes']),
                             branches=accepted['branches'] if accepted else [],
@@ -1276,6 +1311,9 @@ def main():
                         choices=('historical-three-branch', 'live-original-pair'),
                         default='historical-three-branch',
                         help='Opt in to reuse a precommitted real original sample plus one independent restored branch')
+    parser.add_argument('--focal-trigger', choices=('any-tool-failure', 'execution-recovery'),
+                        default='any-tool-failure',
+                        help='Execution-recovery skips ordinary diagnostic test failures and search misses')
     parser.add_argument('--branches', type=int, choices=(2, 3),
                         help='Historical: replay plus fresh samples (default 3); live-original-pair: original plus one fresh sample (2)')
     parser.add_argument('--max-states', type=int, default=5)

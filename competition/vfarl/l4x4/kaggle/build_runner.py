@@ -60,6 +60,9 @@ parser.add_argument('--collection-protocol',
                     choices=('historical-three-branch', 'live-original-pair'),
                     default='historical-three-branch',
                     help='Live pair reuses the original sampled focal action and collects one independent continuation.')
+parser.add_argument('--focal-trigger', choices=('any-tool-failure', 'execution-recovery'),
+                    default='any-tool-failure',
+                    help='Select prefix-visible execution recovery feedback; requires live-original-pair.')
 parser.add_argument('--resident-rl', action='store_true',
                     help='Keep two Unsloth replicas resident; collect small batches, update, synchronize, then continue.')
 parser.add_argument('--resident-batch-tasks', type=int, default=4,
@@ -72,7 +75,9 @@ parser.add_argument('--resident-session-cache-tokens', type=int, default=0,
                     help='LRU token budget for exact-prefix per-session KV; zero preserves fresh-action profile3.')
 parser.add_argument('--resident-exclude-task', action='append', default=[],
                     help='Previously claimed original-inventory task to preserve without resampling after cancellation.')
-parser.add_argument('--resident-task-order', choices=('frozen', 'mixed-course'), default='frozen')
+parser.add_argument('--resident-task-order', choices=('frozen', 'mixed-course', 'evidence-course'), default='frozen')
+parser.add_argument('--resident-curriculum', type=Path,
+                    help='Freeze a metadata-only curriculum for evidence-course; original task assets are unchanged.')
 parser.add_argument('--resident-mixed-groups', type=int, default=2)
 parser.add_argument('--resident-max-states', type=int, default=4)
 parser.add_argument('--resident-seconds', type=float, default=0,
@@ -101,6 +106,8 @@ parser.add_argument('--prevalidation-report', type=Path, action='append', defaul
                     help='Actual local CPU report to freeze; later reports supersede earlier task records.')
 parser.add_argument('--jail-source', type=Path, help='Explicit CPU candidate or already CPU-accepted historical GPU jail source to freeze.')
 args = parser.parse_args()
+if args.focal_trigger == 'execution-recovery' and args.collection_protocol != 'live-original-pair':
+    parser.error('--focal-trigger execution-recovery requires --collection-protocol live-original-pair')
 if args.resident_rl:
     if (args.mode != 'train' or args.policy_backend != 'unsloth' or args.learner_backend != 'unsloth'
             or args.collect_only or args.update_only or args.focal_data or args.collection_kernel
@@ -113,6 +120,8 @@ if args.resident_rl:
             or not math.isfinite(args.resident_batch_wait_ms) or args.resident_batch_wait_ms < 0):
         parser.error('Resident run requires positive batch/token budgets and a finite positive wall budget')
 if args.initial_adapter_kernel:
+    if not args.resident_rl and (not args.focal_data or args.learner_backend != 'unsloth'):
+        parser.error('A nonresident initial adapter is supported for recovered Unsloth focal updates only')
     if not re.fullmatch(r'[A-Za-z0-9_-]+/[A-Za-z0-9_-]+/[0-9]+', args.initial_adapter_kernel):
         parser.error('Initial adapter source requires an explicit owner/kernel/version')
     if any(not re.fullmatch(r'[0-9a-f]{64}', value or '') for value in
@@ -174,6 +183,17 @@ training_config = args.training_config.resolve(strict=True)
 if not training_config.is_relative_to(ROOT) or not training_config.is_file():
     parser.error('--training-config must be an existing file inside this research repository')
 training_config_path = str(training_config.relative_to(ROOT))
+curriculum_path = None
+if args.resident_task_order == 'evidence-course':
+    if not args.resident_rl or args.resident_curriculum is None:
+        parser.error('evidence-course requires --resident-rl and --resident-curriculum')
+elif args.resident_curriculum is not None:
+    parser.error('--resident-curriculum requires --resident-task-order evidence-course')
+if args.resident_curriculum is not None:
+    curriculum_file = args.resident_curriculum.resolve(strict=True)
+    if not curriculum_file.is_relative_to(ROOT) or not curriculum_file.is_file():
+        parser.error('--resident-curriculum must be a file inside this research repository')
+    curriculum_path = str(curriculum_file.relative_to(ROOT))
 jail_override = None
 if args.jail_source:
     jail_hash = hashlib.sha256(args.jail_source.read_bytes()).hexdigest()
@@ -198,6 +218,8 @@ stock = ROOT / 'competition/vfarl/l4x4/kaggle/stock-environment-pins.json'
 if stock.is_file():
     paths.append(stock)
 paths.append(training_config)
+if curriculum_path:
+    paths.append(ROOT / curriculum_path)
 calibration_path = None
 if args.calibration_data:
     for path in [args.calibration_data, *args.calibration_action_file]:
@@ -239,8 +261,13 @@ resident_settings = dict(batch_task_limit=args.resident_batch_tasks,
     excluded_task_ids=args.resident_exclude_task, task_order=args.resident_task_order)
 if args.collection_protocol != 'historical-three-branch':
     resident_settings['collection_protocol'] = args.collection_protocol
+if args.focal_trigger == 'execution-recovery':
+    resident_settings['focal_trigger'] = args.focal_trigger
+if curriculum_path:
+    resident_settings['curriculum'] = curriculum_path
 source = (f'RESIDENT_RL = {args.resident_rl!r}\n'
           f'COLLECTION_PROTOCOL = {args.collection_protocol!r}\n'
+          f'FOCAL_TRIGGER = {args.focal_trigger!r}\n'
           f'RESIDENT_SETTINGS = {resident_settings!r}\n'
           f'INITIAL_ADAPTER_KERNEL = {args.initial_adapter_kernel!r}\n'
           f'INITIAL_ADAPTER_SHA256 = {args.initial_adapter_sha256!r}\n'
@@ -337,6 +364,7 @@ manifest = {'source_sha256': hashlib.sha256(source.encode()).hexdigest(),
             'policy_backend': args.policy_backend,
             'learner_backend': args.learner_backend,
             'collection_protocol': args.collection_protocol,
+            'focal_trigger': args.focal_trigger,
             'update_only': args.update_only,
             'resident_rl': args.resident_rl,
             'resident_settings': resident_settings if args.resident_rl else None,

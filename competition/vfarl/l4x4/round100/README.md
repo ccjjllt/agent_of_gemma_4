@@ -22,6 +22,40 @@
 
 R3取消后的日志与发布状态见[cancelled-r3/recovery-summary.json](cancelled-r3/recovery-summary.json)。完整动作文件发布前，不把实时日志摘要当作可训练token数据；旧快照跨session续采也尚无自动等价恢复保证。
 
+## 100题课程与采样优先级
+
+保留原100题的名单、题面、源码快照、任务哈希与参考修复。原selection SHA仍为 `ee270560ab7b27a0322eec8c604a53832d87f491cb6cdd71f680ff38a065d946`。新的[课程清单](curriculum.json)仅用于host侧调度，不作为模型提示或新的奖励标签；由 `python -m competition.vfarl.l4x4.curriculum` 从冻结元数据及真实日志构建。
+
+修正了原`mixed_course_order`把适配器G当作共同题的错误。真正的课程身份是`role`：67共同＋33专科；适配器主责实际为G34/F19/R10/S37，不能代替课程身份。普通mixed-course现在按role做两共同一专科，再轮转仓库与机制。
+
+三轮resident合计领取35道不同任务，实际全是共同题。剩余65道在这三轮未领取，包含32共同＋33专科；这不表示它们在整个项目从未采样。evidence-course因此按剩余配额近1:1交错，补足此前专科覆盖，完整100题池仍为67/33。
+
+- 4道评分无效题暂停新采，先查明验证原因，不把null当失败，也不据此判定题坏。
+- Tenacity `pvngsy7s`的原始0与独立分支1列为优先回收核对候选；没有精确原件前不标成现成异奖组，也不自动重新整题采样。
+- 已观察到全成功的焦点状态降低复采优先级。这只描述当时状态与策略，不永久删除整题。
+- 高成本轨迹和旧格式／截断失败分别保存；旧回复预算与反馈语义不同，单次旧0分不直接当作难度标签。历史示范长度只是成本先验。
+- 4道独立研究验证题的ID仅用于host侧禁止训练与自适应选题，均不在原100题中；未读取其题目内容。
+
+新课程保留100题完整排序，并单独声明默认新采65题。已领取35题、评分暂停题、待回收候选和预留验证题不会自动进入新采队列。以后若需在新策略下复访，须显式形成新的课程版本，不能复用已提交行为批冒充新样本。
+
+载体接线使用 `--resident-task-order evidence-course --resident-curriculum competition/vfarl/l4x4/round100/curriculum.json`，可与`--collection-protocol live-original-pair`组合。课程文件冻结进载体，运行时解析为解包后的绝对路径，resident再次绑定原selection与任务身份。已用真实元数据和本地载体冻结核对，未启动GPU；课程调整能否提高异奖产率仍须实际采样研究。
+
+## 后续本地优化：焦点触发、KV所有权与旧数据复用
+
+新增显式 `--focal-trigger execution-recovery`，仅与live-original-pair组合；旧any-tool-failure仍保留作对照。新触发器读取实际反馈的`error_type`及完整stdout/stderr，区分工具执行错误、初次诊断测试失败、修改观察后的测试失败、普通搜索空结果和含糊搜索管道失败。成功写入只是一条修改观察，不代表修复正确；shell脚本产生的修改尚未纳入这个计数。普通诊断测试失败、搜索空结果和含糊搜索失败不直接触发，预算／超时反馈也不充作恢复动作证据。新触发要求至少剩4个动作回合、3次工具调用及原token余量；两分支预算不重置。
+
+分类发生在真实工具反馈到达后，下一动作采样前固定快照；终局验证与奖励不变。分类依据保存在原有tool-events、ledger和选样记录中，没有新增逐状态门控文件。[R3离线反馈分析](cancelled-r3/feedback-census.json)包含265条真实反馈，其中首次诊断测试失败1、搜索空结果8、含糊搜索失败4；3题的首个触发点因此移动或暂缓。该分析不预测新的异奖产率或GPU速度。
+
+单会话cache路径增加B1所有权转移：没有padding和后续dummy行时，不再用单元素cat合并KV，也不在停止时复制整个KV。多行路径仍保留停止时复制以保护滑窗。前向顺序、position和mask不变，源码hash仍绑定真实实现。一次性CPU小Gemma对比旧路径，下一token与多turn增量预填充logits差为0；这不等于实际Unsloth GPU已经测得提速。
+
+R3完整输出已发布。只读取约82.4MB有界Range，回收443个研究文件、501条真实动作；未下载整个约6.49GB运行时包。完整输出确认optimizer为0步，16条原始轨迹结束：9成功、3有效失败、4评分无效。
+
+Tenacity的原始0与独立branch1为1已完成[原件来源核对](cancelled-r3/tenacity-live-original-review.json)：同2316-token前缀、状态、策略与预算，两个真实焦点动作分别99／97 tokens且不同。原始动作未做reference评分。新的[待评分数据](recovered-tenacity-r3/pair-pending-reference.jsonl)保留真实tokens、行为概率和采样身份，未把回放作为独立样本，也未伪造旧precommit文件。
+
+`competition.vfarl.l4x4.recovered.build_pair()`通过已审冻结R3源码和实际快照／恢复／终局记录建立显式旧来源派生契约。`complete_reference(policy, pending_path, out_path)`仅接受外部明确提供且已独占的模型，真实补算缺失reference，记录新评分路径后恢复原模式；行为概率永不重算或替换。未补评分的数据当前训练器明确拒绝。函数本身不加载模型或申请GPU，也不做optimizer step。
+
+后续可在同一个已加载的实际初始adapter上补reference，再交给现有Unsloth learner做单组更新，无需重采两个完整后缀。载体已支持给非resident的回收Unsloth更新传入经SHA核对的初始adapter；独立前后对照也使用同一初始adapter。新的reference前向、GPU更新及独立任务收益均尚未执行。
+
 ## 原常驻实验说明
 
 用户确认沿用v4的67共同＋33专科题，并授权原124,593,514字节材料上传到jiyujia私有数据集。selection及材料SHA见plan.json。全部来自train，不读取heldout。

@@ -971,22 +971,30 @@ def main():
                         wall_seconds=time.monotonic() - started)
         (out / 'carrier.json').write_text(json.dumps(evidence, indent=2) + '\n')
         return
+    initial_adapter = None
+    if INITIAL_ADAPTER_KERNEL:
+        matches = [path for path in Path('/kaggle/input').rglob('adapter_model.safetensors')
+                   if path.parent.name == 'adapter' and sha(path) == INITIAL_ADAPTER_SHA256]
+        if len(matches) != 1:
+            raise RuntimeError('Require one mounted initial adapter with the declared SHA256')
+        weights = matches[0]
+        if sha(weights.parent / 'adapter_config.json') != INITIAL_ADAPTER_CONFIG_SHA256:
+            raise RuntimeError('Initial adapter config differs from its declared source')
+        initial_adapter = weights.parent.parent
+        evidence['initial_adapter'] = dict(kernel=INITIAL_ADAPTER_KERNEL,
+            weights_sha256=INITIAL_ADAPTER_SHA256, config_sha256=INITIAL_ADAPTER_CONFIG_SHA256,
+            optimizer_state='Fresh Adam; no optimizer state supplied by this carrier')
+    baseline_policy = ('The declared initial adapter '+str(INITIAL_ADAPTER_SHA256)
+                       if initial_adapter else 'Original frozen base and fresh config-seed zero-B adapter')
     if RESIDENT_RL:
-        initial_adapter = None
-        if INITIAL_ADAPTER_KERNEL:
-            matches = [path for path in Path('/kaggle/input').rglob('adapter_model.safetensors')
-                       if path.parent.name == 'adapter' and sha(path) == INITIAL_ADAPTER_SHA256]
-            if len(matches) != 1:
-                raise RuntimeError('Require one mounted initial adapter with the declared SHA256')
-            weights = matches[0]
-            if sha(weights.parent / 'adapter_config.json') != INITIAL_ADAPTER_CONFIG_SHA256:
-                raise RuntimeError('Initial adapter config differs from its declared source')
-            initial_adapter = weights.parent.parent
-            evidence['initial_adapter'] = dict(kernel=INITIAL_ADAPTER_KERNEL,
-                weights_sha256=INITIAL_ADAPTER_SHA256, config_sha256=INITIAL_ADAPTER_CONFIG_SHA256,
-                optimizer_state='Fresh Adam for this round; prior short run did not export moments')
         from competition.vfarl.l4x4.resident import run as resident_run
         evidence['resident_settings'] = RESIDENT_SETTINGS
+        resident_arguments = dict(RESIDENT_SETTINGS)
+        if resident_arguments.get('curriculum'):
+            frozen_curriculum = source / resident_arguments['curriculum']
+            resident_arguments['curriculum'] = str(frozen_curriculum)
+            evidence['curriculum'] = dict(path=RESIDENT_SETTINGS['curriculum'],
+                sha256=sha(frozen_curriculum), usage='Metadata-only scheduling; no task or reward rewriting')
         live_pair = RESIDENT_SETTINGS.get('collection_protocol') == 'live-original-pair'
         if live_pair:
             evidence['resident_effective_settings'] = dict(RESIDENT_SETTINGS,
@@ -1006,7 +1014,7 @@ def main():
             questions=material / 'questions.jsonl', assets=material / 'assets',
             prevalidation=prevalidation, tools=source / 'competition/vfarl/six-tools.json',
             out=out / 'resident', initial_adapter=initial_adapter,
-            isolation=isolation, worker_env=env, **RESIDENT_SETTINGS)
+            isolation=isolation, worker_env=env, **resident_arguments)
         evidence.update(resident_summary=summary, optimizer_steps=summary['optimizer_steps'],
             one_update_completed=summary['optimizer_steps'] > 0,
             wall_seconds=time.monotonic() - started)
@@ -1038,6 +1046,7 @@ def main():
     else:
         task_queue = out / 'task-queue.json'
         collection_protocol = globals().get('COLLECTION_PROTOCOL', 'historical-three-branch')
+        focal_trigger = globals().get('FOCAL_TRIGGER', 'any-tool-failure')
         collection_branches = 2 if collection_protocol == 'live-original-pair' else 3
         if DYNAMIC_QUEUE:
             from competition.vfarl.l4x4.run import TaskQueue
@@ -1047,6 +1056,8 @@ def main():
                 turn_tokens=1536, episode_tokens=8192)
             if collection_protocol != 'historical-three-branch':
                 execution_contract['collection_protocol'] = collection_protocol
+            if focal_trigger == 'execution-recovery':
+                execution_contract['focal_trigger'] = focal_trigger
             TaskQueue(task_queue, [row['instance_id'] for row in selected_entries],
                 selection_sha256=sha(material / 'selection.json'), maximum_states=FOCAL_STATES,
                 stop_after_mixed_groups=STOP_AFTER_MIXED_GROUPS, stop_after_tasks=STOP_AFTER_TASKS,
@@ -1061,6 +1072,7 @@ def main():
                 command = common + ['--config', str(config_path), '--prevalidation', str(prevalidation),
                     '--context', str(CONTEXT_LENGTH), '--draws', '1', '--branches', str(collection_branches),
                     '--collection-protocol', collection_protocol, '--max-states', str(states),
+                    '--focal-trigger', focal_trigger,
                     '--policy-gpus', '2', '--worker-index', str(rank), '--worker-count', '2',
                     '--policy-backend', POLICY_BACKEND,
                     '--out', str(out / f'worker-{rank}')]
@@ -1118,18 +1130,17 @@ def main():
             print(json.dumps({'phase': 'independent_validation_started', 'stage': 'before',
                               'task_ids': validation_ids}), flush=True)
             validation_before = fixed_rollouts(source, config_path, prevalidation, out, env,
-                common, validation_ids, 'research-before')
+                common, validation_ids, 'research-before', adapter_run=initial_adapter)
             evidence['independent_validation_before'] = validation_before
             measurement_order.append('unupdated_policy_baseline')
         elif reward_rows:
             # The completed collection already fixes the data for this one
             # update. Measure the independent control afterwards by loading
-            # the original base and fresh seed0 adapter, never the update.
+            # the declared starting adapter (or fresh zero-B), never the update.
             evidence['independent_validation_note'] = (
                 'The unupdated-policy baseline is measured after the optimizer step; '
                 'research-before denotes policy identity, not wall-clock order. '
-                'It uses the same frozen base, fresh config-seed zero-B adapter, '
-                'task order, sampling seeds and budgets.')
+                'It uses '+baseline_policy+' with the same task order, sampling seeds and budgets.')
         else:
             evidence['independent_validation_note'] = 'No mixed sampled-action group; no update comparison was requested.'
         evidence['measurement_order'] = measurement_order
@@ -1143,6 +1154,8 @@ def main():
         command = [sys.executable, '-m', 'training.train_vfarl_unsloth',
                    '--config', str(config_path), '--data', str(focal), '--out', str(out / 'update'),
                    '--actor-backend', POLICY_BACKEND, '--learner-backend', 'unsloth', '--policy-gpus', '2']
+        if initial_adapter is not None:
+            command += ['--adapter-run', str(initial_adapter)]
         learner_ranks, learner_gpus = 1, 2
     else:
         train_env = dict(env, FSDP_TRANSFORMER_CLS_TO_WRAP='Gemma4TextDecoderLayer',
@@ -1190,10 +1203,10 @@ def main():
                 (out / 'carrier.json').write_text(json.dumps(evidence, indent=2) + '\n')
                 print(json.dumps({'phase': 'independent_validation_started', 'stage': 'before',
                                   'wall_clock_stage': 'after_optimizer',
-                                  'policy': 'original-base-fresh-config-seed-zero-B-adapter',
+                                  'policy': baseline_policy,
                                   'task_ids': validation_ids}), flush=True)
                 validation_before = fixed_rollouts(source, config_path, prevalidation, out, env,
-                    common, validation_ids, 'research-before')
+                    common, validation_ids, 'research-before', adapter_run=initial_adapter)
                 evidence['independent_validation_before'] = validation_before
                 measurement_order.append('unupdated_policy_baseline')
             if len(validation_before) != len(validation_ids):
@@ -1232,7 +1245,7 @@ def main():
                 context=CONTEXT_LENGTH, draws=1, focal_states=0,
                 measurement_order=measurement_order,
                 actual_update_before_baseline=validation_after_optimizer,
-                baseline_policy='Original frozen base and fresh config-seed zero-B adapter; research-before describes policy identity.',
+                baseline_policy=baseline_policy+'; research-before describes policy identity.',
                 limitation='Small independent research comparison within allowed train sources; no official heldout score.')
             (out / 'research-validation.json').write_text(json.dumps(comparison, indent=2) + '\n')
             evidence['independent_validation_after'] = validation_after

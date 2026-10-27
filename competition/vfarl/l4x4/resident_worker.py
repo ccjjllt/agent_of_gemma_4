@@ -79,6 +79,7 @@ def main():
                         score_focal_data=None, score_focal_before=False,
                         context=setup['context'], draws=1, branches=setup.get('branches', 3),
                         collection_protocol=setup.get('collection_protocol', 'historical-three-branch'),
+                        focal_trigger=setup.get('focal_trigger', 'any-tool-failure'),
                         max_states=command['maximum_states'], worker_index=args.worker_index,
                         worker_count=2, task_queue=Path(command['task_queue']),
                         stop_after_mixed_groups=command['mixed_groups'],

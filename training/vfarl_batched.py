@@ -213,9 +213,33 @@ def _check_cache_layer(layer):
         raise TrainingError('Session cache layers must contain actual four-dimensional KV states')
 
 
+def _single_session_cache(cache, logical_length):
+    """Validate a uniquely owned, unpadded B1 cache without copying its KV.
+
+    The caller has taken this cache out of the session store. No other request
+    may own it until it is returned to that store, or released after decode.
+    """
+    if not cache.layers:
+        raise TrainingError('Single-session transfer requires actual cache layers')
+    for layer in cache.layers:
+        _check_cache_layer(layer)
+        if int(layer.get_seq_length()) != logical_length:
+            raise TrainingError('Single-session cache has a different logical length')
+        expected = (min(logical_length, layer.sliding_window - 1)
+                    if layer.is_sliding else logical_length)
+        if any(value.shape[0] != 1 or value.shape[-2] != expected
+               for value in (layer.keys, layer.values)):
+            raise TrainingError('Single-session transfer requires one unpadded KV row')
+    return cache
+
+
 def _pack_session_caches(caches, lengths, torch):
     """Consume B1 caches into one right-aligned, physically padded cache."""
     width = max(lengths)
+    if len(caches) == 1:
+        # B1 needs neither concatenation nor padding. Transfer the cache object
+        # itself; a single-element torch.cat would copy every layer's full KV.
+        return _single_session_cache(caches[0], width), width
     if len({len(cache.layers) for cache in caches}) != 1:
         raise TrainingError('Session caches have different layer inventories')
     layers = []
@@ -446,8 +470,16 @@ def sample_batch(policy, requests, *, max_batch_tokens=32768, batch_index=0, ses
                     # Stop-time extraction is essential: later masked dummy
                     # updates would evict valid states from sliding layers.
                     prefix = tuple(row['prompt']) + tuple(row['generated'][:-1])
-                    retained = _extract_session_row(past, row_index,
-                        left_padding=width - len(row['prompt']), logical_length=len(prefix))
+                    if len(requests) == 1:
+                        # No other row can continue with masked dummy tokens.
+                        # Decode stops below, and reference scoring has its own
+                        # fresh cache, so sole ownership can move to the store.
+                        if row_index != 0 or width != len(row['prompt']):
+                            raise TrainingError('B1 cache retirement cannot contain padding')
+                        retained = _single_session_cache(past, len(prefix))
+                    else:
+                        retained = _extract_session_row(past, row_index,
+                            left_padding=width - len(row['prompt']), logical_length=len(prefix))
                     saved = session_cache.put(row['session_id'], policy.identity['policy_id'],
                         prefix, retained, row.get('_session_epoch', 0))
                     prefill_reports[row_index].update(retained_tokens_after=len(prefix),
@@ -499,6 +531,8 @@ def sample_batch(policy, requests, *, max_batch_tokens=32768, batch_index=0, ses
             batching.update(session_cache_hit=prefill_report['hit'],
                 reused_session_tokens=prefill_report['reused_tokens'],
                 new_session_prefill_tokens=prefill_report['new_prefill_tokens'],
+                session_cache_transfer=('single-row-ownership' if len(requests) == 1
+                                        else 'packed-row-stop-time-copy'),
                 session_cache_stats=session_cache.stats())
         results.append(dict(prompt_token_ids=row['prompt'], completion_token_ids=generated,
             behavior_logprobs=row['old'], reference_logprobs=reference, loss_mask=mask,

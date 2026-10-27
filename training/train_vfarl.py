@@ -52,11 +52,33 @@ def _live_capture_binding(row):
               'captured_ledger_sha256', 'restored_ledger_sha256')
     paths = ('selection_evidence_path', 'snapshot_manifest_path', 'original_actions_path',
              'original_episode_path', 'same_state_restore_evidence')
+    evidence_format = evidence.get('format')
+    derived = evidence_format == 'vfarl-derived-live-capture-v1'
+    selection_rule = evidence.get('selection_rule')
+    selection_valid = selection_rule == 'first-real-tool-failure-with-recovery-budget-before-action'
+    if selection_rule == 'first-execution-recovery-feedback-with-budget-before-action-v1':
+        trigger = evidence.get('trigger_feedback')
+        classification = trigger.get('classification') if isinstance(trigger, dict) else None
+        checkpoint = row.get('checkpoint_last_tool_feedback', {})
+        selection_valid = (
+            evidence.get('focal_trigger') == 'execution-recovery'
+            and isinstance(classification, dict)
+            and classification.get('focal_eligible') is True
+            and trigger.get('response_sha256') == checkpoint.get('response_sha256'))
+    if derived:
+        from competition.vfarl.l4x4.recovered import validate_source_proof
+        try:
+            validate_source_proof(evidence)
+        except (KeyError, TypeError, ValueError, SyntaxError) as error:
+            raise TrainingError('Unbound derived collector source: ' + row['branch_id']) from error
+        selection_valid = True
+        hashes += ('source_frozen_collector_sha256', 'source_focal_order_sha256',
+                   'source_capture_before_sampling_sha256', 'provenance_report_sha256')
+        paths += ('provenance_report_path',)
     valid = (
-        evidence.get('format') == 'vfarl-live-capture-v1'
+        evidence_format in ('vfarl-live-capture-v1', 'vfarl-derived-live-capture-v1')
         and evidence.get('selected_by_prefix_only') is True
-        and evidence.get('selection_rule') ==
-            'first-real-tool-failure-with-recovery-budget-before-action'
+        and selection_valid
         and row.get('original_action_replay') is False
         and evidence.get('original_action_replay') is False
         and evidence.get('original_behavior_preserved') is True
@@ -116,6 +138,8 @@ def prepare_rows(path, context_limit):
                 or not feedback.get('response_sha256')):
             excluded.append(dict(branch_id=identity, reason='no-bound-real-failure-feedback-in-focal-prefix'))
             continue
+        if row.get('reference_forward_performed') is not True:
+            raise TrainingError('Missing actual reference forward: ' + identity)
         prompt, completion = row['prompt_token_ids'], row['completion_token_ids']
         mask, old, reference = row['loss_mask'], row['behavior_logprobs'], row['reference_logprobs']
         if (not prompt or not completion or len(prompt) + len(completion) > context_limit
@@ -124,8 +148,6 @@ def prepare_rows(path, context_limit):
                 or any(not isinstance(x, int) or x < 0 for x in prompt + completion)
                 or any(not math.isfinite(x) or x > 1e-6 for x in old + reference)):
             raise TrainingError('Invalid exact token/probability record: ' + identity)
-        if row.get('reference_forward_performed') is not True:
-            raise TrainingError('Missing actual reference forward: ' + identity)
         if row.get('sampling') != {'temperature': 1.0, 'top_p': 1.0, 'top_k': 0}:
             raise TrainingError('This update requires full-support T1 sampling')
         if not row.get('state_id') or not row.get('policy_id') or not row.get('reference_id'):

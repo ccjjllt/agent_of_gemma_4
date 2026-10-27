@@ -39,9 +39,16 @@ def atomic(path, value):
 
 def mixed_course_order(entries):
     """Interleave two common tasks with one specialist using metadata only."""
-    by_adapter = defaultdict(lambda: defaultdict(deque))
+    common_repositories = defaultdict(deque)
+    specialist_groups = defaultdict(lambda: defaultdict(deque))
     for row in entries:
-        by_adapter[row['primary_adapter']][row['canonical_repo']].append(row['instance_id'])
+        if row['role'] == 'common':
+            common_repositories[row['canonical_repo']].append(row['instance_id'])
+        elif row['role'] == 'specialist':
+            group = (row['primary_adapter'], row['submechanism'])
+            specialist_groups[group][row['canonical_repo']].append(row['instance_id'])
+        else:
+            raise ValueError('Unknown task course role: ' + str(row['role']))
 
     def repository_round_robin(repositories):
         result = deque()
@@ -52,8 +59,11 @@ def mixed_course_order(entries):
                     result.append(queue.popleft())
         return result
 
-    common = repository_round_robin(by_adapter.pop('G', {}))
-    specialists = [repository_round_robin(by_adapter[key]) for key in sorted(by_adapter)]
+    # Adapter ownership and course role are different dimensions. The v4
+    # common course also contains F/R/S-owned tasks, so G alone is not common.
+    common = repository_round_robin(common_repositories)
+    specialists = [repository_round_robin(specialist_groups[key])
+                   for key in sorted(specialist_groups)]
     specialist = deque()
     while any(specialists):
         for queue in specialists:
@@ -69,16 +79,101 @@ def mixed_course_order(entries):
     return ordered
 
 
+def evidence_course_order(selected, eligible, selection_path, curriculum_path):
+    """Select fresh train tasks from a source-bound, host-only curriculum.
+
+    Historical outcomes choose scheduling only. They never become rewards for
+    a new policy, and recovery candidates are not new collection requests.
+    """
+    path = Path(curriculum_path).resolve()
+    course = json.loads(path.read_text())
+    selection_sha256 = sha(selection_path)
+    if (course.get('format') != 'vfarl-evidence-course-v1'
+            or course.get('selection_sha256') != selection_sha256):
+        raise ValueError('Evidence course belongs to a different frozen selection')
+    inventory = {row['instance_id']: row for row in selected}
+    records = course.get('tasks')
+    if (not isinstance(records, list) or len(records) != len(inventory)
+            or any(not isinstance(row, dict) for row in records)
+            or len({row.get('instance_id') for row in records}) != len(inventory)
+            or {row.get('instance_id') for row in records} != set(inventory)):
+        raise ValueError('Evidence course must retain the complete task inventory')
+    for row in records:
+        source = inventory[row['instance_id']]
+        if any(row.get(key) != source.get(key) for key in
+               ('role', 'task_input_sha256', 'canonical_repo', 'repair_family_id')):
+            raise ValueError('Evidence course changed frozen task metadata: ' + row['instance_id'])
+
+    def identifiers(key, *, full_inventory=False, allow_external=False):
+        values = course.get(key)
+        if (not isinstance(values, list) or any(not isinstance(value, str) for value in values)
+                or len(set(values)) != len(values)):
+            raise ValueError('Invalid task identities in evidence course: ' + key)
+        if full_inventory:
+            valid = set(values) == set(inventory)
+        else:
+            valid = allow_external or set(values) <= set(inventory)
+        if not valid:
+            raise ValueError('Evidence course references a different inventory: ' + key)
+        return values
+
+    full_order = identifiers('training_order', full_inventory=True)
+    new_order = identifiers('new_collection_order')
+    paused = identifiers('paused_scoring_ids')
+    prior_claimed = identifiers('prior_claimed_task_ids')
+    reuse_candidates = identifiers('reuse_candidate_ids')
+    reserved = identifiers('reserved_validation_task_ids', allow_external=True)
+    eligible_ids = {row['instance_id'] for row in eligible}
+    prohibited = set(paused) | set(prior_claimed) | set(reuse_candidates) | set(reserved)
+    ordered = [task_id for task_id in new_order
+               if task_id in eligible_ids and task_id not in prohibited]
+    active = set(ordered)
+    reasons = {}
+    for task_id in inventory:
+        if task_id in active:
+            continue
+        why = []
+        if task_id in paused:
+            why.append('historical-scoring-invalid; resolve verification cause before new collection')
+        if task_id in reserved:
+            why.append('reserved-research-validation; no training or adaptive selection')
+        if task_id in reuse_candidates:
+            why.append('recover-existing-samples-only; not an automatic resampling request')
+        if task_id in prior_claimed:
+            why.append('previously-claimed; no automatic whole-task repeat')
+        if task_id not in eligible_ids:
+            why.append('not-in-current-usable-and-resume-eligible-set')
+        if task_id not in new_order:
+            why.append('outside-declared-new-collection-order')
+        reasons[task_id] = why
+    record = dict(path=str(path), sha256=sha(path), selection_sha256=selection_sha256,
+        full_training_order=full_order, new_collection_order=ordered,
+        paused_scoring_ids=paused, prior_claimed_task_ids=prior_claimed,
+        reuse_candidate_ids=reuse_candidates, reserved_validation_task_ids=reserved,
+        unscheduled_task_reasons=reasons,
+        interpretation='Host-only scheduling evidence; historical outcomes are not new rewards, reuse candidates are not verified mixed groups')
+    return ordered, record
+
+
 def run(*, config, selection, questions, assets, prevalidation, tools, out,
         initial_adapter=None, optimizer_state=None, stop_after_seconds=0, batch_task_limit=4,
         mixed_groups=2, maximum_states=4, turns=32, tool_calls=32,
         turn_tokens=768, episode_tokens=8192, thinking_budget=256, isolation='chroot',
         worker_env=None, active_tasks=1, batch_size=1, batch_wait_ms=50,
         batch_max_tokens=32768, session_cache_tokens=0, excluded_task_ids=None, task_order='frozen',
-        collection_protocol='historical-three-branch'):
+        collection_protocol='historical-three-branch', curriculum=None,
+        focal_trigger='any-tool-failure'):
     from training.train_vfarl import prepare_rows
     if collection_protocol not in {'historical-three-branch', 'live-original-pair'}:
         raise ValueError('Unknown resident focal collection protocol')
+    if focal_trigger not in {'any-tool-failure', 'execution-recovery'}:
+        raise ValueError('Unknown resident focal trigger')
+    if focal_trigger == 'execution-recovery' and collection_protocol != 'live-original-pair':
+        raise ValueError('Execution-recovery triggering requires live-original-pair collection')
+    if task_order not in {'frozen', 'mixed-course', 'evidence-course'}:
+        raise ValueError('Unknown resident task ordering')
+    if (task_order == 'evidence-course') != (curriculum is not None):
+        raise ValueError('Evidence-course task ordering requires its explicit curriculum file')
     requested_schedule = dict(batch_task_limit=batch_task_limit, mixed_groups=mixed_groups,
         maximum_states=maximum_states, active_tasks_per_replica=active_tasks)
     live_original_pair = collection_protocol == 'live-original-pair'
@@ -102,10 +197,14 @@ def run(*, config, selection, questions, assets, prevalidation, tools, out,
     if not excluded <= {row['instance_id'] for row in selected}:
         raise ValueError('Resume exclusions must belong to the original frozen task inventory')
     eligible = [row for row in selected if row['instance_id'] in usable and row['instance_id'] not in excluded]
-    task_ids = (mixed_course_order(eligible) if task_order == 'mixed-course'
-                else [row['instance_id'] for row in eligible])
-    if task_order not in {'frozen', 'mixed-course'}:
-        raise ValueError('Unknown metadata-only task ordering')
+    course_record = None
+    if task_order == 'evidence-course':
+        task_ids, course_record = evidence_course_order(selected, eligible, selection, curriculum)
+        if not task_ids:
+            raise ValueError('No eligible new collection tasks remain in the declared evidence course')
+    else:
+        task_ids = (mixed_course_order(eligible) if task_order == 'mixed-course'
+                    else [row['instance_id'] for row in eligible])
     cfg = json.loads(Path(config).read_text())
     context = cfg['model']['max_sequence_length']
     setup = dict(config=str(Path(config).resolve()), selection=str(Path(selection).resolve()),
@@ -117,7 +216,10 @@ def run(*, config, selection, questions, assets, prevalidation, tools, out,
         episode_tokens=episode_tokens, thinking_budget=thinking_budget, isolation=isolation,
         active_tasks=active_tasks, batch_size=batch_size, batch_wait_ms=batch_wait_ms,
         batch_max_tokens=batch_max_tokens, session_cache_tokens=session_cache_tokens,
-        collection_protocol=collection_protocol, branches=branches)
+        collection_protocol=collection_protocol, branches=branches,
+        focal_trigger=focal_trigger)
+    if course_record is not None:
+        setup['curriculum'] = dict(path=course_record['path'], sha256=course_record['sha256'])
     bootstrap = out / 'resident-bootstrap.json'
     write(bootstrap, setup)
     started = time.monotonic()
@@ -131,13 +233,15 @@ def run(*, config, selection, questions, assets, prevalidation, tools, out,
         maximum_retained_session_tokens=session_cache_tokens,
         sampling_window='All remaining tasks until mixed-group target' if not batch_task_limit else batch_task_limit,
         budget_seconds=stop_after_seconds, stopping='Stop new claims; retain in-flight work and committed updates')
-    summary.update(collection_protocol=collection_protocol,
+    summary.update(collection_protocol=collection_protocol, focal_trigger=focal_trigger,
         requested_sampling_schedule=requested_schedule,
         actual_sampling_schedule=dict(batch_task_limit=batch_task_limit,
             mixed_groups=mixed_groups, maximum_states=maximum_states,
             active_tasks_per_replica=active_tasks, focal_members_per_state=branches),
         update_boundary='Complete the fixed cohort and close both inference services before updating and synchronizing adapters'
             if live_original_pair else 'Complete the declared collection window before updating and synchronizing adapters')
+    if course_record is not None:
+        summary['evidence_course'] = course_record
     workers, sequences, positions, partial = [], [0, 0], [0, 0], ['', '']
     last_observation = 0.0
 
@@ -273,6 +377,8 @@ def run(*, config, selection, questions, assets, prevalidation, tools, out,
                 turn_tokens=turn_tokens, episode_tokens=episode_tokens)
             if live_original_pair:
                 execution_contract['collection_protocol'] = collection_protocol
+            if focal_trigger == 'execution-recovery':
+                execution_contract['focal_trigger'] = focal_trigger
             TaskQueue(queue, ids, selection_sha256=sha(selection), maximum_states=maximum_states,
                 stop_after_mixed_groups=target, stop_after_tasks=len(ids), stop_after_seconds=seconds,
                 execution_contract=execution_contract)
@@ -384,9 +490,14 @@ def main():
     parser.add_argument('--batch-task-limit', type=int, default=4)
     parser.add_argument('--mixed-groups', type=int, default=2)
     parser.add_argument('--maximum-states', type=int, default=4)
+    parser.add_argument('--task-order', choices=('frozen', 'mixed-course', 'evidence-course'),
+        default='frozen')
+    parser.add_argument('--curriculum', help='Source-bound train-only course for evidence-course ordering')
     parser.add_argument('--collection-protocol',
         choices=('historical-three-branch', 'live-original-pair'), default='historical-three-branch',
         help='live-original-pair uses a fixed two-task cohort, one session per replica and one mixed pair per update')
+    parser.add_argument('--focal-trigger', choices=('any-tool-failure', 'execution-recovery'),
+        default='any-tool-failure', help='Execution-recovery selects prefix-visible recovery feedback in the live pair protocol')
     args = parser.parse_args()
     run(**vars(args))
 
