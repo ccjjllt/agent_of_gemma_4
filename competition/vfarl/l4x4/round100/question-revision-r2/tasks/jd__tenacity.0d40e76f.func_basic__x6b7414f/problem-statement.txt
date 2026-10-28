@@ -1,0 +1,29 @@
+retry_if_exception_message has inverted regex-match behavior
+
+A regex-matching exception message should cause a retry. A message that does not match should propagate without retrying. The behavior is currently reversed.
+
+This reproduction limits each call to two attempts:
+
+```python
+from tenacity import retry, retry_if_exception_message, stop_after_attempt, wait_none, RetryError
+
+@retry(retry=retry_if_exception_message(match=r"retry me"),
+       stop=stop_after_attempt(2), wait=wait_none())
+def matching_message():
+    raise ValueError("retry me")
+
+@retry(retry=retry_if_exception_message(match=r"don't retry"),
+       stop=stop_after_attempt(2), wait=wait_none())
+def nonmatching_message():
+    raise ValueError("retry me")
+
+for function in (matching_message, nonmatching_message):
+    try:
+        function()
+    except RetryError:
+        print(function.__name__, "exhausted its retry attempts")
+    except ValueError:
+        print(function.__name__, "propagated the exception without retrying")
+```
+
+Expected: `matching_message` exhausts its two retry attempts; `nonmatching_message` propagates its ValueError after its first attempt. The current behavior produces the opposite outcomes.

@@ -1,0 +1,5 @@
+# Deprecated metadata draft — do not train
+
+这是保留的错误元数据草稿。其805条IDs/mask映射及读取器/collator机械验证成立，但转换器遗漏get_status/submit_patch的无参object默认schema，部署tools hash错误为cb8c72fe6ec08d3677e8224f36fb6bcd3f36a907e4df88924e2d0bf95fb00471，不能证明该部署工具声明重建原prefix。此目录encoded.jsonl、manifest及原有限验证证据保留，不作为训练推荐；没有模型在此训练。
+
+正确的新导出为../trainer-input-r2/，使用与原formatter完全相等的声明及805/805实际messages前缀重建。新tools hash43118e0d2729405fe1613b5ee22930cde39d701c19fb754a6f618fbc0d3f6199。r1原manual-consumption中的protocol match只证明对其自身配置匹配，不能补足源模板语义。

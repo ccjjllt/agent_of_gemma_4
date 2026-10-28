@@ -1,0 +1,20 @@
+Request body access does not start at the beginning
+
+Each access to the `BaseRequest.body` property should provide the request body stream positioned at its beginning, so the body can be read repeatedly.
+
+```python
+from bottle import BaseRequest, tob
+from wsgiref.util import setup_testing_defaults
+
+environ = {}
+setup_testing_defaults(environ)
+environ["wsgi.input"].write(tob("abc"))
+environ["wsgi.input"].seek(0)
+environ["CONTENT_LENGTH"] = "3"
+
+request = BaseRequest(environ)
+print(request.body.read())
+print(request.body.read())
+```
+
+Both reads should return `b'abc'`. Currently, each property access starts after the first byte, so these reads return `b'bc'`. Repeated reads through `readline()` should likewise begin at the start of the body. Existing form, JSON, multipart, and large-body handling should continue to work.
