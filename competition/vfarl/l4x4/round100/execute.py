@@ -73,25 +73,41 @@ def dataset_ready(run):
 
 
 def launch(run):
+    carrier = run.carrier
+    source_sha256 = hashlib.sha256((carrier / 'run.py').read_bytes()).hexdigest()
+    manifest = json.loads((carrier / 'carrier-manifest.json').read_text())
+    numerics_only = manifest.get('numerics_only') is True
+    session_seconds = run.session_seconds
+    minimum_quota = run.minimum_quota
+    if numerics_only:
+        # A diagnostic carrier must never inherit the resident seven-hour
+        # timeout/minimum just because this launcher is reused.
+        session_seconds = min(int(session_seconds), 20 * 60)
+        if session_seconds < 1:
+            raise ValueError('Numerical study needs a positive bounded session')
+        minimum_quota = (session_seconds + 5 * 60) / 3600
     receipt_path = run.out / 'gpu-push.json'
     if receipt_path.exists():
         receipt = json.loads(receipt_path.read_text())
+        if receipt.get('source_sha256') != source_sha256:
+            raise RuntimeError('Prior receipt belongs to another frozen carrier source')
         if not receipt.get('kernel'):
             raise RuntimeError('Prior submission has an unknown outcome; inspect before any resubmission')
         return receipt['kernel']
     dataset_ready(run)
-    quota = run.quota('before-resident-r1')
-    if quota['remaining_h'] < run.minimum_quota:
-        raise RuntimeError('Actual remaining quota is below the frozen seven-hour new-claim plan')
-    carrier = run.carrier
+    quota = run.quota('before-zero-optimizer-numerics' if numerics_only else 'before-resident-r1')
+    if quota['remaining_h'] < minimum_quota:
+        raise RuntimeError('Actual remaining quota is below the bounded numerical study and reserve'
+            if numerics_only else 'Actual remaining quota is below the frozen seven-hour new-claim plan')
     receipt = dict(at_utc=now(), status='single-submission-started',
-                   source_sha256=hashlib.sha256((carrier / 'run.py').read_bytes()).hexdigest(),
-                   accelerator='NvidiaL4', session_timeout_seconds=run.session_seconds)
+                   source_sha256=source_sha256, numerics_only=numerics_only,
+                   minimum_required_quota_h=minimum_quota,
+                   accelerator='NvidiaL4', session_timeout_seconds=session_seconds)
     save(receipt_path, receipt)
     try:
         # Never retry this mutation automatically: a lost response may still
         # correspond to a live four-card session.
-        result = run.api.kernels_push(str(carrier), timeout=str(run.session_seconds), acc='NvidiaL4')
+        result = run.api.kernels_push(str(carrier), timeout=str(session_seconds), acc='NvidiaL4')
         receipt.update(error=result.error, url=result.url, version=result.version_number,
             invalid_dataset_sources=list(result.invalid_dataset_sources or []),
             invalid_kernel_sources=list(result.invalid_kernel_sources or []),
