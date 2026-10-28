@@ -1,0 +1,33 @@
+{
+  "instance_id": "hukkin__tomli.443a0c1b.func_basic__qlgy79aj",
+  "repo": "swesmith/hukkin__tomli.443a0c1b",
+  "problem_statement": "TypeError when parsing TOML files with pending flags\n\n#### Description\n\nWhen parsing certain TOML files, the parser raises a `TypeError: 'int' object is not iterable` error. This appears to be related to how pending flags are handled internally during the parsing process.\n\n#### Steps/Code to Reproduce\n\n```python\nimport tomli\n\n# This will raise TypeError: 'int' object is not iterable\ntoml_content = \"\"\"\n[table]\nkey = \"value\"\n\"\"\"\n\nresult = tomli.loads(toml_content)\n```\n\nThe error occurs when the parser tries to process pending flags during finalization. The issue seems to affect both valid and invalid TOML files that trigger the flag processing mechanism.\n\n#### Expected Behavior\n\nThe parser should successfully parse valid TOML content without raising TypeError, and should raise appropriate TOMLDecodeError for invalid content.\n\n#### Actual Behavior\n\nParser raises `TypeError: 'int' object is not iterable` instead of properly handling the flags or raising the expected TOML-specific errors.",
+  "FAIL_TO_PASS": [
+    "tests/test_data.py::TestData::test_invalid",
+    "tests/test_data.py::TestData::test_valid"
+  ],
+  "PASS_TO_PASS": [
+    "tests/test_error.py::TestError::test_deprecated_tomldecodeerror",
+    "tests/test_error.py::TestError::test_invalid_char_quotes",
+    "tests/test_error.py::TestError::test_invalid_parse_float",
+    "tests/test_error.py::TestError::test_line_and_col",
+    "tests/test_error.py::TestError::test_missing_value",
+    "tests/test_error.py::TestError::test_module_name",
+    "tests/test_error.py::TestError::test_tomldecodeerror",
+    "tests/test_error.py::TestError::test_type_error",
+    "tests/test_misc.py::TestMiscellaneous::test_deepcopy",
+    "tests/test_misc.py::TestMiscellaneous::test_incorrect_load",
+    "tests/test_misc.py::TestMiscellaneous::test_inline_array_recursion_limit",
+    "tests/test_misc.py::TestMiscellaneous::test_inline_table_recursion_limit",
+    "tests/test_misc.py::TestMiscellaneous::test_load",
+    "tests/test_misc.py::TestMiscellaneous::test_parse_float"
+  ],
+  "base_commit": "bd69b31f73670c20868b7194ccfb3ac47b6878eb",
+  "patch": "",
+  "test_patch": "--- /dev/null\n+++ b/tests/test_data.py\n@@ -0,0 +1,64 @@\n+# SPDX-License-Identifier: MIT\n+# SPDX-FileCopyrightText: 2021 Taneli Hukkinen\n+# Licensed to PSF under a Contributor Agreement.\n+\n+import json\n+from pathlib import Path\n+import unittest\n+\n+from . import burntsushi, tomllib\n+\n+\n+class MissingFile:\n+    def __init__(self, path: Path):\n+        self.path = path\n+\n+\n+DATA_DIR = Path(__file__).parent / \"data\"\n+\n+VALID_FILES = tuple((DATA_DIR / \"valid\").glob(\"**/*.toml\"))\n+assert VALID_FILES, \"Valid TOML test files not found\"\n+\n+_expected_files = []\n+for p in VALID_FILES:\n+    json_path = p.with_suffix(\".json\")\n+    try:\n+        text = json.loads(json_path.read_bytes().decode())\n+    except FileNotFoundError:\n+        text = MissingFile(json_path)\n+    _expected_files.append(text)\n+VALID_FILES_EXPECTED = tuple(_expected_files)\n+\n+INVALID_FILES = tuple((DATA_DIR / \"invalid\").glob(\"**/*.toml\"))\n+assert INVALID_FILES, \"Invalid TOML test files not found\"\n+\n+\n+class TestData(unittest.TestCase):\n+    def test_invalid(self):\n+        for invalid in INVALID_FILES:\n+            with self.subTest(msg=invalid.stem):\n+                toml_bytes = invalid.read_bytes()\n+                try:\n+                    toml_str = toml_bytes.decode()\n+                except UnicodeDecodeError:\n+                    # Some BurntSushi tests are not valid UTF-8. Skip those.\n+                    continue\n+                with self.assertRaises(tomllib.TOMLDecodeError):\n+                    tomllib.loads(toml_str)\n+\n+    def test_valid(self):\n+        for valid, expected in zip(VALID_FILES, VALID_FILES_EXPECTED):\n+            with self.subTest(msg=valid.stem):\n+                if isinstance(expected, MissingFile):\n+                    # For a poor man's xfail, assert that this is one of the\n+                    # test cases where expected data is known to be missing.\n+                    assert valid.stem in {\n+                        \"qa-array-inline-nested-1000\",\n+                        \"qa-table-inline-nested-1000\",\n+                    }\n+                    continue\n+                toml_str = valid.read_bytes().decode()\n+                actual = tomllib.loads(toml_str)\n+                actual = burntsushi.convert(actual)\n+                expected = burntsushi.normalize(expected)\n+                self.assertEqual(actual, expected)\n",
+  "verification_target_files": [
+    "tests/test_data.py",
+    "tests/test_error.py",
+    "tests/test_misc.py"
+  ]
+}
