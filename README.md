@@ -1,11 +1,14 @@
-# Gemma 4 Developer Agent：从官方评分重新开始
+# Gemma 4 Developer Agent
 
-2026-10-24 按用户要求重启研究。当前只研究两件事：官方到底如何评分，以及 129 个公共开发任务需要哪些可迁移的修复能力。
+2026-10-28，按用户要求清空此前研究，重新开始。旧研究文档、训练与采样实现、自建数据、实验结果和提交载体已从工作目录删除。新的研究方案和实现尚未确定。
 
-当前入口：[官方评分与任务机制分析](competition/README.md)。逐题依据与分类见 [129 题目录](competition/task-catalog.md)；原始来源及文件指纹见 [来源清单](competition/sources/provenance.json)。
+当前目录：
 
-2026-10-28正在进行：[VFARL算法与固定100题深审](competition/vfarl/l4x4/round100/optimization-overnight/README.md)。真实采样与两次单步更新证据已经保留；当前先修复算法/数据缺陷，正式GPU训练关闭，独立修复收益仍待验证。
+- [AGENTS.md](AGENTS.md)：项目工作约定。
+- [official/](official/README.md)：少量官方原始说明、模型配置与依赖缓存，附来源和文件指纹。
+- `.venv/`：保留的本地 Python 环境。
+- `.git/`：保留现有 Git 历史；已提交的旧内容仍可从历史中查阅。
 
-旧研究结论不再作为当前决策前提。已删除 `docs/plan/`、`docs/progress/` 和早期 `agent/` 中 41 个文件；这些文件在 Git 提交 `984f2b3` 中可恢复。真实实验结果、失败记录、提交回执、训练产物和依赖缓存仍保存在历史目录，防止丢失事实或重复花费下载/GPU 配额。
+训练数据在运行时直接挂载比赛官方公开集，不在本地下载、复制或另建训练数据包。GPU 实验按新的具体授权与预算执行；本次清理没有启动训练或评测，也没有操作远程资源。
 
-遵守 [AGENTS.md](AGENTS.md)：不新增测试文件，只做必要的一次性手动核对；不读取官方隐藏评测内容；不自动启动 GPU。
+比赛入口：[Gemma 4 Developer Agent Competition](https://www.kaggle.com/competitions/gemma-4-developer-agent)。
