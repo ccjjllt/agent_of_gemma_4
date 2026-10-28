@@ -1,0 +1,39 @@
+# Fixed-token-scale focal PPO research. No GPU launch is implied by this configuration.
+# One real original sample + one independent restored sample; terminal reward.
+# Fixed 1e-6 Adam learning rate is a new experiment, not a proved numerical fix.
+# Both PPO and sampled k3 sum selected action tokens and divide by constant 128.
+# Configured 16K is an upper bound, not evidence of actual 16K backward capacity.
+model:
+  base_family: gemma-4-31b-it-qat-q4_0-unquantized
+  source_version_note: Official Kaggle QAT-unquantized v2 -> reused verified NF4 cache
+  local_files_only: true
+  allow_cached_nf4: true
+  quant_backend: nf4
+  compute_dtype: bfloat16
+  device: cuda
+  kbit_prepare: norms_fp32
+  loss_backend: selected_chunked
+  loss_chunk_size: 32
+  rank: 32
+  alpha: 64
+  dropout: 0.0
+  target_text_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+  learning_rate: 0.000001
+  warmup_ratio: 0.0
+  max_sequence_length: 16384
+  micro_batch_size: 1
+  gradient_accumulation_steps: 1
+  gradient_checkpointing: true
+  epochs: 1
+  max_steps: 1
+  checkpoint_every_n_steps: 1
+  seed: 0
+rl:
+  clip_epsilon: 0.2
+  kl_beta: 0.02
+  logprob_chunk_size: 16
+  max_old_logprob_error: 0.08
+  rollout_correction: sequence_tis
+  rollout_is_max: 2.0
+  objective_normalization: action_sum_fixed_scale
+  action_token_scale: 128.0

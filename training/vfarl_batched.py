@@ -9,6 +9,7 @@ independent RNG and explicit logical positions.
 import asyncio
 from collections import Counter, OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass
 import json
 import math
@@ -44,15 +45,25 @@ SESSION_BATCHED_EXECUTION_PROFILE = dict(BATCHED_EXECUTION_PROFILE,
     cache_retirement='extract-completed-row-before-any-masked-dummy-tail-update',
     padding='full-KV-left-pad; sliding-KV-right-align; explicit-logical-position-ids')
 
+REWIND_SESSION_BATCHED_EXECUTION_PROFILE = dict(SESSION_BATCHED_EXECUTION_PROFILE,
+    version=5, mode='session-prefix-rewind-incremental-prefill-batched-decode',
+    cache_boundary='private-policy-and-epoch-bound-raw-KV-plus-pre-action-prefix-anchor; exact-prefix-rewind-only',
+    cache_retirement='stop-time-B1-extraction; full-layer-crop-plus-owned-sliding-prefix-backup',
+    prefix_rewind='strict-raw-extension-first; otherwise-strict-pre-action-prefix-extension; fresh-on-earlier-change',
+    rewind_storage='clone-sliding-tail-only; full-crop-retains-backing-storage-until-next-update')
+
 
 def configure_batched_policy(policy, *, max_batch_size=2, max_batch_tokens=32768,
-                             prefill_chunk_size=256, session_cache_tokens=0):
+                             prefill_chunk_size=256, session_cache_tokens=0,
+                             session_prefix_rewind=False):
     """Bind the actual batch implementation/config before queue policy binding."""
     if (type(max_batch_size) is not int or max_batch_size < 1
             or type(max_batch_tokens) is not int or max_batch_tokens < 1
             or prefill_chunk_size != 256 or type(session_cache_tokens) is not int
             or session_cache_tokens < 0):
         raise TrainingError('Batched sampler needs positive batch/token budgets and its declared 256-token chunks')
+    if type(session_prefix_rewind) is not bool or (session_prefix_rewind and not session_cache_tokens):
+        raise TrainingError('Session prefix rewind requires an explicit boolean and positive session cache budget')
     runtime = dict(max_batch_size=max_batch_size,
         max_batch_tokens=max_batch_tokens, prefill_chunk_size=prefill_chunk_size,
         sampler_sha256=sha256_file(__file__),
@@ -60,6 +71,9 @@ def configure_batched_policy(policy, *, max_batch_size=2, max_batch_tokens=32768
     profile = SESSION_BATCHED_EXECUTION_PROFILE if session_cache_tokens else BATCHED_EXECUTION_PROFILE
     if session_cache_tokens:
         runtime['session_cache_tokens'] = session_cache_tokens
+    if session_prefix_rewind:
+        runtime['session_prefix_rewind'] = True
+        profile = REWIND_SESSION_BATCHED_EXECUTION_PROFILE
     if (getattr(policy, '_inference_profile', None) == profile
             and getattr(policy, '_inference_runtime', None) == runtime
             and policy.probability_profile == profile
@@ -110,21 +124,38 @@ class SessionCacheStore:
     changes epoch, so its eventual result cannot resurrect a retired cache.
     The token budget applies to retained entries, not the separate active batch.
     """
-    def __init__(self, token_budget):
+    def __init__(self, token_budget, *, session_prefix_rewind=False):
+        if type(session_prefix_rewind) is not bool or (session_prefix_rewind and token_budget <= 0):
+            raise TrainingError('Session prefix rewind requires a positive retained-cache budget')
         self.token_budget = token_budget
+        self.session_prefix_rewind = session_prefix_rewind
         self._entries, self._epochs = OrderedDict(), {}
         self._lock = threading.RLock()
         self.tokens, self.hits, self.misses, self.evictions = 0, 0, 0, 0
+        self.anchor_tensor_bytes, self.rewind_hits = 0, 0
 
     def epoch(self, session_id):
         with self._lock:
+            if self.session_prefix_rewind:
+                self._epochs.setdefault(session_id, 0)
             return self._epochs.get(session_id, 0)
+
+    def _detach_anchor(self, entry):
+        anchor = entry.pop('anchor', None)
+        if anchor is not None:
+            self.anchor_tensor_bytes -= anchor['tensor_bytes']
+        return anchor
 
     def take(self, session_id, policy_id, prompt, epoch):
         with self._lock:
             entry = self._entries.pop(session_id, None) if session_id is not None else None
             if entry is not None:
                 self.tokens -= len(entry['prefix'])
+                anchor = self._detach_anchor(entry)
+            else:
+                anchor = None
+            if self.session_prefix_rewind:
+                self._epochs.setdefault(session_id, 0)
             reason = 'session-cache-empty'
             if epoch != self._epochs.get(session_id, 0):
                 reason = 'session-retired'
@@ -133,32 +164,54 @@ class SessionCacheStore:
                 if entry['policy_id'] != policy_id:
                     reason = 'session-policy-changed'
                 elif len(prefix) >= len(prompt) or tuple(prompt[:len(prefix)]) != prefix:
+                    if (self.session_prefix_rewind and anchor is not None
+                            and len(anchor['prefix']) < len(prompt)
+                            and tuple(prompt[:len(anchor['prefix'])]) == anchor['prefix']):
+                        try:
+                            _restore_session_prefix(entry['cache'], anchor, prefix, policy_id, epoch)
+                        finally:
+                            _release_session_anchor(anchor)
+                        self.hits += 1
+                        self.rewind_hits += 1
+                        return entry['cache'], len(anchor['prefix']), 'session-prefix-rewind'
                     reason = 'prompt-is-not-a-strict-extension-of-session-prefix'
                 elif int(entry['cache'].get_seq_length()) != len(prefix):
+                    _release_session_anchor(anchor)
                     raise TrainingError('Session KV length differs from its exact token prefix')
                 else:
+                    _release_session_anchor(anchor)
                     self.hits += 1
                     return entry['cache'], len(prefix), None
+            _release_session_anchor(anchor)
             self.misses += 1
             return None, 0, reason
 
-    def put(self, session_id, policy_id, prefix, cache, epoch):
+    def put(self, session_id, policy_id, prefix, cache, epoch, *, anchor=None):
         if session_id is None:
             return False
         prefix = tuple(prefix)
         if int(cache.get_seq_length()) != len(prefix):
             raise TrainingError('Refusing to retain a session cache with a false token prefix')
+        if anchor is not None:
+            if not self.session_prefix_rewind:
+                raise TrainingError('Prefix anchors require the explicit rewind session profile')
+            _validate_session_anchor(cache, anchor, prefix, policy_id, epoch)
         with self._lock:
             if epoch != self._epochs.get(session_id, 0) or len(prefix) > self.token_budget:
                 return False
             old = self._entries.pop(session_id, None)
             if old is not None:
                 self.tokens -= len(old['prefix'])
+                _release_session_anchor(self._detach_anchor(old))
             while self._entries and self.tokens + len(prefix) > self.token_budget:
                 _, evicted = self._entries.popitem(last=False)
                 self.tokens -= len(evicted['prefix'])
+                _release_session_anchor(self._detach_anchor(evicted))
                 self.evictions += 1
             self._entries[session_id] = dict(policy_id=policy_id, prefix=prefix, cache=cache)
+            if anchor is not None:
+                self._entries[session_id]['anchor'] = anchor
+                self.anchor_tensor_bytes += anchor['tensor_bytes']
             self.tokens += len(prefix)
             return True
 
@@ -168,17 +221,30 @@ class SessionCacheStore:
             entry = self._entries.pop(session_id, None)
             if entry is not None:
                 self.tokens -= len(entry['prefix'])
+                _release_session_anchor(self._detach_anchor(entry))
 
     def clear(self):
         with self._lock:
+            for entry in self._entries.values():
+                _release_session_anchor(self._detach_anchor(entry))
             self._entries.clear()
             self.tokens = 0
+            self.anchor_tensor_bytes = 0
+            if self.session_prefix_rewind:
+                # Include epochs registered by checked-out/queued requests.
+                for session_id in self._epochs:
+                    self._epochs[session_id] += 1
 
     def stats(self):
         with self._lock:
-            return dict(retained_sessions=len(self._entries), retained_tokens=self.tokens,
+            result = dict(retained_sessions=len(self._entries), retained_tokens=self.tokens,
                 token_budget=self.token_budget, hits=self.hits, misses=self.misses,
                 evictions=self.evictions)
+            if self.session_prefix_rewind:
+                result.update(session_prefix_rewind=True, rewind_hits=self.rewind_hits,
+                    anchor_tensor_bytes=self.anchor_tensor_bytes,
+                    anchor_storage='Sliding-only owned clones; full crop retains backing until update')
+            return result
 
 
 def _cache_from_layers(layers):
@@ -231,6 +297,98 @@ def _single_session_cache(cache, logical_length):
                for value in (layer.keys, layer.values)):
             raise TrainingError('Single-session transfer requires one unpadded KV row')
     return cache
+
+
+def _anchor_storage_bytes(layers):
+    storages = {}
+    for layer in layers:
+        for name in ('keys', 'values'):
+            value = layer.get(name)
+            if value is not None:
+                storage = value.untyped_storage()
+                storages[(str(value.device), storage.data_ptr())] = storage.nbytes()
+    return sum(storages.values())
+
+
+def _release_session_anchor(anchor):
+    if anchor is not None:
+        for saved in anchor['layers']:
+            saved.pop('keys', None)
+            saved.pop('values', None)
+
+
+def _capture_session_prefix(cache, prefix, policy_id, epoch):
+    """Own only materialized sliding tails; full prefix KV stays in the cache."""
+    prefix = tuple(prefix)
+    _single_session_cache(cache, len(prefix))
+    layers = []
+    try:
+        for layer in cache.layers:
+            record = dict(type=type(layer).__name__, sliding=bool(layer.is_sliding),
+                key_shape=tuple(layer.keys.shape), value_shape=tuple(layer.values.shape),
+                dtype=str(layer.keys.dtype), device=str(layer.keys.device))
+            layers.append(record)
+            if layer.is_sliding:
+                record['window'] = layer.sliding_window
+                record['keys'], record['values'] = layer.keys.clone(), layer.values.clone()
+    except BaseException:
+        _release_session_anchor(dict(layers=layers))
+        raise
+    return dict(format='vfarl-session-prefix-anchor-v1', prefix=prefix,
+        prefix_sha256=digest(list(prefix)), policy_id=policy_id, epoch=epoch,
+        layers=layers, tensor_bytes=_anchor_storage_bytes(layers))
+
+
+def _validate_session_anchor(cache, anchor, raw_prefix, policy_id, epoch):
+    prefix = anchor.get('prefix', ())
+    if (anchor.get('format') != 'vfarl-session-prefix-anchor-v1'
+            or not prefix or anchor.get('prefix_sha256') != digest(list(prefix))
+            or anchor.get('policy_id') != policy_id or anchor.get('epoch') != epoch
+            or len(prefix) > len(raw_prefix) or tuple(raw_prefix[:len(prefix)]) != prefix
+            or len(anchor.get('layers', [])) != len(cache.layers)
+            or anchor.get('tensor_bytes') != _anchor_storage_bytes(anchor['layers'])):
+        raise TrainingError('Session rewind anchor differs from its actual action/policy/epoch')
+    _single_session_cache(cache, len(raw_prefix))
+    for layer, saved in zip(cache.layers, anchor['layers']):
+        if (saved['type'] != type(layer).__name__ or saved['sliding'] != bool(layer.is_sliding)
+                or saved['dtype'] != str(layer.keys.dtype) or saved['device'] != str(layer.keys.device)
+                or any(tuple(value.shape[:2]) != saved[shape][:2]
+                       or value.shape[-1] != saved[shape][-1]
+                       for value, shape in ((layer.keys, 'key_shape'), (layer.values, 'value_shape')))):
+            raise TrainingError('Session rewind cache layer metadata changed')
+        if layer.is_sliding:
+            if (saved.get('window') != layer.sliding_window
+                    or any(saved.get(name) is None or tuple(saved[name].shape) != saved[shape]
+                           or saved[name].dtype != layer.keys.dtype or saved[name].device != layer.keys.device
+                           for name, shape in (('keys', 'key_shape'), ('values', 'value_shape')))):
+                raise TrainingError('Session rewind has no exact owned sliding prefix tail')
+
+
+def _restore_session_prefix(cache, anchor, raw_prefix, policy_id, epoch):
+    """Consume a B1 anchor after stop-time extraction, retaining full backing views."""
+    _validate_session_anchor(cache, anchor, raw_prefix, policy_id, epoch)
+    length = len(anchor['prefix'])
+    for layer, saved in zip(cache.layers, anchor['layers']):
+        if layer.is_sliding:
+            layer.keys, layer.values = saved.pop('keys'), saved.pop('values')
+            layer.cumulative_length = length
+        else:
+            # DynamicLayer.crop is a view, not an immediate backing-storage
+            # release. The next update/cat materializes the canonical suffix.
+            layer.crop(length)
+    return _single_session_cache(cache, length)
+
+
+@contextmanager
+def _rewind_request_anchors(requests, enabled):
+    try:
+        yield
+    finally:
+        if enabled:
+            # Stop-time put pops ownership into the store. Anything remaining
+            # belongs to an unfinished/failed request and must be released.
+            for row in requests:
+                _release_session_anchor(row.pop('_prefix_rewind_anchor', None))
 
 
 def _pack_session_caches(caches, lengths, torch):
@@ -334,10 +492,18 @@ def _prefill_sessions(policy, requests, store, *, chunk_size=256):
             del output, ids
         for device in policy.cuda_devices:
             torch.cuda.synchronize(device)
+        if store.session_prefix_rewind and row['session_id'] is not None:
+            row['_prefix_rewind_anchor'] = _capture_session_prefix(cache, prompt,
+                policy.identity['policy_id'], row.get('_session_epoch', 0))
         caches.append(cache)
         reports.append(dict(enabled=True, hit=reused > 0, reused_tokens=reused,
             new_prefill_tokens=len(prompt) - reused, reset_reason=reason,
             prefill_seconds=time.monotonic() - before))
+        if store.session_prefix_rewind:
+            reports[-1].update(reuse_kind=('prefix-rewind' if reason == 'session-prefix-rewind'
+                else 'strict-extension' if reused else 'miss'),
+                reset_reason=None if reused else reason,
+                prefix_anchor_tensor_bytes=row.get('_prefix_rewind_anchor', {}).get('tensor_bytes', 0))
     lengths = [len(row['prompt']) for row in requests]
     past, width = _pack_session_caches(caches, lengths, torch)
     del caches
@@ -380,7 +546,9 @@ def sample_batch(policy, requests, *, max_batch_tokens=32768, batch_index=0, ses
     if (not requests or _batch_token_slots(requests) > max_batch_tokens
             or _batch_span(requests) > policy.cfg['max_sequence_length']):
         raise TrainingError('Batched action exceeds its declared padded KV token budget')
-    profile = SESSION_BATCHED_EXECUTION_PROFILE if session_cache is not None else BATCHED_EXECUTION_PROFILE
+    rewind_enabled = session_cache is not None and session_cache.session_prefix_rewind
+    profile = (REWIND_SESSION_BATCHED_EXECUTION_PROFILE if rewind_enabled else
+               SESSION_BATCHED_EXECUTION_PROFILE if session_cache is not None else BATCHED_EXECUTION_PROFILE)
     if policy.probability_profile != profile:
         raise TrainingError('Batched sampler must retain its distinct actor probability profile')
     sessions = [row['session_id'] for row in requests if row['session_id'] is not None]
@@ -396,7 +564,7 @@ def sample_batch(policy, requests, *, max_batch_tokens=32768, batch_index=0, ses
     for device in policy.cuda_devices:
         torch.cuda.reset_peak_memory_stats(device)
     policy.model.eval()
-    with torch.inference_mode(), torch.autocast('cuda', dtype=torch.bfloat16):
+    with _rewind_request_anchors(requests, rewind_enabled), torch.inference_mode(), torch.autocast('cuda', dtype=torch.bfloat16):
         if session_cache is None:
             next_logits, past, attention, width, prefill_seconds = _prefill(policy, requests, pad_token)
             prefill_reports = [dict(enabled=False, hit=False, reused_tokens=0,
@@ -480,8 +648,19 @@ def sample_batch(policy, requests, *, max_batch_tokens=32768, batch_index=0, ses
                     else:
                         retained = _extract_session_row(past, row_index,
                             left_padding=width - len(row['prompt']), logical_length=len(prefix))
-                    saved = session_cache.put(row['session_id'], policy.identity['policy_id'],
-                        prefix, retained, row.get('_session_epoch', 0))
+                    if rewind_enabled:
+                        anchor = row.pop('_prefix_rewind_anchor', None)
+                        saved = False
+                        try:
+                            saved = session_cache.put(row['session_id'], policy.identity['policy_id'],
+                                prefix, retained, row.get('_session_epoch', 0), anchor=anchor)
+                        finally:
+                            if not saved:
+                                _release_session_anchor(anchor)
+                            del anchor
+                    else:
+                        saved = session_cache.put(row['session_id'], policy.identity['policy_id'],
+                            prefix, retained, row.get('_session_epoch', 0))
                     prefill_reports[row_index].update(retained_tokens_after=len(prefix),
                                                      retained_after_action=saved)
                     del retained
@@ -539,6 +718,7 @@ def sample_batch(policy, requests, *, max_batch_tokens=32768, batch_index=0, ses
             raw_text=policy.tokenizer.decode(generated, skip_special_tokens=False,
                 clean_up_tokenization_spaces=False),
             finish_reason=row['reason'], seed=row['seed'], thinking_budget=row['thinking_budget'],
+            requested_max_new_tokens=row['max_new_tokens'], effective_max_new_tokens=row['limit'],
             thought_tokens=row['thought_count'], forced_control_tokens=mask.count(0),
             sampling=dict(temperature=1.0, top_p=1.0, top_k=0), prefill_chunk_size=256,
             reference_scoring='actual-independent-unpadded-chunked-backbone-selected-head'
@@ -576,7 +756,7 @@ class _Queued:
 class BatchedPolicyService:
     """Async request queue with exactly one owner of the live CUDA model."""
     def __init__(self, policy, *, max_batch_size=2, wait_ms=50, max_batch_tokens=32768,
-                 session_cache_tokens=0):
+                 session_cache_tokens=0, session_prefix_rewind=False):
         if type(wait_ms) not in (int, float) or not math.isfinite(wait_ms) or wait_ms < 0:
             raise TrainingError('Batch collection delay must be nonnegative')
         self.policy = policy
@@ -584,8 +764,10 @@ class BatchedPolicyService:
         self.wait_seconds = wait_ms / 1000
         configure_batched_policy(policy, max_batch_size=max_batch_size,
                                  max_batch_tokens=max_batch_tokens,
-                                 session_cache_tokens=session_cache_tokens)
-        self._session_cache = SessionCacheStore(session_cache_tokens) if session_cache_tokens else None
+                                 session_cache_tokens=session_cache_tokens,
+                                 session_prefix_rewind=session_prefix_rewind)
+        self._session_cache = (SessionCacheStore(session_cache_tokens,
+            session_prefix_rewind=session_prefix_rewind) if session_cache_tokens else None)
         self._queue = asyncio.Queue()
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='vfarl-batch-owner')
         self._task, self._failure, self._closed = None, None, False
@@ -623,7 +805,15 @@ class BatchedPolicyService:
         self._queue.put_nowait(_Queued(row, future, time.monotonic()))
         if self._task is None:
             self._task = asyncio.create_task(self._run())
-        return await future
+        try:
+            return await future
+        except asyncio.CancelledError:
+            if (self._session_cache is not None and self._session_cache.session_prefix_rewind
+                    and row['session_id'] is not None):
+                # Retire an already-dispatched request too: its eventual put
+                # must not resurrect the caller's cancelled prefix backup.
+                self._session_cache.release(row['session_id'])
+            raise
 
     async def _run(self):
         closing = False
@@ -681,6 +871,8 @@ class BatchedPolicyService:
                         queued.future.set_result(value)
             except BaseException as error:
                 self._failure = error
+                if self._session_cache is not None and self._session_cache.session_prefix_rewind:
+                    self._session_cache.clear()
                 for queued in batch:
                     if not queued.future.done():
                         queued.future.set_exception(error)

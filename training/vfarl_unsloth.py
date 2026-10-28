@@ -264,11 +264,44 @@ def validate_reference_scaling(model):
         accessor_source_sha256=sha256_file(inspect.getfile(get_lora_parameters)))
 
 
+def inspect_plain_adapter_for_config(adapter_path, cfg):
+    """Validate saved scaling before copying tensors into live plain LoRA.
+
+    Unlike PEFT.from_pretrained, this backend creates layers from the current
+    config and then copies A/B only. Matching tensor bytes therefore does not
+    establish matching alpha, dropout or adapter semantics by itself.
+    """
+    from .export_peft import inspect_adapter
+    report = inspect_adapter(adapter_path, cfg['rank'], cfg['target_text_modules'])
+    saved = report['adapter_config']
+    expected = dict(r=cfg['rank'], lora_alpha=cfg['alpha'], lora_dropout=cfg['dropout'])
+    observed = {key: saved.get(key, 0.0 if key == 'lora_dropout' else None) for key in expected}
+    differences = [key for key, value in observed.items()
+        if type(value) not in (int, float) or value != expected[key]]
+    # FastModel attachment is ordinary bias-free LoRA. Do not reinterpret
+    # tensors exported with a different effective model as execution drift.
+    variants = [key for key in (
+        'use_rslora', 'use_dora', 'use_qalora', 'lora_bias', 'fan_in_fan_out',
+        'rank_pattern', 'alpha_pattern', 'modules_to_save', 'layer_replication',
+        'alora_invocation_tokens', 'velora_config', 'monteclora_config',
+        'use_bdlora', 'arrow_config', 'kasa_config', 'target_parameters',
+        'trainable_token_indices') if saved.get(key)]
+    if saved.get('bias', 'none') != 'none':
+        variants.append('bias')
+    if differences or variants:
+        raise TrainingError('Saved adapter differs from the live plain LoRA configuration: '
+            + ', '.join(differences + variants))
+    return dict(**observed, use_rslora=False, bias='none', plain_lora=True,
+                scaling=observed['lora_alpha'] / observed['r'])
+
+
 class UnslothPolicy(NF4Policy):
     """Unsloth model execution with the original VFARL exact-token sampler."""
 
     def __init__(self, config, *, seed=None, adapter_run=None, device=None,
-                 inference_device_count=1, training=False):
+                 inference_device_count=1, training=False, diagnostic_phase=None):
+        phase = diagnostic_phase if diagnostic_phase is not None else lambda name: None
+        phase('constructor_start')
         if inference_device_count not in (1, 2) or type(inference_device_count) is not int:
             raise TrainingError('Unsloth policy supports one or two visible CUDA devices')
         if type(training) is not bool:
@@ -281,10 +314,12 @@ class UnslothPolicy(NF4Policy):
             raise TrainingError('Vary the sample seed, not the shared adapter initialization seed')
         # Import order is required by Unsloth's patching mechanism. The modules
         # imported at file scope above do not import transformers or torch.
+        phase('backend_import_start')
         from unsloth import FastModel
         self.stack = single.require_stack('nf4')
         self.torch = torch = self.stack['torch']
         transformers, peft = self.stack['transformers'], self.stack['peft']
+        phase('backend_import_end')
         if (not torch.cuda.is_available() or torch.version.hip is not None
                 or not torch.cuda.is_bf16_supported()
                 or torch.cuda.device_count() != inference_device_count
@@ -301,7 +336,9 @@ class UnslothPolicy(NF4Policy):
         original_config = transformers.AutoConfig.from_pretrained(source, **options)
         if getattr(original_config, 'model_type', None) != 'gemma4':
             raise TrainingError('This Unsloth arm requires the original full Gemma4 conditional-generation cache')
+        phase('cache_manifest_validation_start')
         cache_info = single.validate_nf4_cache(source, original_config, self.cfg)
+        phase('cache_manifest_validation_end')
         tok_source, tok_options = single.source_options(
             self.cfg['tokenizer_name_or_path'] or source,
             self.cfg['tokenizer_revision'] or self.cfg['model_revision'], True)
@@ -320,6 +357,7 @@ class UnslothPolicy(NF4Policy):
                      if inference_device_count == 2 else {'device_map': {'': 0}})
         random.seed(self.cfg['seed']); torch.manual_seed(self.cfg['seed'])
         torch.cuda.manual_seed_all(self.cfg['seed'])
+        phase('model_load_start')
         self.model, _ = FastModel.from_pretrained(
             model_name=source, tokenizer_name=tok_source,
             max_seq_length=self.cfg['max_sequence_length'], dtype=torch.bfloat16,
@@ -328,6 +366,7 @@ class UnslothPolicy(NF4Policy):
             fix_tokenizer=False, trust_remote_code=False, offload_embedding=False,
             use_gradient_checkpointing=checkpointing, return_logits=True,
             attn_implementation=self.cfg['attn_implementation'], **placement)
+        phase('model_load_end')
         if type(self.model).__name__ != 'Gemma4ForConditionalGeneration':
             raise TrainingError('Unsloth changed the full cached model architecture')
         loaded_tokenizer_identity = ct_tokenizer_identity(self.tokenizer, tok_source)
@@ -354,12 +393,14 @@ class UnslothPolicy(NF4Policy):
         # leaf names. A regex of exact qualified paths bypasses that widening
         # and preserves precisely the native text projection set.
         target_pattern = '(?:' + '|'.join(re.escape(name) for name in targets) + ')'
+        phase('adapter_attach_start')
         self.model = FastModel.get_peft_model(self.model,
             r=self.cfg['rank'], lora_alpha=self.cfg['alpha'],
             lora_dropout=0, bias='none', target_modules=target_pattern,
             finetune_vision_layers=False, finetune_language_layers=True,
             finetune_attention_modules=True, finetune_mlp_modules=True,
             use_gradient_checkpointing=checkpointing, random_state=self.cfg['seed'])
+        phase('adapter_attach_end')
         # The already attached set is exact; retain ordinary explicit PEFT
         # targets for compatible plain-adapter exports and reloads.
         self.model.peft_config['default'].target_modules = set(targets)
@@ -370,9 +411,9 @@ class UnslothPolicy(NF4Policy):
             require_zero_lora(self.model, torch)
         else:
             from safetensors.torch import load_file
-            from .export_peft import inspect_adapter
+            phase('saved_adapter_load_start')
             adapter_path = Path(adapter_run) / 'adapter'
-            inspect_adapter(adapter_path, self.cfg['rank'], self.cfg['target_text_modules'])
+            saved_semantics = inspect_plain_adapter_for_config(adapter_path, self.cfg)
             weights = load_file(str(adapter_path / 'adapter_model.safetensors'), device='cpu')
             # Native VFARL exports FP32 trainable A/B. Do not silently round an
             # existing update into a backend's newly initialized BF16 adapter.
@@ -393,10 +434,12 @@ class UnslothPolicy(NF4Policy):
                 raise TrainingError('Unsloth did not preserve every saved native LoRA tensor')
             adapter_initialization = dict(resumed_adapter=True,
                 boundary='Actual saved plain PEFT adapter, loaded without merging into NF4 base',
+                saved_configuration_semantics=saved_semantics,
                 adapter_file_sha256=sha256_file(adapter_path / 'adapter_model.safetensors'),
                 actual_adapter_sha256=trainable_hash(self.model),
                 saved_parameter_tensors=len(weights), saved_tensors_byte_checked=True)
             del weights, loaded
+            phase('saved_adapter_load_end')
         if training:
             FastModel.for_training(self.model, use_gradient_checkpointing=checkpointing)
         else:
@@ -415,8 +458,12 @@ class UnslothPolicy(NF4Policy):
             raise TrainingError('Unsloth did not actually place the model on both declared GPUs')
         # Check after adapter attachment/patching too: neither a backend loader
         # nor LoRA preparation may silently rewrite the frozen quantized base.
+        phase('loaded_base_numeric_validation_start')
         actual_base = validate_loaded_cache(base, source, torch)
+        phase('loaded_base_numeric_validation_end')
+        phase('reference_scaling_validation_start')
         reference_scaling = validate_reference_scaling(self.model)
+        phase('reference_scaling_validation_end')
         self.probability_profile = (dict(
             backend='unsloth', version=1, mode='vfarl-focal-training',
             backbone='complete-untruncated-sequence-use_cache=False',
@@ -476,6 +523,7 @@ class UnslothPolicy(NF4Policy):
         self.thought_close = self._special('<channel|>')
         self.tool_close = self._special('<tool_call|>')
         self.turn_close = self._special('<turn|>')
+        phase('constructor_end')
 
     def switch_execution_mode(self, mode):
         """Switch a resident model without changing base or adapter tensors."""
@@ -527,9 +575,8 @@ class UnslothPolicy(NF4Policy):
     def load_adapter_in_place(self, adapter_run):
         """Copy one exported plain adapter into existing Parameter objects."""
         from safetensors.torch import load_file
-        from .export_peft import inspect_adapter
         adapter_path = Path(adapter_run) / 'adapter'
-        inspect_adapter(adapter_path, self.cfg['rank'], self.cfg['target_text_modules'])
+        saved_semantics = inspect_plain_adapter_for_config(adapter_path, self.cfg)
         peft, torch = self.stack['peft'], self.torch
         weights = load_file(str(adapter_path / 'adapter_model.safetensors'), device='cpu')
         current = peft.get_peft_model_state_dict(self.model, adapter_name='default')
@@ -543,6 +590,7 @@ class UnslothPolicy(NF4Policy):
         if any(_tensor_digest(loaded[k], torch) != _tensor_digest(weights[k], torch) for k in weights):
             raise TrainingError('Resident adapter synchronization changed saved values')
         self.info['adapter_initialization'] = dict(resumed_adapter=True,
+            saved_configuration_semantics=saved_semantics,
             adapter_file_sha256=sha256_file(adapter_path / 'adapter_model.safetensors'),
             actual_adapter_sha256=trainable_hash(self.model),
             boundary='Resident in-place synchronization from committed adapter')

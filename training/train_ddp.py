@@ -222,7 +222,9 @@ def main(argv=None):
         if backend=='nccl':torch.cuda.manual_seed_all(cfg['seed'])
         print(json.dumps({'rank':rank,'stage':'model_load_begin','device':cfg['device']}),flush=True)
         t=time.monotonic()
-        model,tok,device,info=single.load_model_and_tokenizer(cfg,stack,args.resume,expected_provenance=data['provenance'])
+        model,tok,device,info=single.load_model_and_tokenizer(
+            cfg,stack,args.resume,expected_provenance=data['provenance'],
+            adapter_init_seed=cfg.get('adapter_init_seed'))
         signature=single._signature(signature_config,data,info)
         if args.resume:
             single.load_resume_state(args.resume,signature,torch,world_size=dist.get_world_size())

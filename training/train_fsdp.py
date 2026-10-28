@@ -248,7 +248,8 @@ def main(argv=None):
         started = time.monotonic()
         print(json.dumps({'rank': rank, 'stage': 'model_load_begin'}), flush=True)
         model, tok, device, info = single.load_model_and_tokenizer(
-            cfg, stack, resume or init_run, expected_provenance=data['provenance'])
+            cfg, stack, resume or init_run, expected_provenance=data['provenance'],
+            adapter_init_seed=cfg.get('adapter_init_seed'))
         if info['nf4_cache'] is None:
             raise TrainingError('FSDP requires validated cache metadata')
         if init_run:

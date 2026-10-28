@@ -68,14 +68,16 @@ def check_base_family(name):
 
 
 def validate_config(raw):
-    # Optional DDP-only batching choice. Omission preserves old configuration
-    # identities, including checkpoints created before length grouping existed.
-    unknown = set(raw) - set(DEFAULTS) - {'ddp_length_grouped_batches'}
+    # Optional choices stay absent when omitted, preserving old configuration
+    # identities and checkpoints.
+    unknown = set(raw) - set(DEFAULTS) - {'ddp_length_grouped_batches', 'adapter_init_seed'}
     if unknown:
         raise TrainingError("unknown config keys: " + ", ".join(sorted(unknown)))
     cfg = dict(DEFAULTS, **raw)
     if 'ddp_length_grouped_batches' in cfg:
         require_bool(cfg['ddp_length_grouped_batches'], 'ddp_length_grouped_batches')
+    if 'adapter_init_seed' in cfg:
+        integer(cfg['adapter_init_seed'], 'adapter_init_seed', minimum=0)
     for key in ("rank", "alpha", "max_sequence_length", "micro_batch_size",
                 "gradient_accumulation_steps", "epochs", "checkpoint_every_n_steps", "loss_chunk_size"):
         integer(cfg[key], key)
@@ -718,7 +720,8 @@ def main(argv=None):
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(cfg["seed"])
         model, tokenizer, device, model_info = load_model_and_tokenizer(
-            cfg, stack, a.resume, expected_provenance=data["provenance"])
+            cfg, stack, a.resume, expected_provenance=data["provenance"],
+            adapter_init_seed=cfg.get("adapter_init_seed"))
         vocabulary_size = model.get_input_embeddings().num_embeddings
         if any(max(row["input_ids"]) >= vocabulary_size for row in rows):
             raise TrainingError("encoded token id exceeds the model embedding vocabulary")

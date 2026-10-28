@@ -20,6 +20,7 @@ import random
 import statistics
 import sys
 import time
+import traceback
 
 from . import train_sft as single
 from .common import TrainingError, atomic_json, sha256_file
@@ -28,7 +29,7 @@ from .fsdp_qlora import pack_floating_nf4_storage, wrap_fsdp, save_adapter
 from .vfarl_policy import (bind_template, identities, install_eval_checkpointing,
                           install_logprob_forward, read_config, require_zero_lora,
                           frozen_base_reference, install_probability_execution,
-                          digest)
+                          digest, plain_lora_scaling)
 
 
 def live_focal_sample_sha256(row):
@@ -108,7 +109,42 @@ def _live_capture_binding(row):
         raise TrainingError('Unbound live-captured original action: ' + row['branch_id'])
 
 
-def prepare_rows(path, context_limit):
+def _bounded_segment_binding(row):
+    """Require prospective sampler caps bound to the captured logical state."""
+    boundary = row.get('focal_segment_boundary')
+    if (row.get('focal_unit') != 'bounded_response_segment'
+            or not isinstance(boundary, dict)
+            or boundary.get('format') != 'vfarl-bounded-response-segment-v1'):
+        raise TrainingError('Missing prospective bounded-segment evidence: ' + row['branch_id'])
+    ledger = boundary.get('pre_action_ledger')
+    numeric = ('context_limit', 'episode_token_limit', 'turn_token_limit', 'expected_max_new_tokens')
+    if (not isinstance(ledger, dict)
+            or any(type(boundary.get(key)) is not int or boundary[key] < 1 for key in numeric)
+            or any(type(ledger.get(key)) is not int or ledger[key] < 0 for key in ('output_tokens', 'turns'))):
+        raise TrainingError('Invalid captured segment budget: ' + row['branch_id'])
+    canonical = lambda value: hashlib.sha256(json.dumps(value, ensure_ascii=False,
+        sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+    expected = min(boundary['context_limit'] - len(row['prompt_token_ids']),
+        boundary['episode_token_limit'] - ledger['output_tokens'], boundary['turn_token_limit'])
+    requested, effective = row.get('requested_max_new_tokens'), row.get('effective_max_new_tokens')
+    if (boundary.get('state_id') != row['state_id']
+            or boundary.get('prompt_token_ids_sha256') != canonical(row['prompt_token_ids'])
+            or boundary.get('captured_ledger_sha256') != canonical(ledger)
+            or ledger.get('context_limit') != boundary['context_limit']
+            or ledger['turns'] != row['checkpoint_turn']
+            or ledger.get('tool_observations') != row['checkpoint_tool_observations']
+            or ledger.get('tool_failures_observed') != row['checkpoint_tool_failures_observed']
+            or ledger.get('last_tool_feedback') != row['checkpoint_last_tool_feedback']
+            or type(requested) is not int or type(effective) is not int
+            or not 1 <= expected == boundary['expected_max_new_tokens'] == requested == effective
+            or len(row['completion_token_ids']) > effective
+            or (row['finish_reason'] == 'length' and len(row['completion_token_ids']) != effective)):
+        raise TrainingError('Sampled segment does not match its captured prefix/budget: ' + row['branch_id'])
+
+
+def prepare_rows(path, context_limit, *, focal_unit='complete_response'):
+    if focal_unit not in ('complete_response', 'bounded_response_segment'):
+        raise TrainingError('Unsupported focal action unit')
     groups, excluded = {}, []
     seen = set()
     for number, line in enumerate(Path(path).read_text().splitlines(), 1):
@@ -152,9 +188,13 @@ def prepare_rows(path, context_limit):
             raise TrainingError('This update requires full-support T1 sampling')
         if not row.get('state_id') or not row.get('policy_id') or not row.get('reference_id'):
             raise TrainingError('Missing state/policy identities: ' + identity)
-        if row.get('finish_reason') not in ('tool_calls', 'stop'):
+        allowed_finishes = (('tool_calls', 'stop', 'length')
+                            if focal_unit == 'bounded_response_segment' else ('tool_calls', 'stop'))
+        if row.get('finish_reason') not in allowed_finishes:
             excluded.append(dict(branch_id=identity, reason='incomplete-focal-response'))
             continue
+        if focal_unit == 'bounded_response_segment':
+            _bounded_segment_binding(row)
         if row['kind'] == 'live_captured_original_action':
             _live_capture_binding(row)
         groups.setdefault(row['state_id'], []).append(row)
@@ -178,6 +218,15 @@ def prepare_rows(path, context_limit):
                     or partner.get('original_action_replay') is True
                     or partner.get('restored_state_evidence') != evidence['same_state_restore_evidence']):
                 raise TrainingError('Live original has no independently restored partner: ' + state_id)
+        if focal_unit == 'bounded_response_segment' and len(members) >= 2:
+            if (len(members) != 2 or len(originals) != 1
+                    or originals[0]['live_capture_evidence'].get('format') != 'vfarl-live-capture-v1'
+                    or originals[0]['live_capture_evidence'].get('original_sampler_limits') !=
+                        {key: originals[0][key] for key in ('requested_max_new_tokens', 'effective_max_new_tokens')}
+                    or any(row['focal_segment_boundary'] != members[0]['focal_segment_boundary'] for row in members)
+                    or members[0]['focal_segment_boundary']['captured_ledger_sha256'] !=
+                        originals[0]['live_capture_evidence']['captured_ledger_sha256']):
+                raise TrainingError('Bounded segments require one prospective same-cap live original pair: ' + state_id)
         if len({(r['policy_id'], r['reference_id']) for r in members}) != 1:
             raise TrainingError('Different policies in same-state group ' + state_id)
         if len({tuple(r['prompt_token_ids']) for r in members}) != 1:
@@ -187,6 +236,7 @@ def prepare_rows(path, context_limit):
         mixed_rewards = len(members) >= 2 and 0 < average < 1
         mixed = mixed_rewards and distinct_actions >= 2
         summary.append(dict(state_id=state_id, count=len(members), reward_mean=average,
+                            complete_group=len(members) >= 2,
                             mixed_rewards=mixed_rewards, distinct_actions=distinct_actions,
                             mixed_outcomes=mixed, branches=[r['branch_id'] for r in members]))
         if mixed_rewards and distinct_actions < 2:
@@ -198,7 +248,16 @@ def prepare_rows(path, context_limit):
                 rows.append(row)
     return rows, dict(groups=summary, excluded=excluded,
                       objective='same-state mean-centered terminal reward; focal action only',
-                      valid_group_count=len(summary), mixed_group_count=sum(s['mixed_outcomes'] for s in summary))
+                      focal_unit=focal_unit,
+                      valid_group_count=len(summary), mixed_group_count=sum(s['mixed_outcomes'] for s in summary),
+                      eligible_complete_group_action_count=sum(s['count'] for s in summary if s['complete_group']),
+                      same_reward_complete_group_action_count=sum(s['count'] for s in summary
+                          if s['complete_group'] and not s['mixed_rewards']),
+                      identical_action_mixed_group_action_count=sum(s['count'] for s in summary
+                          if s['complete_group'] and s['mixed_rewards'] and not s['mixed_outcomes']),
+                      action_mass_interpretation='Complete verified groups retain their action mass even when '
+                          'same rewards or identical sampled actions produce no preference gradient; missing/unknown '
+                          'partners never receive an invented reward or action count')
 
 
 def batch_for(row, torch, device):
@@ -210,6 +269,84 @@ def batch_for(row, torch, device):
     ref = torch.tensor([p for p, keep in zip(row['reference_logprobs'], row['loss_mask']) if keep],
                        device=device, dtype=torch.float32)
     return dict(input_ids=ids, attention_mask=torch.ones_like(ids), vfarl_selected_mask=mask), old, ref
+
+
+def focal_reduction_denominator(rl, selected_tokens):
+    """Reduce the selected action without silently changing historical runs.
+
+    A sample-dependent token mean changes the policy-gradient estimand. The
+    explicit fixed-scale mode keeps a token sum, divided by one declared
+    constant shared by every action. Forced controls remain outside the sum.
+    """
+    if type(selected_tokens) is not int or selected_tokens < 1:
+        raise TrainingError('Focal reduction requires a nonempty sampled action')
+    mode = rl.get('objective_normalization', 'action_mean')
+    if mode == 'action_mean':
+        return float(selected_tokens)
+    if mode == 'action_sum_fixed_scale':
+        scale = rl['action_token_scale']
+        if type(scale) in (int, float) and math.isfinite(scale) and scale > 0:
+            return float(scale)
+    raise TrainingError('Invalid declared focal-action reduction')
+
+
+def focal_action_denominator(rows, evidence, rl):
+    """Keep zero-PG complete groups in a fixed-scale batch's action mass.
+
+    Reconstruct this from the complete source file, not the mixed training rows.
+    Dividing only by mixed rows is another reward-dependent normalization and
+    can reverse the expected gradient even after fixing token normalization.
+    """
+    if rl.get('objective_normalization', 'action_mean') == 'action_mean':
+        count = len(rows)
+    else:
+        count = evidence.get('eligible_complete_group_action_count')
+    if type(count) is not int or count < max(1, len(rows)):
+        raise TrainingError('Missing complete-group action mass for the declared focal objective')
+    return count
+
+
+def focal_objective_description(rl):
+    mode = rl.get('objective_normalization', 'action_mean')
+    fixed = mode == 'action_sum_fixed_scale'
+    segment = rl.get('focal_unit', 'complete_response') == 'bounded_response_segment'
+    return dict(
+        algorithm_version=('vfarl-focal-ppo-bounded-segment-v3' if segment else
+                           'vfarl-focal-ppo-fixed-token-scale-v2' if fixed
+                           else 'vfarl-focal-ppo-action-mean-v1'),
+        focal_unit=rl.get('focal_unit', 'complete_response'),
+        action_boundary=('Actual sampled response through natural stop or its recorded fixed cap; '
+                         'length feedback is a subsequent environment transition' if segment else
+                         'Only naturally terminated tool_calls/stop responses; censored pairs are excluded'),
+        objective_normalization=mode,
+        fixed_token_scale=rl['action_token_scale'] if fixed else None,
+        policy_reduction=('sum of selected token PPO terms divided by fixed_token_scale'
+                          if fixed else 'mean of selected token PPO terms per action'),
+        kl_reduction=('sum of selected token sampled k3 terms divided by fixed_token_scale'
+                      if fixed else 'mean of selected token sampled k3 terms per action'),
+        action_reduction=('Sum of mixed-group action terms divided by all complete verified group action mass; '
+                          'same-reward and identical-action groups retain zero-PG mass' if fixed else
+                          'Historical mean over mixed-group training actions after action-level IS weighting'),
+        kl_group_scope='Only mixed distinct-action groups have k3 evaluated; zero-PG groups retain denominator '
+                       'mass but receive no extra KL forward/backward. This is not an all-group KL estimate.',
+        estimand=('Selected-state bounded-response-segment Q_actor surrogate with fixed token scaling; '
+                  'if every precommitted pair has a known terminal return and valid data, at an exact '
+                  'on-policy anchor without clipping/KL the two-sample mean baseline gives one half '
+                  'of the focal expected-return gradient divided by the fixed scale' if fixed and segment else
+                  'Naturally terminated verified-pair focal surrogate with fixed token scaling; '
+                  'action-dependent completion/verification selection and complete-group normalization '
+                  'can change the expected terminal-return gradient direction' if fixed else
+                  'Historical length-normalized focal surrogate; sample-dependent '
+                  'token averaging and eligible-pair selection can change the terminal-return gradient direction'),
+        limitation='Terminal verification and valid-pair selection still restrict coverage. '
+                   'Sequence TIS is truncated; sampled k3 is a fixed-data regularizer. '
+                   'Neither mode estimates an unbiased full-trajectory task gradient or exact current-policy KL.')
+
+
+def reduce_focal_terms(values, rl):
+    if rl.get('objective_normalization', 'action_mean') == 'action_mean':
+        return values.mean()
+    return values.sum() / focal_reduction_denominator(rl, values.numel())
 
 
 def shard_snapshot(wrapped):
@@ -315,15 +452,21 @@ def require_calibration_weights(rows, identity):
             raise TrainingError('Calibration tokens belong to different weights or protocol')
 
 
-def actor_learner_binding(rows, identity, *, actor_backend, rollout_correction):
+def actor_learner_binding(rows, identity, *, actor_backend, rollout_correction,
+                         learner_lora_scaling=None, learner_backend='native'):
     """Bind identical weights/protocol while naming both execution paths.
 
     Native collection retains the original exact identity requirement. An
     explicitly selected Unsloth actor may differ only in probability execution;
     its real behavior probabilities remain the importance-sampling denominator.
-    This does not make the native FSDP learner an Unsloth training backend.
+    The caller names the actual learner, independently of the behavior path.
     """
+    if learner_backend not in ('native', 'unsloth'):
+        raise TrainingError('Unknown VFARL learner backend for actor binding')
+    learner_name = 'native-fsdp' if learner_backend == 'native' else 'unsloth-model-parallel'
     if actor_backend == 'native':
+        if learner_backend != 'native':
+            raise TrainingError('Native actor binding requires the native learner')
         for row in rows:
             if (row['policy_id'] != identity['policy_id']
                     or row['reference_id'] != identity['reference_id']):
@@ -335,9 +478,14 @@ def actor_learner_binding(rows, identity, *, actor_backend, rollout_correction):
                     learner_reference_id=identity['reference_id'],
                     same_execution_identity=True)
     if actor_backend != 'unsloth' or rollout_correction != 'sequence_tis':
-        raise TrainingError('Unsloth actor/native learner requires explicit sequence_tis correction')
+        raise TrainingError('Unsloth actor binding requires explicit sequence_tis correction')
+    if (not isinstance(learner_lora_scaling, dict)
+            or not learner_lora_scaling.get('layers') or not learner_lora_scaling.get('active_scaling')):
+        raise TrainingError('Unsloth cross-execution binding requires actual live learner LoRA scaling')
     from .vfarl_unsloth import UNSLOTH_EXECUTION_PROFILE
-    from .vfarl_batched import BATCHED_UNSLOTH_EXECUTION_PROFILE, SESSION_BATCHED_EXECUTION_PROFILE
+    from .vfarl_batched import (BATCHED_UNSLOTH_EXECUTION_PROFILE,
+                                SESSION_BATCHED_EXECUTION_PROFILE,
+                                REWIND_SESSION_BATCHED_EXECUTION_PROFILE)
     # Preserve the already sampled auto-r3 behavior path. This literal is
     # extracted from its frozen source bundle (vfarl_unsloth.py SHA256
     # 2855de90b8b9aa3b3e1f007204d391a9dedfd5497ed639b1f8815f4920c9e77a).
@@ -362,6 +510,7 @@ def actor_learner_binding(rows, identity, *, actor_backend, rollout_correction):
         digest(UNSLOTH_EXECUTION_PROFILE): UNSLOTH_EXECUTION_PROFILE,
         digest(BATCHED_UNSLOTH_EXECUTION_PROFILE): BATCHED_UNSLOTH_EXECUTION_PROFILE,
         digest(SESSION_BATCHED_EXECUTION_PROFILE): SESSION_BATCHED_EXECUTION_PROFILE,
+        digest(REWIND_SESSION_BATCHED_EXECUTION_PROFILE): REWIND_SESSION_BATCHED_EXECUTION_PROFILE,
         '1f84b034b728b36dfb47466e34b2b5c0a667e40a36bf33a4d5fbff7263971c5b': frozen_v1_profile,
     }
     execution_fields = {'probability_execution_sha256', 'probability_runtime_sha256'}
@@ -381,7 +530,7 @@ def actor_learner_binding(rows, identity, *, actor_backend, rollout_correction):
             raise TrainingError('Focal data uses an unknown Unsloth probability profile')
         if (without_execution(actor) != without_execution(identity['policy_identity'])
                 or without_execution(reference) != without_execution(identity['reference_identity'])):
-            raise TrainingError('Unsloth actor and native learner have different weights, adapter or protocol')
+            raise TrainingError('Unsloth actor and learner have different weights, adapter or protocol')
         if (actor.get('probability_execution_sha256') != profile_hash
                 or reference.get('probability_execution_sha256') != profile_hash
                 or row.get('probability_execution_sha256') != profile_hash):
@@ -397,12 +546,16 @@ def actor_learner_binding(rows, identity, *, actor_backend, rollout_correction):
                 or actor.get('probability_runtime_sha256') != recorded['identity_sha256']
                 or reference.get('probability_runtime_sha256') != recorded['identity_sha256']):
             raise TrainingError('Unsloth actor runtime provenance differs from its policy identity')
+        actor_scaling = runtime_identity.get('reference_scaling') or {}
+        if any(actor_scaling.get(key) != learner_lora_scaling[key]
+               for key in ('layers', 'active_scaling')):
+            raise TrainingError('Actor and learner have different effective LoRA scaling; this is not numerical execution drift')
         policies.add((row['policy_id'], row['reference_id']))
         runtime = recorded
     if len(policies) != 1:
         raise TrainingError('One update requires a single frozen Unsloth behavior/reference policy')
     behavior, reference = next(iter(policies))
-    return dict(actor_backend='unsloth', learner_backend='native-fsdp',
+    return dict(actor_backend='unsloth', learner_backend=learner_name,
                 actor_execution_profile_version=profile['version'],
                 actor_execution_profile_sha256=profile_hash,
                 behavior_policy_id=behavior, behavior_reference_id=reference,
@@ -412,8 +565,10 @@ def actor_learner_binding(rows, identity, *, actor_backend, rollout_correction):
                 learner_policy_id=identity['policy_id'],
                 learner_reference_id=identity['reference_id'],
                 same_execution_identity=False, rollout_correction=rollout_correction,
+                effective_lora_scaling=learner_lora_scaling,
                 identity_difference='Probability execution profile/runtime only; all other fields match exactly',
-                reference_interpretation='Actor reference probabilities are preserved as diagnostics; the KL target is a separate frozen native learner reference forward')
+                reference_interpretation='Actor reference probabilities are preserved as diagnostics; '
+                    'the KL target is a separate frozen ' + learner_name + ' learner reference forward')
 
 
 def calibrate_actor(args, cfg):
@@ -469,9 +624,10 @@ def calibrate_actor(args, cfg):
 
 
 def calibrate_fsdp(args, cfg):
+    _, rl = read_config(args.config)
     focal = args.calibrate == 'fsdp-focal'
     if focal:
-        rows, evidence = prepare_rows(args.data, cfg['max_sequence_length'])
+        rows, evidence = prepare_rows(args.data, cfg['max_sequence_length'], focal_unit=rl['focal_unit'])
         manifest = dict(format='vfarl-focal-probability-calibration-v1', evidence=evidence)
         if not rows:
             print(json.dumps(dict(optimizer_steps=0, reason='No verified mixed-outcome focal groups',
@@ -479,7 +635,6 @@ def calibrate_fsdp(args, cfg):
             return 0
     else:
         rows, manifest = calibration_rows(args.data, cfg['max_sequence_length'])
-    _, rl = read_config(args.config)
     stack = single.require_stack('nf4')
     torch, dist = stack['torch'], stack['torch'].distributed
     if int(os.environ.get('WORLD_SIZE','1')) != 4:
@@ -501,7 +656,8 @@ def calibrate_fsdp(args, cfg):
         nonlocal binding
         if focal:
             binding = actor_learner_binding(rows, identity, actor_backend=args.actor_backend,
-                                           rollout_correction=rl['rollout_correction'])
+                                           rollout_correction=rl['rollout_correction'],
+                                           learner_lora_scaling=plain_lora_scaling(model))
         else:
             require_calibration_weights(rows, identity)
     collective_call(torch, bind_sources)
@@ -575,7 +731,7 @@ def run(args):
         return calibrate_actor(args,cfg)
     if args.calibrate in ('fsdp', 'fsdp-focal'):
         return calibrate_fsdp(args,cfg)
-    rows, evidence = prepare_rows(args.data, cfg['max_sequence_length'])
+    rows, evidence = prepare_rows(args.data, cfg['max_sequence_length'], focal_unit=rl['focal_unit'])
     if not rows:
         print(json.dumps(dict(optimizer_steps=0, reason='No fully verified mixed-outcome sampled state groups',
                               **evidence), ensure_ascii=False), flush=True)
@@ -611,7 +767,8 @@ def run(args):
     def verify_identity():
         nonlocal binding
         binding = actor_learner_binding(rows, identity, actor_backend=args.actor_backend,
-                                       rollout_correction=rl['rollout_correction'])
+                                       rollout_correction=rl['rollout_correction'],
+                                       learner_lora_scaling=plain_lora_scaling(model))
         if any(max(r['prompt_token_ids'] + r['completion_token_ids']) >=
                model.get_input_embeddings().num_embeddings for r in rows):
             raise TrainingError('Sample contains an out-of-vocabulary token')
@@ -631,9 +788,9 @@ def run(args):
     before = shard_snapshot(wrapped)
     initial_hash = snapshot_hash(before)
     optimizer.zero_grad(set_to_none=True)
-    # Mean over sampled focal actions, then tokens within each action; long
-    # thought streams do not receive more episode weight solely by length.
-    denominator = len(rows)
+    # Average complete actions after the explicitly declared token reduction.
+    # Historical configs retain action_mean; fixed-scale sums are opt-in.
+    denominator = focal_action_denominator(rows, evidence, rl)
     metrics, before_logprobs, reference_logprobs = [], {}, {}
     before_current_nograd, repeated_current_nograd = {}, {}
     started = time.monotonic()
@@ -660,6 +817,10 @@ def run(args):
         # the cross-engine discrepancy as data, never overwriting actor old.
         errors = torch.tensor([same_path_error,repeat_error] if corrected else
                               [old_error,ref_error],device=device)
+        errors_finite = torch.isfinite(errors).all().to(torch.int32)
+        dist.all_reduce(errors_finite, op=dist.ReduceOp.MIN)
+        if not int(errors_finite):
+            raise TrainingError('Nonfinite logprob consistency error before backward')
         dist.all_reduce(errors, op=dist.ReduceOp.MAX)
         if float(errors.max()) > rl['max_old_logprob_error']:
             atomic_json(output/('probability-mismatch-rank-%03d.json'%rank),dict(
@@ -696,7 +857,8 @@ def run(args):
             dist.all_reduce(valid_importance,op=dist.ReduceOp.MIN)
             if not int(valid_importance):
                 raise TrainingError('The complete focal-action importance weight underflowed in loss dtype; preserve the pair without updating')
-        loss = per_token.mean()*importance
+        token_denominator = focal_reduction_denominator(rl, old.numel())
+        loss = reduce_focal_terms(per_token, rl) * importance
         finite = torch.tensor(int(bool(torch.isfinite(loss).all())), device=device)
         dist.all_reduce(finite, op=dist.ReduceOp.MIN)
         if not int(finite):
@@ -710,6 +872,9 @@ def run(args):
             metrics.append(dict(branch_id=row['branch_id'], state_id=row['state_id'],
                                 reward=row['reward'], advantage=advantage, loss=float(loss.detach()),
                                 policy_loss=float(policy_loss.detach().mean()), kl=float(kl.detach().mean()),
+                                token_reduction_denominator=token_denominator,
+                                policy_loss_reduced=float(policy_loss.detach().sum()) / token_denominator,
+                                kl_reduced=float(kl.detach().sum()) / token_denominator,
                                 ratio_mean=float(ratio.detach().mean()),
                                 clipped_fraction=float(((ratio.detach() - 1).abs() > rl['clip_epsilon']).float().mean()),
                                 old_logprob_max_abs_error=old_error, ref_logprob_max_abs_error=ref_error,
@@ -736,72 +901,105 @@ def run(args):
     grad_norm = wrapped.clip_grad_norm_(cfg['max_grad_norm'])
     if not bool(torch.isfinite(grad_norm)) or float(grad_norm) == 0:
         raise TrainingError('Verified mixed outcomes produced no finite nonzero reward gradient')
-    optimizer.step()
-    after = shard_snapshot(wrapped)
-    squared_delta = sum(float((after[name] - before[name]).double().square().sum()) for name in before)
-    changed = sum(int(torch.count_nonzero(after[name] != before[name]).item()) for name in before)
-    local_change = torch.tensor([squared_delta, changed], dtype=torch.float64, device=device)
-    dist.all_reduce(local_change, op=dist.ReduceOp.SUM)
-    if float(local_change[0]) == 0:
-        raise TrainingError('Optimizer returned without changing any LoRA parameter')
-    # Commit the actual updated adapter before optional post-update forwards.
-    # An OOM during diagnostics must not destroy the only copy of a completed
-    # update or cause the same behavior batch to be trained for a second time.
-    save_adapter(wrapped, model, output / 'adapter', torch, shapes)
-    committed_rank = dict(
-        rank=rank, optimizer_steps=1, grad_norm=float(grad_norm),
-        parameter_shard_before_sha256=initial_hash,
-        parameter_shard_after_sha256=snapshot_hash(after),
-        squared_delta_local=squared_delta, changed_parameters_local=changed,
-        metrics=metrics, before_logprobs=before_logprobs,
-        reference_logprobs=reference_logprobs,
-        before_current_nograd_logprobs=before_current_nograd,
-        repeated_current_nograd_logprobs=repeated_current_nograd,
-        peak_allocated_bytes_at_commit=torch.cuda.max_memory_allocated(device),
-        peak_reserved_bytes_at_commit=torch.cuda.max_memory_reserved(device))
-    collective_call(torch, lambda: atomic_json(
-        output / ('rank-%03d-update.json' % rank), committed_rank))
+    source_sha = sha256_file(Path(args.data))
+    optimizer_step_taken = False
+    try:
+        optimizer.step()
+        optimizer_step_taken = True
+        print(json.dumps(dict(phase='optimizer_step_executed', rank=rank,
+            optimizer_steps=1, optimizer_step_scope='rank-local-returned',
+            adapter_export_completed=False)), flush=True)
+        after = shard_snapshot(wrapped)
+        squared_delta = sum(float((after[name] - before[name]).double().square().sum()) for name in before)
+        changed = sum(int(torch.count_nonzero(after[name] != before[name]).item()) for name in before)
+        local_change = torch.tensor([squared_delta, changed], dtype=torch.float64, device=device)
+        dist.all_reduce(local_change, op=dist.ReduceOp.SUM)
+        if float(local_change[0]) == 0:
+            raise TrainingError('Optimizer returned without changing any LoRA parameter')
+        # Commit the actual updated adapter before optional post-update forwards.
+        # An OOM during diagnostics must not destroy the only copy of a completed
+        # update or cause the same behavior batch to be trained for a second time.
+        save_adapter(wrapped, model, output / 'adapter', torch, shapes)
+        committed_rank = dict(
+            rank=rank, optimizer_steps=1, grad_norm=float(grad_norm),
+            parameter_shard_before_sha256=initial_hash,
+            parameter_shard_after_sha256=snapshot_hash(after),
+            squared_delta_local=squared_delta, changed_parameters_local=changed,
+            metrics=metrics, before_logprobs=before_logprobs,
+            reference_logprobs=reference_logprobs,
+            before_current_nograd_logprobs=before_current_nograd,
+            repeated_current_nograd_logprobs=repeated_current_nograd,
+            peak_allocated_bytes_at_commit=torch.cuda.max_memory_allocated(device),
+            peak_reserved_bytes_at_commit=torch.cuda.max_memory_reserved(device))
+        collective_call(torch, lambda: atomic_json(
+            output / ('rank-%03d-update.json' % rank), committed_rank))
 
-    def commit_update():
-        if rank != 0:
-            return
-        adapter_files = {}
-        for name in ('adapter_config.json', 'adapter_model.safetensors'):
-            path = output / 'adapter' / name
-            adapter_files[name] = dict(sha256=sha256_file(path), bytes=path.stat().st_size)
-        all_metrics = [row for r in range(world) for row in
-            json.loads((output/('rank-%03d-update.json'%r)).read_text())['metrics']]
-        committed = dict(
-            status='optimizer-step-and-adapter-committed', optimizer_steps=1,
-            post_update_diagnostics_completed=False,
-            post_update_diagnostics='not yet executed at the commit boundary',
-            source_data_sha256=sha256_file(Path(args.data)), config=cfg, rl=rl,
-            evidence=evidence, policy=identity, actor_learner_binding=binding, model=info, storage=storage,
-            checkpointed_decoder_layers=checkpoint_layers, rank0_wrap_units=units,
-            global_parameter_delta_l2=float(local_change[0].sqrt()),
-            global_changed_parameter_elements=int(local_change[1]),
-            grad_norm=float(grad_norm), adapter_files=adapter_files,
-            importance_weights=importance_summary(all_metrics),
-            rank_update_files=[dict(path='rank-%03d-update.json' % r,
-                                    sha256=sha256_file(output / ('rank-%03d-update.json' % r)))
-                               for r in range(world)],
-            wall_seconds_to_commit=time.monotonic() - started,
-            frozen_reference='Actual separate zero-LoRA-scaling forwards; fixed base reference with unchanged FSDP traversal',
-            recovery='The optimizer step is already complete. Reuse this adapter and the saved exact-token behavior data for separate diagnostics; do not repeat the training update.',
-            limitation='Parameter changes are committed; post-update likelihood direction and re-rollout outcomes have not yet been measured.')
-        committed['rollout_correction_interpretation'] = (
-            'Actor old remains immutable. If sequence_tis is explicitly enabled, '
-            'rho=stopgrad(exp(sum(mask*(learner_old-actor_old)))) capped above at rollout_is_max; '
-            'PPO ratio=current_learner/frozen_learner_old. The same action weight scales the '
-            'length-normalized policy and sampled k3 terms. This is a truncated, focal Q_actor '
-            'surrogate, not an unbiased full-episode policy gradient or an exact current-policy KL.')
-        atomic_json(output / 'optimizer-step.json', committed)
-        # The carrier can distinguish an exported update from fully completed
-        # diagnostics even if the process later fails. optimizer-step.json is
-        # immutable evidence; the final manifest is replaced only on success.
-        atomic_json(output / 'training_manifest.json', committed)
+        def commit_update():
+            if rank != 0:
+                return
+            adapter_files = {}
+            for name in ('adapter_config.json', 'adapter_model.safetensors'):
+                path = output / 'adapter' / name
+                adapter_files[name] = dict(sha256=sha256_file(path), bytes=path.stat().st_size)
+            all_metrics = [row for r in range(world) for row in
+                json.loads((output/('rank-%03d-update.json'%r)).read_text())['metrics']]
+            committed = dict(
+                status='optimizer-step-and-adapter-committed', optimizer_steps=1,
+                optimizer_step_scope='all-ranks-committed',
+                global_optimizer_step_confirmed=True, adapter_export_completed=True,
+                post_update_diagnostics_completed=False,
+                post_update_diagnostics='not yet executed at the commit boundary',
+                source_data_sha256=sha256_file(Path(args.data)), config=cfg, rl=rl,
+                objective=focal_objective_description(rl),
+                action_reduction_denominator=denominator,
+                evidence=evidence, policy=identity, actor_learner_binding=binding, model=info, storage=storage,
+                checkpointed_decoder_layers=checkpoint_layers, rank0_wrap_units=units,
+                global_parameter_delta_l2=float(local_change[0].sqrt()),
+                global_changed_parameter_elements=int(local_change[1]),
+                grad_norm=float(grad_norm), adapter_files=adapter_files,
+                importance_weights=importance_summary(all_metrics),
+                rank_update_files=[dict(path='rank-%03d-update.json' % r,
+                                        sha256=sha256_file(output / ('rank-%03d-update.json' % r)))
+                                   for r in range(world)],
+                wall_seconds_to_commit=time.monotonic() - started,
+                frozen_reference='Actual separate zero-LoRA-scaling forwards; fixed base reference with unchanged FSDP traversal',
+                recovery='The optimizer step is already complete. Reuse this adapter and the saved exact-token behavior data for separate diagnostics; do not repeat the training update.',
+                limitation='Parameter changes are committed; post-update likelihood direction and re-rollout outcomes have not yet been measured.')
+            committed['rollout_correction_interpretation'] = (
+                'Actor old remains immutable. If sequence_tis is explicitly enabled, '
+                'rho=stopgrad(exp(sum(mask*(learner_old-actor_old)))) capped above at rollout_is_max; '
+                'PPO ratio=current_learner/frozen_learner_old. The same action weight scales the '
+                'explicitly declared policy and sampled k3 reductions. This is a truncated, focal Q_actor '
+                'surrogate, not an unbiased full-episode policy gradient or an exact current-policy KL.')
+            atomic_json(output / 'optimizer-step.json', committed)
+            # The carrier can distinguish an exported update from fully completed
+            # diagnostics even if the process later fails. optimizer-step.json is
+            # immutable evidence; the final manifest is replaced only on success.
+            atomic_json(output / 'training_manifest.json', committed)
 
-    collective_call(torch, commit_update)
+        collective_call(torch, commit_update)
+    except Exception:
+        # A rank may have changed its adapter before export or commit I/O fails.
+        # Preserve that fact without starting any new exception-path collective.
+        failure = traceback.format_exc()
+        commit_path = output / 'optimizer-step.json'
+        committed = json.loads(commit_path.read_text()) if commit_path.is_file() else {}
+        if optimizer_step_taken and committed.get('adapter_export_completed') is not True:
+            partial = dict(status='optimizer-step-executed-before-adapter-commit',
+                optimizer_steps=1, optimizer_step_scope='rank-local-returned',
+                global_optimizer_step_confirmed=False, completed_step_rank=rank,
+                world_size=world, learner_backend='native-fsdp',
+                source_data_sha256=source_sha, adapter_export_completed=False,
+                post_update_diagnostics_completed=False, failure=failure,
+                recovery='This rank returned from Adam; parameter/optimizer state may have '
+                         'changed. Global completion and adapter export are not established. '
+                         'This is not a resumable '
+                         'checkpoint. Preserve the batch and error; do not train it again.')
+            atomic_json(output / ('rank-%03d-partial-update.json' % rank), partial)
+            if rank == 0:
+                atomic_json(commit_path, partial)
+                atomic_json(output / 'training_manifest.json', partial)
+        raise
     if rank == 0:
         print(json.dumps(dict(phase='optimizer_step_committed', optimizer_steps=1,
                               manifest=str(output / 'optimizer-step.json'),
@@ -832,8 +1030,13 @@ def run(args):
                                     repeat_mean_logprob_delta=float((repeated-baseline).mean()),
                                     repeat_mean_abs_delta=float((repeated-baseline).abs().mean()),
                                     post_reference_k3_on_behavior_tokens=float(
-                                        (post_reference_ratio.exp() - post_reference_ratio - 1).mean()),
+                                        (torch.expm1(post_reference_ratio) - post_reference_ratio).mean()),
                                     mean_logprob_delta=float((post - baseline).mean()),
+                                    importance_advantage_weighted_reduced_logprob_delta=(
+                                        next(item['sequence_importance_weight_loss_dtype'] for item in metrics
+                                             if item['branch_id'] == row['branch_id']) * row['advantage'] *
+                                        float((post - baseline).sum()) /
+                                        focal_reduction_denominator(rl, post.numel())),
                                     advantage_weighted_mean_delta=float((post - baseline).mean()) * row['advantage']))
     torch.cuda.synchronize(device)
     local = dict(rank=rank, optimizer_steps=1, grad_norm=float(grad_norm),
@@ -854,6 +1057,8 @@ def run(args):
             optimizer_step_manifest='optimizer-step.json',
             optimizer_step_manifest_sha256=sha256_file(output / 'optimizer-step.json'),
             source_data_sha256=sha256_file(Path(args.data)), config=cfg, rl=rl,
+            objective=focal_objective_description(rl),
+            action_reduction_denominator=denominator,
             evidence=evidence, policy=identity, actor_learner_binding=binding, model=info, storage=storage,
             checkpointed_decoder_layers=checkpoint_layers, rank0_wrap_units=units,
             global_parameter_delta_l2=float(local_change[0].sqrt()),

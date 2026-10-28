@@ -171,6 +171,8 @@ def read_config(path):
             raw = yaml.safe_load(text)
     else:
         raw = dict(path)
+    if 'adapter_init_seed' in raw['model']:
+        raise TrainingError('adapter_init_seed is SFT-only; VFARL initializes adapters with model.seed')
     cfg = single.validate_config(raw['model'])
     if (cfg['quant_backend'] != 'nf4' or not cfg['allow_cached_nf4']
             or not cfg['local_files_only'] or cfg['compute_dtype'] != 'bfloat16'
@@ -181,7 +183,9 @@ def read_config(path):
     if cfg['base_family'] != 'gemma-4-31b-it-qat-q4_0-unquantized':
         raise TrainingError('This experiment is restricted to the provenance-checked 31B QAT-derived cache')
     rl = dict(clip_epsilon=0.2, kl_beta=0.02, logprob_chunk_size=16,
-              max_old_logprob_error=0.08, rollout_correction='none', rollout_is_max=2.0)
+              max_old_logprob_error=0.08, rollout_correction='none', rollout_is_max=2.0,
+              objective_normalization='action_mean', action_token_scale=128.0,
+              focal_unit='complete_response')
     if set(raw.get('rl', {})) - set(rl):
         raise TrainingError('Unsupported VFARL objective setting')
     rl.update(raw.get('rl', {}))
@@ -196,6 +200,12 @@ def read_config(path):
             or type(rl['rollout_is_max']) not in (int,float)
             or not math.isfinite(rl['rollout_is_max']) or rl['rollout_is_max'] < 1):
         raise TrainingError('Unsupported rollout correction or invalid sequence IS cap')
+    if (rl['objective_normalization'] not in ('action_mean', 'action_sum_fixed_scale')
+            or type(rl['action_token_scale']) not in (int, float)
+            or not math.isfinite(rl['action_token_scale']) or rl['action_token_scale'] <= 0):
+        raise TrainingError('Unsupported focal-action normalization or invalid fixed token scale')
+    if rl['focal_unit'] not in ('complete_response', 'bounded_response_segment'):
+        raise TrainingError('Unsupported focal action unit')
     return cfg, rl
 
 
@@ -225,6 +235,25 @@ def require_zero_lora(model, torch):
     matrices = [p for name, p in model.named_parameters() if '.lora_B.' in name]
     if not matrices or any(bool(torch.count_nonzero(p).item()) for p in matrices):
         raise TrainingError('First VFARL update requires genuinely zero-initialized LoRA B matrices')
+
+
+def plain_lora_scaling(model):
+    """Read effective adapter scaling independently of numerical execution."""
+    from peft.tuners.tuners_utils import BaseTunerLayer
+    values = []
+    for module in model.modules():
+        if not isinstance(module, BaseTunerLayer):
+            continue
+        if (not hasattr(module, 'scaling') or set(module.scaling) != {'default'}
+                or module.merged or getattr(module, 'lora_variant', None)):
+            raise TrainingError('VFARL requires one unmerged plain default LoRA')
+        value = float(module.scaling['default'])
+        if not math.isfinite(value) or value <= 0:
+            raise TrainingError('Invalid live LoRA scaling for actor/learner binding')
+        values.append(value)
+    if not values:
+        raise TrainingError('No active plain LoRA layers for actor/learner binding')
+    return dict(layers=len(values), active_scaling=sorted(set(values)))
 
 
 @contextmanager
@@ -681,6 +710,7 @@ class NF4Policy:
                     raw_text=self.tokenizer.decode(generated, skip_special_tokens=False,
                                                   clean_up_tokenization_spaces=False),
                     finish_reason=reason, seed=seed, thinking_budget=thinking_budget,
+                    requested_max_new_tokens=max_new_tokens, effective_max_new_tokens=limit,
                     thought_tokens=thought_count, forced_control_tokens=mask.count(0),
                     sampling=dict(temperature=1.0, top_p=1.0, top_k=0),
                     prefill_chunk_size=PREFILL_CHUNK_SIZE,
