@@ -1,0 +1,26 @@
+Parsing a dotted key followed by a table header raises an internal TypeError
+
+A valid TOML document containing a dotted key and a later, unrelated table should parse normally:
+
+```python
+import tomli
+
+document = 'fruit.apple.color = "red"\n[other]\nx = 1\n'
+assert tomli.loads(document) == {
+    "fruit": {"apple": {"color": "red"}},
+    "other": {"x": 1},
+}
+```
+
+Actual: this document raises TypeError: 'int' object is not subscriptable. A simple table with only an ordinary key does not reproduce the failure; the transition after a dotted key is significant.
+
+Invalid TOML must still raise the TOML-specific error. For example, the table created by a dotted key cannot be declared again:
+
+```python
+try:
+    tomli.loads('fruit.apple.color = "red"\n[fruit.apple]\nx = 1\n')
+except tomli.TOMLDecodeError:
+    pass
+else:
+    raise AssertionError("A repeated table declaration must be rejected")
+```

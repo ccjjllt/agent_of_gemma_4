@@ -1,0 +1,17 @@
+# 当前四题CPU运行时修复r4：待审、未提交
+
+新授权允许向jiyujia私有提交修复代码，复用既有固定100材料与运行时。本目录从冻结carrier-r3派生；r3及其32个嵌入源文件逐字不改。新kernel为`jiyujia/vfarl-train100-cpu-runtime-repair-r4`，private=true、GPU=false、TPU=false、model_sources=[]，不采样模型、不执行optimizer。计划CPU session timeout为3600秒；这不是GPU watchdog或CPU额度读数。
+
+本次仅执行固定train索引9 Moto5348、10 Moto6159、23 DVC7628、54 Markdownify161，排除原载体第五题Marshmallow。前三题task字节与当前R3完全相同；54仅problem_statement更新为当前版本，task SHA`12cfb3ac480707b893f6fbebbd292103958d2d6b81d83da29a3adf48bdf33c24`、当前prompt SHA`82eab1acd5345bb34fe7c1042f046745127da386d9d7843b65ee3159068f7433`。四题snapshot、原reviewed patch及全部非statement字段／原oracle保持不变，逐项SHA见[carrier-manifest.json](carrier-manifest.json)。
+
+parent selection为当前R3原bytes，SHA`7a6990034f651b932b8d218c8613df7d8f435925e72ef2624d3cc238ecdb893e`。原material全100 selection保留；另投影四题selection SHA`56f75b33b4a745787a2db53936ff808d383a46fde776aa18242e767cdf7d687c`及questions SHA`3d25564bb71025fc7192e7d6d025c3a90fe4b26bdcdde4f56c0a8fda098d676e`供CPU loader消费，避免旧loader在过滤前校验其他未更新任务。没有把子集SHA冒称parent SHA，也不把其他96个material task重标为当前题面。
+
+实际输入仍只有既有私有dataset `jiyujia/vfarl-l4x4-train100-v4/1`（material SHA`4b3792470dd1dacc73e1899ba38a3d96f2054bfad916d4a9b51b7e4db4333504`）和既有kernel output `jiyujia/vfarl-newtasks-unsloth-r6/1`（runtime SHA`0a8e277010c63701b1a163869bd6998732c18307770d7297a5cea524391879a0`），以及比赛原依赖。无新dataset、模型材料或其他账号。metadata的internet=true沿用冻结CPU依赖准备配置，不表示启动模型网络服务。
+
+[具体源差异](source-diff.md)仅新增四题输入版本绑定／真实prompt渲染证据及更换四题selection/questions参数；旧`SOURCE_BUNDLE`字面量及32文件hash完全一致。run SHA`ab16ab3b97d3613a96481841a91c69326e67f2355cc24709c1e9917365596948`，metadata SHA`3c8c672b943755f48933ab452b8e90d550c4dddda03225227f865e1c17337405`。保持`legacy-default`；没有打开`isolated-prefix-no-write-v1`、canonical history或新算法。本次若成功，只构成当前四题在该legacy环境下的Linux验收证据，不能追认新bytecode policy或全部100题适用性。
+
+本地已实际调用新增输入overlay与pinned官方`build_agent_prompt`，四题均匹配当前公开prompt SHA；这只是render，不执行agent。另让未修改的旧main实际读取四题selection/questions并完成task字节校验，用一次性Python trace在`prevalidate`协程第一句前停止，没有放宽loader或执行oracle。见[输入／prompt记录](local-input-binding-observation.json)、[旧loader消费记录](local-loader-consumption.json)与[独立静态复核](independent-source-review.json)。初稿render helper曾因嵌套换行转义在本地失败，改为`chr(10)`后重跑成功；没有向远端提交失败初稿。
+
+CPU原冻结验收配置为time_minutes=null、tool_calls=32、turns=32，command timeout90秒、完整verification timeout300秒；没有agent动作执行。公开prompt身份另按各题原run-summary的budget/harness渲染，保留30.0与int60的原类型，不能把它们混成实际CPU验收配置。真实baseline/reference完整验收尚未执行，奖励不补0，R7与R6数据不改。
+
+实际账号身份由显式`/Users/zhaohuaxiang/.kaggle/access_token_jiyujia`配置及mine作者共同核实，未打印secret。裸CLI默认属于qingyu1232，未用于任何提交。独立GPU研究的jiyujia只读状态记录在`numerics-20261028/execution-r4-20261028`：UTC00:56时GPU剩5.29285小时、reserved0且最近会话无RUNNING/QUEUED；这些GPU小时不是CPU额度，CPU小时／并发上限未在该endpoint暴露。CPU/GPU使用独立slug、目录和receipt，提交前再协调实际并发。

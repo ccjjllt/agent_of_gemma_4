@@ -1,0 +1,620 @@
+{
+  "format": "vfarl-official-request-path-source-review-v1",
+  "date": "2026-10-28",
+  "reviewer": "Codex /root/data_status",
+  "scope": "Local read-only source/metadata review. No request, model, tool replay, network, GPU or old-record mutation.",
+  "conclusions": {
+    "request_mode": "Pinned swegemma constructs RunConfig(max_llm_calls=remaining_turns) without overriding streaming_mode. Pinned google-adk1.36.1 defaults NONE and passes stream=True only for SSE. LiteLlm therefore takes its nonstream branch and calls acompletion without adding stream=True, then converts a complete ModelResponse. The adk_submission thought patch forwards stream unchanged. This is source-level call-path evidence, not a captured HTTP request.",
+    "serving_selection": "Official HARNESS_README documents setup_vllm_server using enable_auto_tool_choice=True, tool_call_parser=gemma4 and reasoning_parser=gemma4. The exact setup script bytes are absent locally. Pinned adk_submission VllmServer.build_cmd maps these fields to CLI flags; its generic VllmConfig default is hermes, so defaults alone do not prove Gemma4 selection.",
+    "served_adapter_route": "create_model_registry builds LiteLlm(model=openai/<served-model>, api_base=<server.base_url>, api_key=EMPTY), installs reasoning patch. Compiler resolves model/adapter; swegemma resolver uses registry adapter entry when present or clones base_model with openai/<adapter_name> (preserving supported provider prefix). This routing does not itself enable streaming or select parser per action.",
+    "without_tool_call": "A nonpartial model event without function calls/responses is final for ADK, ending that invocation. If submit_patch is still false and no outer stop condition holds, swegemma retains the same session and makes another invocation with a user continuation nudge. It allows 3 consecutive nudges; a parsed function_call observed while tool budget remains resets that counter, including calls whose later response is an error. A fourth consecutive no-call completion is processed but no fourth nudge is sent.",
+    "nudge_selection": "If nonthought assistant text contains the literal <|tool_call>, harness selects its tool-closure/token-limit message regardless of finish_reason. Otherwise LENGTH/MAX_TOKENS selects thinking-truncation nudge; remaining cases use generic continue/submit text. These existing nudges do not establish actual recovery success.",
+    "budget_and_stop": "Outer loop stops for patch_submitted, wall timeout, tool_calls_used>=tool limit, llm_calls_used>=turn limit (default cap500 when turns=None), agent_error, or 3 already-used consecutive nudges. Remaining turn budget is passed to each ADK invocation. ADK increments and enforces its internal LLM-call limit. Nonpartial model events and usage update swegemma counters, with fallback count>=1 and session reconciliation. Tool decorators independently return error JSON for configured tool/turn/cost/token/time budgets; get_status and submit_patch use count_tool_call=False and are exempt from consumable-call/turn/cost/token checks while retaining time checks. Cost/token checks are not an unconditional outer-loop break in this source.",
+    "exception_boundary": "Malformed response-to-function argument JSON can throw at json.loads before a tool event exists. ModelRetryPlugin retries transient network/server/provider errors; nonretryable errors propagate to outer sandbox error and stop, rather than necessarily receiving a continuation nudge. Once a structured function call reaches FunctionTool, unknown keys are filtered and missing mandatory arguments yield an error response; swegemma ToolErrorPlugin also maps runtime/lookup exceptions to structured tool errors.",
+    "unsubmitted_patch": "On exit without explicit submit, harness can capture git diff, strip protected files and return it for evaluation. No-call ending or malformed submit does not by itself determine final reward or imply a successful submit."
+  },
+  "wheel_sources": [
+    {
+      "path": "competition/sources/swegemma-0.2.11-py3-none-any.whl",
+      "sha256": "9ad876581f3acde8ec3c369858f0834e2b9f41a3cffce3ca42f09cb090aea9d3",
+      "bytes": 119670,
+      "metadata": {
+        "member": "swegemma-0.2.11.dist-info/METADATA",
+        "sha256": "84c8c8f3e7178ea6a1c2628151b2c490ab554b77a10ab14e0e99bc63cfd65d63",
+        "distribution_fields": [
+          "Name: swegemma",
+          "Version: 0.2.11",
+          "Requires-Dist: adk-submission",
+          "Requires-Dist: cachetools>=5.0.0",
+          "Requires-Dist: docker>=7.0.0",
+          "Requires-Dist: google-adk>=1.34.0",
+          "Requires-Dist: google-genai>=1.0.0",
+          "Requires-Dist: networkx>=3.0",
+          "Requires-Dist: numpy>=1.26.0",
+          "Requires-Dist: pydantic>=2.0.0",
+          "Requires-Dist: python-dotenv>=1.0.0",
+          "Requires-Dist: pyyaml>=6.0.0",
+          "Requires-Dist: rich>=13.0.0",
+          "Requires-Dist: adk-eval-core",
+          "Requires-Dist: litellm>=1.0.0",
+          "Requires-Dist: pandas>=2.0.0",
+          "Requires-Dist: tokenizers>=0.20.0",
+          "Requires-Dist: torchvision",
+          "Requires-Dist: transformers>=4.40.0",
+          "Requires-Dist: safetensors",
+          "Requires-Dist: accelerate"
+        ]
+      },
+      "members": [
+        {
+          "member": "swegemma/harness/agent_runner.py",
+          "sha256": "4d7eccabd203c26f7c39e882684d2fd851f383f6a5c76c4a75b0e559cd5d6a18",
+          "bytes": 46695,
+          "line_ranges": [
+            {
+              "start": 61,
+              "end": 90,
+              "excerpt": "_SKILL_TOOL_NAMES = frozenset({'load_skill', 'load_skill_resource', 'run_skill_script'})\n\n\ndef resolve_swegemma_adapter(\n    base_model: Any,\n    adapter_info: Any,\n    model_registry: Any | None = None,\n) -> Any:\n    \"\"\"Resolve an adapter declaration to a configured LiteLlm model instance.\"\"\"\n    import copy\n\n    adapter_name = getattr(adapter_info, 'name', str(adapter_info))\n    if model_registry is not None and adapter_name in model_registry:\n        return model_registry.get(adapter_name)\n\n    if hasattr(base_model, 'model') and isinstance(base_model.model, str):\n        target_model = f'openai/{adapter_name}'\n        for prefix in ('openai/', 'hosted_vllm/', 'custom/'):\n            if base_model.model.startswith(prefix):\n                target_model = f'{prefix}{adapter_name}'\n                break\n        if hasattr(base_model, 'model_copy'):\n            return base_model.model_copy(update={'model': target_model})\n        cloned = copy.copy(base_model)\n        cloned.model = target_model\n        return cloned\n\n    if isinstance(base_model, str):\n        for prefix in ('openai/', 'hosted_vllm/', 'custom/'):\n            if base_model.startswith(prefix):"
+            },
+            {
+              "start": 244,
+              "end": 284,
+              "excerpt": "class ToolErrorPlugin(BasePlugin):\n    \"\"\"ADK plugin that converts undeclared-tool and runtime tool errors into tool responses.\"\"\"\n\n    def __init__(self, name: str = 'swegemma_tool_error') -> None:\n        super().__init__(name=name)\n\n    async def before_tool_callback(\n        self,\n        *,\n        tool: Any,\n        tool_args: dict[str, Any],\n        tool_context: Any,\n    ) -> dict[str, Any] | None:\n        \"\"\"Coerce single-element list strings and validate skill tool arguments before execution.\"\"\"\n        tool_name = getattr(tool, 'name', '') or ''\n        return _sanitize_skill_tool_args(tool_name, tool_args)\n\n    async def on_tool_error_callback(\n        self,\n        *,\n        tool: Any,\n        tool_args: dict[str, Any],\n        tool_context: Any,\n        error: Exception,\n    ) -> dict[str, Any] | None:\n        \"\"\"Return tool lookup and runtime exceptions to the model as structured error dicts.\"\"\"\n        tool_name = getattr(tool, 'name', 'unknown') or 'unknown'\n        logger.warning(\n            \"Tool '%s' raised %s: %s\",\n            tool_name,\n            type(error).__name__,\n            error,\n        )\n        return {\n            'status': 'error',\n            'error_type': type(error).__name__,\n            'error': str(error),\n        }\n\n\n_PRUNED_TOP_DIRS = ("
+            },
+            {
+              "start": 688,
+              "end": 720,
+              "excerpt": "            'name': 'swegemma_eval',\n            'root_agent': agent,\n            'plugins': [display_plugin, retry_plugin, tool_error_plugin],\n        }\n        if config.context_cache_config is not None:\n            app_kwargs['context_cache_config'] = config.context_cache_config\n        if config.events_compaction_config is not None:\n            app_kwargs['events_compaction_config'] = config.events_compaction_config\n\n        app = App(**app_kwargs)\n        runner = Runner(app=app, session_service=session_service)\n\n        initial_prompt = build_agent_prompt(\n            task=task,\n            config=config,\n            workspace_tree=workspace_tree,\n            enable_sandbox_testing=enable_sandbox_testing,\n            declared_tools=_extract_declared_tools(agent),\n        )\n\n        user_message = genai_types.Content(\n            role='user',\n            parts=[genai_types.Part(text=initial_prompt)],\n        )\n\n        # Execute agent within time and turn budgets\n        max_llm_calls = (\n            config.budget.turns if config.budget.turns is not None else 500\n        )\n\n        timeout_sec = (\n            config.budget.time_minutes * 60\n            if config.budget.time_minutes is not None"
+            },
+            {
+              "start": 783,
+              "end": 810,
+              "excerpt": "                async with timeout_context:\n                    max_nudges = 3\n                    consecutive_nudges = 0\n                    current_message = user_message\n\n                    while True:\n                        remaining_turns = max_llm_calls - context.llm_calls_used\n                        if remaining_turns <= 0:\n                            agent_error = (\n                                f'Agent exceeded turns budget ({config.budget.turns} turns)'\n                                if config.budget.turns is not None\n                                else 'Agent exceeded maximum allowed LLM turns'\n                            )\n                            logger.warning(\n                                'Task %s: LLM turn budget exhausted.', task.instance_id\n                            )\n                            break\n\n                        run_config = RunConfig(max_llm_calls=remaining_turns)\n                        last_event_finish_reason = None\n                        last_assistant_text = ''\n                        turn_has_tool_call = False\n                        prev_calls = context.llm_calls_used\n                        async for _event in runner.run_async(\n                            user_id='eval_user',\n                            session_id=session.id,\n                            new_message=current_message,\n                            run_config=run_config,"
+            },
+            {
+              "start": 915,
+              "end": 1025,
+              "excerpt": "                        except Exception as sess_err:\n                            logger.debug(\n                                'Failed to inspect session events: %s', sess_err\n                            )\n\n                        if context.patch_submitted:\n                            context.set_activity('Patch submitted')\n                            break\n\n                        if (\n                            timeout_sec is not None\n                            and context.elapsed_seconds > timeout_sec\n                        ):\n                            if not agent_error:\n                                agent_error = f'Agent exceeded session timeout ({config.budget.time_minutes} min)'\n                            break\n\n                        if (\n                            context.budget.tool_calls is not None\n                            and context.tool_calls_used >= context.budget.tool_calls\n                        ):\n                            if not agent_error:\n                                agent_error = (\n                                    f'Agent exceeded tool call budget ({context.budget.tool_calls} calls)'\n                                )\n                            logger.warning(\n                                'Task %s: Tool call budget (%d) exhausted; terminating agent loop.',\n                                task.instance_id,\n                                context.budget.tool_calls,\n                            )\n                            break\n\n                        if context.llm_calls_used >= max_llm_calls:\n                            if not agent_error:\n                                agent_error = (\n                                    f'Agent exceeded turns budget ({config.budget.turns} turns)'\n                                    if config.budget.turns is not None\n                                    else 'Agent exceeded maximum allowed LLM turns'\n                                )\n                            logger.warning(\n                                'Task %s: LLM turn budget exhausted.', task.instance_id\n                            )\n                            break\n\n                        if agent_error:\n                            break\n\n                        if turn_has_tool_call:\n                            consecutive_nudges = 0\n\n                        if consecutive_nudges >= max_nudges:\n                            logger.warning(\n                                'Task %s: Reached maximum continuation nudges (%d) without patch submission.',\n                                task.instance_id,\n                                max_nudges,\n                            )\n                            break\n\n                        consecutive_nudges += 1\n                        is_length_truncation = False\n                        if last_event_finish_reason is not None:\n                            fr_str = str(last_event_finish_reason).upper()\n                            if 'MAX_TOKENS' in fr_str or 'LENGTH' in fr_str:\n                                is_length_truncation = True\n\n                        has_truncated_tool_call = '<|tool_call>' in last_assistant_text\n\n                        if has_truncated_tool_call:\n                            nudge_prompt = (\n                                'Your previous response reached the token limit before the tool call finished closing '\n                                '(<|tool_call|> was cut off). Do NOT repeat your prior reasoning in thought—emit your '\n                                'next tool call immediately, and if calling edit_file or write_file, split the change '\n                                'into smaller incremental edits.'\n                            )\n                        elif is_length_truncation:\n                            nudge_prompt = (\n                                'Your previous response reached the token limit while thinking before a tool call was '\n                                'completed. Do NOT repeat your analysis in thought—keep reasoning under a few sentences '\n                                'and emit your next tool call immediately, or call submit_patch when you have completed '\n                                'and verified your changes.'\n                            )\n                        else:\n                            nudge_prompt = (\n                                'Please continue your work using the available tools, or call submit_patch when '\n                                'you have completed and verified your changes.'\n                            )\n\n                        logger.info(\n                            'Task %s: Agent ended turn without calling submit_patch (nudge %d/%d). Prompting continuation.',\n                            task.instance_id,\n                            consecutive_nudges,\n                            max_nudges,\n                        )\n                        trace.record_custom(\n                            'continuation_nudge', nudge_prompt, author='harness'\n                        )\n                        context.set_activity(\n                            f'Nudge ({consecutive_nudges}/{max_nudges})'\n                        )\n                        if display_mgr:\n                            display_mgr.log_task_prompt(nudge_prompt, author='user')\n                        if file_display_mgr is not None:\n                            file_display_mgr.log_task_prompt(\n                                nudge_prompt, author='user'\n                            )\n\n                        current_message = genai_types.Content(\n                            role='user',\n                            parts=[genai_types.Part(text=nudge_prompt)],\n                        )\n"
+            },
+            {
+              "start": 1048,
+              "end": 1088,
+              "excerpt": "        agent_patch = (context.submitted_patch if context is not None else '') or ''\n        is_synthetic_mock_repo = (\n            task.repo.startswith('test/mock_repo') and task.base_commit == '123456'\n        )\n        extra_protected = list(getattr(task, 'test_files', None) or ())\n\n        if not (context is not None and context.patch_submitted):\n            # Fallback: check if the agent made unsubmitted modifications on disk\n            try:\n                await sandbox_exec(docker, sandbox_id, 'cd /workspace && git add -N .')\n                diff_res = await sandbox_exec(\n                    docker,\n                    sandbox_id,\n                    'cd /workspace && (git diff --binary _swegemma_baseline 2>/dev/null || git diff --binary HEAD)',\n                )\n                unsubmitted_diff = diff_res.stdout or ''\n                if not is_synthetic_mock_repo and unsubmitted_diff.strip():\n                    from swegemma.harness.verification import (\n                        strip_protected_files_from_patch,\n                    )\n\n                    unsubmitted_diff = strip_protected_files_from_patch(\n                        unsubmitted_diff, extra_protected_paths=extra_protected\n                    )\n                if unsubmitted_diff.strip():\n                    logger.info(\n                        'Task %s: Captured unsubmitted working tree modifications as fallback patch (%d bytes)',\n                        task.instance_id,\n                        len(unsubmitted_diff),\n                    )\n                    agent_patch = unsubmitted_diff\n                else:\n                    if not agent_error:\n                        agent_error = (\n                            'Agent completed execution without calling submit_patch.'\n                        )\n                    logger.warning(\n                        'Task %s completed without explicit submit_patch call and no working tree modifications.',\n                        task.instance_id,\n                    )\n            except Exception as fallback_err:"
+            }
+          ],
+          "local_copy": {
+            "path": "competition/sources/framework/swegemma/harness/agent_runner.py",
+            "sha256": "4d7eccabd203c26f7c39e882684d2fd851f383f6a5c76c4a75b0e559cd5d6a18",
+            "bytes": 46695
+          },
+          "local_copy_bytes_equal_wheel_member": true
+        },
+        {
+          "member": "swegemma/context.py",
+          "sha256": "272168834495f424dac54cfcc3d470c1b8e42b75a1125e7501586eb5f4fb73c0",
+          "bytes": 23794,
+          "line_ranges": [
+            {
+              "start": 279,
+              "end": 323,
+              "excerpt": "            if not is_partial:\n                author = getattr(event, 'author', None)\n                role = getattr(content, 'role', None) if content else None\n                non_model_authors = {'user', 'harness', 'system', 'tool'}\n\n                is_non_model = (author is not None and author in non_model_authors) or (\n                    role is not None and role in ('user', 'tool')\n                )\n                is_agent = not is_non_model and author is not None\n\n                if is_agent:\n                    has_content = content is not None and (\n                        bool(parts)\n                        or bool(getattr(content, 'text', None))\n                        or isinstance(content, str)\n                    )\n                    is_pure_tool_response = bool(parts) and all(\n                        getattr(p, 'function_response', None) for p in parts\n                    )\n                    if has_content and not is_pure_tool_response:\n                        self.record_llm_call()\n                        usage = getattr(event, 'usage_metadata', None)\n                        if usage is not None:\n                            in_toks = int(getattr(usage, 'prompt_token_count', 0) or 0)\n                            out_toks = int(\n                                getattr(usage, 'candidates_token_count', 0) or 0\n                            )\n                            toks = getattr(usage, 'total_token_count', None)\n                            if toks is None:\n                                toks = in_toks + out_toks\n                            if isinstance(toks, (int, float)) and toks > 0:\n                                with self._lock:\n                                    self._total_tokens += int(toks)\n                            if self._token_budget is not None and hasattr(\n                                self._token_budget, 'record_usage'\n                            ):\n                                with contextlib.suppress(Exception):\n                                    self._token_budget.record_usage(\n                                        input_tokens=in_toks,\n                                        output_tokens=out_toks,\n                                    )\n        except Exception as e:\n            logger.debug('Failed to handle ADK event: %s', e)\n\n    @property"
+            },
+            {
+              "start": 468,
+              "end": 550,
+              "excerpt": "    def check_budget(self, *, count_tool_call: bool = True) -> str | None:\n        \"\"\"Check consumable budget limits and increment call count. Returns error JSON if exceeded.\"\"\"\n        with self._lock:\n            if (\n                count_tool_call\n                and self.budget.tool_calls is not None\n                and self.tool_calls_used >= self.budget.tool_calls\n            ):\n                return json.dumps(\n                    {\n                        'status': 'error',\n                        'error_type': 'BudgetExceeded',\n                        'error_message': f'Tool call budget exhausted ({self.budget.tool_calls} calls)',\n                    },\n                    ensure_ascii=False,\n                )\n\n            if (\n                count_tool_call\n                and self.budget.turns is not None\n                and self.llm_calls_used >= self.budget.turns\n            ):\n                return json.dumps(\n                    {\n                        'status': 'error',\n                        'error_type': 'BudgetExceeded',\n                        'error_message': f'Turn budget exhausted ({self.budget.turns} turns)',\n                    },\n                    ensure_ascii=False,\n                )\n\n            if (\n                count_tool_call\n                and self.budget.cost_usd is not None\n                and self.total_cost_usd >= self.budget.cost_usd\n            ):\n                return json.dumps(\n                    {\n                        'status': 'error',\n                        'error_type': 'BudgetExceeded',\n                        'error_message': f'Cost budget exhausted (${self.budget.cost_usd:.4f} USD)',\n                    },\n                    ensure_ascii=False,\n                )\n\n            if (\n                count_tool_call\n                and self.budget.total_tokens is not None\n                and self.total_tokens >= self.budget.total_tokens\n            ):\n                return json.dumps(\n                    {\n                        'status': 'error',\n                        'error_type': 'BudgetExceeded',\n                        'error_message': f'Token budget exhausted ({self.budget.total_tokens} tokens)',\n                    },\n                    ensure_ascii=False,\n                )\n\n            if self.budget.time_minutes is not None:\n                if self.budget.time_minutes <= 0:\n                    return json.dumps(\n                        {\n                            'status': 'error',\n                            'error_type': 'TimeoutExceeded',\n                            'error_message': f'Session time budget exhausted ({self.budget.time_minutes} minutes)',\n                        },\n                        ensure_ascii=False,\n                    )\n                if self.agent_start_time is not None:\n                    elapsed_minutes = self.agent_elapsed_seconds / 60.0\n                    if elapsed_minutes > self.budget.time_minutes:\n                        return json.dumps(\n                            {\n                                'status': 'error',\n                                'error_type': 'TimeoutExceeded',\n                                'error_message': f'Session time budget exhausted ({self.budget.time_minutes} minutes)',\n                            },\n                            ensure_ascii=False,\n                        )\n\n            if count_tool_call:\n                self.tool_calls_used += 1"
+            }
+          ],
+          "local_copy": {
+            "path": "research/006/official-data-20261013/wheels-source/swegemma/context.py",
+            "sha256": "272168834495f424dac54cfcc3d470c1b8e42b75a1125e7501586eb5f4fb73c0",
+            "bytes": 23794
+          },
+          "local_copy_bytes_equal_wheel_member": true
+        },
+        {
+          "member": "swegemma/tools/execution.py",
+          "sha256": "ff4df981ae1070334665ce8ab726c231e139ac5cf34bb5ebc4660eada28a7b2d",
+          "bytes": 6573,
+          "line_ranges": [
+            {
+              "start": 16,
+              "end": 45,
+              "excerpt": "\nlogger = logging.getLogger(__name__)\n\n\n@budget_gated\ndef run_command(ctx: Any, command: str) -> str:\n    \"\"\"Execute a shell command inside the repository sandbox.\n\n    You can run any shell command (Python scripts, tests, git commands, etc.).\n    The command runs in the repository workspace. No network access.\n\n    Args:\n        ctx: Context instance.\n        command: Shell command to execute (e.g., \"pytest tests/\", \"python3 script.py\").\n    \"\"\"\n    # Determine effective command timeout\n    cmd_timeout = ctx.harness.command_timeout_seconds\n    if ctx.budget.time_minutes is not None:\n        remaining = ctx.remaining_time_seconds\n        if remaining is not None:\n            # Provide a minimum floor of 5s on remaining time so near-deadline commands don't fail immediately on 1s\n            effective_remaining = max(5, int(remaining))\n            if cmd_timeout is not None:\n                effective_timeout = min(cmd_timeout, effective_remaining)\n            else:\n                effective_timeout = effective_remaining\n        else:\n            effective_timeout = cmd_timeout\n    else:\n        effective_timeout = cmd_timeout"
+            },
+            {
+              "start": 76,
+              "end": 85,
+              "excerpt": "@budget_gated(count_tool_call=False)\ndef submit_patch(ctx: Any) -> str:\n    \"\"\"Capture the current working tree modifications as the agent's submission.\n\n    This generates a unified git diff against the baseline commit. The agent\n    can submit multiple times; only the final submission is evaluated.\n\n    Args:\n        ctx: Context instance.\n    \"\"\""
+            },
+            {
+              "start": 117,
+              "end": 122,
+              "excerpt": "\n\n@budget_gated(count_tool_call=False)\ndef get_status(ctx: Any) -> str:\n    \"\"\"Check active budget details (time, tool calls) and active patch details.\n"
+            }
+          ],
+          "local_copy": {
+            "path": "competition/sources/framework/swegemma/tools/execution.py",
+            "sha256": "ff4df981ae1070334665ce8ab726c231e139ac5cf34bb5ebc4660eada28a7b2d",
+            "bytes": 6573
+          },
+          "local_copy_bytes_equal_wheel_member": true
+        }
+      ]
+    },
+    {
+      "path": "research/006/official-data-20261013/wheels/google_adk-1.36.1-py3-none-any.whl",
+      "sha256": "1a2f6868c509e3151fb0de3575a7d18b45c338be86f420924dad74e7193631a0",
+      "bytes": 2877731,
+      "metadata": {
+        "member": "google_adk-1.36.1.dist-info/METADATA",
+        "sha256": "28751f5a13bb6dcfa9a89a3d2dc44be6231bb1a4dfc4ef8de5aefb687b85d032",
+        "distribution_fields": [
+          "Name: google-adk",
+          "Version: 1.36.1",
+          "Requires-Dist: aiosqlite>=0.21",
+          "Requires-Dist: anyio>=4.9,<5",
+          "Requires-Dist: authlib>=1.6.6,<2",
+          "Requires-Dist: click>=8.1.8,<9",
+          "Requires-Dist: fastapi>=0.124.1,<1",
+          "Requires-Dist: google-api-python-client>=2.157,<3",
+          "Requires-Dist: google-auth[pyopenssl]>=2.47",
+          "Requires-Dist: google-cloud-aiplatform[agent-engines]>=1.148.1,<2",
+          "Requires-Dist: google-cloud-bigquery>=2.2",
+          "Requires-Dist: google-cloud-bigquery-storage>=2",
+          "Requires-Dist: google-cloud-bigtable>=2.32",
+          "Requires-Dist: google-cloud-dataplex>=1.7,<3",
+          "Requires-Dist: google-cloud-discoveryengine>=0.13.12,<0.14",
+          "Requires-Dist: google-cloud-pubsub>=2,<3",
+          "Requires-Dist: google-cloud-secret-manager>=2.22,<3",
+          "Requires-Dist: google-cloud-spanner>=3.56,<4",
+          "Requires-Dist: google-cloud-speech>=2.30,<3",
+          "Requires-Dist: google-cloud-storage>=2.18,<4",
+          "Requires-Dist: google-genai>=2.9,<3",
+          "Requires-Dist: graphviz>=0.20.2,<1",
+          "Requires-Dist: httpx>=0.27,<1",
+          "Requires-Dist: jsonschema>=4.23,<5",
+          "Requires-Dist: mcp>=1.24,<2",
+          "Requires-Dist: opentelemetry-api>=1.36,<=1.41.1",
+          "Requires-Dist: opentelemetry-exporter-gcp-logging>=1.9.0a0,<=1.12.0a0",
+          "Requires-Dist: opentelemetry-exporter-gcp-monitoring>=1.9.0a0,<2",
+          "Requires-Dist: opentelemetry-exporter-gcp-trace>=1.9,<2",
+          "Requires-Dist: opentelemetry-exporter-otlp-proto-http>=1.36",
+          "Requires-Dist: opentelemetry-resourcedetector-gcp>=1.9.0a0,<2",
+          "Requires-Dist: opentelemetry-sdk>=1.36,<=1.41.1",
+          "Requires-Dist: pyarrow>=14",
+          "Requires-Dist: pydantic>=2.12,<3",
+          "Requires-Dist: python-dateutil>=2.9.0.post0,<3",
+          "Requires-Dist: python-dotenv>=1,<2",
+          "Requires-Dist: pyyaml>=6.0.2,<7",
+          "Requires-Dist: requests>=2.32.4,<3",
+          "Requires-Dist: sqlalchemy>=2,<3",
+          "Requires-Dist: sqlalchemy-spanner>=1.14",
+          "Requires-Dist: starlette>=0.49.1,<1",
+          "Requires-Dist: tenacity>=9,<10",
+          "Requires-Dist: typing-extensions>=4.5,<5",
+          "Requires-Dist: tzlocal>=5.3,<6",
+          "Requires-Dist: uvicorn>=0.34,<1",
+          "Requires-Dist: watchdog>=6,<7",
+          "Requires-Dist: websockets>=15.0.1,<16",
+          "Requires-Dist: a2a-sdk>=0.3.4,<0.4 ; extra == \"a2a\"",
+          "Requires-Dist: google-cloud-iamconnectorcredentials>=0.1,<0.2 ; extra == \"agent-identity\"",
+          "Requires-Dist: google-adk-community ; extra == \"community\"",
+          "Requires-Dist: flit>=3.10 ; extra == \"dev\"",
+          "Requires-Dist: isort>=6 ; extra == \"dev\"",
+          "Requires-Dist: mypy>=1.15 ; extra == \"dev\"",
+          "Requires-Dist: pre-commit>=4 ; extra == \"dev\"",
+          "Requires-Dist: pyink>=25.12 ; extra == \"dev\"",
+          "Requires-Dist: pylint>=2.6 ; extra == \"dev\"",
+          "Requires-Dist: autodoc-pydantic ; extra == \"docs\"",
+          "Requires-Dist: furo ; extra == \"docs\"",
+          "Requires-Dist: myst-parser ; extra == \"docs\"",
+          "Requires-Dist: sphinx<9 ; extra == \"docs\"",
+          "Requires-Dist: sphinx-autodoc-typehints ; extra == \"docs\"",
+          "Requires-Dist: sphinx-click ; extra == \"docs\"",
+          "Requires-Dist: sphinx-rtd-theme ; extra == \"docs\"",
+          "Requires-Dist: gepa>=0.1 ; extra == \"eval\"",
+          "Requires-Dist: google-cloud-aiplatform[evaluation]>=1.148 ; extra == \"eval\"",
+          "Requires-Dist: jinja2>=3.1.4,<4 ; extra == \"eval\"",
+          "Requires-Dist: pandas>=2.2.3 ; extra == \"eval\"",
+          "Requires-Dist: rouge-score>=0.1.2 ; extra == \"eval\"",
+          "Requires-Dist: tabulate>=0.9 ; extra == \"eval\"",
+          "Requires-Dist: anthropic>=0.78 ; extra == \"extensions\"",
+          "Requires-Dist: beautifulsoup4>=3.2.2 ; extra == \"extensions\"",
+          "Requires-Dist: crewai[tools] ; extra == \"extensions\" and ( python_version>='3.11' and python_version<'3.12')",
+          "Requires-Dist: docker>=7 ; extra == \"extensions\"",
+          "Requires-Dist: google-cloud-firestore>=2.11,<3 ; extra == \"extensions\"",
+          "Requires-Dist: google-cloud-parametermanager>=0.4,<1 ; extra == \"extensions\"",
+          "Requires-Dist: k8s-agent-sandbox>=0.1.1.post3 ; extra == \"extensions\"",
+          "Requires-Dist: kubernetes>=29 ; extra == \"extensions\"",
+          "Requires-Dist: langgraph>=0.2.60,<0.4.8 ; extra == \"extensions\"",
+          "Requires-Dist: litellm>=1.83.7,<=1.83.14 ; extra == \"extensions\"",
+          "Requires-Dist: llama-index-embeddings-google-genai>=0.3 ; extra == \"extensions\"",
+          "Requires-Dist: llama-index-readers-file>=0.4 ; extra == \"extensions\"",
+          "Requires-Dist: lxml>=5.3 ; extra == \"extensions\"",
+          "Requires-Dist: pypika>=0.50 ; extra == \"extensions\"",
+          "Requires-Dist: toolbox-adk>=1,<2 ; extra == \"extensions\"",
+          "Requires-Dist: opentelemetry-instrumentation-google-genai>=0.6b0,<1 ; extra == \"otel-gcp\"",
+          "Requires-Dist: slack-bolt>=1.22 ; extra == \"slack\"",
+          "Requires-Dist: a2a-sdk>=0.3,<0.4 ; extra == \"test\"",
+          "Requires-Dist: anthropic>=0.78 ; extra == \"test\"",
+          "Requires-Dist: crewai[tools] ; extra == \"test\" and ( python_version>='3.11' and python_version<'3.12')",
+          "Requires-Dist: google-cloud-firestore>=2.11,<3 ; extra == \"test\"",
+          "Requires-Dist: google-cloud-iamconnectorcredentials>=0.1,<0.2 ; extra == \"test\"",
+          "Requires-Dist: google-cloud-parametermanager>=0.4,<1 ; extra == \"test\"",
+          "Requires-Dist: kubernetes>=29 ; extra == \"test\"",
+          "Requires-Dist: langchain-community>=0.3.17 ; extra == \"test\"",
+          "Requires-Dist: langgraph>=0.2.60,<0.4.8 ; extra == \"test\"",
+          "Requires-Dist: litellm>=1.83.7,<=1.83.14 ; extra == \"test\"",
+          "Requires-Dist: llama-index-readers-file>=0.4 ; extra == \"test\"",
+          "Requires-Dist: openai>=1.100.2 ; extra == \"test\"",
+          "Requires-Dist: opentelemetry-instrumentation-google-genai>=0.3b0,<1 ; extra == \"test\"",
+          "Requires-Dist: pypika>=0.50 ; extra == \"test\"",
+          "Requires-Dist: pytest>=9,<10 ; extra == \"test\"",
+          "Requires-Dist: pytest-asyncio>=0.25 ; extra == \"test\"",
+          "Requires-Dist: pytest-mock>=3.14 ; extra == \"test\"",
+          "Requires-Dist: pytest-xdist>=3.6.1 ; extra == \"test\"",
+          "Requires-Dist: python-multipart>=0.0.9 ; extra == \"test\"",
+          "Requires-Dist: rouge-score>=0.1.2 ; extra == \"test\"",
+          "Requires-Dist: slack-bolt>=1.22 ; extra == \"test\"",
+          "Requires-Dist: tabulate>=0.9 ; extra == \"test\"",
+          "Requires-Dist: toolbox-adk>=1,<2 ; extra == \"toolbox\""
+        ]
+      },
+      "members": [
+        {
+          "member": "google/adk/agents/run_config.py",
+          "sha256": "eb927652123a58c5cdc7ef7bdc681e394fdd13535b2a78e1a92830fa736aa87f",
+          "bytes": 13854,
+          "line_ranges": [
+            {
+              "start": 223,
+              "end": 226,
+              "excerpt": "  \"\"\"\n\n  streaming_mode: StreamingMode = StreamingMode.NONE\n  \"\"\"Streaming mode, None or StreamingMode.SSE or StreamingMode.BIDI.\"\"\""
+            }
+          ]
+        },
+        {
+          "member": "google/adk/flows/llm_flows/base_llm_flow.py",
+          "sha256": "b20beb63a63aa143ef49c6246a1efed75e0dfcb9d8fae45b46c390d0cacab1fd",
+          "bytes": 52718,
+          "line_ranges": [
+            {
+              "start": 862,
+              "end": 875,
+              "excerpt": "  async def run_async(\n      self, invocation_context: InvocationContext\n  ) -> AsyncGenerator[Event, None]:\n    \"\"\"Runs the flow.\"\"\"\n    while True:\n      last_event = None\n      async with Aclosing(self._run_one_step_async(invocation_context)) as agen:\n        async for event in agen:\n          last_event = event\n          yield event\n      if not last_event or last_event.is_final_response() or last_event.partial:\n        if last_event and last_event.partial:\n          logger.warning('The last event is partial, which is not expected.')\n        break"
+            },
+            {
+              "start": 1291,
+              "end": 1296,
+              "excerpt": "          invocation_context.increment_llm_call_count()\n          responses_generator = llm.generate_content_async(\n              llm_request,\n              stream=invocation_context.run_config.streaming_mode\n              == StreamingMode.SSE,\n          )"
+            }
+          ]
+        },
+        {
+          "member": "google/adk/models/lite_llm.py",
+          "sha256": "2f28c6afa110006e0fdec46c9ac7c6b614d74c81e0d0bf6fda2b0d6353111098",
+          "bytes": 80905,
+          "line_ranges": [
+            {
+              "start": 1367,
+              "end": 1386,
+              "excerpt": "def _split_message_content_and_tool_calls(\n    message: Message,\n) -> tuple[Optional[OpenAIMessageContent], list[ChatCompletionMessageToolCall]]:\n  \"\"\"Returns message content and tool calls, parsing inline JSON when needed.\"\"\"\n  existing_tool_calls = message.get(\"tool_calls\") or []\n  normalized_tool_calls = (\n      list(existing_tool_calls) if existing_tool_calls else []\n  )\n  content = message.get(\"content\")\n\n  # LiteLLM responses either provide structured tool_calls or inline JSON, not\n  # both. When tool_calls are present we trust them and skip the fallback parser.\n  if normalized_tool_calls or not isinstance(content, str):\n    return content, normalized_tool_calls\n\n  fallback_tool_calls, remainder = _parse_tool_calls_from_text(content)\n  if fallback_tool_calls:\n    return remainder, fallback_tool_calls\n\n  return content, []"
+            },
+            {
+              "start": 1720,
+              "end": 1741,
+              "excerpt": "  message_content, tool_calls = _split_message_content_and_tool_calls(message)\n  if isinstance(message_content, str) and message_content:\n    parts.append(types.Part.from_text(text=message_content))\n\n  if tool_calls:\n    for tool_call in tool_calls:\n      if tool_call.type == \"function\":\n        thought_signature = _extract_thought_signature_from_tool_call(tool_call)\n        part = types.Part.from_function_call(\n            name=tool_call.function.name,\n            args=json.loads(tool_call.function.arguments or \"{}\"),\n        )\n        part.function_call.id = tool_call.id\n        if thought_signature:\n          part.thought_signature = thought_signature\n        parts.append(part)\n\n  return LlmResponse(\n      content=types.Content(role=\"model\", parts=parts),\n      partial=is_partial,\n      model_version=model_version,\n  )"
+            },
+            {
+              "start": 2211,
+              "end": 2218,
+              "excerpt": "  async def generate_content_async(\n      self, llm_request: LlmRequest, stream: bool = False\n  ) -> AsyncGenerator[LlmResponse, None]:\n    \"\"\"Generates content asynchronously.\n\n    Args:\n      llm_request: LlmRequest, the request to send to the LiteLlm model.\n      stream: bool = False, whether to do streaming call."
+            },
+            {
+              "start": 2244,
+              "end": 2269,
+              "excerpt": "    completion_args = {\n        \"model\": effective_model,\n        \"messages\": normalized_messages,\n        \"tools\": tools,\n        \"response_format\": response_format,\n    }\n    completion_args.update(self._additional_args)\n\n    # merge headers\n    if _is_litellm_vertex_model(effective_model) or _is_litellm_gemini_model(\n        effective_model\n    ):\n      completion_args[\"headers\"] = merge_tracking_headers(\n          completion_args.get(\"headers\")\n      )\n\n    if generation_params:\n      completion_args.update(generation_params)\n\n    if stream:\n      text = \"\"\n      reasoning_parts: List[types.Part] = []\n      # Track function calls by index\n      function_calls = {}  # index -> {name, args, id}\n      completion_args[\"stream\"] = True\n      completion_args[\"stream_options\"] = {\"include_usage\": True}"
+            },
+            {
+              "start": 2466,
+              "end": 2468,
+              "excerpt": "    else:\n      response = await self.llm_client.acompletion(**completion_args)\n      yield _model_response_to_generate_content_response(response)"
+            }
+          ]
+        },
+        {
+          "member": "google/adk/events/event.py",
+          "sha256": "120808bf6ce77d6c2322881b335bcdee12e2ac8a94d9fbbfc38353f3764d946a",
+          "bytes": 4405,
+          "line_ranges": [
+            {
+              "start": 83,
+              "end": 98,
+              "excerpt": "  def is_final_response(self) -> bool:\n    \"\"\"Returns whether the event is the final response of an agent.\n\n    NOTE: This method is ONLY for use by Agent Development Kit.\n\n    Note that when multiple agents participate in one invocation, there could be\n    one event has `is_final_response()` as True for each participating agent.\n    \"\"\"\n    if self.actions.skip_summarization or self.long_running_tool_ids:\n      return True\n    return (\n        not self.get_function_calls()\n        and not self.get_function_responses()\n        and not self.partial\n        and not self.has_trailing_code_execution_result()\n    )"
+            }
+          ]
+        },
+        {
+          "member": "google/adk/tools/function_tool.py",
+          "sha256": "3d74d850137e959804f74d3cf81f964745d6f08ce161d8b5994d8788cc1f950b",
+          "bytes": 10600,
+          "line_ranges": [
+            {
+              "start": 159,
+              "end": 189,
+              "excerpt": "  @override\n  async def run_async(\n      self, *, args: dict[str, Any], tool_context: ToolContext\n  ) -> Any:\n    # Preprocess arguments (includes Pydantic model conversion)\n    args_to_call = self._preprocess_args(args)\n\n    signature = inspect.signature(self.func)\n    valid_params = {param for param in signature.parameters}\n    if self._context_param_name in valid_params:\n      args_to_call[self._context_param_name] = tool_context\n\n    # Filter args_to_call to only include valid parameters for the function\n    args_to_call = {k: v for k, v in args_to_call.items() if k in valid_params}\n\n    # Before invoking the function, we check for if the list of args passed in\n    # has all the mandatory arguments or not.\n    # If the check fails, then we don't invoke the tool and let the Agent know\n    # that there was a missing input parameter. This will basically help\n    # the underlying model fix the issue and retry.\n    mandatory_args = self._get_mandatory_args()\n    missing_mandatory_args = [\n        arg for arg in mandatory_args if arg not in args_to_call\n    ]\n\n    if missing_mandatory_args:\n      missing_mandatory_args_str = '\\n'.join(missing_mandatory_args)\n      error_str = f\"\"\"Invoking `{self.name}()` failed as the following mandatory input parameters are not present:\n{missing_mandatory_args_str}\nYou could retry calling this tool, but it is IMPORTANT for you to provide all the mandatory parameters.\"\"\"\n      return {'error': error_str}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "research/006/official-data-20261013/wheels/adk_submission-0.2.13-py3-none-any.whl",
+      "sha256": "f156f0bd84580ccb9334726d114d7a5481f16d3a6e2887cc4d276ced0ef8d99d",
+      "bytes": 66528,
+      "metadata": {
+        "member": "adk_submission-0.2.13.dist-info/METADATA",
+        "sha256": "7f3d6ea57506a653d1f15e1820039578eb3beab5c3eb49ce3f757afc2ebef3d2",
+        "distribution_fields": [
+          "Name: adk-submission",
+          "Version: 0.2.13",
+          "Requires-Dist: google-adk<2.0,>=1.34.0",
+          "Requires-Dist: pyyaml>=6.0",
+          "Requires-Dist: pydantic>=2.0",
+          "Requires-Dist: pytest>=8.0; extra == \"dev\"",
+          "Requires-Dist: pytest-asyncio>=0.23; extra == \"dev\"",
+          "Requires-Dist: requests>=2.28.0; extra == \"serving\"",
+          "Requires-Dist: litellm>=1.0.0; extra == \"serving\""
+        ]
+      },
+      "members": [
+        {
+          "member": "adk_submission/server.py",
+          "sha256": "d60b3fe34dd7f6e359b003db82b68434757c74b1030862bacda5cff6164f91eb",
+          "bytes": 35447,
+          "line_ranges": [
+            {
+              "start": 142,
+              "end": 157,
+              "excerpt": "    model: str\n    port: int = 8000\n    host: str = \"127.0.0.1\"\n    tool_call_parser: str | None = \"hermes\"\n    reasoning_parser: str | None = None\n    reasoning_config: dict[str, Any] | str | None = None\n    default_chat_template_kwargs: dict[str, Any] | str | None = None\n    limit_mm_per_prompt: str | None = None\n    speculative_config: dict[str, Any] | str | None = None\n    kv_cache_dtype: str | None = None\n    max_model_len: int = 32768\n    dtype: str = \"auto\"\n    gpu_memory_utilization: float = 0.90\n    enable_auto_tool_choice: bool = True\n    enable_lora: bool = True\n    max_loras: int = 1"
+            },
+            {
+              "start": 472,
+              "end": 489,
+              "excerpt": "        try:\n            from google.adk.models.lite_llm import LiteLlm\n            from .resolvers.generation import install_litellm_reasoning_patch\n\n            install_litellm_reasoning_patch()\n\n            for alias, model_name in model_aliases.items():\n                registry.register(\n                    alias,\n                    LiteLlm(\n                        model=_format_model_id(model_name),\n                        api_base=self.base_url,\n                        api_key=api_key or \"EMPTY\",\n                    ),\n                )\n        except ImportError:\n            for alias, model_name in model_aliases.items():\n                registry.register(alias, _format_model_id(model_name))"
+            },
+            {
+              "start": 677,
+              "end": 723,
+              "excerpt": "    def __init__(\n        self,\n        config: VllmConfig,\n        adapter_manifest: AdapterManifest | None = None,\n        lora_modules: Mapping[str, str | Path] | None = None,\n    ):\n        super().__init__(config=config, adapter_manifest=adapter_manifest, lora_modules=lora_modules)\n        self.config: VllmConfig = config\n\n    def build_cmd(self) -> list[str]:\n        \"\"\"Construct the CLI command to launch vLLM OpenAI API server.\"\"\"\n        cmd = [\n            sys.executable,\n            \"-m\",\n            \"vllm.entrypoints.openai.api_server\",\n            \"--model\",\n            self.config.model,\n            \"--host\",\n            self.config.host,\n            \"--port\",\n            str(self.config.port),\n            \"--max-model-len\",\n            str(self.config.max_model_len),\n            \"--dtype\",\n            self.config.dtype,\n            \"--gpu-memory-utilization\",\n            str(self.config.gpu_memory_utilization),\n        ]\n\n        if self.config.tensor_parallel_size > 1:\n            cmd.extend([\"--tensor-parallel-size\", str(self.config.tensor_parallel_size)])\n\n        if self.config.enable_auto_tool_choice:\n            cmd.append(\"--enable-auto-tool-choice\")\n\n        if self.config.tool_call_parser:\n            cmd.extend([\"--tool-call-parser\", self.config.tool_call_parser])\n\n        reasoning_parser = getattr(self.config, \"reasoning_parser\", None)\n        if reasoning_parser:\n            cmd.extend([\"--reasoning-parser\", str(reasoning_parser)])\n\n        reasoning_cfg = getattr(self.config, \"reasoning_config\", None)\n        if (\n            reasoning_cfg is None\n            and reasoning_parser == \"gemma4\"\n            and \"--reasoning-config\" not in self.config.extra_args"
+            }
+          ],
+          "local_copy": {
+            "path": "research/006/official-data-20261013/wheels-source/adk_submission/server.py",
+            "sha256": "d60b3fe34dd7f6e359b003db82b68434757c74b1030862bacda5cff6164f91eb",
+            "bytes": 35447
+          },
+          "local_copy_bytes_equal_wheel_member": true
+        },
+        {
+          "member": "adk_submission/resolvers/generation.py",
+          "sha256": "ba0d58d1dce4395d656416522855cab07d43b7ed0cd61898234dc35e9b92ecc6",
+          "bytes": 18037,
+          "line_ranges": [
+            {
+              "start": 313,
+              "end": 332,
+              "excerpt": "    ):\n\n        @functools.wraps(orig_generate_async)\n        async def _patched_generate_content_async(\n            self: Any, llm_request: Any, stream: bool = False\n        ) -> Any:\n            inc_thoughts = _extract_include_thoughts(llm_request)\n            if inc_thoughts is None:\n                inc_thoughts = self.__dict__.get(\"_adk_include_thoughts\")\n            async for llm_response in orig_generate_async(\n                self, llm_request, stream=stream\n            ):\n                if inc_thoughts is False:\n                    llm_response, should_skip = _strip_thought_parts_from_response(\n                        llm_response\n                    )\n                    if should_skip:\n                        continue\n                yield llm_response\n"
+            }
+          ],
+          "local_copy": {
+            "path": "research/006/official-data-20261013/wheels-source/adk_submission/resolvers/generation.py",
+            "sha256": "ba0d58d1dce4395d656416522855cab07d43b7ed0cd61898234dc35e9b92ecc6",
+            "bytes": 18037
+          },
+          "local_copy_bytes_equal_wheel_member": true
+        },
+        {
+          "member": "adk_submission/builders/llm.py",
+          "sha256": "97c27324ce60ac6dc466941bcc19f5482f7693af9fc02fb760a40526c84c10b5",
+          "bytes": 3658,
+          "line_ranges": [
+            {
+              "start": 83,
+              "end": 104,
+              "excerpt": "        sub_agents=sub_agents,\n        output_key=config.output_key,\n        include_contents=config.include_contents,\n        generate_content_config=gen_config,\n        **callback_kwargs,\n    )\n\n    if config.disallow_transfer_to_parent is not None:\n        kwargs[\"disallow_transfer_to_parent\"] = config.disallow_transfer_to_parent\n    if config.disallow_transfer_to_peers is not None:\n        kwargs[\"disallow_transfer_to_peers\"] = config.disallow_transfer_to_peers\n\n    agent_cls = _get_agent_cls(ctx)\n    return agent_cls(**kwargs)\n\n\n__all__ = [\n    \"_get_agent_cls\",\n    \"compile_llm_agent\",\n]"
+            }
+          ],
+          "local_copy": {
+            "path": "research/006/official-data-20261013/wheels-source/adk_submission/builders/llm.py",
+            "sha256": "97c27324ce60ac6dc466941bcc19f5482f7693af9fc02fb760a40526c84c10b5",
+            "bytes": 3658
+          },
+          "local_copy_bytes_equal_wheel_member": true
+        }
+      ],
+      "equivalent_v30_archive": {
+        "path": "research/006/official-data-20261013/wheels-v30/adk_submission-0.2.13-py3-none-any.whl",
+        "sha256": "69642a13145151040fb96b483170f96cc7cff1d509851d21d08bc7a0ad3ef371",
+        "all_zip_member_payloads_equal_current": true
+      }
+    },
+    {
+      "path": "competition/sources/adk_eval_core-0.1.0-py3-none-any.whl",
+      "sha256": "e614e1b2fe8d886a634871e4c57f9887e1cc66e8c27300f8503a43c6e3ca82f3",
+      "bytes": 90060,
+      "metadata": {
+        "member": "adk_eval_core-0.1.0.dist-info/METADATA",
+        "sha256": "740cfce11e88d34fc8d8e42bf8efa69994c37d411744e79a71ecb5ab50bf1819",
+        "distribution_fields": [
+          "Name: adk-eval-core",
+          "Version: 0.1.0",
+          "Requires-Dist: pydantic~=2.0",
+          "Requires-Dist: google-adk>=1.34.0",
+          "Requires-Dist: docker>=7.0.0",
+          "Requires-Dist: pyyaml>=6.0",
+          "Requires-Dist: rich>=13.0",
+          "Requires-Dist: numpy>=2.0.0",
+          "Requires-Dist: scikit-learn>=1.3.0; extra == \"scoring\"",
+          "Requires-Dist: pytest>=9.0.0; extra == \"dev\"",
+          "Requires-Dist: pytest-asyncio>=0.23.0; extra == \"dev\"",
+          "Requires-Dist: pytest-cov>=7.0.0; extra == \"dev\"",
+          "Requires-Dist: ruff>=0.15.0; extra == \"dev\""
+        ]
+      },
+      "members": [
+        {
+          "member": "adk_eval_core/plugins/retry_plugin.py",
+          "sha256": "ba61cf201167aaf970c3131a4f24b464515509f3cacd5358de99c5ec0fb07af0",
+          "bytes": 7084,
+          "line_ranges": [
+            {
+              "start": 26,
+              "end": 39,
+              "excerpt": "class ModelRetryPlugin(BasePlugin):\n    \"\"\"ADK plugin providing exponential backoff retries for model calls.\n\n    Handles rate limits (429), server errors (500, 502, 503, 504), ResourceExhausted,\n    and network connection timeouts.\n    \"\"\"\n\n    def __init__(\n        self,\n        max_retries: int = 5,\n        initial_delay: float | None = None,\n        backoff_factor: float = 2.0,\n        max_delay: float = 60.0,\n        name: str = \"model_retry\","
+            },
+            {
+              "start": 54,
+              "end": 65,
+              "excerpt": "    def _is_retryable_error(self, error: Exception) -> bool:\n        if isinstance(\n            error,\n            (\n                EvalCoreError,\n                FileNotFoundError,\n                PermissionError,\n                IsADirectoryError,\n                TypeError,\n            ),\n        ):\n            return False"
+            },
+            {
+              "start": 119,
+              "end": 131,
+              "excerpt": "    async def on_model_error_callback(\n        self,\n        *,\n        callback_context: CallbackContext,\n        llm_request: LlmRequest,\n        error: Exception,\n    ) -> LlmResponse | None:\n        \"\"\"Intercept model errors and retry with exponential backoff on transient errors.\"\"\"\n        if not self._is_retryable_error(error):\n            logger.warning(\n                \"Non-retryable model error: %s: %s\", type(error).__name__, error\n            )\n            return None"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "documentation_source": {
+    "path": "competition/sources/HARNESS_README.md",
+    "sha256": "445000219b803942c469391ec8b69791a31e9cec2f934738c767e34b5ca0aa1f",
+    "bytes": 55940,
+    "relevant_lines": [
+      {
+        "start": 163,
+        "end": 170
+      },
+      {
+        "start": 202,
+        "end": 202
+      }
+    ],
+    "status": "Official cached guide, not the missing setup script bytecode/source"
+  },
+  "vllm_source_availability": {
+    "cache": {
+      "path": "research/007/12b-qat-cache-and-train-20261017/cpu-prepare-output-v4/p007-12b-probe/vllm-gemma4-sources.json",
+      "sha256": "f65e17e1c38e54b29aa6d4e208435e0baf3cc3949d2e8ad976b227515df5a959",
+      "bytes": 192385
+    },
+    "cache_member_names": [
+      "vllm/model_executor/layers/rotary_embedding/gemma4_rope.py",
+      "vllm/model_executor/models/gemma4.py",
+      "vllm/model_executor/models/gemma4_mm.py",
+      "vllm/model_executor/models/gemma4_utils.py",
+      "vllm/reasoning/gemma4_reasoning_parser.py",
+      "vllm/reasoning/gemma4_utils.py",
+      "vllm/tool_parsers/gemma4_tool_parser.py",
+      "vllm/tool_parsers/gemma4_utils.py"
+    ],
+    "gemma4_tool_parser_member_sha256": "682b2152b76c031df9c58c3ffbb5b243945be5d8957ebdce00faef1b9de6b889",
+    "absent_from_reviewed_cache": [
+      "vllm/reasoning/basic_parsers.py",
+      "vllm/entrypoints/openai/serving_chat.py"
+    ],
+    "full_serving_reasoning_to_tool_order_source_closed": false,
+    "wheel_listing": {
+      "path": "research/006/official-data-20261013/wheel-files.json",
+      "sha256": "ef576077064574334893c31c7b4e04a45bb19b9b49421c18c9d6a8e9991bb5ce",
+      "bytes": 6825
+    },
+    "release_evidence_limit": "Cached official dataset listing names vllm0.19.1; CPU extractor used nextglob vllm wheel but omitted selected wheel filename/full SHA. Do not promote cached member SHA into a verified whole-wheel SHA. No exact installed LiteLLM version/source is established here; google-adk metadata only constrains it in extras.",
+    "upstream_reference_now_available": true
+  },
+  "interpretation_limits": [
+    "This reviews the official path, not proof that R3 custom strict-native collector ran through this server/ADK chain.",
+    "Historical token strings accepted by a parser do not establish successful schema validation, tool execution, state mutation, next-model recovery or better terminal return.",
+    "Same-tag upstream basic/serving source is now available as a reference; same-wheel serving/setup source and HTTP capture/end-to-end replay remain absent.",
+    "No new recovery prompt is proposed as a demonstrated gain; existing official continuation is already a confound when comparing custom collector stop semantics."
+  ],
+  "upstream_release_reference": {
+    "provenance_path": "competition/vfarl/l4x4/round100/optimization-overnight/r3-official-parser-semantics/upstream-v0.19.1/provenance.json",
+    "provenance_sha256": "6cba2b669766f763330d6988f74cf2bd3ca94f3759d65cd4b3ab2ddd23de03b1",
+    "ref_commit": "b1388b1fbf5aaef47937fabe98931211684666a6",
+    "files": [
+      {
+        "path": "competition/vfarl/l4x4/round100/optimization-overnight/r3-official-parser-semantics/upstream-v0.19.1/basic_parsers.py",
+        "sha256": "48238f175f2e402dce635944ed1f851ca5eed887dd4f1d9eb9fc0670bf2e1b38",
+        "provenance": {
+          "name": "basic_parsers.py",
+          "git_blob_sha": "a8bb33d2c9cd9c3cdbee03a7a4255ba69d7797f5",
+          "url": "https://github.com/vllm-project/vllm/blob/v0.19.1/vllm/reasoning/basic_parsers.py",
+          "sha256": "48238f175f2e402dce635944ed1f851ca5eed887dd4f1d9eb9fc0670bf2e1b38",
+          "bytes": 7636
+        },
+        "status": "public release-tag source reference; not a recovered wheel member"
+      },
+      {
+        "path": "competition/vfarl/l4x4/round100/optimization-overnight/r3-official-parser-semantics/upstream-v0.19.1/serving.py",
+        "sha256": "1f60379d22c80bbea2580ff6674ea679f932af401c7934c786ded98682e91f24",
+        "provenance": {
+          "name": "serving.py",
+          "git_blob_sha": "493c26d3aed94205d70ce4057f8d3b24d207bee7",
+          "url": "https://github.com/vllm-project/vllm/blob/v0.19.1/vllm/entrypoints/openai/chat_completion/serving.py",
+          "sha256": "1f60379d22c80bbea2580ff6674ea679f932af401c7934c786ded98682e91f24",
+          "bytes": 81311
+        },
+        "status": "public release-tag source reference; not a recovered wheel member",
+        "source_excerpt": {
+          "start": 1374,
+          "end": 1396,
+          "excerpt": "            if reasoning_parser:\n                # If the reasoning parser is enabled,\n                # tool calls are extracted exclusively from the content.\n                reasoning, content = reasoning_parser.extract_reasoning(\n                    output.text, request=request\n                )\n                if not request.include_reasoning:\n                    reasoning = None\n            else:\n                reasoning = None\n                content = output.text\n\n            auto_tools_called = False\n            # if auto tools are not enabled, and a named tool choice using\n            #   outlines is not being used\n            tool_calls, content = self._parse_tool_calls_from_content(\n                request=request,\n                tokenizer=tokenizer,\n                content=content,\n                enable_auto_tools=self.enable_auto_tools,\n                tool_parser_cls=self.tool_parser,\n            )\n            tool_call_class = ("
+        }
+      },
+      {
+        "path": "competition/vfarl/l4x4/round100/optimization-overnight/r3-official-parser-semantics/upstream-v0.19.1/gemma4_tool_parser.py",
+        "sha256": "682b2152b76c031df9c58c3ffbb5b243945be5d8957ebdce00faef1b9de6b889",
+        "provenance": {
+          "name": "gemma4_tool_parser.py",
+          "git_blob_sha": "ac48ef26cc197fa9d2c2bc5109caee26f38ab605",
+          "url": "https://github.com/vllm-project/vllm/blob/v0.19.1/vllm/tool_parsers/gemma4_tool_parser.py",
+          "sha256": "682b2152b76c031df9c58c3ffbb5b243945be5d8957ebdce00faef1b9de6b889",
+          "bytes": 27743
+        },
+        "status": "public release-tag source reference; not a recovered wheel member",
+        "cached_wheelhouse_member_bytes_equal": true
+      },
+      {
+        "path": "competition/vfarl/l4x4/round100/optimization-overnight/r3-official-parser-semantics/upstream-v0.19.1/gemma4_reasoning_parser.py",
+        "sha256": "64a1d3f05e22cee893ebc1f2507a150eaadf4d06e3efac5035c6ab94480a739e",
+        "provenance": {
+          "name": "gemma4_reasoning_parser.py",
+          "git_blob_sha": "6f2241603f9a4ceaf8d82def7143f5cec597d94d",
+          "url": "https://github.com/vllm-project/vllm/blob/v0.19.1/vllm/reasoning/gemma4_reasoning_parser.py",
+          "sha256": "64a1d3f05e22cee893ebc1f2507a150eaadf4d06e3efac5035c6ab94480a739e",
+          "bytes": 9297
+        },
+        "status": "public release-tag source reference; not a recovered wheel member",
+        "cached_wheelhouse_member_bytes_equal": true
+      },
+      {
+        "path": "competition/vfarl/l4x4/round100/optimization-overnight/r3-official-parser-semantics/upstream-v0.19.1/engine_serving.py",
+        "sha256": "4cc5381ad3c25e5ef9c09d69b4cbd4d9a4a49d33bdb961e9b67241b1b28050c2",
+        "provenance": {
+          "name": "engine_serving.py",
+          "git_blob_sha": "cab5a536c2f0619d4922d801eba75510d91b393c",
+          "sha256": "4cc5381ad3c25e5ef9c09d69b4cbd4d9a4a49d33bdb961e9b67241b1b28050c2",
+          "bytes": 35910,
+          "url": "https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/entrypoints/openai/engine/serving.py"
+        },
+        "status": "public release-tag source reference; not a recovered wheel member"
+      }
+    ],
+    "order_supported": "Nonstream serving.py:1374-1396 calls reasoning_parser.extract_reasoning(output.text, request=request), then passes only content to _parse_tool_calls_from_content. This is release-tag reference evidence.",
+    "limits": "Gemma4 tool/reasoning members match actual wheelhouse cache bytes; basic/serving source is same-tag upstream reference, not verified whole-wheel recovery. No serving/model/tool execution was performed here."
+  }
+}

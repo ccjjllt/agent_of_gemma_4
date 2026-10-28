@@ -1,0 +1,26 @@
+List and tuple handling is swapped in Term.wrap_constant
+
+Python lists should produce array values, and Python tuples should produce SQL tuple values. They currently get the opposite wrapping behavior.
+
+```python
+from pypika import Query, Table, Tuple
+from pypika.dialects import PostgreSQLQuery
+
+table = Table("abc")
+
+query1 = PostgreSQLQuery.into(table).insert(1, [1, "a", True])
+print(str(query1))
+# Expected: INSERT INTO "abc" VALUES (1,ARRAY[1,'a',true])
+
+query2 = Query.from_(table).select("*").where(Tuple(table.foo, table.bar) == (1, 2))
+print(str(query2))
+# Expected: SELECT * FROM "abc" WHERE ("foo","bar")=(1,2)
+
+query3 = Query.from_(table).select("*").where(
+    Tuple(table.foo, table.bar).isin([(1, 1), (2, 2)])
+)
+print(str(query3))
+# Expected: SELECT * FROM "abc" WHERE ("foo","bar") IN ((1,1),(2,2))
+```
+
+The current PostgreSQL insert wraps the list as a tuple, and the tuple-valued comparison/IN cases wrap Python tuples as arrays. Array SQL syntax should remain appropriate for the selected query dialect.

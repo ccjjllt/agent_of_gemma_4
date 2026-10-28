@@ -1,0 +1,13 @@
+# history_format：非默认resident入口
+
+四文件最小plumbing：默认`raw-preserved`，显式实验格式`canonical-ct-v1`。Kaggle builder使用`--resident-history-format`，非默认只允许`--resident-rl --collection-protocol live-original-pair`；direct resident CLI使用`--history-format`两choices。未知格式或canonical搭配historical/非resident会在模型/环境准备前拒绝。
+
+仅canonical时RESIDENT_SETTINGS、resident bootstrap、summary及queue execution_contract新增`history_format`。runner沿既有dict kwargs透传，worker从setup读取并仅对非默认值加入collect Namespace；raw默认/显式raw不新增这些字段。collect侧root使用缺省raw兼容旧调用。worker不增加独立history CLI，bootstrap为其来源。
+
+随后补入helper源码绑定：canonical的resident bootstrap与queue execution_contract写实际同目录history.py的`history_source_sha256`，worker在模型加载前逐字SHA核对；缺失或不匹配为fatal，不转raw。raw仍不写新字段。实际参数/合同AST与匹配、错误、缺失三种来源观察在`history-source-binding.json`，它保存这次补充后的源码SHA；原manual-observations.json保留首次plumbing时的真实SHA。
+
+该格式与cache/rewind独立。一次性实际parser与kwargs构造证明canonical可用session_cache_tokens=0且未声明session_prefix_rewind；没有自动开启rewind或强制cache。单独rewind不选择canonical，单独canonical可fresh-prefill。
+
+本次只做实际parser/early-guard/kwargs/非默认record写入AST的手动CPU核对，保留来源SHA和有限执行范围于manual-observations.json。用惰性路径/kwargs recorder，没有打包carrier、加载模型、渲染history、执行工具、优化器或GPU；这不是same-state rollout、修复收益或端到端official适配验证。既有numerics footer原字节保留，未生成或回写冻结r4。
+
+run.py的episode/queue/Snapshot history集成由root负责，纯history.py helper由data_status负责。该实验继续使用strict native parser；不实现官方对10坏语法中8个提取call的容错行为。helper不支持的native输出应由run.py显式走既定raw feedback后续路径，不由本plumbing删除样本或改变reward。官方结构化history的可执行范围及provenance仍需按独立机制证据表述。

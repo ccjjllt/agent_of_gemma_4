@@ -1,0 +1,15 @@
+# 真实CPU episode：canonical工具轮与坏输出后续
+
+固定100索引26 Tenacity wait_fixed；使用当前r2 task（SHA a52f6388…）、已验证74文件原source inventory和原snapshot（SHA44d3b8ed…），真实官方SubprocessManager、SwegemmaContext六工具及TaskEnvironment.verify。没有stub任务工具或奖励。原完整6文件oracle实跑baseline exit1/reward0；raw有效5动作、canonical有效5动作、canonical故意malformed后续6动作均真实edit/inline source-bound观察/submit，final exit0/reward1；补丁与既有teacher逐字相同。原F2P/P2P及scope未改，没有执行示范新增test文件。
+
+这是Codex scripted/off-policy轻量facade发原生工具文本；不是Gemma推理。所有action明确training_eligible=false、on_policy=false、policy_id/reference_id=null、behavior/reference/old logprobs=null、loss_mask全0。capture=False，无focal候选、规范化canonical结果或SFT导出，100主数据和旧奖励均未动。奖励只描述本次真实源码/原oracle机制，不是模型修复收益或same-state pair。
+
+本次脚本call是不含thought的完整单call子集；不把此前R3含thought的静态转换观察冒充这次真实工具执行范围。
+
+canonical有效轮真实call IDs为vfarl_turn_000001…000005，首两轮不同且无重复。坏场景第三动作明确发`call:submit_patch{}]`（严格坏语法），原action和token完整保留，未执行虚构submit；实际episode写出fallback和host nudge，再通过真实edit修源、inline command绑定workspace import并观察2.5、submit完成原oracle。下一请求以坏动作的完整prompt+completion IDs为逐ID前缀；累计turn/output不重置，6动作均保留，canonical在unsupported后明确退回raw。history-transitions、harness-feedback、actions、tool-events、patch与实际verifier/JUnit均在各episode目录。
+
+最初三episode位于actual-run-r2；其result里的source_sha256只是结束时当前文件SHA，未在import前冻结，不能冒充精确loaded源码。随后source-pinned-followup仅重复一个覆盖两有效轮＋坏调用＋修复的6动作场景；它在import前保存run.py/history.py原字节、import后及结束再核SHA，三处完全相同。以该followup作为加载源码绑定的机制证据，不重命名或重写先前真实结果。import binding及loaded-source原件已保存。
+
+运行复用了原官方Python3.12 pth依赖，没有新建依赖profile。现有transformers/torch cache为Python3.11 ABI，直接放3.12导入失败；真实CT AutoTokenizer在既有.venv3.11 CPU进程中通过本机JSON render/encode/decode调用，manager/context/verifier仍在既有官方3.12 host。没有模型、GPU或网络。初次launch误读six-tools wrapper在工具前失败；下一launch跑出baseline后，facade未显式return_dict=False导致BatchEncoding无法JSON编码，在episode工具前失败。原失败说明/exception保留，修正只在一次性facade，不改主源码。
+
+机制汇总与逐artifact SHA见mechanism-review.json；精确source binding见source-pinned-followup/source-import-binding.json。macOS noncontainer证据不代表Linux/chroot验收；本次没有Snapshot捕获/恢复、没有真实模型采样/缓存rewind，也不声称端到端官方宽松parser语义。
