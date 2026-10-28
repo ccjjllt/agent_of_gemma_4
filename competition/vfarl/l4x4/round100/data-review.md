@@ -1,0 +1,47 @@
+# 固定100题的训练数据深审
+
+2026-10-28。审阅范围仅为v4固定100个train任务及其既有R1/R2/R3记录；未读取预留4题或heldout正文。本轮不以更换题目、降低原完整验收要求或将null补0解决产率问题。
+
+后续源语义深审已冻结[38条独立题面revision](question-revision-r2/README.md)，62条其他task/question字节保持原样。OSA旧参考修复的空串距离错误及弱oracle已确证，修正示范独立导出；qrcode SVG84返回非SVG根也通过原oracle的反例随后确证。iniconfig95恒定显示行号1也通过原28要求节点／42展开用例的主契约反例亦已确证。未来RL暂停这三题，正确SFT与原100题库存仍保留；[最新课程](question-revision-r2/curriculum-r4.json)待采62题为32共同＋30专科。split_by已有新版题面下真实重放，moto8题已补真实API断言及独立官方0/1示范。下文65题和v4题面统计描述原版本，当前38条新题面均已真实重放，完整消费表见[100题监督版](question-revision-r2/supervision-r2/README.md)，这些新证据仍不追认Linux环境或模型收益。
+
+另发现11个原始source task blob被清理，现已全部按原SHA精确恢复并冻结[100个原始来源归档](optimization-overnight/source-pin-archive/manifest.json)。8个moto旧示范只做导入/语法检查的缺口另见[工具示范质量审阅](semantic-audit/teacher-tools-quality/README.md)；原独立官方验收仍保留，不能将该示范缺口说成奖励伪造。
+
+## 已证实的问题与修订
+
+最优先的问题是实际采样环境与历史CPU证据脱节。R3四道unknown的原始完整验收均明确缺少依赖：moto两题缺sure，DVC缺colorama，markdownify缺bs4。原始运行时的profile-00只有pytest相关四个包，却包含18道stock任务；训练载体没有应用CPU准备阶段已有的显式依赖修复。维护中的runner已改为按实际依赖元数据绑定任务，合法等价环境继续复用，错误stock回退不再进入采样。原null结果保留。[CPU修复载体与执行边界](cpu-runtime-repair/README.md)记录了四题冷环境原始0／参考1验收计划。远端提交尚因自动审批拒绝而未执行，不能声称这四题的新环境已经可用。
+
+原采样排序还存在课程身份混淆：三轮resident合计领取35道不同任务，全是共同课，33道专科均未领取。新的冻结课程已按role而非primary_adapter组织，新采65题为32共同＋33专科，并轮转机制与仓库。固定题身份、题面、参考修复与100题总池不变；这修正的是暴露顺序，尚未证明提高异奖产率。
+
+## 来源、题面与重复修复
+
+固定v4的100题来自92道SWE-smith-py和8道SWE-Gym；81题ID属于func/lm合成变异。95题保留发布者题面，5题为已明确版本化并按该版本实跑的行为澄清：TinyDB缓存失效、dataset事务退出、pyparsing WordStart、tomli Flags.set、pyparsing.line。全部任务的原要求profile均为verbatim_required_ids，baseline profile均为all_original_F2P_failed；S600两条已披露的基线标签噪声任务没有混入此100题。后续深审在95个原题面中找到split_by把前缀切分误写为全序列partition的确证，已生成独立本地[单题问题修订](question-revision-r1/README.md)，v4原件不改。
+
+元数据有100个不同repair_family，但只有43个snapshot_group。funcy同一snapshot有13题，pypika同一snapshot有11题，共24%；这是相关任务的集中，不应当成24个独立代码环境。后续报告需同时给出任务、family和snapshot覆盖，不根据相同snapshot自动删除不同真实缺陷。
+
+对100份实际已审submitted.patch的增删行做指纹比较，仅发现pypika的b54t4fio/xv03w5cm同为`self._distinct=False→True`。逐份核对后，前者位于functions.py的DistinctOptionFunction.distinct，后者位于queries.py的QueryBuilder.distinct；对应聚合函数DISTINCT与整个查询DISTINCT，作用域及契约不同。没有证据支持将它们合并为同一题。仅按增删文本去重会误删。
+
+## 复杂度与真实预算
+
+100份真实参考修复中，75题只有不超过4条增删行，24题为5–20条，1题超过20条；注释与空白也计入这一简单行数。此统计支持“当前池以局部修复为主”，不等于真实Agent能低成本定位，也不证明题难或题易。
+
+历史thinking=0示范的最大完整上下文不超过4079，不能用它作为新策略的真实长度预算。R3已有16条原始终止轨迹，其中12条有效、4条评分无效；最终上下文中位数10472.5、最大19108，对应各自历史示范长度的比值中位数约2.95。R3的响应、thinking、上下文及反馈协议与早期轮次不同，这些长度只描述其实际成本，不能跨轮当作纯模型难度比较。
+
+R3实际冻结载体是32768上下文、单响应1536、6活动任务、B4与32768 session cache；早期16K／768计划不是R3运行参数。逐项读取501条真实采样记录，模型输入prefix中位7265／最大19071，完整采样序列中位7390／最大19108，最长响应1083。原始终止episode最终长度与全部采样动作长度是不同统计。详见[实际形状证据](optimization-overnight/r3-actual-shape-evidence.json)。没有由此推断16K或32K反向容量。
+
+R1/R2已记录单响应截断或格式终止；R3有7条格式终止、5条提交后又调用工具、4条纯文本终止。终止原因与最终奖励并非一一对应，例如已经修好代码后格式错误仍可能在完整验收中得1。应分别保留格式、提交协议、工具恢复、最终完整奖励与成本，不能把所有0都标成机制能力失败，也不能将所有工具错误视为有价值的恢复焦点。现有execution-recovery触发和live-original-pair正针对这些可见过程差异，收益仍待真实采样。
+
+## 下一轮的最小数据变更
+
+先补四道unknown的真实CPU冷环境证据并导出依赖完整运行时；追加固定100内marshmallow一题，核对已证实的非stock时区资源／源码dist-info漂移，最新载体为CPU R3共五题。若能恢复原模型提交补丁，应单独重判该已冻结补丁而不重采整题，原奖励和新环境判定分别保留。当前下载的状态manifest不含完整快照森林，因此不宣称已经能等价跨session恢复。
+
+继续保留原100题，按65道未领取名单执行新的小批课程。将任务完整奖励、每个状态的异奖与同奖、有效／无效验收、实际token成本分别统计；旧单次0不作为永久难度标签，不按未来奖励改首个焦点。
+
+Tenacity的原始0／独立分支1仅在补齐真实reference后成为训练输入；行为tokens和行为概率不重算，不为凑异奖把强制回放改名为独立样本。其他已领取任务不自动重采或复训旧行为批。
+
+预验收已有runtime_sha256字段，但旧collector未以稳定环境身份核对其与当前runtime的等价性。不能直接以整个runtime.json哈希比较跨载体环境，因为路径和准备记录会变；后续身份宜绑定实际Python版本、依赖包版本及源码layout/preload/copy语义，再与CPU证据关联。非stock的marshmallow反例已证实raw profile-15没有tzdata和准确源码metadata却仍可按source_profile被选中，现已补实际版本、来源和文件哈希绑定，详情见CPU修复说明。
+
+固定材料中的runtime.json保存了layout、preload、copy/pth、console_scripts及别名语义；material-manifest和CPU报告保存task、snapshot与参考修复哈希。实际依赖包还须查当次preparation，不能把current_packages_are_source_expectations=true的原始期望表当作安装结果。CPU报告只存完整runtime哈希，缺少语义对象时不能从hash反推配置。
+
+已有R3状态manifest能进一步绑定特定轨迹的真实任务运行时：task_runtime_bindings含外部Python二进制哈希与任务profile的RECORD哈希；copy模式还可使用快照filesystem中的venv文件。runtime.python和package_identity则描述采集器宿主，不能混作任务解释器，例如Tenacity状态的宿主Python为3.12.13，任务二进制实际为3.12.16。并非100题每份旧CPU结果都有这些状态，所以不统一回填一个虚假的环境身份。
+
+所有统计均由一次性本地Python读取固定selection、实际submitted.patch及冻结curriculum中的真实episode来源计算；未新增测试文件、模型样本、训练更新或修复收益。
