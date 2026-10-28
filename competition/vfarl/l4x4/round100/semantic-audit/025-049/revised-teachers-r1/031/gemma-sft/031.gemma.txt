@@ -1,0 +1,114 @@
+<bos><|turn>system
+<|tool>declaration:edit_file{description:<|"|>Replace a contiguous block of text in an existing file.
+
+        More token-efficient than write_file for targeted changes. Provide 2-4 lines of unique
+        surrounding context in old_string to ensure an unambiguous match.
+
+        Args:
+            filepath: Relative path to the target file.
+            old_string: Text block to replace.
+            new_string: Replacement text block.
+            allow_multiple: Replace all occurrences of old_string if True.
+
+        Returns:
+            Dictionary containing file status, occurrences count, match strategy, and unified diff.
+        <|"|>,parameters:{properties:{allow_multiple:{type:<|"|>BOOLEAN<|"|>},filepath:{type:<|"|>STRING<|"|>},new_string:{type:<|"|>STRING<|"|>},old_string:{type:<|"|>STRING<|"|>}},required:[<|"|>filepath<|"|>,<|"|>old_string<|"|>,<|"|>new_string<|"|>],type:<|"|>OBJECT<|"|>}}<tool|><|tool>declaration:get_status{description:<|"|>Check active budget details (time, tool calls) and active patch details.<|"|>,parameters:{type:<|"|>OBJECT<|"|>}}<tool|><|tool>declaration:read_file{description:<|"|>Read the contents of a file from the repository workspace.
+
+        Supports reading specific line ranges using start_line and end_line (1-indexed).
+        To avoid overwhelming the context window, large files are automatically truncated
+        to a maximum number of lines (default: 150 lines).
+
+        Args:
+            filepath: Relative path within the workspace directory (e.g., "fastapi/main.py", "pyproject.toml").
+            start_line: Optional starting line number (1-indexed, inclusive).
+            end_line: Optional ending line number (1-indexed, inclusive).
+
+        Returns:
+            Dictionary containing file content, line range, and truncation status.
+        <|"|>,parameters:{properties:{end_line:{nullable:true,type:<|"|><|"|>},filepath:{type:<|"|>STRING<|"|>},start_line:{nullable:true,type:<|"|><|"|>}},required:[<|"|>filepath<|"|>],type:<|"|>OBJECT<|"|>}}<tool|><|tool>declaration:run_command{description:<|"|>Execute a shell command inside the repository sandbox.
+
+        You can run any shell command (Python scripts, tests, git commands, etc.).
+        The command runs in the repository workspace. No network access.
+
+        Args:
+            command: Shell command to execute (e.g., "pytest tests/", "python3 script.py").
+        <|"|>,parameters:{properties:{command:{type:<|"|>STRING<|"|>}},required:[<|"|>command<|"|>],type:<|"|>OBJECT<|"|>}}<tool|><|tool>declaration:submit_patch{description:<|"|>Capture the current working tree modifications as the agent's submission.
+
+        This generates a unified git diff against the baseline commit. The agent
+        can submit multiple times; only the final submission is evaluated.
+        <|"|>,parameters:{type:<|"|>OBJECT<|"|>}}<tool|><|tool>declaration:write_file{description:<|"|>Create or overwrite a file in the workspace.
+
+        Args:
+            filepath: Relative path to the file to create or overwrite.
+            content: Full content of the file.
+        <|"|>,parameters:{properties:{content:{type:<|"|>STRING<|"|>},filepath:{type:<|"|>STRING<|"|>}},required:[<|"|>filepath<|"|>,<|"|>content<|"|>],type:<|"|>OBJECT<|"|>}}<tool|><turn|>
+<|turn>user
+You are evaluating a software engineering task for repository swesmith/jd__tenacity.0d40e76f.
+
+Problem Statement:
+wait_random_exponential does not respect its minimum wait
+
+The configured minimum should be respected by the randomized exponential wait strategy. It currently still samples values below that minimum.
+
+```python
+from tenacity import Retrying, RetryCallState, wait_random_exponential
+
+retrying = Retrying()
+state = RetryCallState(retrying, None, (), {})
+state.attempt_number = 1
+waiter = wait_random_exponential(min=5, multiplier=1)
+print([waiter(state) for _ in range(5)])
+```
+
+For this first-attempt configuration, the exponential wait bound is already limited to 5 seconds by the minimum setting. Each generated wait should therefore be 5.0 seconds. The current random interval starts at 0 and ends at 5, so waits below the requested minimum are possible.
+
+The minimum must also remain respected for later attempts.
+
+
+## Task Budget (Session terminates when any budget is exhausted)
+- Time allowance: 60 minutes
+- Tool calls allowance: 100 calls
+- Max loop iterations: 500 turns
+
+## Execution Environment Rules
+- Single command timeout: 300 seconds (commands exceeding this fail without ending the session)
+- Command output limit: 5000 characters
+- File view limit: 150 lines per read_file call
+- File character limit: 10000 characters per read_file call
+- Environment is offline (no network/PyPI access). All repository and test dependencies are ALREADY pre-installed. Do NOT attempt to run pip install or download packages.
+
+## Instructions:
+0. All source code is under `/workspace`. Do NOT search outside `/workspace` (e.g. `/usr/`, `/wheels/`, system site-packages). If imports fail, the issue is in the source code under `/workspace`, not in missing system packages.
+1. Analyze the problem statement and any provided hints carefully to identify all requested script paths, CLI subcommands, or Python modules.
+2. Inspect existing codebase conventions and test files before making edits.
+3. Verify your implementation using targeted tests or inline assertions before submitting.
+4. Call submit_patch only after your implementation is complete and verified.
+5. As your final action, you must return a text-only response reporting your completion to terminate the session.<turn|>
+<|turn>model
+<|tool_call>call:get_status{}<tool_call|><|tool_response>response:get_status{value:<|"|>{"status": "ok", "tool_calls_used": 0, "patch_submitted": false, "patch_size": 0, "tool_calls_remaining": 100, "max_tool_calls": 100, "time_seconds_remaining": 3599.9999308330007, "max_time_minutes": 60, "agent_elapsed_seconds": 6.9458968937397e-05, "max_turns": 500, "command_timeout_seconds": 300}<|"|>}<tool_response|><|tool_call>call:read_file{end_line:201,filepath:<|"|>tenacity/wait.py<|"|>,start_line:165}<tool_call|><|tool_response>response:read_file{value:<|"|>{"status": "ok", "filepath": "tenacity/wait.py", "content": "            exp = self.exp_base ** (retry_state.attempt_number - 1)\n            result = self.multiplier * exp\n        except OverflowError:\n            return self.max\n        return max(max(0, self.min), min(result, self.max))\n\n\nclass wait_random_exponential(wait_exponential):\n    \"\"\"Random wait with exponentially widening window.\n\n    An exponential backoff strategy used to mediate contention between multiple\n    uncoordinated processes for a shared resource in distributed systems. This\n    is the sense in which \"exponential backoff\" is meant in e.g. Ethernet\n    networking, and corresponds to the \"Full Jitter\" algorithm described in\n    this blog post:\n\n    https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/\n\n    Each retry occurs at a random time in a geometrically expanding interval.\n    It allows for a custom multiplier and an ability to restrict the upper\n    limit of the random interval to some maximum value.\n    \"\"\"\n\n    def __call__(self, retry_state: \"RetryCallState\") -> float:\n        high = super().__call__(retry_state=retry_state)\n        return random.uniform(0, high)\n\n\nclass wait_exponential_jitter(wait_base):\n    \"\"\"Wait strategy that applies exponential backoff and jitter.\n\n    It allows for a customized initial wait, maximum wait and jitter.\n\n    This implements the strategy described here:\n    https://cloud.google.com/storage/docs/retry-strategy\n\n    The wait time is min(initial * 2**n + random.uniform(0, jitter), maximum)", "start_line": 165, "end_line": 201, "total_lines": 224, "is_truncated": false}<|"|>}<tool_response|><|tool_call>call:run_command{command:<|"|>python3 - <<'PYREPLAY'
+import random
+from tenacity import Retrying, RetryCallState, wait_random_exponential
+random.seed(7)
+state = RetryCallState(retry_object=Retrying(), fn=None, args=(), kwargs={})
+waiter = wait_random_exponential(multiplier=1, min=5, max=60)
+for attempt in (1, 2, 4):
+    state.attempt_number = attempt
+    value = waiter(state)
+    upper = max(5, min(60, 2 ** (attempt - 1)))
+    print("attempt:", attempt, "wait:", value, "expected_interval:", (5, upper))
+    assert 5 <= value <= upper
+PYREPLAY<|"|>}<tool_call|><|tool_response>response:run_command{value:<|"|>{"status": "error", "error_type": "CommandError", "error_message": "Traceback (most recent call last):\n  File \"<stdin>\", line 11, in <module>\nAssertionError\n", "details": {"stdout": "attempt: 1 wait: 1.619163824165812 expected_interval: (5, 5)\n", "stderr": "Traceback (most recent call last):\n  File \"<stdin>\", line 11, in <module>\nAssertionError\n", "exit_code": 1}}<|"|>}<tool_response|><|tool_call>call:edit_file{filepath:<|"|>tenacity/wait.py<|"|>,new_string:<|"|>        high = super().__call__(retry_state=retry_state)
+        return random.uniform(self.min, high)<|"|>,old_string:<|"|>        high = super().__call__(retry_state=retry_state)
+        return random.uniform(0, high)<|"|>}<tool_call|><|tool_response>response:edit_file{value:<|"|>{"status": "ok", "filepath": "tenacity/wait.py", "occurrences": 1, "strategy": "exact", "diff": "--- a/tenacity/wait.py\n+++ b/tenacity/wait.py\n@@ -187,7 +187,7 @@\n \n     def __call__(self, retry_state: \"RetryCallState\") -> float:\n         high = super().__call__(retry_state=retry_state)\n-        return random.uniform(0, high)\n+        return random.uniform(self.min, high)\n \n \n class wait_exponential_jitter(wait_base):\n", "is_truncated": false}<|"|>}<tool_response|><|tool_call>call:read_file{end_line:196,filepath:<|"|>tenacity/wait.py<|"|>,start_line:180}<tool_call|><|tool_response>response:read_file{value:<|"|>{"status": "ok", "filepath": "tenacity/wait.py", "content": "\n    https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/\n\n    Each retry occurs at a random time in a geometrically expanding interval.\n    It allows for a custom multiplier and an ability to restrict the upper\n    limit of the random interval to some maximum value.\n    \"\"\"\n\n    def __call__(self, retry_state: \"RetryCallState\") -> float:\n        high = super().__call__(retry_state=retry_state)\n        return random.uniform(self.min, high)\n\n\nclass wait_exponential_jitter(wait_base):\n    \"\"\"Wait strategy that applies exponential backoff and jitter.\n\n    It allows for a customized initial wait, maximum wait and jitter.", "start_line": 180, "end_line": 196, "total_lines": 224, "is_truncated": false}<|"|>}<tool_response|><|tool_call>call:run_command{command:<|"|>python3 - <<'PYREPLAY'
+import random
+from tenacity import Retrying, RetryCallState, wait_random_exponential
+random.seed(7)
+state = RetryCallState(retry_object=Retrying(), fn=None, args=(), kwargs={})
+waiter = wait_random_exponential(multiplier=1, min=5, max=60)
+for attempt in (1, 2, 4):
+    state.attempt_number = attempt
+    value = waiter(state)
+    upper = max(5, min(60, 2 ** (attempt - 1)))
+    print("attempt:", attempt, "wait:", value, "expected_interval:", (5, upper))
+    assert 5 <= value <= upper
+PYREPLAY<|"|>}<tool_call|><|tool_response>response:run_command{value:<|"|>{"status": "ok", "stdout": "attempt: 1 wait: 5.0 expected_interval: (5, 5)\nattempt: 2 wait: 5.0 expected_interval: (5, 5)\nattempt: 4 wait: 6.952803419119562 expected_interval: (5, 8)\n", "stderr": "", "exit_code": 0}<|"|>}<tool_response|><|tool_call>call:get_status{}<tool_call|><|tool_response>response:get_status{value:<|"|>{"status": "ok", "tool_calls_used": 5, "patch_submitted": false, "patch_size": 0, "tool_calls_remaining": 95, "max_tool_calls": 100, "time_seconds_remaining": 3599.830911875004, "max_time_minutes": 60, "agent_elapsed_seconds": 0.16908879205584526, "max_turns": 500, "command_timeout_seconds": 300}<|"|>}<tool_response|><|tool_call>call:submit_patch{}<tool_call|><|tool_response>response:submit_patch{value:<|"|>{"status": "ok", "patch_size": 453, "files_changed": 1}<|"|>}<tool_response|>

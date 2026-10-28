@@ -1,0 +1,66 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex agent /root/data_status, actual archived source API and independent official evidence review, 2026-10-28",
+  "review_notes": "Codex-authored off-policy behavior-asserting demonstration; no sampled Gemma, generated thinking or behavior logprobs. Real boto3 calls execute only under the actual archived Moto mock context. Source-binding and target behavior assertions fail before the unchanged production edit and pass after it. Original fixed100 train ID, task bytes, source bytes/mode, F2P/P2P and official verification files are preserved. Legacy human_reviewed schema label denotes Codex review; new actual tool events and separate original official baseline/final are required.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "moto/dynamodb/responses.py",
+        "start_line": 429,
+        "end_line": 448
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,importlib\nmodule=importlib.import_module('moto.dynamodb.responses')\nactual=Path(module.__file__).resolve();expected=(Path.cwd()/'moto/dynamodb/responses.py').resolve()\nassert actual==expected,(actual,expected)\nprint(\"source_binding\",actual,\"sha256\",hashlib.sha256(actual.read_bytes()).hexdigest())\nimport boto3\nfrom botocore.exceptions import ClientError\nfrom moto import mock_dynamodb\nwith mock_dynamodb():\n client=boto3.client('dynamodb',region_name='us-east-1')\n client.create_table(TableName='local-table',KeySchema=[{'AttributeName':'pk','KeyType':'HASH'}],AttributeDefinitions=[{'AttributeName':'pk','AttributeType':'S'}],ProvisionedThroughput={'ReadCapacityUnits':1,'WriteCapacityUnits':1})\n try: result=client.get_item(TableName='local-table',Key={'pk':{'S':''}})\n except ClientError as error:\n  print('empty_string_key_error',error.response['Error'])\n  assert error.response['Error']['Code']=='ValidationException'\n else:\n  print('empty_string_key_unexpectedly_accepted',True)\n  raise AssertionError('empty string key accepted')\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "72966751624c5be0bf6692bd21449d735692845963d8c1fb5da22a263c1d61ba"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "moto/dynamodb/responses.py",
+        "old_string": "        name = self.body[\"TableName\"]\n        self.dynamodb_backend.get_table(name)\n        key = self.body[\"Key\"]\n        projection_expression = self.body.get(\"ProjectionExpression\")\n        expression_attribute_names = self.body.get(\"ExpressionAttributeNames\")\n        if expression_attribute_names == {}:\n",
+        "new_string": "        name = self.body[\"TableName\"]\n        self.dynamodb_backend.get_table(name)\n        key = self.body[\"Key\"]\n        empty_keys = [k for k, v in key.items() if not next(iter(v.values()))]\n        if empty_keys:\n            raise MockValidationException(\n                \"One or more parameter values are not valid. The AttributeValue for a key attribute cannot contain an \"\n                f\"empty string value. Key: {empty_keys[0]}\"\n            )\n        projection_expression = self.body.get(\"ProjectionExpression\")\n        expression_attribute_names = self.body.get(\"ExpressionAttributeNames\")\n        if expression_attribute_names == {}:\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "moto/dynamodb/responses.py",
+        "old_string": "            expr_names=expression_attribute_names,\n            expr_values=expression_attribute_values,\n            filter_expression=filter_expression,\n            **filter_kwargs\n        )\n\n        result = {\n",
+        "new_string": "            expr_names=expression_attribute_names,\n            expr_values=expression_attribute_values,\n            filter_expression=filter_expression,\n            **filter_kwargs,\n        )\n\n        result = {\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,importlib\nmodule=importlib.import_module('moto.dynamodb.responses')\nactual=Path(module.__file__).resolve();expected=(Path.cwd()/'moto/dynamodb/responses.py').resolve()\nassert actual==expected,(actual,expected)\nprint(\"source_binding\",actual,\"sha256\",hashlib.sha256(actual.read_bytes()).hexdigest())\nimport boto3\nfrom botocore.exceptions import ClientError\nfrom moto import mock_dynamodb\nwith mock_dynamodb():\n client=boto3.client('dynamodb',region_name='us-east-1')\n client.create_table(TableName='local-table',KeySchema=[{'AttributeName':'pk','KeyType':'HASH'}],AttributeDefinitions=[{'AttributeName':'pk','AttributeType':'S'}],ProvisionedThroughput={'ReadCapacityUnits':1,'WriteCapacityUnits':1})\n try: result=client.get_item(TableName='local-table',Key={'pk':{'S':''}})\n except ClientError as error:\n  print('empty_string_key_error',error.response['Error'])\n  assert error.response['Error']['Code']=='ValidationException'\n else:\n  print('empty_string_key_unexpectedly_accepted',True)\n  raise AssertionError('empty string key accepted')\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "72966751624c5be0bf6692bd21449d735692845963d8c1fb5da22a263c1d61ba"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Submitted the production fix. The source-bound local API observation now satisfies the expected behavior; original official verification is recorded separately."
+}

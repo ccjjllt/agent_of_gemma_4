@@ -1,0 +1,127 @@
+import asyncio,dataclasses,hashlib,json,os,shutil,stat,subprocess,tarfile,tempfile,time,traceback
+from pathlib import Path
+from types import SimpleNamespace
+root=Path.cwd();source_paths=('competition/vfarl/l4x4/run.py','competition/vfarl/l4x4/history.py');source_bytes_before={n:(root/n).read_bytes() for n in source_paths};before_import_sha={n:hashlib.sha256(b).hexdigest() for n,b in source_bytes_before.items()}
+assert before_import_sha=={'competition/vfarl/l4x4/run.py':'3cc567d927b2905c04fa9ce613e05ddf46a19bbeed05472a65b1f8b8a95e88a7','competition/vfarl/l4x4/history.py':'d2ffd8a52c15f4eb7f609748e4ea9200efe7cb6ece9a03768fcbd09e82783892'}
+from competition.vfarl.l4x4.run import TaskEnvironment,episode,canonical_history_ledger,write
+from competition.vfarl.replay.run_official import selection_prompt_profile,bind_selection_prompt,build_agent_prompt
+after_import_sha={n:hashlib.sha256((root/n).read_bytes()).hexdigest() for n in source_paths};assert after_import_sha==before_import_sha
+import types,marshal
+compiled=compile(source_bytes_before['competition/vfarl/l4x4/run.py'],str(root/'competition/vfarl/l4x4/run.py'),'exec')
+compiled_episode=next(v for v in compiled.co_consts if isinstance(v,types.CodeType) and v.co_name=='episode')
+assert compiled_episode==episode.__code__ and compiled_episode.co_filename==episode.__code__.co_filename
+loaded_episode_code_sha256=hashlib.sha256(marshal.dumps(episode.__code__)).hexdigest()
+out=root/'competition/vfarl/l4x4/round100/semantic-audit/post-submit-cpu-multisubmit-r1';out.mkdir(exist_ok=False)
+source_dir=out/'loaded-source';source_dir.mkdir()
+for name,raw in source_bytes_before.items():(source_dir/Path(name).name).write_bytes(raw)
+write(out/'source-import-binding.json',dict(before_import_sha256=before_import_sha,after_import_sha256=after_import_sha,loaded_episode_code_sha256=loaded_episode_code_sha256,loaded_episode_structurally_equals_preimport_source=True,exact_preimport_source_bytes_preserved=True))
+origin={'kind':'Codex-scripted-off-policy-CPU-multiple-submit-semantics','training_eligible':False,'model_sampled':False,'on_policy':False,'behavior_and_reference_logprobs':None,'focal_capture':False,'canonical_training_normalization_or_SFT_export':False,'gpu_used':False};write(out/'origin.json',origin)
+sp=root/'competition/vfarl/l4x4/round100/question-revision-r3/selection.json';entry=json.loads(sp.read_bytes())['tasks'][26];teacher=root/'competition/vfarl/l4x4/round100/semantic-audit/025-049/revised-teachers-r1/026/teacher-r1';task=root/entry['task_input'];old=json.loads((teacher/'run-summary.json').read_bytes());assert hashlib.sha256(task.read_bytes()).hexdigest()==entry['task_input_sha256'];assert hashlib.sha256((teacher/'source-snapshot.tgz').read_bytes()).hexdigest()==old['snapshot_sha256'];initial=[json.loads((teacher/'messages.json').read_bytes())[0]];assert hashlib.sha256(initial[0]['content'].encode()).hexdigest()==entry['official_initial_user_prompt_sha256'];recipe=json.loads((teacher/'recipe.json').read_bytes());td=json.loads((root/'competition/vfarl/six-tools.json').read_bytes());tools=td.get('tools',td.get('functions',td));tools=[t if 'function' in t else {'type':'function','function':t} for t in tools]
+inventory=json.loads((teacher/'source-inventory.json').read_bytes());selected_budget,selected_harness,prompt_profile=selection_prompt_profile(sp,task)
+assert type(selected_budget.time_minutes) is int and selected_budget.time_minutes==60
+code='''import json,sys\nfrom transformers import AutoTokenizer\nt=AutoTokenizer.from_pretrained(sys.argv[1],local_files_only=True)\nprint(json.dumps({'ready':True,'tokenizer_class':type(t).__name__}),flush=True)\nfor line in sys.stdin:\n try:\n  r=json.loads(line);v=getattr(t,r['method'])(*r.get('args',[]),**r.get('kwargs',{}));print(json.dumps({'ok':True,'value':v},ensure_ascii=False),flush=True)\n except Exception as e:print(json.dumps({'ok':False,'error':type(e).__name__+': '+str(e)}),flush=True)\n'''
+log=(out/'tokenizer-stderr.log').open('w');child=subprocess.Popen([str(root/'.venv/bin/python'),'-u','-c',code,str(root/'research/006/data-replay-20261013/tokenizer')],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=log,text=True,env=dict(os.environ,PYTHONPATH='/private/tmp/vfarl-cpu-packages',USE_TORCH='1',USE_TF='0',HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1',PYTHONDONTWRITEBYTECODE='1'));ready=json.loads(child.stdout.readline());assert ready['ready']
+class TokenizerRPC:
+ def call(self,m,*a,**k):
+  child.stdin.write(json.dumps({'method':m,'args':a,'kwargs':k},ensure_ascii=False)+'\n');child.stdin.flush();r=json.loads(child.stdout.readline())
+  if not r['ok']:raise RuntimeError(r['error'])
+  return r['value']
+ def __getattr__(self,n):return lambda *a,**k:self.call(n,*a,**k)
+tok=TokenizerRPC();tc=tok.convert_tokens_to_ids('<tool_call|>');turn=tok.convert_tokens_to_ids('<turn|>')
+def native(name,args):
+ s=tok.apply_chat_template([{'role':'user','content':'Codex scripted CPU mechanism instruction.'},{'role':'assistant','content':None,'tool_calls':[{'id':'scripted-off-policy-not-model','type':'function','function':{'name':name,'arguments':args}}]}],tools=[],tokenize=False,add_generation_prompt=False,enable_thinking=True);i=s.index('<|tool_call>');return s[i:s.index('<tool_call|>',i)+len('<tool_call|>')]
+valid=[native('get_status',{}),native('read_file',recipe['actions'][1]['arguments']),native('edit_file',recipe['actions'][3]['arguments']),native('run_command',recipe['actions'][4]['arguments']),native('submit_patch',{})]
+correct=recipe['actions'][3]['arguments'];bad=dict(correct);bad['new_string']=correct['new_string'].replace('return self.wait_fixed\n','return self.wait_fixed * 0.2\n');assert bad['new_string']!=correct['new_string']
+repair_bad=dict(filepath=correct['filepath'],old_string=bad['new_string'],new_string=correct['new_string'])
+break_after_submit=dict(filepath=correct['filepath'],old_string=correct['new_string'],new_string=bad['new_string'])
+canonical_calls=[valid[0],valid[1],native('edit_file',bad),valid[4],valid[3],native('edit_file',repair_bad),valid[3],valid[4]]
+raw_calls=[valid[0],valid[1],valid[2],valid[3],valid[4],native('edit_file',break_after_submit),valid[3]]
+
+final_text='Finished this scripted CPU submission-semantics demonstration.'
+fm=[{'role':'user','content':'Codex scripted CPU mechanism instruction.'}]
+fp=tok.apply_chat_template(fm,tools=[],tokenize=False,add_generation_prompt=True,enable_thinking=True)
+fr=tok.apply_chat_template(fm+[{'role':'assistant','content':final_text}],tools=[],tokenize=False,add_generation_prompt=False,enable_thinking=True)
+assert fr.startswith(fp)
+final_raw=fr[len(fp):];final_raw=final_raw[:final_raw.index('<turn|>')+len('<turn|>')]
+class Facade:
+ tokenizer=tok;tool_close=tc;turn_close=turn;vfarl_stop_ids=[tc,turn];identity={'policy_id':None,'reference_id':None,'origin':origin}
+ def __init__(self,texts,env,label):self.texts=list(texts);self.requests=[];self.env=env;self.label=label;self.submissions=[];self.first_submit_control=None
+ def release_session(self,*a,**k):pass
+ async def sample_async(self,ids,**req):
+  assert req['compute_reference'] is False
+  patch=self.env.ctx.submitted_patch or '';patchsha=hashlib.sha256(patch.encode()).hexdigest()
+  if self.env.ctx.patch_submitted and (not self.submissions or patchsha!=self.submissions[-1]['sha256']):
+   capture=self.env.output/('actual-submission-'+str(len(self.submissions)+1)+'.patch');capture.write_text(patch);self.submissions.append(dict(path=str(capture),sha256=patchsha,before_request=len(self.requests)+1))
+   if self.label=='canonical-resubmit' and len(self.submissions)==1:
+    control=await self.env.verify(patch,'first-submission-control');assert control['verification_complete'] and control['reward']==0
+    self.first_submit_control=dict(path=str(self.env.output/'first-submission-control-result.json'),reward=control['reward'],verification_complete=control['verification_complete'])
+  if not self.texts:raise RuntimeError('Scripted facade exhausted; no model fallback')
+  text=self.texts.pop(0);start=time.monotonic();c=tok.encode(text,add_special_tokens=False);assert len(c)<=req['max_new_tokens'] and tok.decode(c,skip_special_tokens=False)==text
+  self.requests.append({'prompt_ids_sha256':hashlib.sha256(json.dumps(ids,separators=(',',':')).encode()).hexdigest(),'request':req,'patch_submitted_before_sample':self.env.ctx.patch_submitted,'submitted_patch_sha256_before_sample':patchsha,'tool_calls_used':self.env.ctx.tool_calls_used,'llm_calls_used':self.env.ctx.llm_calls_used,'time_minutes':self.env.budget.time_minutes,'tool_limit':self.env.budget.tool_calls,'turn_limit':self.env.budget.turns})
+  return dict(prompt_token_ids=list(ids),completion_token_ids=c,raw_text=text,behavior_logprobs=None,reference_logprobs=None,old_logprobs=None,generated_reasoning=None,loss_mask=[0]*len(c),forced_control_tokens=[False]*len(c),finish_reason='tool_calls' if text.startswith('<|tool_call>') else 'stop',prompt_tokens=len(ids),completion_tokens=len(c),thought_tokens=0,seconds=time.monotonic()-start,policy_id=None,reference_id=None,origin=origin,training_eligible=False,on_policy=False)
+async def execute():
+ results=[]
+ with tempfile.TemporaryDirectory(prefix='vfarl-post-submit-real-asset-') as temp:
+  asset=Path(temp);shutil.copy2(task,asset/'task.json');(asset/'source-snapshot.tgz').symlink_to(teacher/'source-snapshot.tgz');shutil.copy2(teacher/'run-summary.json',asset/'run-summary.json')
+  runtime=dict(python=old['task_python_profile']['path'],site_packages=old['task_site_packages_profile'],site_packages_mode=old['task_site_packages_mode'],source_layout=old['sandbox_source_layout_path']);write(asset/'runtime.json',runtime);write(out/'runtime-used.json',runtime)
+  for label,fmt in [('canonical-resubmit','canonical-ct-v1'),('raw-no-resubmit','raw-preserved')]:
+   eo=out/label;env=TaskEnvironment(asset,eo,tool_calls=selected_budget.tool_calls,turns=selected_budget.turns);env.budget=selected_budget;env.harness=selected_harness;env.config=dataclasses.replace(env.config,budget=selected_budget,harness=selected_harness)
+   try:
+    env.start();workspace=env.manager.sandboxes[env.sid]['workspace']
+    for f in inventory['files']:
+     p=workspace/f['path']
+     if 'symlink' in f:assert p.is_symlink() and str(p.readlink())==f['symlink']
+     else:
+      assert hashlib.sha256(p.read_bytes()).hexdigest()==f['sha256'];p.chmod(f['mode']);assert stat.S_IMODE(p.stat().st_mode)==f['mode']
+    assert len(inventory['files'])==74
+    before_pyc=[str(p.relative_to(workspace)) for p in workspace.rglob('*.pyc')];assert not before_pyc
+    actual_prompt=build_agent_prompt(env.task,env.config,declared_tools=sorted(env.tools),enable_sandbox_testing=True);profile=bind_selection_prompt(prompt_profile,actual_prompt);assert actual_prompt==initial[0]['content']
+    baseline=await env.verify('', 'baseline');assert baseline['reward']==0 and baseline['verification_complete']
+    ids=tok.apply_chat_template([{'role':'user','content':actual_prompt}],tools=tools,tokenize=True,return_dict=False,add_generation_prompt=True,enable_thinking=True);assert isinstance(ids,list)
+    ledger=None
+    if fmt!='raw-preserved':ledger=dict(output_tokens=0,turns=0,context_limit=32768,**canonical_history_ledger(tok,tools,[{'role':'user','content':actual_prompt}],ids))
+    args=SimpleNamespace(context=32768,turns=selected_budget.turns,tool_calls=selected_budget.tool_calls,turn_tokens=2048,episode_tokens=8192,thinking_budget=8,collection_protocol='live-original-pair',focal_trigger='execution-recovery',**({'history_format':fmt} if fmt!='raw-preserved' else {}));facade=Facade((canonical_calls if fmt!='raw-preserved' else raw_calls)+[final_raw],env,label)
+    record,candidates,actions=await episode(env,facade,ids,args,eo/'episode',ledger=ledger,capture=False,history_tools=tools if fmt!='raw-preserved' else None)
+    assert not candidates and record['termination']=='model_text_termination' and record['verified'] and record['reward']==1 and record['policy_id'] is None and record['patch_submitted']
+    expected_events=8 if fmt!='raw-preserved' else 7
+    assert len(actions)==len(facade.requests)==expected_events+1 and not facade.texts
+    assert actions[-1]['raw_text']==final_raw and actions[-1]['finish_reason']=='stop'
+    assert all(a['behavior_logprobs'] is None and a['reference_logprobs'] is None and not a['training_eligible'] and sum(a['loss_mask'])==0 for a in actions)
+    assert record['ledger']['output_tokens']==sum(len(a['completion_token_ids']) for a in actions) and record['ledger']['turns']==len(actions)
+    assert record['ledger'].get('harness_feedback_count',0)==0
+    events=[json.loads(x) for x in (eo/'episode/tool-events.jsonl').read_bytes().splitlines()];assert len(events)==expected_events
+    assert [e['response']['status'] for e in events]==(['ok']*4+['error','ok','ok','ok'] if fmt!='raw-preserved' else ['ok']*6+['error'])
+    assert all(r['time_minutes']==60 and r['tool_limit']==100 and r['turn_limit']==500 for r in facade.requests)
+    assert [r['llm_calls_used'] for r in facade.requests]==list(range(1,len(facade.requests)+1))
+    assert [r['tool_calls_used'] for r in facade.requests]==sorted(r['tool_calls_used'] for r in facade.requests)
+    assert record['post_submit_behavior']=='continue_tools_or_final_within_existing_budget' and record['evaluated_patch_semantics']=='last_successful_explicit_submission'
+    samepatch=(eo/'episode/evaluated.patch').read_bytes()==(teacher/'submitted.patch').read_bytes();assert samepatch
+    patchsha=hashlib.sha256((env.ctx.submitted_patch or '').encode()).hexdigest();assert facade.requests[-1]['submitted_patch_sha256_before_sample']==patchsha
+    actual=env.manager.exec(env.sid,'git diff --binary _swegemma_baseline');assert actual.exit_code==0
+    from swegemma.harness.verification import strip_protected_files_from_patch
+    current_worktree_patch=strip_protected_files_from_patch(actual.stdout,extra_protected_paths=env.task.test_files);(eo/'workingtree-at-final.patch').write_text(current_worktree_patch)
+    current_source=(workspace/'tenacity/wait.py').read_bytes();(eo/'workingtree-target-at-final.py.txt').write_bytes(current_source)
+    if fmt!='raw-preserved':
+     assert len(facade.submissions)==2 and facade.first_submit_control['reward']==0
+     assert [r['patch_submitted_before_sample'] for r in facade.requests]==[False]*4+[True]*5
+     assert current_worktree_patch.encode()==(teacher/'submitted.patch').read_bytes()
+     calls=[c['id'] for m in record['ledger']['canonical_history']['messages'] for c in m.get('tool_calls',[])];assert len(calls)==8 and len(calls)==len(set(calls)) and record['ledger']['canonical_history_active']
+    else:
+     assert len(facade.submissions)==1 and facade.first_submit_control is None
+     assert [r['patch_submitted_before_sample'] for r in facade.requests]==[False]*5+[True]*3
+     assert current_worktree_patch.encode()!=(teacher/'submitted.patch').read_bytes()
+     assert current_worktree_patch.encode()==Path(results[0]['actual_submission_snapshots'][0]['path']).read_bytes()
+    item=dict(label=label,history_format=fmt,summary=record,actual_manager=type(env.manager).__module__+'.'+type(env.manager).__name__,actual_context=type(env.ctx).__module__+'.'+type(env.ctx).__name__,source_snapshot_sha256=old['snapshot_sha256'],current_task_sha256=entry['task_input_sha256'],source_inventory_files_bytes_modes_restored=74,source_pyc_before_sampling=before_pyc,source_inventory_sha256=hashlib.sha256((teacher/'source-inventory.json').read_bytes()).hexdigest(),prompt_profile=profile,actual_budget_time_JSON_type=type(env.budget.time_minutes).__name__,baseline_result=dict(path=str(eo/'baseline-result.json'),sha256=hashlib.sha256((eo/'baseline-result.json').read_bytes()).hexdigest(),reward=0,actual_original_scope=True),same_final_evaluated_patch_bytes_as_existing_teacher=samepatch,submitted_patch_sha256=patchsha,sampling_facade_requests=facade.requests,actual_tool_events=len(events),actual_actions=len(actions),actual_submission_snapshots=facade.submissions,first_submission_control=facade.first_submit_control,current_worktree_patch_sha256=hashlib.sha256(current_worktree_patch.encode()).hexdigest(),current_worktree_source_sha256=hashlib.sha256(current_source).hexdigest(),current_worktree_equals_evaluated=(current_worktree_patch.encode()==(eo/'episode/evaluated.patch').read_bytes()),final_action_retained=True,postsubmit_nudge_count=0,no_focal_candidates=True)
+    if fmt!='raw-preserved':item.update(canonical_tool_call_ids=calls,canonical_history_active=record['ledger']['canonical_history_active'])
+    write(eo/'mechanism-observation.json',item);results.append(item)
+   finally:env.close()
+ return results
+try:
+ results=asyncio.run(execute())
+ end_sha={n:hashlib.sha256((root/n).read_bytes()).hexdigest() for n in source_paths};assert end_sha==before_import_sha
+ write(out/'source-import-binding.json',dict(before_import_sha256=before_import_sha,after_import_sha256=after_import_sha,end_current_sha256=end_sha,loaded_episode_code_sha256=loaded_episode_code_sha256,loaded_episode_structurally_equals_preimport_source=True,exact_preimport_source_bytes_preserved=True,no_source_change_during_episode=True))
+ write(out/'result.json',dict(format='Codex-scripted-real-CPU-multiple-submit-semantics-v1',origin=origin,source_sha256=before_import_sha,input_source=dict(selection=str(sp),selection_sha256=hashlib.sha256(sp.read_bytes()).hexdigest(),index=26,instance_id=entry['instance_id'],task=str(task),task_sha256=entry['task_input_sha256'],source_inventory=str(teacher/'source-inventory.json'),source_inventory_sha256=hashlib.sha256((teacher/'source-inventory.json').read_bytes()).hexdigest(),snapshot=str(teacher/'source-snapshot.tgz'),snapshot_sha256=old['snapshot_sha256'],source_tree_sha256=old['source_tree_sha256'],original_recipe=str(teacher/'recipe.json'),current_prompt_sha256=entry['official_initial_user_prompt_sha256']),tokenizer=dict(actual_process_ready=ready,path=str(root/'research/006/data-replay-20261013/tokenizer'),template_sha256=hashlib.sha256((root/'research/006/data-replay-20261013/tokenizer/chat_template.jinja').read_bytes()).hexdigest(),implementation='Real CT AutoTokenizer in existing Python3.11 CPU cache process via JSON methods; official manager/context/verifier in existing Python3.12 host. No model/new dependency environment.'),episodes=results,scope='Actual local macOS official tools demonstrate canonical wrong-submit -> real API failure -> repair -> repeat-submit and raw correct-submit -> later wrong workingtree without resubmit. Original oracle evaluates last explicit submission; no model/GPU/focal data or new supervision.'))
+ print(json.dumps({'result':str(out/'result.json'),'episodes':[dict(label=x['label'],**{k:x['summary'][k] for k in ('reward','verified','termination','actions')}) for x in results],'no_model_gpu_or_focal':True},indent=2))
+except BaseException:(out/'exception.txt').write_text(traceback.format_exc());raise
+finally:child.terminate();child.wait(timeout=10);log.close()
+

@@ -1,0 +1,33 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex source/oracle review; producer legacy enum only, not human/model authorship",
+  "review_notes": "Oracle-quality probe only. Wrong candidate preserves correct quick_answer and mismatch fixes but ignores truncate=True. All original tests/deadlines/seeds unchanged. The reused profile only silently imports the six original dependencies, never target calls. Not canonical/teacher/SFT admission.",
+  "training_eligible": false,
+  "eligible_for_full_episode_SFT": false,
+  "purpose": "original-oracle counterexample only",
+  "actions": [
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "textdistance/algorithms/edit_based.py",
+        "old_string": "    def __call__(self, *sequences: Sequence[object]) -> int:\n        sequences = self._get_sequences(*sequences)\n\n        result = self.quick_answer(*sequences)\n        if result is not None:\n            assert isinstance(result, float)\n            return int(result)\n\n        _zip = zip if not self.truncate else zip_longest\n        return sum(self.test_func(*es) for es in _zip(*sequences))\n",
+        "new_string": "    def __call__(self, *sequences: Sequence[object]) -> int:\n        sequences = self._get_sequences(*sequences)\n\n        result = self.quick_answer(*sequences)\n        if result is not None:\n            assert isinstance(result, int)\n            return result\n\n        _zip = zip_longest\n        return sum(not self.test_func(*es) for es in _zip(*sequences))\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYOBSERVE'\nfrom pathlib import Path\nimport hashlib,json,textdistance\nimport textdistance.algorithms.edit_based as module\np=Path(module.__file__).resolve();assert p==(Path.cwd()/'textdistance/algorithms/edit_based.py').resolve()\nrows=[]\nfor name,truncate,left,right,expected in [('default',False,'abc','ax',2),('truncate',True,'abc','ax',1),('empty',True,'','',0),('same',True,'abc','abc',0)]:\n try:\n  value=textdistance.Hamming(external=False,truncate=truncate)(left,right);rows.append({'case':name,'truncate':truncate,'left':left,'right':right,'value':value,'type':type(value).__name__,'expected':expected,'correct':type(value) is int and value==expected})\n except Exception as e:rows.append({'case':name,'truncate':truncate,'left':left,'right':right,'error':type(e).__name__+': '+str(e),'expected':expected,'correct':False})\nprint(json.dumps({'source_path':str(p),'source_sha256':hashlib.sha256(p.read_bytes()).hexdigest(),'observations':rows},sort_keys=True))\nPYOBSERVE"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "1042603db487d931f1a5d3a3963ce153bd732ea91a92c2c7c2592252870f2039"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Non-training oracle-quality mechanism observation."
+}

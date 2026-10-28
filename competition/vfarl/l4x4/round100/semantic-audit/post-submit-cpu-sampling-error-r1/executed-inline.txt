@@ -1,0 +1,113 @@
+import asyncio,dataclasses,hashlib,json,os,shutil,stat,subprocess,tarfile,tempfile,time,traceback
+from pathlib import Path
+from types import SimpleNamespace
+root=Path.cwd();source_paths=('competition/vfarl/l4x4/run.py','competition/vfarl/l4x4/history.py');source_bytes_before={n:(root/n).read_bytes() for n in source_paths};before_import_sha={n:hashlib.sha256(b).hexdigest() for n,b in source_bytes_before.items()}
+assert before_import_sha=={'competition/vfarl/l4x4/run.py':'9fd1afd97180084a4a7f3aa9e616facbc5d40070b6a87b6f339fe88c18344ea5','competition/vfarl/l4x4/history.py':'d2ffd8a52c15f4eb7f609748e4ea9200efe7cb6ece9a03768fcbd09e82783892'}
+from competition.vfarl.l4x4.run import TaskEnvironment,episode,canonical_history_ledger,write,PolicyProtocolError
+from competition.vfarl.replay.run_official import selection_prompt_profile,bind_selection_prompt,build_agent_prompt
+after_import_sha={n:hashlib.sha256((root/n).read_bytes()).hexdigest() for n in source_paths};assert after_import_sha==before_import_sha
+import types,marshal
+compiled=compile(source_bytes_before['competition/vfarl/l4x4/run.py'],str(root/'competition/vfarl/l4x4/run.py'),'exec')
+compiled_episode=next(v for v in compiled.co_consts if isinstance(v,types.CodeType) and v.co_name=='episode')
+assert compiled_episode==episode.__code__ and compiled_episode.co_filename==episode.__code__.co_filename
+loaded_episode_code_sha256=hashlib.sha256(marshal.dumps(episode.__code__)).hexdigest()
+out=root/'competition/vfarl/l4x4/round100/semantic-audit/post-submit-cpu-sampling-error-r1';out.mkdir(exist_ok=False)
+source_dir=out/'loaded-source';source_dir.mkdir()
+for name,raw in source_bytes_before.items():(source_dir/Path(name).name).write_bytes(raw)
+write(out/'source-import-binding.json',dict(before_import_sha256=before_import_sha,after_import_sha256=after_import_sha,loaded_episode_code_sha256=loaded_episode_code_sha256,loaded_episode_structurally_equals_preimport_source=True,exact_preimport_source_bytes_preserved=True))
+origin={'kind':'Codex-scripted-off-policy-CPU-postsubmit-sampling-exception','training_eligible':False,'model_sampled':False,'on_policy':False,'behavior_and_reference_logprobs':None,'focal_capture':False,'canonical_training_normalization_or_SFT_export':False,'gpu_used':False};write(out/'origin.json',origin)
+sp=root/'competition/vfarl/l4x4/round100/question-revision-r3/selection.json';entry=json.loads(sp.read_bytes())['tasks'][26];teacher=root/'competition/vfarl/l4x4/round100/semantic-audit/025-049/revised-teachers-r1/026/teacher-r1';task=root/entry['task_input'];old=json.loads((teacher/'run-summary.json').read_bytes());assert hashlib.sha256(task.read_bytes()).hexdigest()==entry['task_input_sha256'];assert hashlib.sha256((teacher/'source-snapshot.tgz').read_bytes()).hexdigest()==old['snapshot_sha256'];initial=[json.loads((teacher/'messages.json').read_bytes())[0]];assert hashlib.sha256(initial[0]['content'].encode()).hexdigest()==entry['official_initial_user_prompt_sha256'];recipe=json.loads((teacher/'recipe.json').read_bytes());td=json.loads((root/'competition/vfarl/six-tools.json').read_bytes());tools=td.get('tools',td.get('functions',td));tools=[t if 'function' in t else {'type':'function','function':t} for t in tools]
+inventory=json.loads((teacher/'source-inventory.json').read_bytes());selected_budget,selected_harness,prompt_profile=selection_prompt_profile(sp,task)
+assert type(selected_budget.time_minutes) is int and selected_budget.time_minutes==60
+code='''import json,sys\nfrom transformers import AutoTokenizer\nt=AutoTokenizer.from_pretrained(sys.argv[1],local_files_only=True)\nprint(json.dumps({'ready':True,'tokenizer_class':type(t).__name__}),flush=True)\nfor line in sys.stdin:\n try:\n  r=json.loads(line);v=getattr(t,r['method'])(*r.get('args',[]),**r.get('kwargs',{}));print(json.dumps({'ok':True,'value':v},ensure_ascii=False),flush=True)\n except Exception as e:print(json.dumps({'ok':False,'error':type(e).__name__+': '+str(e)}),flush=True)\n'''
+log=(out/'tokenizer-stderr.log').open('w');child=subprocess.Popen([str(root/'.venv/bin/python'),'-u','-c',code,str(root/'research/006/data-replay-20261013/tokenizer')],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=log,text=True,env=dict(os.environ,PYTHONPATH='/private/tmp/vfarl-cpu-packages',USE_TORCH='1',USE_TF='0',HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1',PYTHONDONTWRITEBYTECODE='1'));ready=json.loads(child.stdout.readline());assert ready['ready']
+class TokenizerRPC:
+ def call(self,m,*a,**k):
+  child.stdin.write(json.dumps({'method':m,'args':a,'kwargs':k},ensure_ascii=False)+'\n');child.stdin.flush();r=json.loads(child.stdout.readline())
+  if not r['ok']:raise RuntimeError(r['error'])
+  return r['value']
+ def __getattr__(self,n):return lambda *a,**k:self.call(n,*a,**k)
+tok=TokenizerRPC();tc=tok.convert_tokens_to_ids('<tool_call|>');turn=tok.convert_tokens_to_ids('<turn|>')
+def native(name,args):
+ s=tok.apply_chat_template([{'role':'user','content':'Codex scripted CPU mechanism instruction.'},{'role':'assistant','content':None,'tool_calls':[{'id':'scripted-off-policy-not-model','type':'function','function':{'name':name,'arguments':args}}]}],tools=[],tokenize=False,add_generation_prompt=False,enable_thinking=True);i=s.index('<|tool_call>');return s[i:s.index('<tool_call|>',i)+len('<tool_call|>')]
+valid=[native('get_status',{}),native('read_file',recipe['actions'][1]['arguments']),native('edit_file',recipe['actions'][3]['arguments']),native('run_command',recipe['actions'][4]['arguments']),native('submit_patch',{})]
+
+final_text='Applied the production repair and verified the corrected wait calculation.'
+fm=[{'role':'user','content':'Codex scripted CPU mechanism instruction.'}]
+fp=tok.apply_chat_template(fm,tools=[],tokenize=False,add_generation_prompt=True,enable_thinking=True)
+fr=tok.apply_chat_template(fm+[{'role':'assistant','content':final_text}],tools=[],tokenize=False,add_generation_prompt=False,enable_thinking=True)
+assert fr.startswith(fp)
+final_raw=fr[len(fp):];final_raw=final_raw[:final_raw.index('<turn|>')+len('<turn|>')]
+class Facade:
+ tokenizer=tok;tool_close=tc;turn_close=turn;vfarl_stop_ids=[tc,turn];identity={'policy_id':None,'reference_id':None,'origin':origin}
+ def __init__(self,texts,env):self.texts=list(texts);self.requests=[];self.env=env
+ def release_session(self,*a,**k):pass
+ async def sample_async(self,ids,**req):
+  assert req['compute_reference'] is False
+  self.requests.append({'prompt_ids_sha256':hashlib.sha256(json.dumps(ids,separators=(',',':')).encode()).hexdigest(),'request':req,'patch_submitted_before_sample':self.env.ctx.patch_submitted,'submitted_patch_sha256_before_sample':hashlib.sha256((self.env.ctx.submitted_patch or '').encode()).hexdigest()})
+  if self.env.ctx.patch_submitted:
+   assert len(self.requests)==6
+   raise RuntimeError('Controlled CPU facade failure at post-submit sample6; no model output produced')
+  if not self.texts:raise RuntimeError('Scripted facade exhausted; no model fallback')
+  text=self.texts.pop(0);start=time.monotonic();c=tok.encode(text,add_special_tokens=False);assert len(c)<=req['max_new_tokens'] and tok.decode(c,skip_special_tokens=False)==text
+  return dict(prompt_token_ids=list(ids),completion_token_ids=c,raw_text=text,behavior_logprobs=None,reference_logprobs=None,old_logprobs=None,generated_reasoning=None,loss_mask=[0]*len(c),forced_control_tokens=[False]*len(c),finish_reason='tool_calls' if text.startswith('<|tool_call>') else 'stop',prompt_tokens=len(ids),completion_tokens=len(c),thought_tokens=0,seconds=time.monotonic()-start,policy_id=None,reference_id=None,origin=origin,training_eligible=False,on_policy=False)
+async def execute():
+ results=[]
+ with tempfile.TemporaryDirectory(prefix='vfarl-post-submit-real-asset-') as temp:
+  asset=Path(temp);shutil.copy2(task,asset/'task.json');(asset/'source-snapshot.tgz').symlink_to(teacher/'source-snapshot.tgz');shutil.copy2(teacher/'run-summary.json',asset/'run-summary.json')
+  runtime=dict(python=old['task_python_profile']['path'],site_packages=old['task_site_packages_profile'],site_packages_mode=old['task_site_packages_mode'],source_layout=old['sandbox_source_layout_path']);write(asset/'runtime.json',runtime);write(out/'runtime-used.json',runtime)
+  for label,fmt in [('raw-post-submit-error','raw-preserved')]:
+   eo=out/label;env=TaskEnvironment(asset,eo,tool_calls=selected_budget.tool_calls,turns=selected_budget.turns);env.budget=selected_budget;env.harness=selected_harness;env.config=dataclasses.replace(env.config,budget=selected_budget,harness=selected_harness)
+   try:
+    env.start();workspace=env.manager.sandboxes[env.sid]['workspace']
+    for f in inventory['files']:
+     p=workspace/f['path']
+     if 'symlink' in f:assert p.is_symlink() and str(p.readlink())==f['symlink']
+     else:
+      assert hashlib.sha256(p.read_bytes()).hexdigest()==f['sha256'];p.chmod(f['mode']);assert stat.S_IMODE(p.stat().st_mode)==f['mode']
+    assert len(inventory['files'])==74
+    before_pyc=[str(p.relative_to(workspace)) for p in workspace.rglob('*.pyc')];assert not before_pyc
+    actual_prompt=build_agent_prompt(env.task,env.config,declared_tools=sorted(env.tools),enable_sandbox_testing=True);profile=bind_selection_prompt(prompt_profile,actual_prompt);assert actual_prompt==initial[0]['content']
+    baseline=await env.verify('', 'baseline');assert baseline['reward']==0 and baseline['verification_complete']
+    ids=tok.apply_chat_template([{'role':'user','content':actual_prompt}],tools=tools,tokenize=True,return_dict=False,add_generation_prompt=True,enable_thinking=True);assert isinstance(ids,list)
+    ledger=None
+    if fmt!='raw-preserved':ledger=dict(output_tokens=0,turns=0,context_limit=32768,**canonical_history_ledger(tok,tools,[{'role':'user','content':actual_prompt}],ids))
+    args=SimpleNamespace(context=32768,turns=selected_budget.turns,tool_calls=selected_budget.tool_calls,turn_tokens=2048,episode_tokens=8192,thinking_budget=8,collection_protocol='live-original-pair',focal_trigger='execution-recovery',**({'history_format':fmt} if fmt!='raw-preserved' else {}));facade=Facade(valid+[final_raw],env)
+    caught=None
+    try:
+     await episode(env,facade,ids,args,eo/'episode',ledger=ledger,capture=False,history_tools=None)
+    except PolicyProtocolError as error:
+     caught=error
+     (eo/'episode/exception.txt').write_text(traceback.format_exc())
+    assert caught is not None and type(caught.__cause__) is RuntimeError
+    assert str(caught)=='Current-policy sampling failed' and 'post-submit sample6' in str(caught.__cause__)
+    diagnostic_path=eo/'episode/post-submit-sampling-failure.json';diagnostic=json.loads(diagnostic_path.read_bytes())
+    assert diagnostic['fatal'] and not diagnostic['eligible_for_training']
+    assert diagnostic['sampling_error']['type']=='RuntimeError' and diagnostic['verification_complete'] and diagnostic['diagnostic_reward']==1
+    assert 'finalization_error' not in diagnostic and caught.post_submit_diagnostic['evidence']==str(diagnostic_path)
+    verification_path=Path(diagnostic['verification']);verification=json.loads(verification_path.read_bytes())
+    assert verification['reward']==1 and verification['verification_complete']
+    actions=[json.loads(line) for line in (eo/'episode/actions.jsonl').read_bytes().splitlines()]
+    events=[json.loads(line) for line in (eo/'episode/tool-events.jsonl').read_bytes().splitlines()]
+    assert len(actions)==len(events)==5 and len(facade.requests)==6
+    assert [e['tool'] for e in events]==['get_status','read_file','edit_file','run_command','submit_patch']
+    assert [x['patch_submitted_before_sample'] for x in facade.requests]==[False]*5+[True]
+    assert events[-1]['response']['status']=='ok' and env.ctx.patch_submitted
+    assert not (eo/'episode/episode.json').exists() and not (eo/'episode/harness-feedback.jsonl').exists()
+    assert not list(out.rglob('focal.jsonl'))
+    assert all(a['behavior_logprobs'] is None and a['reference_logprobs'] is None and not a['training_eligible'] and sum(a['loss_mask'])==0 for a in actions)
+    assert (eo/'episode/submitted.patch').read_bytes()==(teacher/'submitted.patch').read_bytes()==(eo/'episode/evaluated.patch').read_bytes()
+    patchsha=hashlib.sha256((env.ctx.submitted_patch or '').encode()).hexdigest();assert facade.requests[-1]['submitted_patch_sha256_before_sample']==patchsha
+    item=dict(label=label,history_format=fmt,actual_manager=type(env.manager).__module__+'.'+type(env.manager).__name__,actual_context=type(env.ctx).__module__+'.'+type(env.ctx).__name__,source_snapshot_sha256=old['snapshot_sha256'],current_task_sha256=entry['task_input_sha256'],source_inventory_files_bytes_modes_restored=74,source_pyc_before_sampling=before_pyc,source_inventory_sha256=hashlib.sha256((teacher/'source-inventory.json').read_bytes()).hexdigest(),prompt_profile=profile,actual_budget_time_JSON_type=type(env.budget.time_minutes).__name__,baseline_result=dict(path=str(eo/'baseline-result.json'),sha256=hashlib.sha256((eo/'baseline-result.json').read_bytes()).hexdigest(),reward=0,actual_original_scope=True),same_patch_bytes_as_existing_teacher=True,submitted_patch_sha256=patchsha,sampling_facade_requests=facade.requests,actual_tool_events=5,actual_actions=5,postsubmit_sample_attempt_count=1,postsubmit_output_tokens_produced=0,postsubmit_nudge_count=0,no_focal_pairs_created=True,caught_fatal=dict(type=type(caught).__name__,message=str(caught),cause_type=type(caught.__cause__).__name__,cause=str(caught.__cause__)),diagnostic_path=str(diagnostic_path),diagnostic_sha256=hashlib.sha256(diagnostic_path.read_bytes()).hexdigest(),diagnostic_verification=diagnostic['verification'],diagnostic_reward=verification['reward'],verification_complete=verification['verification_complete'],production_episode_returned_normally=False,top_level_collect_executed=False)
+    write(eo/'mechanism-observation.json',item);results.append(item)
+   finally:env.close()
+ return results
+try:
+ results=asyncio.run(execute())
+ end_sha={n:hashlib.sha256((root/n).read_bytes()).hexdigest() for n in source_paths};assert end_sha==before_import_sha
+ write(out/'source-import-binding.json',dict(before_import_sha256=before_import_sha,after_import_sha256=after_import_sha,end_current_sha256=end_sha,loaded_episode_code_sha256=loaded_episode_code_sha256,loaded_episode_structurally_equals_preimport_source=True,exact_preimport_source_bytes_preserved=True,no_source_change_during_episode=True))
+ write(out/'result.json',dict(format='Codex-scripted-real-CPU-postsubmit-sampling-exception-v1',origin=origin,source_sha256=before_import_sha,input_source=dict(selection=str(sp),selection_sha256=hashlib.sha256(sp.read_bytes()).hexdigest(),index=26,instance_id=entry['instance_id'],task=str(task),task_sha256=entry['task_input_sha256'],source_inventory=str(teacher/'source-inventory.json'),source_inventory_sha256=hashlib.sha256((teacher/'source-inventory.json').read_bytes()).hexdigest(),snapshot=str(teacher/'source-snapshot.tgz'),snapshot_sha256=old['snapshot_sha256'],source_tree_sha256=old['source_tree_sha256'],original_recipe=str(teacher/'recipe.json'),current_prompt_sha256=entry['official_initial_user_prompt_sha256']),tokenizer=dict(actual_process_ready=ready,path=str(root/'research/006/data-replay-20261013/tokenizer'),template_sha256=hashlib.sha256((root/'research/006/data-replay-20261013/tokenizer/chat_template.jinja').read_bytes()).hexdigest(),implementation='Real CT AutoTokenizer in existing Python3.11 CPU cache process via JSON methods; official manager/context/verifier in existing Python3.12 host. No model/new dependency environment.'),episodes=results,scope='Actual local macOS official SubprocessManager/SwegemmaContext5tools followed by deliberate RuntimeError on postsubmit sample6. Production episode remains fatal; original oracle result is diagnostic only. Not a model failure, Linux/chroot gain, onpolicy pair or supervision.'))
+ print(json.dumps({'result':str(out/'result.json'),'fatal':results[0]['caught_fatal'],'diagnostic_reward':results[0]['diagnostic_reward'],'actual_actions':5,'no_model_gpu_or_focal':True},indent=2))
+except BaseException:(out/'exception.txt').write_text(traceback.format_exc());raise
+finally:child.terminate();child.wait(timeout=10);log.close()
+

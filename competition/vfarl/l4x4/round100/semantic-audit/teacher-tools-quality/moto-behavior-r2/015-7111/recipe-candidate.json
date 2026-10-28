@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex agent /root/data_status, actual archived source API and independent official evidence review, 2026-10-28",
+  "review_notes": "Codex-authored off-policy behavior-asserting demonstration; no sampled Gemma, generated thinking or behavior logprobs. Real boto3 calls execute only under the actual archived Moto mock context. Source-binding and target behavior assertions fail before the unchanged production edit and pass after it. Original fixed100 train ID, task bytes, source bytes/mode, F2P/P2P and official verification files are preserved. Legacy human_reviewed schema label denotes Codex review; new actual tool events and separate original official baseline/final are required.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "moto/awslambda/models.py",
+        "start_line": 615,
+        "end_line": 635
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,importlib\nmodule=importlib.import_module('moto.awslambda.models')\nactual=Path(module.__file__).resolve();expected=(Path.cwd()/'moto/awslambda/models.py').resolve()\nassert actual==expected,(actual,expected)\nprint(\"source_binding\",actual,\"sha256\",hashlib.sha256(actual.read_bytes()).hexdigest())\nimport boto3,io,zipfile,json\nfrom moto import mock_lambda,mock_iam\nwith mock_lambda(),mock_iam():\n iam=boto3.client('iam',region_name='us-east-1')\n role=iam.create_role(RoleName='local-role',AssumeRolePolicyDocument=json.dumps({'Version':'2012-10-17','Statement':[{'Effect':'Allow','Principal':{'Service':'lambda.amazonaws.com'},'Action':'sts:AssumeRole'}]}))['Role']['Arn']\n buffer=io.BytesIO()\n with zipfile.ZipFile(buffer,'w') as archive:archive.writestr('handler.py','def handle(event, context): return None')\n client=boto3.client('lambda',region_name='us-east-1')\n result=client.create_function(FunctionName='local-function',Runtime='python3.8',Role=role,Handler='handler.handle',Code={'ZipFile':buffer.getvalue()})\n print('omitted_package_type',result.get('PackageType'))\n assert result.get('PackageType')=='Zip'\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "eff3df8c6bf82a47fb3a0e69f7a23ee3daa77e4faab9a1b039e0efb14a6e13b6"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "moto/awslambda/models.py",
+        "old_string": "\n        self.description = spec.get(\"Description\", \"\")\n        self.memory_size = spec.get(\"MemorySize\", 128)\n        self.package_type = spec.get(\"PackageType\", None)\n        self.publish = spec.get(\"Publish\", False)  # this is ignored currently\n        self.timeout = spec.get(\"Timeout\", 3)\n        self.layers: List[Dict[str, str]] = self._get_layers_data(\n",
+        "new_string": "\n        self.description = spec.get(\"Description\", \"\")\n        self.memory_size = spec.get(\"MemorySize\", 128)\n        self.package_type = spec.get(\"PackageType\", \"Zip\")\n        self.publish = spec.get(\"Publish\", False)  # this is ignored currently\n        self.timeout = spec.get(\"Timeout\", 3)\n        self.layers: List[Dict[str, str]] = self._get_layers_data(\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,importlib\nmodule=importlib.import_module('moto.awslambda.models')\nactual=Path(module.__file__).resolve();expected=(Path.cwd()/'moto/awslambda/models.py').resolve()\nassert actual==expected,(actual,expected)\nprint(\"source_binding\",actual,\"sha256\",hashlib.sha256(actual.read_bytes()).hexdigest())\nimport boto3,io,zipfile,json\nfrom moto import mock_lambda,mock_iam\nwith mock_lambda(),mock_iam():\n iam=boto3.client('iam',region_name='us-east-1')\n role=iam.create_role(RoleName='local-role',AssumeRolePolicyDocument=json.dumps({'Version':'2012-10-17','Statement':[{'Effect':'Allow','Principal':{'Service':'lambda.amazonaws.com'},'Action':'sts:AssumeRole'}]}))['Role']['Arn']\n buffer=io.BytesIO()\n with zipfile.ZipFile(buffer,'w') as archive:archive.writestr('handler.py','def handle(event, context): return None')\n client=boto3.client('lambda',region_name='us-east-1')\n result=client.create_function(FunctionName='local-function',Runtime='python3.8',Role=role,Handler='handler.handle',Code={'ZipFile':buffer.getvalue()})\n print('omitted_package_type',result.get('PackageType'))\n assert result.get('PackageType')=='Zip'\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "eff3df8c6bf82a47fb3a0e69f7a23ee3daa77e4faab9a1b039e0efb14a6e13b6"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Submitted the production fix. The source-bound local API observation now satisfies the expected behavior; original official verification is recorded separately."
+}

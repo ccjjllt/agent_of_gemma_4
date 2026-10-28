@@ -1,0 +1,75 @@
+{
+  "schema_version": "single-fixed100-revised-problem-source-pin-v1",
+  "original_catalog": "competition/vfarl/acquisition/supplemental/catalog.json",
+  "original_catalog_sha256": "b160db5c1f6fd50d97d44aa82b41275850232f4461955a3248ef591deebd82d5",
+  "tasks": [
+    {
+      "instance_id": "msiemens__tinydb.10644a0e.func_basic__qel5fui7",
+      "canonical_repo": "msiemens/tinydb",
+      "primary_adapter": "F",
+      "submechanism": "F4",
+      "repair_family_id": "msiemens/tinydb::TinyDB.close::explicit_close_prevents_second_context_cleanup",
+      "snapshot_group_id": "msiemens/tinydb::10644a0e07ad180c5b756aba272ee6b0dbd12df8",
+      "execution_commit": "751b303691b39b98c62a4d6a02a5bfeeae373ce6",
+      "source_dataset": "SWE-bench/SWE-smith-py",
+      "source_revision": "77cab9055d42ab4a5c25c89a8f937096db13558e",
+      "physical_split": "train",
+      "original_FAIL_TO_PASS_count": 1,
+      "original_PASS_TO_PASS_count": 203,
+      "mechanism_evidence": {
+        "trigger": "Explicitly close a live database inside its context using a counting storage implementation.",
+        "base_wrong_behavior": "The method leaves _opened=True, so context exit closes the same storage again.",
+        "production_symbols": "TinyDB.close",
+        "causal_change": "Mark the database closed before resource cleanup so context exit observes completed ownership release.",
+        "discriminating_observation": {
+          "kind": "explicitly_reviewed_source_bound_inline_execution",
+          "description": "from tinydb import TinyDB\nfrom tinydb.storages import MemoryStorage\nclass CountingStorage(MemoryStorage):\n def __init__(self):super().__init__();self.closes=0\n def close(self):self.closes+=1\ndb=TinyDB(storage=CountingStorage);s=db.storage\nwith db:\n db.close()\nprint('database_close_state',s.closes,db._opened)\nassert s.closes==1 and not db._opened\n"
+        },
+        "bug_patch_direction": "introduces_defect_not_a_repair_target"
+      },
+      "original_patch_semantics": "bug_introducing",
+      "use_partition": "train_only",
+      "course_membership": "S600_common",
+      "source_task_path": "competition/vfarl/acquisition/s600-common-c/msiemens__tinydb.10644a0e.func_basic__qel5fui7.task.json",
+      "source_task_sha256": "c10dc9b72c11b99688a8aa8dd0374286a7d124b4488ecaf5737097bbe99b652f",
+      "source_review_path": "competition/vfarl/acquisition/s600-common-c/reviewed-batch14-v2.json",
+      "source_review_sha256": "0ca4a2548ea04fc12e21202c3de3845505a935dfe5849d82542c349a548e4ff7",
+      "environment": {
+        "mirror_repo": "swesmith/msiemens__tinydb.10644a0e",
+        "bug_branch": "msiemens__tinydb.10644a0e.func_basic__qel5fui7",
+        "buggy_commit": "751b303691b39b98c62a4d6a02a5bfeeae373ce6",
+        "fresh_remote_commit": "751b303691b39b98c62a4d6a02a5bfeeae373ce6",
+        "cached_commit_matches_fresh_remote": true
+      },
+      "license_evidence": {
+        "source_code": {
+          "license": "MIT",
+          "path": "competition/vfarl/acquisition/s600-common-c/tinydb.LICENSE",
+          "sha256": "b0e2a2d39271e3d96b717d7be8235ac413d74797bf7f742f0801cfaad6c8c912",
+          "source_commit": "10644a0e07ad180c5b756aba272ee6b0dbd12df8"
+        },
+        "source_dataset": {
+          "license": "MIT",
+          "path": "competition/vfarl/acquisition/recover-semantics/sources/SWE-smith-py-README.txt",
+          "sha256": "18afda407941c9d3c65ff530bedd3bc93f3a13d9504ee5728e959fb43ffce808",
+          "revision": "77cab9055d42ab4a5c25c89a8f937096db13558e"
+        }
+      },
+      "source_mechanism_review_complete": true,
+      "root_second_read": "Root independently read all twenty complete original production patches, trigger/causal contracts and source-bound executed observations: cache write-back/read/flush, storage context ownership, default-table routing, CRUD identity/state/selection, monotone ID allocation and encoder configuration consumption. Table.remove is S3 selected-subset/ID-list preservation with missing-ID feedback, not S5 grammar. JSONStorage.write F1 attribution is limited to kwargs consumption; the extra seek is restored but not independently demonstrated as the inline failure cause. Full original seven-file/204-requirement scope and actual F2P failures/204 repaired passes retained; no oracle, task or event alteration.",
+      "root_admission_read_result": "competition/vfarl/replay/s600-c-tinydb-database-close-state-replay-result.json",
+      "visible_prompt_profile": {
+        "kind": "curator_authored_behavioral_clarification",
+        "original_problem_statement_sha256": "158b80acd5a6882a9052ee084563c8c3147d9d53e3dfaecfcda5085f92bc9275",
+        "curated_problem_statement_sha256": "a4172bfe8e8c47e71f950f4f717c4c8632adc9a9e4f4a08632a3701ac035db50",
+        "curated_prompt": "Explicit TinyDB.close inside a context closes the storage twice\n\nCalling `close()` explicitly inside a TinyDB context should close the storage once. Exiting that context should complete successfully.\n\n```python\nfrom tinydb import TinyDB\n\nclass TestStorage:\n    def __init__(self):\n        self.closed = False\n\n    def read(self):\n        return {}\n\n    def write(self, data):\n        pass\n\n    def close(self):\n        if self.closed:\n            raise RuntimeError(\"Storage already closed!\")\n        self.closed = True\n\nwith TinyDB(storage=TestStorage) as db:\n    db.close()\n```\n\nThe `storage` argument above is the storage class accepted by TinyDB. The current code raises `RuntimeError(\"Storage already closed!\")` on context exit. The explicit close and context cleanup should work together without closing this storage twice.\n",
+        "reviewed_by": "Codex source-bound 25-49 semantic review and freshly executed reviewed-recipe replay 2026-10-28",
+        "reason": "Clarify demonstrated API/actual-output/scope contradictions using the pinned original production source; preserve the same repair requirement and original oracle.",
+        "source_basis": "competition/vfarl/l4x4/round100/optimization-overnight/data-semantics-25-49/review.json and proposed-prompt-changes.json; current question-revision-r2 source-bound curation; actual new replay in this directory.",
+        "original_prompt_run_preserved": "competition/vfarl/replay/artifacts/s600-common-c/s600-c-tinydb-database-close-state-run-001",
+        "actual_new_replay_under_curated_prompt": "competition/vfarl/l4x4/round100/semantic-audit/025-049/revised-teachers-r1/041/teacher-r1",
+        "reference_patch_or_required_list_in_prompt": false
+      }
+    }
+  ]
+}

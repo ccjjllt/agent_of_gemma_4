@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex agent /root/data_status, local source API and archived mechanism review, 2026-10-28",
+  "review_notes": "Codex-authored off-policy demonstration candidate; no model sampling or logprob. Reuses the same fixed100 train ID, task input, source snapshot and production edit. Replaces syntax-only commands with the real source API behavior assertion, observed to fail before the archived production change and pass after it. Original F2P/P2P and verification assets are unmodified; this new run must separately record official baseline failure and repaired success. Legacy human_reviewed label denotes Codex review, not end-user annotation.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "moto/secretsmanager/utils.py",
+        "start_line": 59,
+        "end_line": 79
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib\nsource=(Path.cwd()/'moto/secretsmanager/utils.py').resolve()\nprint(\"source_binding\",source,\"sha256\",hashlib.sha256(source.read_bytes()).hexdigest())\nfrom pathlib import Path\nimport moto.secretsmanager.utils as module\nassert Path(module.__file__).resolve()==(Path.cwd()/'moto/secretsmanager/utils.py').resolve()\narn=module.secret_arn('us-east-1','example')\nsuffix=arn.rsplit('-',1)[1]\nprint('secret_arn',arn,'suffix_length',len(suffix))\nassert len(suffix)==6\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "9089393e79a494adc757ee9cbbd106c84d0dc2aa7b603415ff3dfb776e51a64b"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "moto/secretsmanager/utils.py",
+        "old_string": "\n\ndef secret_arn(region, secret_id):\n    id_string = \"\".join(random.choice(string.ascii_letters) for _ in range(5))\n    return \"arn:aws:secretsmanager:{0}:{1}:secret:{2}-{3}\".format(\n        region, get_account_id(), secret_id, id_string\n    )\n",
+        "new_string": "\n\ndef secret_arn(region, secret_id):\n    id_string = \"\".join(random.choice(string.ascii_letters) for _ in range(6))\n    return \"arn:aws:secretsmanager:{0}:{1}:secret:{2}-{3}\".format(\n        region, get_account_id(), secret_id, id_string\n    )\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib\nsource=(Path.cwd()/'moto/secretsmanager/utils.py').resolve()\nprint(\"source_binding\",source,\"sha256\",hashlib.sha256(source.read_bytes()).hexdigest())\nfrom pathlib import Path\nimport moto.secretsmanager.utils as module\nassert Path(module.__file__).resolve()==(Path.cwd()/'moto/secretsmanager/utils.py').resolve()\narn=module.secret_arn('us-east-1','example')\nsuffix=arn.rsplit('-',1)[1]\nprint('secret_arn',arn,'suffix_length',len(suffix))\nassert len(suffix)==6\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "9089393e79a494adc757ee9cbbd106c84d0dc2aa7b603415ff3dfb776e51a64b"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Submitted the production fix. The local source API probe now satisfies the expected behavior; original task verification is performed separately by the official harness."
+}

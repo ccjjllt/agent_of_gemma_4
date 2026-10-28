@@ -1,0 +1,34 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex source/oracle manual review; legacy producer enum only, not human authorship",
+  "review_notes": "Controlled non-training original-oracle quality experiment. Wrong candidate deliberately preserves cached call and violates public reset contract; correct contrast pops only call. Original F2P/P2P untouched. No canonical/full SFT admission.",
+  "authorship": "Codex scripted off-policy oracle-quality probe",
+  "eligible_for_full_episode_SFT": false,
+  "training_eligible": false,
+  "purpose": "counterexample-only",
+  "actions": [
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "bottle.py",
+        "old_string": "    def reset(self):\n        \"\"\" Forget any cached values. The next time :attr:`call` is accessed,\n            all plugins are re-applied. \"\"\"\n        self.__dict__.clear()\n\n    def prepare(self):\n        \"\"\" Do all on-demand work immediately (useful for debugging).\"\"\"\n",
+        "new_string": "    def reset(self):\n        \"\"\" Forget any cached values. The next time :attr:`call` is accessed,\n            all plugins are re-applied. \"\"\"\n        self.__dict__.pop('call', None)\n\n    def prepare(self):\n        \"\"\" Do all on-demand work immediately (useful for debugging).\"\"\"\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYSOURCE'\nfrom pathlib import Path\nimport hashlib,json,bottle\nassert Path(bottle.__file__).resolve()==Path('bottle.py').resolve()\nclass Plugin:\n    def __init__(self):self.applies=0\n    def apply(self, callback, route):\n        self.applies+=1\n        route.plugin_data='important_data'\n        captured=self.applies\n        return lambda:(callback(),captured)\napp=bottle.Bottle();plugin=Plugin();app.install(plugin)\n@app.route('/x')\ndef callback():return 'ok'\nroute=app.routes[0];route.prepare();first=route.call();route.reset()\nprint('SOURCE',hashlib.sha256(Path('bottle.py').read_bytes()).hexdigest())\nprint('AFTER_RESET',json.dumps({'plugin_data':getattr(route,'plugin_data',None),'cached_call_retained':'call' in route.__dict__,'plugin_applies_before_second_call':plugin.applies}))\nsecond=route.call()\nprint('AFTER_SECOND_CALL',json.dumps({'first':first,'second':second,'plugin_applies':plugin.applies,'plugin_data':getattr(route,'plugin_data',None)}))\nPYSOURCE"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "f9923f17d86679cf1927397a983f074a6c6e51b84b1d257ceb8300c371689f9a"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Non-training mechanism probe completed; no model benefit claim."
+}

@@ -1,0 +1,9 @@
+# 当前fixed100监督消费：53题历史源独立核对
+
+2026-10-28，只解析两个原S_common／S_specialist action文件中当前100ID的行，没有写合并数据或改旧行。两文件实际SHA仍匹配selection.source_inputs冻结值。按38个r2 revision、OSA及8个指定moto的并集，替换集为47题；其旧381行应全部移除。其余53题为424行，common256、specialist168。
+
+53个历史source_episode全部存在且真实文件SHA匹配声明；其实际第一条message prompt SHA也全部匹配current r2。53个publisher原blob存在且SHA匹配selection.source_task_sha256。424行的source_task字段按publisher原blob比较，未与adapted task_input_sha256混淆。角色按common／specialist源文件核对；adapter、submechanism、family、snapshot、repo、source dataset/revision及physical train标签均与current selection一致。每题行数等于old_decision_examples；action_index无重复，工具名／tool_call_id或终止回答与实际messages一一对应。当前issues为空。
+
+[retained53-source-review.json](retained53-source-review.json) 列每个原始行的文件／行号／raw-line SHA、source_episode及SHA和metadata核对结果，可供组装后确认这424行逐字复制。没有重写action_index、工具事件、metadata、prompt或hash。
+
+47题新源仍应由root独立显式列优先manifest并逐题验publisher blob／current prompt／actual messages绑定。OSA只取corrected-sft-r3；r2预算profile不同。42取mysql-copy enhancement。moto只取behavior-r1 independent-sft-r2两题及behavior-r2 independent-sft-r1六题。不能并入另一个同ID可选teacher造成重复。新47的实际messages首prompt和SFT行的current prompt须双匹配；保留53不可通过JSON roundtrip改变字节。此核对不构成新RL奖励、Gemma rollout、GPU或训练完成证据。

@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex /root/data_status",
+  "review_notes": "Fresh Codex-prescribed off-policy demonstration of the unchanged fixed100 task. The same finite inline command observes directory destination output and the existing-file overwrite=False boundary separately before asserting both. Actual workspace import/source SHA is printed. Existing reviewed production edit, original task/snapshot/required oracle and fixed100 identity are unchanged; no model sampling/logprob or hidden oracle commands enter history.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "bottle.py",
+        "start_line": 2774,
+        "end_line": 2798
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, io, json, tempfile\nimport bottle\nactual = Path(bottle.__file__).resolve()\nexpected = (Path.cwd() / 'bottle.py').resolve()\nassert actual == expected, (actual, expected)\nprint('source_binding', str(actual), 'sha256', hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom bottle import FileUpload\nwith tempfile.TemporaryDirectory() as folder:\n directory = Path(folder) / 'uploads'\n directory.mkdir()\n payload = b'new upload bytes'\n directory_error = None\n try:\n  FileUpload(io.BytesIO(payload), 'file', 'incoming.txt').save(str(directory))\n except Exception as exc:\n  directory_error = type(exc).__name__\n target = directory / 'incoming.txt'\n directory_result = {'error': directory_error, 'at_expected_path': target.is_file(),\n                     'bytes_equal': target.is_file() and target.read_bytes() == payload,\n                     'directory_entries': sorted(p.name for p in directory.iterdir())}\n print('directory_destination', json.dumps(directory_result, sort_keys=True))\n existing = Path(folder) / 'existing.txt'\n existing.write_bytes(b'keep')\n overwrite_error = None\n try:\n  FileUpload(io.BytesIO(b'replacement'), 'file', 'other.txt').save(str(existing))\n except Exception as exc:\n  overwrite_error = type(exc).__name__\n overwrite_result = {'error': overwrite_error, 'original_bytes_preserved': existing.read_bytes() == b'keep'}\n print('existing_destination', json.dumps(overwrite_result, sort_keys=True))\n assert directory_result['error'] is None and directory_result['at_expected_path'] and directory_result['bytes_equal'], directory_result\n assert overwrite_error in ('OSError', 'IOError') and overwrite_result['original_bytes_preserved'], overwrite_result\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "8224153b8e827c395d4f52c2ebbbc6354a9b18436e1c7ce344b6630931c6f45e"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "bottle.py",
+        "old_string": "        \"\"\"\n        if isinstance(destination, basestring):  # Except file-likes here\n            if os.path.isdir(destination):\n                destination = os.path.join(self.filename, destination)\n            if not overwrite and os.path.exists(destination):\n                pass\n            with open(destination, 'wb') as fp:\n                self._copy_file(fp, chunk_size + 1)\n        else:\n            self._copy_file(destination, chunk_size + 1)\n\n###############################################################################\n# Application Helper ###########################################################\n",
+        "new_string": "        \"\"\"\n        if isinstance(destination, basestring):  # Except file-likes here\n            if os.path.isdir(destination):\n                destination = os.path.join(destination, self.filename)\n            if not overwrite and os.path.exists(destination):\n                raise IOError('File exists.')\n            with open(destination, 'wb') as fp:\n                self._copy_file(fp, chunk_size)\n        else:\n            self._copy_file(destination, chunk_size)\n\n###############################################################################\n# Application Helper ###########################################################\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, io, json, tempfile\nimport bottle\nactual = Path(bottle.__file__).resolve()\nexpected = (Path.cwd() / 'bottle.py').resolve()\nassert actual == expected, (actual, expected)\nprint('source_binding', str(actual), 'sha256', hashlib.sha256(actual.read_bytes()).hexdigest())\nfrom bottle import FileUpload\nwith tempfile.TemporaryDirectory() as folder:\n directory = Path(folder) / 'uploads'\n directory.mkdir()\n payload = b'new upload bytes'\n directory_error = None\n try:\n  FileUpload(io.BytesIO(payload), 'file', 'incoming.txt').save(str(directory))\n except Exception as exc:\n  directory_error = type(exc).__name__\n target = directory / 'incoming.txt'\n directory_result = {'error': directory_error, 'at_expected_path': target.is_file(),\n                     'bytes_equal': target.is_file() and target.read_bytes() == payload,\n                     'directory_entries': sorted(p.name for p in directory.iterdir())}\n print('directory_destination', json.dumps(directory_result, sort_keys=True))\n existing = Path(folder) / 'existing.txt'\n existing.write_bytes(b'keep')\n overwrite_error = None\n try:\n  FileUpload(io.BytesIO(b'replacement'), 'file', 'other.txt').save(str(existing))\n except Exception as exc:\n  overwrite_error = type(exc).__name__\n overwrite_result = {'error': overwrite_error, 'original_bytes_preserved': existing.read_bytes() == b'keep'}\n print('existing_destination', json.dumps(overwrite_result, sort_keys=True))\n assert directory_result['error'] is None and directory_result['at_expected_path'] and directory_result['bytes_equal'], directory_result\n assert overwrite_error in ('OSError', 'IOError') and overwrite_result['original_bytes_preserved'], overwrite_result\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "8224153b8e827c395d4f52c2ebbbc6354a9b18436e1c7ce344b6630931c6f45e"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Fixed directory upload placement and the existing-file overwrite guard. The inline API observations confirm the expected destination bytes and preserve existing contents without overwrite permission."
+}

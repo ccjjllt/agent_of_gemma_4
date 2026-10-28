@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Restore ObjectValueNode recursion instead of returning None; unsupported literal forms remain None. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "graphene/types/generic.py",
+        "start_line": 20,
+        "end_line": 58
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nmodule = importlib.import_module('graphene.types.generic')\nactual=Path(module.__file__).resolve()\nexpected=(Path.cwd() / 'graphene/types/generic.py').resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom graphql import parse_value\nfrom graphene.types.generic import GenericScalar\nvalue=GenericScalar.parse_literal(parse_value('{person:{name:\"Ada\", flags:[true,false], score:3}, empty:null}'))\nprint(\"nested_literal\",value)\nassert value=={\"person\":{\"name\":\"Ada\",\"flags\":[True,False],\"score\":3},\"empty\":None}\nassert GenericScalar.parse_literal(parse_value(\"[1,2]\"))==[1,2]\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "030362343229fc5bfcb118e19bcffc1e2e6c495f58f42b72fb9c95244cd08bde"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "graphene/types/generic.py",
+        "old_string": "        elif isinstance(ast, ObjectValueNode):\n            return None\n        else:\n            return {\n                field.name.value: GenericScalar.parse_literal(field.value)\n                for field in ast.fields\n            }",
+        "new_string": "        elif isinstance(ast, ObjectValueNode):\n            return {\n                field.name.value: GenericScalar.parse_literal(field.value)\n                for field in ast.fields\n            }\n        else:\n            return None"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nmodule = importlib.import_module('graphene.types.generic')\nactual=Path(module.__file__).resolve()\nexpected=(Path.cwd() / 'graphene/types/generic.py').resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom graphql import parse_value\nfrom graphene.types.generic import GenericScalar\nvalue=GenericScalar.parse_literal(parse_value('{person:{name:\"Ada\", flags:[true,false], score:3}, empty:null}'))\nprint(\"nested_literal\",value)\nassert value=={\"person\":{\"name\":\"Ada\",\"flags\":[True,False],\"score\":3},\"empty\":None}\nassert GenericScalar.parse_literal(parse_value(\"[1,2]\"))==[1,2]\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "030362343229fc5bfcb118e19bcffc1e2e6c495f58f42b72fb9c95244cd08bde"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Restored recursive object literal parsing. Inline checks confirm nested objects, lists, numbers, booleans, and null. Patch submitted."
+}

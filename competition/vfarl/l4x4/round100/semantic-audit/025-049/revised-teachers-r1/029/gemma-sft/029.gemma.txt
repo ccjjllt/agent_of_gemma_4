@@ -1,0 +1,168 @@
+<bos><|turn>system
+<|tool>declaration:edit_file{description:<|"|>Replace a contiguous block of text in an existing file.
+
+        More token-efficient than write_file for targeted changes. Provide 2-4 lines of unique
+        surrounding context in old_string to ensure an unambiguous match.
+
+        Args:
+            filepath: Relative path to the target file.
+            old_string: Text block to replace.
+            new_string: Replacement text block.
+            allow_multiple: Replace all occurrences of old_string if True.
+
+        Returns:
+            Dictionary containing file status, occurrences count, match strategy, and unified diff.
+        <|"|>,parameters:{properties:{allow_multiple:{type:<|"|>BOOLEAN<|"|>},filepath:{type:<|"|>STRING<|"|>},new_string:{type:<|"|>STRING<|"|>},old_string:{type:<|"|>STRING<|"|>}},required:[<|"|>filepath<|"|>,<|"|>old_string<|"|>,<|"|>new_string<|"|>],type:<|"|>OBJECT<|"|>}}<tool|><|tool>declaration:get_status{description:<|"|>Check active budget details (time, tool calls) and active patch details.<|"|>,parameters:{type:<|"|>OBJECT<|"|>}}<tool|><|tool>declaration:read_file{description:<|"|>Read the contents of a file from the repository workspace.
+
+        Supports reading specific line ranges using start_line and end_line (1-indexed).
+        To avoid overwhelming the context window, large files are automatically truncated
+        to a maximum number of lines (default: 150 lines).
+
+        Args:
+            filepath: Relative path within the workspace directory (e.g., "fastapi/main.py", "pyproject.toml").
+            start_line: Optional starting line number (1-indexed, inclusive).
+            end_line: Optional ending line number (1-indexed, inclusive).
+
+        Returns:
+            Dictionary containing file content, line range, and truncation status.
+        <|"|>,parameters:{properties:{end_line:{nullable:true,type:<|"|><|"|>},filepath:{type:<|"|>STRING<|"|>},start_line:{nullable:true,type:<|"|><|"|>}},required:[<|"|>filepath<|"|>],type:<|"|>OBJECT<|"|>}}<tool|><|tool>declaration:run_command{description:<|"|>Execute a shell command inside the repository sandbox.
+
+        You can run any shell command (Python scripts, tests, git commands, etc.).
+        The command runs in the repository workspace. No network access.
+
+        Args:
+            command: Shell command to execute (e.g., "pytest tests/", "python3 script.py").
+        <|"|>,parameters:{properties:{command:{type:<|"|>STRING<|"|>}},required:[<|"|>command<|"|>],type:<|"|>OBJECT<|"|>}}<tool|><|tool>declaration:submit_patch{description:<|"|>Capture the current working tree modifications as the agent's submission.
+
+        This generates a unified git diff against the baseline commit. The agent
+        can submit multiple times; only the final submission is evaluated.
+        <|"|>,parameters:{type:<|"|>OBJECT<|"|>}}<tool|><|tool>declaration:write_file{description:<|"|>Create or overwrite a file in the workspace.
+
+        Args:
+            filepath: Relative path to the file to create or overwrite.
+            content: Full content of the file.
+        <|"|>,parameters:{properties:{content:{type:<|"|>STRING<|"|>},filepath:{type:<|"|>STRING<|"|>}},required:[<|"|>filepath<|"|>,<|"|>content<|"|>],type:<|"|>OBJECT<|"|>}}<tool|><turn|>
+<|turn>user
+You are evaluating a software engineering task for repository swesmith/jd__tenacity.0d40e76f.
+
+Problem Statement:
+retry_if_exception_message has inverted regex-match behavior
+
+A regex-matching exception message should cause a retry. A message that does not match should propagate without retrying. The behavior is currently reversed.
+
+This reproduction limits each call to two attempts:
+
+```python
+from tenacity import retry, retry_if_exception_message, stop_after_attempt, wait_none, RetryError
+
+@retry(retry=retry_if_exception_message(match=r"retry me"),
+       stop=stop_after_attempt(2), wait=wait_none())
+def matching_message():
+    raise ValueError("retry me")
+
+@retry(retry=retry_if_exception_message(match=r"don't retry"),
+       stop=stop_after_attempt(2), wait=wait_none())
+def nonmatching_message():
+    raise ValueError("retry me")
+
+for function in (matching_message, nonmatching_message):
+    try:
+        function()
+    except RetryError:
+        print(function.__name__, "exhausted its retry attempts")
+    except ValueError:
+        print(function.__name__, "propagated the exception without retrying")
+```
+
+Expected: `matching_message` exhausts its two retry attempts; `nonmatching_message` propagates its ValueError after its first attempt. The current behavior produces the opposite outcomes.
+
+
+## Task Budget (Session terminates when any budget is exhausted)
+- Time allowance: 60 minutes
+- Tool calls allowance: 100 calls
+- Max loop iterations: 500 turns
+
+## Execution Environment Rules
+- Single command timeout: 300 seconds (commands exceeding this fail without ending the session)
+- Command output limit: 5000 characters
+- File view limit: 150 lines per read_file call
+- File character limit: 10000 characters per read_file call
+- Environment is offline (no network/PyPI access). All repository and test dependencies are ALREADY pre-installed. Do NOT attempt to run pip install or download packages.
+
+## Instructions:
+0. All source code is under `/workspace`. Do NOT search outside `/workspace` (e.g. `/usr/`, `/wheels/`, system site-packages). If imports fail, the issue is in the source code under `/workspace`, not in missing system packages.
+1. Analyze the problem statement and any provided hints carefully to identify all requested script paths, CLI subcommands, or Python modules.
+2. Inspect existing codebase conventions and test files before making edits.
+3. Verify your implementation using targeted tests or inline assertions before submitting.
+4. Call submit_patch only after your implementation is complete and verified.
+5. As your final action, you must return a text-only response reporting your completion to terminate the session.<turn|>
+<|turn>model
+<|tool_call>call:get_status{}<tool_call|><|tool_response>response:get_status{value:<|"|>{"status": "ok", "tool_calls_used": 0, "patch_submitted": false, "patch_size": 0, "tool_calls_remaining": 100, "max_tool_calls": 100, "time_seconds_remaining": 3599.999920041999, "max_time_minutes": 60, "agent_elapsed_seconds": 8.033309131860733e-05, "max_turns": 500, "command_timeout_seconds": 300}<|"|>}<tool_response|><|tool_call>call:read_file{end_line:240,filepath:<|"|>tenacity/retry.py<|"|>,start_line:222}<tool_call|><|tool_response>response:read_file{value:<|"|>{"status": "ok", "filepath": "tenacity/retry.py", "content": "\n            predicate = message_fnc\n        elif match:\n            prog = re.compile(match)\n\n            def match_fnc(exception: BaseException) -> bool:\n                return not bool(prog.match(str(exception)))\n\n            predicate = match_fnc\n        else:\n            raise TypeError(\n                f\"{self.__class__.__name__}() missing 1 required argument 'message' or 'match'\"\n            )\n\n        super().__init__(predicate)\n\n\nclass retry_if_not_exception_message(retry_if_exception_message):\n    \"\"\"Retries until an exception message equals or matches.\"\"\"", "start_line": 222, "end_line": 240, "total_lines": 282, "is_truncated": false}<|"|>}<tool_response|><|tool_call>call:run_command{command:<|"|>python3 - <<'PYREPLAY'
+from pathlib import Path
+import hashlib, importlib
+expected=(Path.cwd() / 'tenacity/retry.py').resolve()
+try:
+ module = importlib.import_module('tenacity.retry')
+except Exception as import_error:
+ traceback=import_error.__traceback__
+ while traceback is not None:
+  file=traceback.tb_frame.f_globals.get('__file__')
+  if file and Path(file).resolve()==expected:
+   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')
+  traceback=traceback.tb_next
+ raise
+actual=Path(module.__file__).resolve()
+print("source_binding", str(actual), "sha256", hashlib.sha256(actual.read_bytes()).hexdigest())
+assert actual == expected, (actual, expected)
+from tenacity import RetryCallState, Retrying
+state=RetryCallState(Retrying(),None,(),{})
+from tenacity import retry_if_exception_message
+strategy=retry_if_exception_message(match='temporary')
+state.set_exception((ValueError,ValueError('temporary unavailable'),None))
+print('matching_exception_retry',strategy(state))
+assert strategy(state) is True
+state.set_exception((ValueError,ValueError('permanent'),None))
+assert strategy(state) is False
+
+PYREPLAY<|"|>}<tool_call|><|tool_response>response:run_command{value:<|"|>{"status": "error", "error_type": "CommandError", "error_message": "Traceback (most recent call last):\n  File \"<stdin>\", line 23, in <module>\nAssertionError\n", "details": {"stdout": "source_binding /Users/zhaohuaxiang/ccjjllt/agent_of_gemma_4/competition/vfarl/l4x4/round100/semantic-audit/025-049/revised-teachers-r1/029/teacher-r1/sandboxes/swegemma_sandbox_13030079-20b/workspace/tenacity/retry.py sha256 efd75593cb7412963a04478f45b85949697184460dcd2613beed3a09c37133f1\nmatching_exception_retry False\n", "stderr": "Traceback (most recent call last):\n  File \"<stdin>\", line 23, in <module>\nAssertionError\n", "exit_code": 1}}<|"|>}<tool_response|><|tool_call>call:edit_file{filepath:<|"|>tenacity/retry.py<|"|>,new_string:<|"|>            prog = re.compile(match)
+
+            def match_fnc(exception: BaseException) -> bool:
+                return bool(prog.match(str(exception)))
+
+            predicate = match_fnc
+        else:
+<|"|>,old_string:<|"|>            prog = re.compile(match)
+
+            def match_fnc(exception: BaseException) -> bool:
+                return not bool(prog.match(str(exception)))
+
+            predicate = match_fnc
+        else:
+<|"|>}<tool_call|><|tool_response>response:edit_file{value:<|"|>{"status": "ok", "filepath": "tenacity/retry.py", "occurrences": 1, "strategy": "exact", "diff": "--- a/tenacity/retry.py\n+++ b/tenacity/retry.py\n@@ -225,7 +225,7 @@\n             prog = re.compile(match)\n \n             def match_fnc(exception: BaseException) -> bool:\n-                return not bool(prog.match(str(exception)))\n+                return bool(prog.match(str(exception)))\n \n             predicate = match_fnc\n         else:\n", "is_truncated": false}<|"|>}<tool_response|><|tool_call>call:run_command{command:<|"|>python3 - <<'PYREPLAY'
+from pathlib import Path
+import hashlib, importlib
+expected=(Path.cwd() / 'tenacity/retry.py').resolve()
+try:
+ module = importlib.import_module('tenacity.retry')
+except Exception as import_error:
+ traceback=import_error.__traceback__
+ while traceback is not None:
+  file=traceback.tb_frame.f_globals.get('__file__')
+  if file and Path(file).resolve()==expected:
+   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')
+  traceback=traceback.tb_next
+ raise
+actual=Path(module.__file__).resolve()
+print("source_binding", str(actual), "sha256", hashlib.sha256(actual.read_bytes()).hexdigest())
+assert actual == expected, (actual, expected)
+from tenacity import RetryCallState, Retrying
+state=RetryCallState(Retrying(),None,(),{})
+from tenacity import retry_if_exception_message
+strategy=retry_if_exception_message(match='temporary')
+state.set_exception((ValueError,ValueError('temporary unavailable'),None))
+print('matching_exception_retry',strategy(state))
+assert strategy(state) is True
+state.set_exception((ValueError,ValueError('permanent'),None))
+assert strategy(state) is False
+
+PYREPLAY<|"|>}<tool_call|><|tool_response>response:run_command{value:<|"|>{"status": "ok", "stdout": "source_binding /Users/zhaohuaxiang/ccjjllt/agent_of_gemma_4/competition/vfarl/l4x4/round100/semantic-audit/025-049/revised-teachers-r1/029/teacher-r1/sandboxes/swegemma_sandbox_13030079-20b/workspace/tenacity/retry.py sha256 3d59d97d705e2cdd83ceccad29ec70db748f2e7f3601d65f14f0b63a1550ff56\nmatching_exception_retry True\n", "stderr": "", "exit_code": 0}<|"|>}<tool_response|><|tool_call>call:get_status{}<tool_call|><|tool_response>response:get_status{value:<|"|>{"status": "ok", "tool_calls_used": 4, "patch_submitted": false, "patch_size": 0, "tool_calls_remaining": 96, "max_tool_calls": 100, "time_seconds_remaining": 3599.798920791829, "max_time_minutes": 60, "agent_elapsed_seconds": 0.20107991597615182, "max_turns": 500, "command_timeout_seconds": 300}<|"|>}<tool_response|><|tool_call>call:submit_patch{}<tool_call|><|tool_response>response:submit_patch{value:<|"|>{"status": "ok", "patch_size": 475, "files_changed": 1}<|"|>}<tool_response|>Preserve the matching Boolean of the compiled pattern applied to the exception message. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness.<turn|>

@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Retry exceptions whose text matches an explicit anchored regular expression. The regular-expression match result is negated. Preserve the matching Boolean of the compiled pattern applied to the exception message. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "tenacity/retry.py",
+        "start_line": 222,
+        "end_line": 240
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'tenacity/retry.py').resolve()\ntry:\n module = importlib.import_module('tenacity.retry')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom tenacity import RetryCallState, Retrying\nstate=RetryCallState(Retrying(),None,(),{})\nfrom tenacity import retry_if_exception_message\nstrategy=retry_if_exception_message(match='temporary')\nstate.set_exception((ValueError,ValueError('temporary unavailable'),None))\nprint('matching_exception_retry',strategy(state))\nassert strategy(state) is True\nstate.set_exception((ValueError,ValueError('permanent'),None))\nassert strategy(state) is False\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "a60c14ee8695644bc0dc4bdb281e69c6b25d852c64f023df76db75cd2e8d314c"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "tenacity/retry.py",
+        "old_string": "            prog = re.compile(match)\n\n            def match_fnc(exception: BaseException) -> bool:\n                return not bool(prog.match(str(exception)))\n\n            predicate = match_fnc\n        else:\n",
+        "new_string": "            prog = re.compile(match)\n\n            def match_fnc(exception: BaseException) -> bool:\n                return bool(prog.match(str(exception)))\n\n            predicate = match_fnc\n        else:\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'tenacity/retry.py').resolve()\ntry:\n module = importlib.import_module('tenacity.retry')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom tenacity import RetryCallState, Retrying\nstate=RetryCallState(Retrying(),None,(),{})\nfrom tenacity import retry_if_exception_message\nstrategy=retry_if_exception_message(match='temporary')\nstate.set_exception((ValueError,ValueError('temporary unavailable'),None))\nprint('matching_exception_retry',strategy(state))\nassert strategy(state) is True\nstate.set_exception((ValueError,ValueError('permanent'),None))\nassert strategy(state) is False\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "a60c14ee8695644bc0dc4bdb281e69c6b25d852c64f023df76db75cd2e8d314c"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Preserve the matching Boolean of the compiled pattern applied to the exception message. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}

@@ -1,0 +1,1 @@
+Preparation stopped before any tool or official verification: the requested source_bytecode_policy string legacy is not a supported name. No task result was produced. The next fresh directory uses the imported LEGACY constant (legacy-default). Earlier tar/Python and reviewed-command-hash preparation mistakes also occurred before any task execution.

@@ -1,0 +1,66 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex agent /root/data_status, actual archived source API and independent official evidence review, 2026-10-28",
+  "review_notes": "Codex-authored off-policy behavior-asserting demonstration; no sampled Gemma, generated thinking or behavior logprobs. Real boto3 calls execute only under the actual archived Moto mock context. Source-binding and target behavior assertions fail before the unchanged production edit and pass after it. Original fixed100 train ID, task bytes, source bytes/mode, F2P/P2P and official verification files are preserved. Legacy human_reviewed schema label denotes Codex review; new actual tool events and separate original official baseline/final are required.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "moto/ses/models.py",
+        "start_line": 160,
+        "end_line": 180
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,importlib\nmodule=importlib.import_module('moto.ses.models')\nactual=Path(module.__file__).resolve();expected=(Path.cwd()/'moto/ses/models.py').resolve()\nassert actual==expected,(actual,expected)\nprint(\"source_binding\",actual,\"sha256\",hashlib.sha256(actual.read_bytes()).hexdigest())\nimport boto3\nfrom moto import mock_ses\nwith mock_ses():\n client=boto3.client('ses',region_name='us-east-1');identity='sender@example.com'\n client.verify_email_identity(EmailAddress=identity)\n client.set_identity_mail_from_domain(Identity=identity,MailFromDomain='mail.example.com')\n result=client.get_identity_mail_from_domain_attributes(Identities=[identity])\n print('identity_mail_from',result['MailFromDomainAttributes'])\n assert result['MailFromDomainAttributes'][identity]['MailFromDomain']=='mail.example.com'\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "38a04350a009e9eb095cd5838073df646c81756fcf5f0679da0a99333310cdff"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "moto/ses/models.py",
+        "old_string": "            return True\n        if address in self.email_addresses:\n            return True\n        _, host = address.split(\"@\", 1)\n        return host in self.domains\n\n    def verify_email_identity(self, address: str) -> None:\n",
+        "new_string": "            return True\n        if address in self.email_addresses:\n            return True\n        host = address.split(\"@\", 1)[-1]\n        return host in self.domains\n\n    def verify_email_identity(self, address: str) -> None:\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "moto/ses/models.py",
+        "old_string": "        mail_from_domain: Optional[str] = None,\n        behavior_on_mx_failure: Optional[str] = None,\n    ) -> None:\n        if identity not in (self.domains + self.addresses):\n            raise InvalidParameterValue(f\"Identity '{identity}' does not exist.\")\n\n        if mail_from_domain is None:\n            self.identity_mail_from_domains.pop(identity)\n            return\n\n        if not mail_from_domain.endswith(identity):\n            raise InvalidParameterValue(\n                f\"Provided MAIL-FROM domain '{mail_from_domain}' is not subdomain of \"\n                f\"the domain of the identity '{identity}'.\"\n            )\n\n        if behavior_on_mx_failure not in (None, \"RejectMessage\", \"UseDefaultValue\"):\n",
+        "new_string": "        mail_from_domain: Optional[str] = None,\n        behavior_on_mx_failure: Optional[str] = None,\n    ) -> None:\n        if not self._is_verified_address(identity):\n            raise InvalidParameterValue(f\"Identity '{identity}' does not exist.\")\n\n        if mail_from_domain is None:\n            self.identity_mail_from_domains.pop(identity)\n            return\n\n        if not mail_from_domain.endswith(identity.split(\"@\")[-1]):\n            raise InvalidParameterValue(\n                f\"Provided MAIL-FROM domain '{mail_from_domain}' is not subdomain of \"\n                f\"the domain of the identity '{identity.split('@')[-1]}'.\"\n            )\n\n        if behavior_on_mx_failure not in (None, \"RejectMessage\", \"UseDefaultValue\"):\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib,importlib\nmodule=importlib.import_module('moto.ses.models')\nactual=Path(module.__file__).resolve();expected=(Path.cwd()/'moto/ses/models.py').resolve()\nassert actual==expected,(actual,expected)\nprint(\"source_binding\",actual,\"sha256\",hashlib.sha256(actual.read_bytes()).hexdigest())\nimport boto3\nfrom moto import mock_ses\nwith mock_ses():\n client=boto3.client('ses',region_name='us-east-1');identity='sender@example.com'\n client.verify_email_identity(EmailAddress=identity)\n client.set_identity_mail_from_domain(Identity=identity,MailFromDomain='mail.example.com')\n result=client.get_identity_mail_from_domain_attributes(Identities=[identity])\n print('identity_mail_from',result['MailFromDomainAttributes'])\n assert result['MailFromDomainAttributes'][identity]['MailFromDomain']=='mail.example.com'\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "38a04350a009e9eb095cd5838073df646c81756fcf5f0679da0a99333310cdff"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Submitted the production fix. The source-bound local API observation now satisfies the expected behavior; original official verification is recorded separately."
+}

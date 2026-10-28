@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="69" time="7.049" timestamp="2026-10-28T01:51:03.854139+08:00" hostname="bogon"><testcase classname="tests.test_apigateway.test_apigateway" name="test_create_and_get_rest_api" time="0.200" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_update_rest_api" time="0.089" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_update_rest_api_invalid_api_id" time="0.113" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_update_rest_api_operation_add_remove" time="0.129" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_list_and_delete_apis" time="0.107" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_create_rest_api_with_tags" time="0.077" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_create_rest_api_with_policy" time="0.066" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_create_rest_api_invalid_apikeysource" time="0.087" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_create_rest_api_valid_apikeysources" time="0.084" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_create_rest_api_invalid_endpointconfiguration" time="0.068" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_create_rest_api_valid_endpointconfigurations" time="0.081" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_create_resource__validate_name" time="0.064"><failure message="botocore.errorfactory.BadRequestException: An error occurred (BadRequestException) when calling the CreateResource operation: Resource's path part only allow a-zA-Z0-9._- and curly braces at the beginning and the end and an optional plus sign before the closing brace.">@mock_apigateway
+    def test_create_resource__validate_name():
+        client = boto3.client("apigateway", region_name="us-west-2")
+        response = client.create_rest_api(name="my_api", description="this is my api")
+        api_id = response["id"]
+    
+        resources = client.get_resources(restApiId=api_id)
+        root_id = [resource for resource in resources["items"] if resource["path"] == "/"][
+            0
+        ]["id"]
+    
+        invalid_names = ["/users", "users/", "users/{user_id}", "us{er", "us+er"]
+        valid_names = ["users", "{user_id}", "{proxy+}", "{pro:xy+}", "us:er_0-9"]
+        # All invalid names should throw an exception
+        for name in invalid_names:
+            with pytest.raises(ClientError) as ex:
+                client.create_resource(restApiId=api_id, parentId=root_id, pathPart=name)
+            ex.value.response["Error"]["Code"].should.equal("BadRequestException")
+            ex.value.response["Error"]["Message"].should.equal(
+                "Resource's path part only allow a-zA-Z0-9._- and curly braces at the beginning and the end and an optional plus sign before the closing brace."
+            )
+        # All valid names  should go through
+        for name in valid_names:
+&gt;           client.create_resource(restApiId=api_id, parentId=root_id, pathPart=name)
+
+tests/test_apigateway/test_apigateway.py:286: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/private/tmp/vfarl-moto-source-api-cache-r3/botocore/client.py:565: in _api_call
+    return self._make_api_call(operation_name, kwargs)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = &lt;botocore.client.APIGateway object at 0x10ccebef0&gt;
+operation_name = 'CreateResource'
+api_params = {'parentId': 'o0zwe90k27', 'pathPart': '{pro:xy+}', 'restApiId': 'yabxbbyjl2'}
+
+    def _make_api_call(self, operation_name, api_params):
+        operation_model = self._service_model.operation_model(operation_name)
+        service_name = self._service_model.service_name
+        history_recorder.record(
+            'API_CALL',
+            {
+                'service': service_name,
+                'operation': operation_name,
+                'params': api_params,
+            },
+        )
+        if operation_model.deprecated:
+            logger.debug(
+                'Warning: %s.%s() is deprecated', service_name, operation_name
+            )
+        request_context = {
+            'client_region': self.meta.region_name,
+            'client_config': self.meta.config,
+            'has_streaming_input': operation_model.has_streaming_input,
+            'auth_type': operation_model.auth_type,
+        }
+        api_params = self._emit_api_params(
+            api_params=api_params,
+            operation_model=operation_model,
+            context=request_context,
+        )
+        (
+            endpoint_url,
+            additional_headers,
+            properties,
+        ) = self._resolve_endpoint_ruleset(
+            operation_model, api_params, request_context
+        )
+        if properties:
+            # Pass arbitrary endpoint info with the Request
+            # for use during construction.
+            request_context['endpoint_properties'] = properties
+        request_dict = self._convert_to_request_dict(
+            api_params=api_params,
+            operation_model=operation_model,
+            endpoint_url=endpoint_url,
+            context=request_context,
+            headers=additional_headers,
+        )
+        resolve_checksum_context(request_dict, operation_model, api_params)
+    
+        service_id = self._service_model.service_id.hyphenize()
+        handler, event_response = self.meta.events.emit_until_response(
+            f'before-call.{service_id}.{operation_name}',
+            model=operation_model,
+            params=request_dict,
+            request_signer=self._request_signer,
+            context=request_context,
+        )
+    
+        if event_response is not None:
+            http, parsed_response = event_response
+        else:
+            maybe_compress_request(
+                self.meta.config, request_dict, operation_model
+            )
+            apply_request_checksum(request_dict)
+            http, parsed_response = self._make_request(
+                operation_model, request_dict, request_context
+            )
+    
+        self.meta.events.emit(
+            f'after-call.{service_id}.{operation_name}',
+            http_response=http,
+            parsed=parsed_response,
+            model=operation_model,
+            context=request_context,
+        )
+    
+        if http.status_code &gt;= 300:
+            error_info = parsed_response.get("Error", {})
+            error_code = error_info.get("QueryErrorCode") or error_info.get(
+                "Code"
+            )
+            error_class = self.exceptions.from_code(error_code)
+&gt;           raise error_class(parsed_response, operation_name)
+E           botocore.errorfactory.BadRequestException: An error occurred (BadRequestException) when calling the CreateResource operation: Resource's path part only allow a-zA-Z0-9._- and curly braces at the beginning and the end and an optional plus sign before the closing brace.
+
+/private/tmp/vfarl-moto-source-api-cache-r3/botocore/client.py:1017: BadRequestException</failure></testcase><testcase classname="tests.test_apigateway.test_apigateway" name="test_create_resource" time="0.098" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_child_resource" time="0.093" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_create_method" time="0.073" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_create_method_apikeyrequired" time="0.087" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_create_method_response" time="0.065" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_get_method_unknown_resource_id" time="0.057" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_delete_method" time="0.148" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_integrations" time="0.122" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_integration_response" time="0.074" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_update_authorizer_configuration" time="0.183" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_non_existent_authorizer" time="0.092" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_create_authorizer" time="0.128" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_delete_authorizer" time="0.157" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_put_integration_response_with_response_template" time="0.066" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_put_integration_response_but_integration_not_found" time="0.077" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_put_integration_validation" time="0.096" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_create_domain_names" time="0.067" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_get_domain_names" time="0.169" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_get_domain_name" time="0.057" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_create_model" time="0.068" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_get_api_models" time="0.083" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_get_model_by_name" time="0.067" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_get_model_with_invalid_name" time="0.103" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_api_key_value_min_length" time="0.062" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_get_api_key_include_value" time="0.081" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_get_api_keys_include_values" time="0.095" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_create_api_key" time="0.090" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_create_api_key_twice" time="0.086" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_api_keys" time="0.064" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_usage_plans" time="0.064" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_update_usage_plan" time="0.059" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_usage_plan_keys" time="0.166" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_create_usage_plan_key_non_existent_api_key" time="0.096" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_get_usage_plans_using_key_id" time="0.090" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_get_integration_response_unknown_response" time="0.086" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_get_api_key_unknown_apikey" time="0.098" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_get_domain_name_unknown_domainname" time="0.081" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_delete_domain_name_unknown_domainname" time="0.069" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_create_base_path_mapping" time="0.127" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_create_base_path_mapping_with_unknown_api" time="0.096" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_create_base_path_mapping_with_invalid_base_path" time="0.097" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_create_base_path_mapping_with_unknown_stage" time="0.059" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_create_base_path_mapping_with_duplicate_base_path" time="0.059" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_get_base_path_mappings" time="0.061" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_get_base_path_mappings_with_unknown_domain" time="0.061" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_get_base_path_mapping" time="0.176" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_get_base_path_mapping_with_unknown_domain" time="0.072" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_get_base_path_mapping_with_unknown_base_path" time="0.094" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_delete_base_path_mapping" time="0.079" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_delete_base_path_mapping_with_unknown_domain" time="0.098" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_delete_base_path_mapping_with_unknown_base_path" time="0.081" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_update_path_mapping" time="0.100" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_update_path_mapping_with_unknown_domain" time="0.085" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_update_path_mapping_with_unknown_base_path" time="0.058" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_update_path_mapping_to_same_base_path" time="0.076" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_update_path_mapping_with_unknown_api" time="0.105" /><testcase classname="tests.test_apigateway.test_apigateway" name="test_update_path_mapping_with_unknown_stage" time="0.087" /></testsuite></testsuites>

@@ -1,0 +1,57 @@
+{
+  "evidence_kind": "human_reviewed_off_policy_demonstration",
+  "reviewed_by": "Codex manual causal source, pinned original tests, and command review 2026-10-25",
+  "review_notes": "Report one explicitly selected code and one unmatched code through a real StyleGuide/DecisionEngine. Every decision uses a hardcoded unrelated error code. Forward the actual code argument into the configured decision engine. Original F2P/P2P unchanged. Baseline diagnostic failure is expected task reproduction, not a policy error. Source imports asserted against the workspace before and after the repair.",
+  "actions": [
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "filepath": "src/flake8/style_guide.py",
+        "start_line": 373,
+        "end_line": 391
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/flake8/style_guide.py').resolve()\ntry:\n module = importlib.import_module('flake8.style_guide')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom argparse import Namespace\nfrom flake8.style_guide import StyleGuide,Decision\nfrom flake8.statistics import Statistics\noptions=Namespace(select=['E'],extend_select=[],ignore=[],extend_ignore=[],extended_default_select=[],extended_default_ignore=[])\nguide=StyleGuide(options,None,Statistics())\nselected=guide.should_report_error('E201')\nignored=guide.should_report_error('F401')\nprint('code_decisions',selected,ignored)\nassert selected is Decision.Selected and ignored is Decision.Ignored\n\nPYREPLAY"
+      },
+      "expected_status": "error",
+      "reviewed_command_sha256": "9c199abf7d6fe3749541261f2aef5c017afee7eaf9d1d010d2d17186256175d8"
+    },
+    {
+      "tool": "edit_file",
+      "arguments": {
+        "filepath": "src/flake8/style_guide.py",
+        "old_string": "        :param code:\n            The code for the check that has been run.\n        \"\"\"\n        # Introduced bug: Switched the logic to use a hardcoded code\n        return self.decider.decision_for(\"HARDCODED_CODE\")\n\n    def handle_error(\n        self,\n",
+        "new_string": "        :param code:\n            The code for the check that has been run.\n        \"\"\"\n        return self.decider.decision_for(code)\n\n    def handle_error(\n        self,\n"
+      },
+      "expected_status": "ok"
+    },
+    {
+      "tool": "run_command",
+      "arguments": {
+        "command": "python3 - <<'PYREPLAY'\nfrom pathlib import Path\nimport hashlib, importlib\nexpected=(Path.cwd() / 'src/flake8/style_guide.py').resolve()\ntry:\n module = importlib.import_module('flake8.style_guide')\nexcept Exception as import_error:\n traceback=import_error.__traceback__\n while traceback is not None:\n  file=traceback.tb_frame.f_globals.get('__file__')\n  if file and Path(file).resolve()==expected:\n   print('source_binding', str(expected), 'sha256', hashlib.sha256(expected.read_bytes()).hexdigest(), 'actual_import_failure_frame')\n  traceback=traceback.tb_next\n raise\nactual=Path(module.__file__).resolve()\nprint(\"source_binding\", str(actual), \"sha256\", hashlib.sha256(actual.read_bytes()).hexdigest())\nassert actual == expected, (actual, expected)\nfrom argparse import Namespace\nfrom flake8.style_guide import StyleGuide,Decision\nfrom flake8.statistics import Statistics\noptions=Namespace(select=['E'],extend_select=[],ignore=[],extend_ignore=[],extended_default_select=[],extended_default_ignore=[])\nguide=StyleGuide(options,None,Statistics())\nselected=guide.should_report_error('E201')\nignored=guide.should_report_error('F401')\nprint('code_decisions',selected,ignored)\nassert selected is Decision.Selected and ignored is Decision.Ignored\n\nPYREPLAY"
+      },
+      "expected_status": "ok",
+      "reviewed_command_sha256": "9c199abf7d6fe3749541261f2aef5c017afee7eaf9d1d010d2d17186256175d8"
+    },
+    {
+      "tool": "get_status",
+      "arguments": {},
+      "expected_status": "ok"
+    },
+    {
+      "tool": "submit_patch",
+      "arguments": {},
+      "expected_status": "ok"
+    }
+  ],
+  "final_response": "Forward the actual code argument into the configured decision engine. Source-bound inline observations now pass. Patch submitted; clean full-file task verification is performed separately by the harness."
+}
