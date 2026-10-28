@@ -22,8 +22,22 @@ def main():
     parser.add_argument('--bootstrap', type=Path, required=True)
     parser.add_argument('--worker-index', type=int, choices=(0, 1), required=True)
     parser.add_argument('--ipc', type=Path, required=True)
+    parser.add_argument('--session-prefix-rewind', action='store_true',
+        help='Opt in to same pre-action prefix cache rewind; requires the matching resident bootstrap and a positive session-cache budget')
     args = parser.parse_args()
     setup = json.loads(args.bootstrap.read_text())
+    if args.session_prefix_rewind != bool(setup.get('session_prefix_rewind', False)):
+        parser.error('--session-prefix-rewind must match the explicit resident bootstrap setting')
+    if args.session_prefix_rewind and setup.get('session_cache_tokens', 0) <= 0:
+        parser.error('--session-prefix-rewind requires a positive session-cache budget')
+    history_format = setup.get('history_format', 'raw-preserved')
+    if history_format not in {'raw-preserved', 'canonical-ct-v1'} or (
+            history_format != 'raw-preserved'
+            and setup.get('collection_protocol') != 'live-original-pair'):
+        parser.error('Canonical history requires live-original-pair and an explicit supported history format')
+    if history_format != 'raw-preserved' and setup.get('history_source_sha256') != digest(
+            Path(__file__).with_name('history.py').read_bytes()):
+        raise RuntimeError('Canonical history source SHA differs from the explicit resident bootstrap')
     source_root = Path(__file__).resolve().parents[3]
     from .state import configure_isolation
     isolation = configure_isolation(setup['isolation'], hidden_paths=[
@@ -39,7 +53,8 @@ def main():
     from training.vfarl_batched import configure_batched_policy
     configure_batched_policy(policy, max_batch_size=setup.get('batch_size', 2),
         max_batch_tokens=setup.get('batch_max_tokens', 32768),
-        session_cache_tokens=setup.get('session_cache_tokens', 0))
+        session_cache_tokens=setup.get('session_cache_tokens', 0),
+        session_prefix_rewind=bool(args.session_prefix_rewind))
     selection = json.loads(Path(setup['selection']).read_text())
     entries = selection['tasks']
     if any(row['physical_split'] != 'train' for row in entries):
@@ -79,6 +94,7 @@ def main():
                         score_focal_data=None, score_focal_before=False,
                         context=setup['context'], draws=1, branches=setup.get('branches', 3),
                         collection_protocol=setup.get('collection_protocol', 'historical-three-branch'),
+                        complete_fixed_cohort=setup.get('complete_fixed_cohort', False),
                         focal_trigger=setup.get('focal_trigger', 'any-tool-failure'),
                         max_states=command['maximum_states'], worker_index=args.worker_index,
                         worker_count=2, task_queue=Path(command['task_queue']),
@@ -90,6 +106,8 @@ def main():
                         thinking_budget=setup['thinking_budget'], isolation=setup['isolation'],
                         active_tasks=setup.get('active_tasks', 4),
                         resident_hidden_root=Path(setup['out']))
+                    if history_format != 'raw-preserved':
+                        values['history_format'] = history_format
                     task_ids = command['task_ids']
                     wanted = set(task_ids)
                     by_id = {row['instance_id']: row for row in entries}
@@ -107,7 +125,8 @@ def main():
                             max_batch_size=setup.get('batch_size', 2),
                             wait_ms=setup.get('batch_wait_ms', 10),
                             max_batch_tokens=setup.get('batch_max_tokens', 32768),
-                            session_cache_tokens=setup.get('session_cache_tokens', 0))
+                            session_cache_tokens=setup.get('session_cache_tokens', 0),
+                            session_prefix_rewind=bool(args.session_prefix_rewind))
                         try:
                             await collect(SimpleNamespace(**values), subset, questions, policy=service)
                         finally:
@@ -119,14 +138,16 @@ def main():
                 elif operation == 'update':
                     from training.train_vfarl_unsloth import run
                     from training.common import sha256_file
+                    from training.vfarl_optimizer import load_bound_optimizer, save_bound_optimizer
                     policy.switch_execution_mode('training')
+                    optimizer_resume = None
                     if optimizer is None:
                         optimizer = policy.torch.optim.AdamW(
                             [parameter for name, parameter in policy.model.named_parameters()
                              if 'lora_' in name], lr=policy.cfg['learning_rate'], weight_decay=0.0)
                         if setup.get('optimizer_state'):
-                            optimizer.load_state_dict(policy.torch.load(setup['optimizer_state'],
-                                map_location='cpu', weights_only=True))
+                            optimizer_resume = load_bound_optimizer(setup['optimizer_state'],
+                                policy, optimizer, learning_rate=policy.cfg['learning_rate'])
                     # Loading Adam state restores param-group learning rates as
                     # well as moments. This run's declared rate takes priority;
                     # keep the existing step counters and moment tensors intact.
@@ -137,6 +158,8 @@ def main():
                         before_assignment=prior_learning_rates,
                         actual=[float(group['lr']) for group in optimizer.param_groups],
                         policy='Current declared learning rate; Adam moments and step counters retained')
+                    if optimizer_resume is not None:
+                        optimizer_learning_rate['bound_resume'] = optimizer_resume
                     print(json.dumps(dict(phase='resident_optimizer_learning_rate',
                         **optimizer_learning_rate)), flush=True)
                     diagnostic_error = None
@@ -155,12 +178,11 @@ def main():
                         print(json.dumps(dict(phase='resident_committed_diagnostic_error',
                             out=command['out'], error=diagnostic_error)), flush=True)
                     latest = Path(setup['out']) / 'optimizer-latest.pt'
-                    temporary = latest.with_suffix('.part')
-                    policy.torch.save(optimizer.state_dict(), temporary)
-                    temporary.replace(latest)
+                    optimizer_binding = save_bound_optimizer(latest, policy, optimizer)
                     policy.switch_execution_mode('inference')
                     result = dict(out=command['out'], policy=policy.identity,
                         optimizer_state=str(latest), optimizer_state_sha256=sha256_file(latest),
+                        optimizer_binding=optimizer_binding,
                         optimizer_learning_rate=optimizer_learning_rate,
                         diagnostic_error=diagnostic_error)
                 elif operation == 'sync':

@@ -13,18 +13,22 @@ FOCAL_SELECTION_RULES = {
 }
 
 
-def classify_tool_feedback(tool, arguments, response, ledger):
+def classify_tool_feedback(tool, arguments, response, ledger, *, production_change=None):
     """Read the real response, including stdout hidden by stderr summaries."""
     response = response if isinstance(response, dict) else {}
     failed = response.get('status') == 'error'
     error_type = str(response.get('error_type', ''))
-    mutations = ledger.get('successful_mutation_observations', 0)
-    mutation = (response.get('status') == 'ok' and
-        (tool == 'write_file' or (tool == 'edit_file' and bool(response.get('diff')))))
+    mutations = ledger.get('production_mutation_observations', 0)
+    # A successful tool name/diff is insufficient: it may only write reports
+    # or protected files. Missing host content evidence remains unknown.
+    mutation = (production_change.get('changed') if production_change is not None else
+                None if tool in {'run_command', 'edit_file', 'write_file'} else False)
     result = dict(category='tool_success', focal_eligible=False,
         error_type=error_type, failed=failed,
-        mutation_observation=bool(mutation), prior_mutation_observations=mutations,
+        mutation_observation=mutation, prior_mutation_observations=mutations,
         interpretation='Prefix scheduling only; no semantic repair or terminal reward inferred')
+    if production_change is not None:
+        result['production_change'] = production_change
     if not failed:
         return result
     if any(word in error_type.lower() for word in ('budget', 'timeout', 'timeexceeded')):
@@ -85,8 +89,12 @@ def classify_tool_feedback(tool, arguments, response, ledger):
     test_command = re.search(r'(?<![\w.-])(?:pytest|py\.test|unittest|tox|nox)(?![\w.-])', command)
     test_output = re.search(r'(?:FAILED\s+[^\n]*test|(?:FAIL|ERROR):\s+test|ERROR collecting)', output)
     if test_command or test_output:
-        if mutations:
+        if mutations or mutation is True:
             result.update(category='repair_attempt_failed', focal_eligible=True)
+        elif mutation is None:
+            # An unreadable state or a newly emitted report is not evidence of
+            # a repair attempt. Historical unknowns never grant eligibility.
+            result['category'] = 'mutation_unknown_test_failure'
         else:
             result['category'] = 'diagnostic_test_failure'
         return result

@@ -18,6 +18,7 @@ import math
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tarfile
 import time
@@ -27,10 +28,32 @@ from contextlib import contextmanager
 from pathlib import Path
 
 SIX_TOOLS = {'run_command', 'read_file', 'edit_file', 'write_file', 'get_status', 'submit_patch'}
+HISTORY_FORMATS = ('raw-preserved', 'canonical-ct-v1')
 
 
 class PolicyProtocolError(RuntimeError):
     """A shared sampling/state interface failed; do not retry it on every task."""
+
+
+class RuntimePreparationError(RuntimeError):
+    """The declared task dependency environment could not be prepared."""
+
+    def __init__(self, details):
+        self.details = details
+        super().__init__('Task runtime is explicitly unavailable: '+json.dumps(details, sort_keys=True))
+
+
+def require_task_runtime_available(runtime):
+    preparation = runtime.get('linux_preparation') or {}
+    preparation_success = preparation.get('success') if isinstance(preparation, dict) else None
+    if (runtime.get('linux_environment_ready') is False
+            or runtime.get('linux_preparation_error')
+            or preparation_success is False):
+        raise RuntimePreparationError({
+            'linux_environment_ready': runtime.get('linux_environment_ready'),
+            'linux_preparation_error': runtime.get('linux_preparation_error'),
+            'linux_preparation_success': preparation_success,
+        })
 
 
 def digest(value):
@@ -54,6 +77,72 @@ def append(path, value):
         handle.flush()
 
 
+def canonical_history_ledger(tokenizer, tools, messages, expected_prefix):
+    """Initialize only explicitly requested structured conditioning, never samples."""
+    from competition.vfarl.l4x4 import history
+    try:
+        rendered = history.render_prefix(history.new_history(messages), tokenizer, tools)
+    except (history.UnsupportedHistory, history.HistoryBindingError) as exc:
+        raise PolicyProtocolError('Canonical history initialization failed: '+str(exc)) from exc
+    if rendered['prompt_token_ids'] != expected_prefix:
+        raise PolicyProtocolError('Canonical initial history differs from the actual policy prefix')
+    return dict(history_format=history.PROFILE, canonical_history_active=True,
+        canonical_history=rendered['history'],
+        canonical_history_source_sha256=digest(Path(history.__file__).read_bytes()),
+        canonical_history_initial_metadata=rendered['metadata'])
+
+
+def require_canonical_prefix(ledger, tokenizer, tools, expected_prefix):
+    """Bind restored structured history before sampling or executing a tool."""
+    from competition.vfarl.l4x4 import history
+    if digest(Path(history.__file__).read_bytes()) != ledger.get('canonical_history_source_sha256'):
+        raise PolicyProtocolError('Canonical history implementation changed after initialization')
+    try:
+        previous = history.render_prefix(ledger['canonical_history'], tokenizer, tools)
+    except (history.UnsupportedHistory, history.HistoryBindingError, KeyError) as exc:
+        raise PolicyProtocolError('Invalid persisted canonical conditioning: '+str(exc)) from exc
+    if previous['prompt_token_ids'] != expected_prefix:
+        raise PolicyProtocolError('Canonical history is not the prefix of the actual sampled action')
+
+
+def advance_canonical_history(ledger, tokenizer, tools, action, *, kind,
+                              parsed_call=None, response=None, message=None):
+    """Return new conditioning or explicitly fall back for unsupported raw output.
+
+    Sampling evidence is read-only. Invalid persisted state/template/source is a
+    protocol error; an unsupported emitted shape keeps its real sample and uses
+    the existing raw feedback path for the remainder of this episode.
+    """
+    if not ledger.get('canonical_history_active', False):
+        return None, None
+    from competition.vfarl.l4x4 import history
+    require_canonical_prefix(ledger, tokenizer, tools, action['prompt_token_ids'])
+    try:
+        if kind == 'tool':
+            advanced = history.append_tool_result(ledger['canonical_history'],
+                raw_text=action['raw_text'], parsed_call=parsed_call, response=response,
+                call_id=f'vfarl_turn_{ledger["turns"]:06d}', tokenizer=tokenizer, tools=tools)
+        elif kind == 'nudge':
+            advanced = history.append_user_nudge(ledger['canonical_history'], text=message,
+                preceding_assistant_raw_text=action['raw_text'], tokenizer=tokenizer, tools=tools)
+        else:
+            raise PolicyProtocolError('Unknown canonical history transition')
+    except history.UnsupportedHistory as exc:
+        event = dict(kind='canonical_history_fallback', after_turn=ledger['turns'],
+            reason=str(exc), raw_text_sha256=digest(action['raw_text'].encode()),
+            fallback='raw-preserved for the rest of this episode',
+            behavior_tokens_or_logprobs_modified=False, sample_discarded=False)
+        ledger['canonical_history_active'] = False
+        ledger['canonical_history_fallback'] = event
+        return None, event
+    except history.HistoryBindingError as exc:
+        raise PolicyProtocolError('Canonical history binding failed: '+str(exc)) from exc
+    ledger['canonical_history'] = advanced['history']
+    event = dict(kind='canonical_history_transition', after_turn=ledger['turns'],
+                 metadata=advanced['metadata'])
+    return advanced['prompt_token_ids'], event
+
+
 async def blocking_call(function, *args, **kwargs):
     """Run host work off the agent loop and drain it before task cleanup.
 
@@ -74,12 +163,84 @@ def safe_id(value):
     return value
 
 
+def cpu_evidence_applicability(row, task, assets, isolation):
+    """Bind CPU verification inputs; keep task/prompt identity distinct.
+
+    The fixed-patch verifier does not read problem_statement. A real old task
+    object may establish that this one field changed; metadata claims alone
+    never establish compatibility. Policy samples still bind the full task.
+    """
+    from competition.vfarl.l4x4.bytecode import LEGACY, policy_name
+    asset = Path(assets) / safe_id(task['instance_id'])
+    missing = [name for name in ('task.json', 'source-snapshot.tgz', 'submitted.patch', 'runtime.json')
+               if not (asset/name).is_file()]
+    if missing:
+        return dict(matches_current_task=False, matches_current_verification=False,
+            missing_current_asset_files=missing, mismatch_fields=['current_asset_not_materialized'],
+            verification_mismatch_fields=['current_asset_not_materialized'],
+            statement_only_compatibility=None,
+            interpretation='Current task assets are not materialized in this scope; no CPU failure inferred')
+    current_bytes = (asset/'task.json').read_bytes()
+    expected = dict(instance_id=task['instance_id'],
+        task_input_sha256=digest(current_bytes),
+        snapshot_sha256=digest((asset/'source-snapshot.tgz').read_bytes()),
+        reviewed_patch_sha256=digest((asset/'submitted.patch').read_bytes()),
+        execution_isolation=isolation,
+        source_bytecode_policy=policy_name(json.loads((asset/'runtime.json').read_text())))
+    if expected['task_input_sha256'] != task['task_input_sha256']:
+        raise ValueError('Current task asset differs from frozen selection: '+task['instance_id'])
+    row = dict(row or {})
+    # Absence denotes the actual historical default, never the new profile.
+    row.setdefault('source_bytecode_policy', LEGACY)
+    mismatches = [key for key, value in expected.items() if row.get(key) != value]
+    compatibility = None
+    if mismatches == ['task_input_sha256']:
+        old_sha = row.get('task_input_sha256')
+        compatibility = dict(verified=False, basis='problem_statement_only_fixed_patch_cpu',
+            original_task_input_sha256=old_sha,
+            current_task_input_sha256=expected['task_input_sha256'])
+        if not isinstance(old_sha, str) or not re.fullmatch(r'[0-9a-f]{64}', old_sha):
+            compatibility['reason'] = 'CPU record has no valid original task SHA'
+        else:
+            witness = asset.parent.parent/'provenance/cpu-verification-tasks'/(old_sha+'.json')
+            compatibility['original_task_witness'] = str(witness)
+            try:
+                original_bytes = witness.read_bytes()
+                if digest(original_bytes) != old_sha:
+                    compatibility['reason'] = 'Original task witness SHA differs from the CPU record'
+                else:
+                    original, current = json.loads(original_bytes), json.loads(current_bytes)
+                    if (not isinstance(original, dict) or not isinstance(current, dict)
+                            or not isinstance(original.get('problem_statement'), str)
+                            or not isinstance(current.get('problem_statement'), str)):
+                        compatibility['reason'] = 'Expected two complete task objects with textual problem statements'
+                    elif ({key: value for key, value in original.items() if key != 'problem_statement'}
+                            != {key: value for key, value in current.items() if key != 'problem_statement'}):
+                        compatibility['reason'] = 'Task fields other than problem_statement changed'
+                    else:
+                        compatibility.update(verified=True,
+                            reason='Actual SHA-bound task objects have identical nonstatement fields',
+                            historical_cpu_row_rewritten=False,
+                            new_prompt_or_policy_evidence=False)
+            except (OSError, ValueError, UnicodeError) as exc:
+                compatibility['reason'] = 'Original task witness unavailable or unreadable: '+type(exc).__name__
+    verification_matches = not mismatches or bool(compatibility and compatibility['verified'])
+    return dict(matches_current_task=not mismatches,
+        matches_current_verification=verification_matches, expected=expected,
+        observed={key: row.get(key) for key in expected}, mismatch_fields=mismatches,
+        verification_mismatch_fields=[] if verification_matches else mismatches,
+        statement_only_compatibility=compatibility,
+        interpretation='CPU verification compatibility does not relabel task/prompt identity or establish runtime equivalence; actual dependency-profile applicability remains separate')
+
+
 class TaskQueue:
     """Host-only, process-safe claims in the frozen task order.
 
     A claim is never silently retried after a worker failure. Every started
     task and focal group remains evidence, including failures and unknowns.
-    Stopping affects future claims/state reservations, never an active branch.
+    Historical stopping affects future claims/state reservations. An explicitly
+    fixed live cohort completes its claimed pairs regardless of another pair's
+    outcome; the claim deadline still prevents starting unclaimed tasks.
     """
     def __init__(self, path, task_ids, *, selection_sha256, maximum_states,
                  stop_after_mixed_groups=0, stop_after_tasks=0, stop_after_seconds=0,
@@ -131,7 +292,8 @@ class TaskQueue:
         if self.time_budget_reached(state):
             return 'declared-collection-time-budget-reached'
         mixed = self.contract['stop_after_mixed_groups']
-        if mixed and len(state['mixed_groups']) >= mixed:
+        if (mixed and len(state['mixed_groups']) >= mixed
+                and not self.complete_fixed_cohort()):
             return 'declared-mixed-group-target-reached'
         tasks = self.contract['stop_after_tasks']
         if tasks and len(state['claimed']) >= tasks:
@@ -144,6 +306,13 @@ class TaskQueue:
         seconds = self.contract['stop_after_seconds']
         return bool(seconds and time.monotonic() - state['started_at'] >= seconds)
 
+    def complete_fixed_cohort(self):
+        return bool((self.contract.get('execution_contract') or {}).get('complete_fixed_cohort'))
+
+    def admitted_cohort_task(self, state, task_id):
+        return (self.complete_fixed_cohort() and task_id is not None
+                and any(row['instance_id'] == task_id for row in state['claimed']))
+
     def claim(self, worker):
         with self.locked() as state:
             reason = self.stop_reason(state)
@@ -154,13 +323,17 @@ class TaskQueue:
             state['claimed'].append(dict(instance_id=task_id, worker=worker, claimed_at=time.time()))
             return task_id
 
-    def state_available(self):
+    def state_available(self, task_id=None):
         with self.locked() as state:
             # A task budget limits task claims, not the states of those tasks.
+            # A fixed live cohort commits its claimed tasks before observing
+            # returns. Finish their pairs even if another task reaches the
+            # mixed target or the deadline for starting new tasks has passed.
             mixed = self.contract['stop_after_mixed_groups']
             return (len(state['states']) < self.contract['maximum_states']
-                    and not self.time_budget_reached(state)
-                    and not (mixed and len(state['mixed_groups']) >= mixed))
+                    and (self.admitted_cohort_task(state, task_id)
+                         or (not self.time_budget_reached(state)
+                             and not (mixed and len(state['mixed_groups']) >= mixed))))
 
     def reserve_state(self, state_id, task_id, draw, worker):
         with self.locked() as state:
@@ -168,8 +341,9 @@ class TaskQueue:
                 raise ValueError('A focal state was already reserved in this run')
             mixed = self.contract['stop_after_mixed_groups']
             if (len(state['states']) >= self.contract['maximum_states']
-                    or self.time_budget_reached(state)
-                    or (mixed and len(state['mixed_groups']) >= mixed)):
+                    or (not self.admitted_cohort_task(state, task_id)
+                        and (self.time_budget_reached(state)
+                             or (mixed and len(state['mixed_groups']) >= mixed)))):
                 return False
             state['states'][state_id] = dict(instance_id=task_id, draw=draw, worker=worker,
                                              reserved_at=time.time(), completed=False)
@@ -257,11 +431,18 @@ class NativeArguments:
                 self.pos += 1
             self.take(']')
             return result
-        match = re.match(r'(?:true|false|null|none|[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)', self.text[self.pos:])
+        match = re.match(r'(?:true|false|null|none|None|[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)', self.text[self.pos:])
         if match is None:
             raise ValueError("Invalid native argument literal")
         self.pos += len(match.group())
-        return json.loads(match.group().replace('none', 'null'))
+        literal = match.group()
+        value = json.loads('null' if literal in ('none', 'None') else literal)
+        if isinstance(value, float) and not math.isfinite(value):
+            # A decimal exponent can overflow Python's float even though its
+            # spelling matched. Keep it in the parse-feedback path instead of
+            # executing an unserializable argument and then losing its event.
+            raise ValueError('Nonfinite native numeric argument')
+        return value
 
 
 def parse_call(text):
@@ -362,6 +543,9 @@ def live_original_evidence(candidate, summary, restored, restore_path, original_
               'behavior_logprobs', 'policy_id', 'reference_id')
     sample_hash = canonical_digest({key: action[key] for key in fields})
     source_hash = canonical_digest({key: source_action[key] for key in fields})
+    sampler_limits = ('requested_max_new_tokens', 'effective_max_new_tokens')
+    if any(action.get(key) != source_action.get(key) for key in sampler_limits):
+        raise PolicyProtocolError('Live original sampler limits differ from its actual action log')
     prefix_hash = canonical_digest(action['prompt_token_ids'])
     captured_ledger_hash = canonical_digest(state['ledger'])
     restored_ledger_hash = canonical_digest(restored['ledger'])
@@ -396,6 +580,7 @@ def live_original_evidence(candidate, summary, restored, restore_path, original_
         snapshot_manifest_sha256=digest(snapshot_path.read_bytes()),
         original_actions_path=str(action_path), original_action_line=index+1,
         original_action_line_sha256=digest(source_line),
+        original_sampler_limits={key: source_action.get(key) for key in sampler_limits},
         original_episode_path=str(episode_path),
         original_episode_sha256=digest(episode_path.read_bytes()),
         captured_ledger_sha256=captured_ledger_hash,
@@ -410,9 +595,11 @@ def live_original_evidence(candidate, summary, restored, restore_path, original_
 
 
 def focal_record(action, candidate, branch_summary, original_summary, *, branch_id,
-                 instance_id, kind, on_policy, restore_path, environment_control):
-    return dict(action, state_id=candidate['manifest']['state_id'],
+                 instance_id, kind, on_policy, restore_path, environment_control,
+                 focal_unit='complete_response'):
+    row = dict(action, state_id=candidate['manifest']['state_id'],
         branch_id=branch_id, instance_id=instance_id, kind=kind, on_policy=on_policy,
+        focal_unit=focal_unit,
         verified=branch_summary['verified'], reward=branch_summary['reward'],
         origin_episode_reward=original_summary['reward'],
         focal_selection_basis='observed tool failure, regardless of original final result',
@@ -423,6 +610,14 @@ def focal_record(action, candidate, branch_summary, original_summary, *, branch_
         checkpoint_last_tool_feedback=candidate['last_tool_feedback'],
         restoration_scope=candidate['manifest']['restoration_scope'],
         restored_state_evidence=str(restore_path), verification=branch_summary['verification'])
+    if focal_unit == 'bounded_response_segment':
+        state = candidate['manifest']['state']
+        ledger = state['ledger']
+        row['focal_segment_boundary'] = dict(candidate['sampling_limits'],
+            format='vfarl-bounded-response-segment-v1', state_id=row['state_id'],
+            prompt_token_ids_sha256=canonical_digest(state['prompt_token_ids']),
+            pre_action_ledger=ledger, captured_ledger_sha256=canonical_digest(ledger))
+    return row
 
 
 def score_focal_rows(policy, args, data_path, *, stage):
@@ -452,7 +647,7 @@ def score_focal_rows(policy, args, data_path, *, stage):
         if line.strip():
             row = json.loads(line)
             original_lines[row['branch_id']] = (number, digest(line.encode()))
-    rows, evidence = prepare_rows(data_path, args.context)
+    rows, evidence = prepare_rows(data_path, args.context, focal_unit=policy.rl['focal_unit'])
     # Before scores consume each collector's own complete state groups. After
     # scores consume the merged file, partitioning only after group validation.
     if stage == 'after':
@@ -524,8 +719,129 @@ def final_patch(env):
     return patch, evidence
 
 
+async def persist_and_verify_episode_patch(env, out, *, label=None):
+    """Keep the submitted/evaluated bytes before running the original verifier."""
+    (out/'submitted.patch').write_text(env.ctx.submitted_patch or '')
+    patch, patch_capture = await blocking_call(final_patch, env)
+    (out/'evaluated.patch').write_text(patch)
+    write(out/'patch-capture.json', patch_capture)
+    label = out.name if label is None else label
+    result = await env.verify(patch, label)
+    return result, patch_capture, str(env.output/(label+'-result.json'))
+
+
+def production_worktree_fingerprint(env):
+    """Observe production bytes without staging files or changing task state.
+
+    Frozen baseline production files retain every type, including configuration
+    and templates. New files need an explicit source/template type; other new
+    paths remain unclassified, even if staged. Reports/caches cannot establish
+    a repair attempt merely by appearing. No correctness is inferred.
+    """
+    started = time.monotonic()
+    try:
+        from swegemma.harness.verification import _is_protected_test_or_config_path
+        workspace = Path(env.manager.sandboxes[env.sid]['workspace']).resolve()
+
+        def git_paths(*arguments):
+            result = subprocess.run(['git', '--no-optional-locks', '-c',
+                'core.fsmonitor=false', '-c', 'safe.directory='+str(workspace),
+                '-C', str(workspace), *arguments], capture_output=True, timeout=15)
+            if result.returncode:
+                raise RuntimeError('Cannot list production paths: '+result.stderr.decode(errors='replace')[-500:])
+            return {os.fsdecode(value) for value in result.stdout.split(b'\0') if value}
+
+        if not hasattr(env, '_production_baseline_paths'):
+            env._production_baseline_paths = git_paths('ls-tree', '-r', '--name-only', '-z',
+                                                       '_swegemma_baseline')
+        paths = env._production_baseline_paths | git_paths(
+            'ls-files', '-z', '--cached', '--others', '--exclude-standard')
+        extra_protected = set(env.task.test_files or ())
+        fingerprint = hashlib.sha256()
+        unclassified = hashlib.sha256()
+        unclassified_paths = []
+        count, read_bytes = 0, 0
+        new_source_suffixes = {'.py', '.pyi', '.js', '.mjs', '.cjs', '.jsx', '.ts',
+            '.tsx', '.vue', '.svelte', '.java', '.go', '.rs', '.c', '.cc', '.cpp',
+            '.h', '.hh', '.hpp', '.cs', '.rb', '.php', '.sh', '.bash', '.zsh',
+            '.fish', '.sql', '.graphql', '.gql', '.proto', '.html', '.htm',
+            '.jinja', '.jinja2', '.j2', '.tmpl', '.mako', '.mustache', '.hbs',
+            '.handlebars', '.css', '.scss', '.sass', '.less', '.svg'}
+        generated_directories = {'__pycache__', '.pytest_cache', '.mypy_cache',
+            '.ruff_cache', '.hypothesis', '.cache', '.tox', '.nox', '.venv',
+            'venv', 'node_modules', 'htmlcov', 'coverage', 'build', 'dist'}
+        for name in sorted(paths):
+            relative = Path(name)
+            if (relative.is_absolute() or '..' in relative.parts
+                    or any(part.lower() == '.git' for part in relative.parts)):
+                raise ValueError('Unsafe production path returned by Git')
+            if name in extra_protected or _is_protected_test_or_config_path(name):
+                continue
+            path = workspace/relative
+            if not path.parent.resolve().is_relative_to(workspace):
+                raise ValueError('Production path parent leaves the task workspace')
+            try:
+                metadata = path.lstat()
+            except FileNotFoundError:
+                # Absence is represented by no path record. Keeping a missing
+                # index-only path would make stage/unstage change the digest.
+                continue
+            else:
+                if stat.S_ISLNK(metadata.st_mode):
+                    record = (name, 'symlink', os.readlink(path))
+                elif stat.S_ISREG(metadata.st_mode):
+                    content = hashlib.sha256()
+                    with path.open('rb') as stream:
+                        for block in iter(lambda: stream.read(1024*1024), b''):
+                            content.update(block)
+                            read_bytes += len(block)
+                    record = (name, 'file', bool(metadata.st_mode & 0o111), content.hexdigest())
+                else:
+                    raise ValueError('Unsupported production path kind: '+name)
+            new_source = (relative.suffix.lower() in new_source_suffixes
+                or relative.name in {'Dockerfile', 'Makefile', 'Rakefile'})
+            generated_location = any(part.lower() in generated_directories
+                                     for part in relative.parts[:-1])
+            if name in env._production_baseline_paths or (new_source and not generated_location):
+                fingerprint.update(json.dumps(record, ensure_ascii=True, separators=(',', ':')).encode()+b'\n')
+                count += 1
+            else:
+                unclassified.update(json.dumps(record, ensure_ascii=True, separators=(',', ':')).encode()+b'\n')
+                unclassified_paths.append(name)
+        return dict(status='known', sha256=fingerprint.hexdigest(), production_paths=count,
+                    unclassified_sha256=unclassified.hexdigest(),
+                    unclassified_path_count=len(unclassified_paths),
+                    unclassified_paths=unclassified_paths[:20],
+                    scope='frozen-baseline-production-and-new-source-v2',
+                    boundary='New non-source/config/data paths are unknown; baseline configurations/templates remain observed',
+                    read_bytes=read_bytes, seconds=time.monotonic()-started)
+    except Exception as exc:
+        return dict(status='unknown', error=f'{type(exc).__name__}: {exc}',
+                    seconds=time.monotonic()-started)
+
+
+def observe_production_change(env, ledger):
+    previous = ledger.get('production_worktree_fingerprint', {})
+    current = production_worktree_fingerprint(env)
+    comparable = (current.get('status') == previous.get('status') == 'known'
+                  and current.get('scope') == previous.get('scope'))
+    unclassified_changed = (current.get('unclassified_sha256') != previous.get('unclassified_sha256')
+                            if comparable else None)
+    changed = (True if current['sha256'] != previous['sha256'] else
+               None if unclassified_changed else False) if comparable else None
+    ledger['production_worktree_fingerprint'] = current
+    return dict(changed=changed, before_status=previous.get('status', 'unknown'),
+        before_sha256=previous.get('sha256'), after=current,
+        unclassified_changed=unclassified_changed,
+        source='actual-known-production-content; new non-source paths remain unknown; no repair correctness inferred')
+
+
 class TaskEnvironment:
     def __init__(self, asset, output, *, tool_calls=32, turns=32):
+        self.runtime = json.loads((asset/'runtime.json').read_text())
+        # Failed preparation can leave old python/site-packages fields behind.
+        # Never execute those fields as a replacement for the declared profile.
+        require_task_runtime_available(self.runtime)
         from adk_submission import ModelRegistry
         from swegemma.budget import EvaluationBudget, HarnessLimits
         from swegemma.config import EvalConfig
@@ -538,7 +854,6 @@ class TaskEnvironment:
         task_cls = ExternalTrainTask if 'verification_target_files' in payload else Task
         fields = {field.name for field in dataclasses.fields(task_cls)}
         self.task = task_cls(**{key: value for key, value in payload.items() if key in fields})
-        self.runtime = json.loads((asset/'runtime.json').read_text())
         historical = json.loads((asset/'run-summary.json').read_text())
         self.site_packages_mode = self.runtime.get('site_packages_mode') or historical.get('task_site_packages_mode') or 'pth'
         if self.site_packages_mode not in ('pth', 'copy'):
@@ -550,6 +865,8 @@ class TaskEnvironment:
             budget=self.budget, harness=self.harness, graph_dir='', embeddings_dir='',
             enable_sandbox_testing=True)
         self.manager = SubprocessManager(base_dir=output/'sandboxes', system_site_packages=False)
+        from competition.vfarl.l4x4.bytecode import configure_manager, policy_name
+        self.bytecode_policy = configure_manager(self.manager, policy_name(self.runtime))
         original_start, original_stop = self.manager.start, self.manager.stop
         self.phase, self.report_number = 'agent', 0
 
@@ -678,6 +995,7 @@ class TaskEnvironment:
 
 
 async def prevalidate(args, entries):
+    from competition.vfarl.l4x4.bytecode import policy_name
     from competition.vfarl.l4x4.state import configure_isolation
     isolation = configure_isolation(args.isolation, hidden_paths=[args.assets.resolve(),
         args.out.resolve(), Path(__file__).resolve().parents[3]])
@@ -693,6 +1011,7 @@ async def prevalidate(args, entries):
                   'snapshot_sha256': digest((asset/'source-snapshot.tgz').read_bytes()),
                   'reviewed_patch_sha256': digest((asset/'submitted.patch').read_bytes()),
                   'runtime_sha256': runtime_digest(asset/'runtime.json'),
+                  'source_bytecode_policy': policy_name(json.loads((asset/'runtime.json').read_text())),
                   'runtime_hash_encoding': 'canonical-json-utf8-sort-keys-compact'}
         env = None
         try:
@@ -703,6 +1022,8 @@ async def prevalidate(args, entries):
                           usable=baseline['reward'] == 0 and repaired['reward'] == 1)
         except Exception as exc:
             result.update(usable=False, error=f'{type(exc).__name__}: {exc}')
+            if isinstance(exc, RuntimePreparationError):
+                result['runtime_preparation_error'] = exc.details
             out.mkdir(parents=True, exist_ok=True)
             (out/'exception.txt').write_text(traceback.format_exc())
         finally:
@@ -719,16 +1040,31 @@ async def prevalidate(args, entries):
 
 
 async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None,
-                  capture=False, seed=0, first_seed=None, train_focal_first_action=False):
+                  capture=False, seed=0, first_seed=None, train_focal_first_action=False,
+                  history_tools=None):
     from competition.vfarl.l4x4.state import Snapshot
     from competition.vfarl.l4x4.feedback import (FOCAL_SELECTION_RULES,
         classify_tool_feedback, focal_feedback_ready)
     out.mkdir(parents=True, exist_ok=True)
     ledger = ledger if ledger is not None else {'output_tokens': 0, 'turns': 0, 'context_limit': args.context}
+    history_format = getattr(args, 'history_format', 'raw-preserved')
+    if ledger.get('history_format', 'raw-preserved') != history_format:
+        raise PolicyProtocolError('Episode history format differs from its restored ledger')
+    if history_format == 'canonical-ct-v1':
+        if ledger.get('history_format') != 'canonical-ct-v1' or history_tools is None:
+            raise PolicyProtocolError('Canonical episodes require their initialized/restored history and tools')
+        if ledger.get('canonical_history_active', False):
+            require_canonical_prefix(ledger, policy.tokenizer, history_tools, ids)
     candidates, actions, stop = [], [], None
     live_pair = getattr(args, 'collection_protocol', 'historical-three-branch') == 'live-original-pair'
     focal_trigger = getattr(args, 'focal_trigger', 'any-tool-failure')
     selection_rule = FOCAL_SELECTION_RULES[focal_trigger]
+    if live_pair and 'production_worktree_fingerprint' not in ledger:
+        # Existing dirty files establish a baseline, not a new agent mutation.
+        ledger['production_worktree_fingerprint'] = await blocking_call(
+            production_worktree_fingerprint, env)
+        if ledger['production_worktree_fingerprint']['status'] == 'unknown':
+            ledger['production_mutation_unknown_observations'] = 1
     def release_episode_cache(reason):
         if hasattr(policy, 'release_session'):
             policy.release_session(env.sid)
@@ -768,11 +1104,25 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
         else:
             message = ('Please continue your work using the available tools, or call '
                 'submit_patch when you have completed and verified your changes.')
-        suffix = continuation_suffix(policy.tokenizer, message,
-            assistant_ended=bool(ids and ids[-1] == policy.turn_close))
-        if len(ids) + len(suffix) + 16 > args.context:
-            return False
-        ids += suffix
+        # Unsupported native shapes remain real data and take the existing raw
+        # feedback path; they are not excluded from terminal verification.
+        history_candidate = dict(ledger)
+        next_ids, history_event = advance_canonical_history(
+            history_candidate, policy.tokenizer, history_tools, action, kind='nudge', message=message)
+        if next_ids is not None:
+            if len(next_ids) + 16 > args.context:
+                return False
+            ids = next_ids
+        else:
+            suffix = continuation_suffix(policy.tokenizer, message,
+                assistant_ended=bool(ids and ids[-1] == policy.turn_close))
+            if len(ids) + len(suffix) + 16 > args.context:
+                return False
+            ids += suffix
+        # A nudge exceeding the remaining context is not a committed message.
+        ledger.update(history_candidate)
+        if history_event is not None:
+            append(out/'history-transitions.jsonl', history_event)
         ledger['continuation_nudges'] = count + 1
         ledger['harness_feedback_count'] = ledger.get('harness_feedback_count', 0) + 1
         append(out/'harness-feedback.jsonl', dict(kind='continuation_nudge',
@@ -834,8 +1184,40 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
                 else:
                     action = policy.sample(ids, **sampling)
         except Exception as exc:
-            release_episode_cache('sampling-error')
-            raise PolicyProtocolError('Current-policy sampling failed') from exc
+            failure = PolicyProtocolError('Current-policy sampling failed')
+            sampling_trace = traceback.format_exc()
+            try:
+                release_episode_cache('sampling-error')
+            except Exception as cleanup_error:
+                failure.sampling_cache_cleanup_error = dict(
+                    type=type(cleanup_error).__name__, error=str(cleanup_error))
+            if env.ctx.patch_submitted and (env.ctx.submitted_patch or '').strip():
+                diagnostic = dict(format='vfarl-fatal-post-submit-sampling-v1',
+                    fatal=True, eligible_for_training=False,
+                    sampling_error=dict(type=type(exc).__name__, error=str(exc),
+                                        traceback=sampling_trace))
+                if hasattr(failure, 'sampling_cache_cleanup_error'):
+                    diagnostic['cache_cleanup_error'] = failure.sampling_cache_cleanup_error
+                try:
+                    env.ctx.stop_agent_session()
+                    result, _, verification = await persist_and_verify_episode_patch(
+                        env, out, label=out.name+'-post-submit-sampling-error')
+                    diagnostic.update(verification=verification,
+                        verification_complete=result['verification_complete'],
+                        diagnostic_reward=result['reward'])
+                except Exception as finalization_error:
+                    diagnostic['finalization_error'] = dict(
+                        type=type(finalization_error).__name__, error=str(finalization_error),
+                        traceback=traceback.format_exc())
+                diagnostic_path = out/'post-submit-sampling-failure.json'
+                try:
+                    write(diagnostic_path, diagnostic)
+                except Exception as recording_error:
+                    diagnostic['recording_error'] = dict(
+                        type=type(recording_error).__name__, error=str(recording_error))
+                failure.post_submit_diagnostic = dict(diagnostic,
+                    evidence=str(diagnostic_path) if diagnostic_path.exists() else None)
+            raise failure from exc
         replayed = first_action is not None
         first_action = None
         if action['prompt_token_ids'] != ids:
@@ -860,6 +1242,10 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
                                'last_tool_feedback': dict(ledger.get('last_tool_feedback', {})),
                                'observed_tool_error': bool(ledger.get('last_tool_error', False)),
                                'remaining_token_capacity': room,
+                               'sampling_limits': dict(context_limit=args.context,
+                                   episode_token_limit=args.episode_tokens,
+                                   turn_token_limit=args.turn_tokens,
+                                   expected_max_new_tokens=min(room, args.turn_tokens)),
                                'has_recovery_budget': recovery_budget})
         if action['finish_reason'] not in ('tool_calls', 'stop'):
             if state is not None:
@@ -877,7 +1263,7 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
             break
         try:
             call = parse_call(action['raw_text'])
-        except ValueError as exc:
+        except (ValueError, RecursionError) as exc:
             if state is not None:
                 candidates[-1]['action_protocol_error'] = True
             await retain_candidates()
@@ -900,7 +1286,9 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
             await retain_candidates()
             stop = 'unknown_tool: ' + name
             break
-        if env.ctx.patch_submitted:
+        # Historical collections keep their original late-tool stop. The live
+        # protocol may use tools and submit again before its final response.
+        if env.ctx.patch_submitted and not live_pair:
             stop = 'tool_call_after_submission'
             break
         started = time.monotonic()
@@ -919,7 +1307,12 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
                 await retain_candidates()
                 stop = 'tool_exception'
                 break
-        classification = (classify_tool_feedback(name, arguments, response, ledger)
+        production_change = None
+        if live_pair and name in {'run_command', 'edit_file', 'write_file'}:
+            # Failed commands can still leave actual file changes behind.
+            production_change = await blocking_call(observe_production_change, env, ledger)
+        classification = (classify_tool_feedback(name, arguments, response, ledger,
+                                                production_change=production_change)
                           if live_pair else None)
         append(out/'tool-events.jsonl', {'tool': name, 'arguments': arguments,
             'response': response, 'seconds': time.monotonic()-started,
@@ -930,7 +1323,15 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
             candidates[-1]['action_tool_error'] = response_failed
         await retain_candidates()
         try:
-            ids += tool_suffix(policy.tokenizer, name, arguments, response)
+            next_ids, history_event = advance_canonical_history(
+                ledger, policy.tokenizer, history_tools, action, kind='tool',
+                parsed_call=(name, arguments), response=response)
+            if history_event is not None:
+                append(out/'history-transitions.jsonl', history_event)
+            if next_ids is not None:
+                ids = next_ids
+            else:
+                ids += tool_suffix(policy.tokenizer, name, arguments, response)
         except Exception as exc:
             raise PolicyProtocolError('Actual tool response serialization failed') from exc
         ledger['tool_observations'] = ledger.get('tool_observations', 0) + 1
@@ -945,31 +1346,38 @@ async def episode(env, policy, ids, args, out, *, ledger=None, first_action=None
             category = classification['category']
             categories[category] = categories.get(category, 0) + 1
             if classification['mutation_observation']:
-                ledger['successful_mutation_observations'] = (
-                    ledger.get('successful_mutation_observations', 0) + 1)
+                ledger['production_mutation_observations'] = (
+                    ledger.get('production_mutation_observations', 0) + 1)
+            if production_change is not None and production_change['changed'] is None:
+                ledger['production_mutation_unknown_observations'] = (
+                    ledger.get('production_mutation_unknown_observations', 0) + 1)
             ledger['continuation_nudges'] = 0
-            if env.ctx.patch_submitted:
-                # Official execution stops immediately on submission. Sampling
-                # one more assistant turn used to waste a full GPU request.
-                stop = 'submitted'
-                break
+            # The pinned official ADK flow can request an assistant response
+            # after submit_patch's ordinary function response. Keep that
+            # opportunity within the existing budget. The native collector's
+            # strict native parsing and no-call/nudge rules remain separate.
         if env.ctx.tool_calls_used >= args.tool_calls:
             stop = 'tool_budget_exhausted'
             break
+    if stop is None and not env.ctx.patch_submitted and ledger['turns'] >= args.turns:
+        # The while condition can end an episode without an explicit break.
+        # Exhausting turns is not an implicit submit_patch call, even though
+        # the ordinary working-tree fallback may still yield a valid patch.
+        stop = 'turn_budget_exhausted'
     await retain_candidates()
     release_episode_cache('episode-finished')
     env.ctx.stop_agent_session()
-    patch, patch_capture = await blocking_call(final_patch, env)
-    (out/'submitted.patch').write_text(env.ctx.submitted_patch or '')
-    (out/'evaluated.patch').write_text(patch)
-    write(out/'patch-capture.json', patch_capture)
-    result = await env.verify(patch, out.name)
+    result, patch_capture, verification = await persist_and_verify_episode_patch(env, out)
     summary = {'instance_id': env.task.instance_id, 'reward': result['reward'],
-        'verified': result['verification_complete'], 'termination': stop or 'submitted',
+        'verified': result['verification_complete'],
+        'termination': stop or ('submitted' if env.ctx.patch_submitted else 'episode_ended_without_submission'),
         'actions': len(actions), 'ledger': dict(ledger), 'policy_id': policy.identity['policy_id'],
-        'verification': str(env.output/(out.name+'-result.json')),
+        'verification': verification,
         'patch_submitted': env.ctx.patch_submitted, 'patch_capture': patch_capture,
-        'final_context_tokens': len(ids)}
+        'final_context_tokens': len(ids),
+        **({'post_submit_behavior': 'continue_tools_or_final_within_existing_budget',
+            'evaluated_patch_semantics': 'last_successful_explicit_submission'}
+           if live_pair else {})}
     write(out/'episode.json', summary)
     print(json.dumps({'phase': 'episode_result', 'attempt': out.name,
         **{key: summary[key] for key in ('instance_id', 'reward', 'verified',
@@ -982,6 +1390,12 @@ async def collect(args, entries, questions, *, policy=None):
     if protocol not in ('historical-three-branch', 'live-original-pair'):
         raise ValueError('Unknown focal collection protocol')
     live_pair = protocol == 'live-original-pair'
+    history_format = getattr(args, 'history_format', 'raw-preserved')
+    if history_format not in HISTORY_FORMATS or (history_format != 'raw-preserved' and not live_pair):
+        raise ValueError('Canonical CT history requires explicit live-original-pair collection')
+    complete_fixed_cohort = getattr(args, 'complete_fixed_cohort', False)
+    if complete_fixed_cohort and not live_pair:
+        raise ValueError('Fixed-cohort completion requires live-original-pair collection')
     focal_trigger = getattr(args, 'focal_trigger', 'any-tool-failure')
     if focal_trigger not in ('any-tool-failure', 'execution-recovery'):
         raise ValueError('Unknown focal trigger')
@@ -997,7 +1411,10 @@ async def collect(args, entries, questions, *, policy=None):
     from competition.vfarl.l4x4.state import Snapshot, configure_isolation
     from training.vfarl_policy import build_policy, read_config
     from training.common import TrainingError
-    model_config, _ = read_config(args.config)
+    model_config, collection_rl = read_config(args.config)
+    if (collection_rl['focal_unit'] == 'bounded_response_segment'
+            and not live_pair and args.score_focal_data is None):
+        raise ValueError('Bounded response segments require prospective live-original-pair collection')
     if model_config['max_sequence_length'] != args.context:
         raise ValueError('Sampling context and training config must match; use an explicit context-specific config')
     source_root = Path(__file__).resolve().parents[3]
@@ -1047,29 +1464,60 @@ async def collect(args, entries, questions, *, policy=None):
         print(json.dumps({'phase': 'empty_partition', 'worker': args.worker_index,
                           'selected_tasks': 0, 'focal_scoring_completed': True}), flush=True)
         return
-    preparation = {row['instance_id']: row for row in
-                   (json.loads(line) for line in args.prevalidation.read_text().splitlines())}
+    selected_by_id = {entry['instance_id']: entry for entry in entries}
+    preparation = {}
+    for report in (json.loads(line) for line in args.prevalidation.read_text().splitlines() if line.strip()):
+        key = report['instance_id']
+        if key not in selected_by_id:
+            continue
+        if key in preparation:
+            previous = cpu_evidence_applicability(preparation[key], selected_by_id[key],
+                args.assets, isolation['effective_mode'])
+            candidate = cpu_evidence_applicability(report, selected_by_id[key],
+                args.assets, isolation['effective_mode'])
+            rank = lambda value: (value['matches_current_task'], value['matches_current_verification'])
+            if rank(previous) > rank(candidate):
+                continue
+        preparation[key] = report
+    cpu_applicability = {key: cpu_evidence_applicability(report, selected_by_id[key],
+        args.assets, isolation['effective_mode']) for key, report in preparation.items()}
     global_indices = {row['instance_id']: i for i, row in enumerate(json.loads(args.selection.read_text())['tasks'])}
-    usable = {key for key, row in preparation.items() if row.get('usable')}
+    usable = {key for key, row in preparation.items() if row.get('usable')
+              and cpu_applicability[key]['matches_current_verification']}
     queue_entries = [row for row in entries if row['instance_id'] in usable]
     execution_contract = dict(config_sha256=digest(args.config.read_bytes()),
         policy_backend=args.policy_backend, context=args.context, draws=args.draws,
         branches=args.branches, turns=args.turns, tool_calls=args.tool_calls,
         turn_tokens=args.turn_tokens, episode_tokens=args.episode_tokens)
+    if history_format != 'raw-preserved':
+        execution_contract['history_format'] = history_format
+        execution_contract['history_source_sha256'] = digest(
+            Path(__file__).with_name('history.py').read_bytes())
     if live_pair:
         execution_contract['collection_protocol'] = protocol
+        execution_contract['post_submit_behavior'] = 'continue_tools_or_final_within_existing_budget'
+        execution_contract['evaluated_patch_semantics'] = 'last_successful_explicit_submission'
+        if complete_fixed_cohort:
+            execution_contract['complete_fixed_cohort'] = True
         if focal_trigger != 'any-tool-failure':
             execution_contract['focal_trigger'] = focal_trigger
         write(args.out/'collection-protocol.json', dict(
             collection_protocol=protocol, format='vfarl-live-capture-v1',
+            complete_fixed_cohort=complete_fixed_cohort,
+            stopping=('Claim deadline prevents new tasks; every claimed cohort task may finish its pair'
+                if complete_fixed_cohort else 'Historical shared queue stopping for new claims and state reservations'),
             state_selection=focal_trigger+'; fixed by visible feedback before sampling',
             focal_trigger=focal_trigger,
             recovery_budget_minimum=dict(remaining_turns=4, remaining_tool_calls=3)
                 if focal_trigger == 'execution-recovery' else dict(remaining_turns=2, remaining_tool_calls=2),
             samples='One real original focal action and one independently sampled restored action',
+            post_submit_behavior='Continue tools, repeat submit, or return final text within the same budget; no post-submit nudge. Evaluate the last successful explicit submission. Historical late-tool stopping is unchanged; not full ADK equivalence.',
             original_behavior='Original tokens, masks and behavior probabilities are preserved',
             reference='Actual frozen reference computed by the model owner at original focal sampling',
-            reward='Each sample uses its own complete verified terminal return; invalid remains null'))
+            reward='Each sample uses its own complete verified terminal return; invalid remains null',
+            **({'history_format': history_format,
+                'history_boundary': 'Strict parsed complete turns use CT structured conditioning; unsupported shapes retain samples and use raw feedback for the rest of the episode. Not the tolerant official-parser route.'}
+               if history_format != 'raw-preserved' else {})))
     queue = (TaskQueue(args.task_queue, [row['instance_id'] for row in queue_entries],
         selection_sha256=digest(args.selection.read_bytes()), maximum_states=args.max_states,
         stop_after_mixed_groups=args.stop_after_mixed_groups,
@@ -1080,8 +1528,8 @@ async def collect(args, entries, questions, *, policy=None):
         queue.bind_policy(policy.identity)
         entries = queue.entries(args.worker_index, {row['instance_id']: row for row in queue_entries})
     states = 0
-    def can_start_state():
-        return states < args.max_states and (queue is None or queue.state_available())
+    def can_start_state(task_id):
+        return states < args.max_states and (queue is None or queue.state_available(task_id))
     async def collect_entry(entry):
         nonlocal states
         key = safe_id(entry['instance_id'])
@@ -1091,12 +1539,10 @@ async def collect(args, entries, questions, *, policy=None):
             if queue is not None:
                 queue.finish_task(key, args.worker_index)
             return
-        if preparation[key].get('execution_isolation') != isolation['effective_mode']:
-            raise ValueError('Task was not verified in the actual collection isolation environment: '+key)
-        for filename, field in [('task.json', 'task_input_sha256'),
-                                ('source-snapshot.tgz', 'snapshot_sha256')]:
-            if digest((args.assets/key/filename).read_bytes()) != preparation[key].get(field):
-                raise ValueError('Linux verification belongs to different task assets: '+key)
+        applicability = cpu_evidence_applicability(preparation[key], entry, args.assets,
+            isolation['effective_mode'])
+        if not applicability['matches_current_verification']:
+            raise ValueError('Linux verification does not apply to current verification inputs: '+key)
         for draw in range(args.draws):
             env = None
             retained_snapshot = None
@@ -1116,19 +1562,32 @@ async def collect(args, entries, questions, *, policy=None):
                     f'including all history and the next response. The session output budget is '
                     f'{args.episode_tokens} tokens; each response allows at most {args.turn_tokens} tokens, '
                     f'including up to {getattr(args, "thinking_budget", 1024)} thought tokens. Full histories are never truncated.\n')
+                if history_format != 'raw-preserved':
+                    actual_prompt = actual_prompt.removesuffix('Full histories are never truncated.\n') + (
+                        'Full structured messages are retained; the pinned CT template determines '
+                        'rendered reasoning context. No token-budget truncation is applied.\n')
                 write(out/'prompt-provenance.json', {'original_prompt_sha256': digest(questions[key].encode()),
                     'actual_prompt_sha256': digest(actual_prompt.encode()),
-                    'change': 'Official build_agent_prompt with actual run budgets plus explicit token limits'})
+                    'change': 'Official build_agent_prompt with actual run budgets plus explicit token limits',
+                    **({'history_format': history_format,
+                        'render_boundary': 'Full structured messages retained; pinned CT defines visible reasoning, including its last-user rule'}
+                       if history_format != 'raw-preserved' else {})})
                 (out/'actual-prompt.txt').write_text(actual_prompt)
                 phase = 'policy_prompt'
                 ids = policy.render_prompt([{'role': 'user', 'content': actual_prompt}], tools)
+                initial_ledger = None
+                if history_format != 'raw-preserved':
+                    initial_ledger = dict(output_tokens=0, turns=0, context_limit=args.context,
+                        **canonical_history_ledger(policy.tokenizer, tools,
+                            [{'role': 'user', 'content': actual_prompt}], ids))
                 base_seed = 20261026 + global_indices[key]*10000 + draw*1000
                 phase = 'policy_episode'
                 summary, candidates, _ = await episode(env, policy, ids, args, out/'original',
-                    capture=can_start_state(), seed=base_seed)
+                    capture=can_start_state(key), seed=base_seed, ledger=initial_ledger,
+                    history_tools=tools if history_format != 'raw-preserved' else None)
                 environment_control = None
                 if (summary['verified'] and summary['reward'] in (0, 1)
-                        and candidates and can_start_state()):
+                        and candidates and can_start_state(key)):
                     # Confirm this actual GPU worker's task environment before
                     # comparing an observed tool-failure state. The original
                     # task may later recover and succeed; its terminal reward
@@ -1147,7 +1606,7 @@ async def collect(args, entries, questions, *, policy=None):
                 # Include naturally recovered original episodes as well as
                 # terminal failures; do not choose states by branch outcomes.
                 fork = (summary['verified'] and summary['reward'] in (0, 1)
-                        and candidates and can_start_state())
+                        and candidates and can_start_state(key))
                 if fork:
                     # Prefer feedback immediately after an actual error with
                     # remaining recovery budget.
@@ -1176,7 +1635,8 @@ async def collect(args, entries, questions, *, policy=None):
                                 summary, summary, branch_id=f'{key}-{draw}-original',
                                 instance_id=key, kind='live_captured_original_action',
                                 on_policy=True, restore_path=restore_path,
-                                environment_control=environment_control)
+                                environment_control=environment_control,
+                                focal_unit=collection_rl['focal_unit'])
                             original_row.update(original_action_replay=False,
                                 collection_protocol=protocol, live_capture_evidence=evidence)
                             rows.append(original_row)
@@ -1186,13 +1646,15 @@ async def collect(args, entries, questions, *, policy=None):
                             branch_dir, ledger=ledger,
                             first_action=candidate['action'] if branch == 0 else None,
                             seed=base_seed+500, first_seed=base_seed+500+branch*100,
-                            train_focal_first_action=branch != 0)
+                            train_focal_first_action=branch != 0,
+                            history_tools=tools if history_format != 'raw-preserved' else None)
                         if actions:
                             row = focal_record(actions[0], candidate, branch_summary, summary,
                                 branch_id=f'{key}-{draw}-{branch}', instance_id=key,
                                 kind='original_action_replay' if branch == 0 else 'sampled_focal_action',
                                 on_policy=branch != 0, restore_path=restore_path,
-                                environment_control=environment_control)
+                                environment_control=environment_control,
+                                focal_unit=collection_rl['focal_unit'])
                             if live_pair:
                                 row['collection_protocol'] = protocol
                             rows.append(row)
@@ -1215,7 +1677,8 @@ async def collect(args, entries, questions, *, policy=None):
                     from training.train_vfarl import prepare_rows
                     prepared = {'groups': []}
                     if (args.out/'focal.jsonl').exists():
-                        _, prepared = prepare_rows(args.out/'focal.jsonl', args.context)
+                        _, prepared = prepare_rows(args.out/'focal.jsonl', args.context,
+                                                   focal_unit=collection_rl['focal_unit'])
                     accepted = next((row for row in prepared['groups']
                         if row['state_id'] == state_result['state_id']), None)
                     state_result.update(
@@ -1241,6 +1704,9 @@ async def collect(args, entries, questions, *, policy=None):
                     'fatal': fatal}
                 if exc.__cause__ is not None:
                     failure['cause'] = f'{type(exc.__cause__).__name__}: {exc.__cause__}'
+                for field in ('post_submit_diagnostic', 'sampling_cache_cleanup_error'):
+                    if hasattr(exc, field):
+                        failure[field] = getattr(exc, field)
                 append(args.out/'collection.jsonl', failure)
                 print(json.dumps(dict(failure, phase='collection_error')), flush=True)
                 if fatal:
@@ -1303,6 +1769,8 @@ def main():
     parser.add_argument('--score-focal-before', action='store_true',
                         help='Optional repeated actor drift measurement; sampled behavior probabilities are already stored verbatim')
     parser.add_argument('--tools', type=Path, default=Path('competition/vfarl/six-tools.json'))
+    parser.add_argument('--history-format', choices=HISTORY_FORMATS, default='raw-preserved',
+        help='Explicit canonical CT conditioning experiment; sampled tokens/probabilities remain immutable')
     parser.add_argument('--prevalidate', action='store_true')
     parser.add_argument('--prevalidation', type=Path)
     parser.add_argument('--context', type=int, choices=(4096, 8192, 16384, 32768), default=4096)

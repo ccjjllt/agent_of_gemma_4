@@ -8,6 +8,7 @@ import copy
 import ctypes
 import ctypes.util
 import hashlib
+import importlib.metadata
 import json
 import os
 import re
@@ -123,6 +124,48 @@ def sha(path):
         for block in iter(lambda: stream.read(1024 * 1024), b''):
             h.update(block)
     return h.hexdigest()
+
+
+def optimizer_commit_evidence(update, source_sha256):
+    """Separate an executed step from an exported, reusable adapter.
+
+    The immutable commit survives diagnostic failures. A partial step must
+    remain visible without being accepted as an adapter for further rollouts.
+    """
+    update = Path(update)
+    path = update / 'optimizer-step.json'
+    record = json.loads(path.read_text()) if path.is_file() else {}
+    errors = []
+    if record.get('optimizer_steps') != 1:
+        errors.append('No immutable record of exactly one optimizer step')
+    if record.get('adapter_export_completed') is not True:
+        errors.append('Adapter export was not committed')
+    if record.get('source_data_sha256') != source_sha256:
+        errors.append('Optimizer record does not bind the current behavior data')
+    files = record.get('adapter_files') or {}
+    for name in ('adapter_config.json', 'adapter_model.safetensors'):
+        item = files.get(name) if isinstance(files, dict) else None
+        adapter = update / 'adapter' / name
+        if (not isinstance(item, dict) or not adapter.is_file()
+                or item.get('bytes') != adapter.stat().st_size
+                or item.get('sha256') != sha(adapter)):
+            errors.append('Missing or changed committed adapter file: ' + name)
+    rank_local_steps = []
+    for partial_path in sorted(update.glob('rank-*-partial-update.json')):
+        partial = json.loads(partial_path.read_text())
+        if (partial.get('optimizer_steps') == 1
+                and partial.get('source_data_sha256') == source_sha256):
+            rank_local_steps.append(dict(rank=partial.get('completed_step_rank'),
+                optimizer_steps=1, optimizer_step_scope=partial.get('optimizer_step_scope'),
+                path=str(partial_path), sha256=sha(partial_path)))
+    return dict(optimizer_steps=record.get('optimizer_steps'),
+        optimizer_step_scope=record.get('optimizer_step_scope'),
+        global_optimizer_step_confirmed=record.get('global_optimizer_step_confirmed'),
+        rank_local_step_records=rank_local_steps,
+        adapter_export_completed=record.get('adapter_export_completed') is True,
+        reusable_adapter_commit=not errors, errors=errors,
+        optimizer_step_manifest=str(path),
+        optimizer_step_manifest_sha256=sha(path) if path.is_file() else None)
 
 
 def unique(pattern):
@@ -301,7 +344,195 @@ def record_capabilities(out):
     print(json.dumps({'phase': 'isolation_capabilities', **probes}), flush=True)
 
 
+def bind_task_environments(selection, prep, source):
+    """Resolve actual dependency profiles without using the generic stock fallback."""
+    profile_root = source / 'competition/vfarl/l4x4/kaggle'
+    profiles = json.loads((profile_root / 'environment-profiles.json').read_text())['profiles']
+    stock = json.loads((profile_root / 'stock-environment-pins.json').read_text())['profiles']
+    stock_by_task = {task: group for group in stock for task in group['tasks']}
+    profile_by_task = {task: group for group in profiles for task in group['tasks']}
+    normalize = lambda name: re.sub(r'[-_.]+', '-', name).lower()
+    observed, bindings, problems = {}, {}, {}
+    for entry in selection['tasks']:
+        key = entry['instance_id']
+        group = stock_by_task.get(key)
+        declared = entry.get('linux_environment_profile_id')
+        expected = profile_by_task.get(key)
+        if declared:
+            candidates = [row for row in prep['task_environments'] if row['id'] == declared]
+        elif group:
+            # An exact equivalent profile is valid (e.g. the minimal dominate
+            # environment); task membership alone never makes pytest-only
+            # profile-00 a valid moto/DVC/markdownify environment.
+            candidates = sorted(prep['task_environments'], key=lambda row: row['id'] == group['id'], reverse=True)
+        else:
+            candidates = [row for row in prep['task_environments']
+                          if expected and expected['source_profile'] != 'stock'
+                          and row['source_profile'] == expected['source_profile']]
+        failures = []
+        for actual in candidates:
+            if not actual.get('success') or not actual.get('environment_path'):
+                continue
+            root = Path(actual['environment_path'])
+            abi = actual.get('python_abi') or '.'.join(actual['python_requested'].split('.')[:2])
+            site = root / 'lib' / ('python' + abi) / 'site-packages'
+            if not (root / 'bin/python').is_file() or not site.is_dir():
+                failures.append(actual['id'] + ': missing packaged interpreter/site-packages')
+                continue
+            if str(site) not in observed:
+                observed[str(site)] = {normalize(dist.metadata['Name']): dist.version
+                                      for dist in importlib.metadata.distributions(path=[str(site)])
+                                      if dist.metadata['Name']}
+            installed = observed[str(site)]
+            if group:
+                if str(actual.get('python_requested')) != group['python']:
+                    continue
+                excluded = {normalize(name) for name in group.get('runtime_excluded_distributions', {})}
+                wanted = {normalize(name): version for name, version in group['packages'].items()
+                          if normalize(name) not in excluded}
+                missing = {name: version for name, version in wanted.items() if installed.get(name) != version}
+                forbidden = excluded | {normalize(name) for name in group.get('excluded', {}).get('repair_distributions', [])}
+                prohibited = sorted(forbidden & installed.keys())
+                if missing or prohibited:
+                    if actual['id'] == group['id'] or key in actual.get('tasks', []):
+                        failures.append(actual['id'] + ': missing/mismatched pins ' + str(missing)
+                                        + '; prohibited distributions ' + str(prohibited))
+                    continue
+                if actual['id'] != group['id'] and installed != wanted:
+                    continue
+            elif expected:
+                if (expected.get('python_version_pin')
+                        and actual.get('python_requested') != expected['python_version_pin']):
+                    failures.append(actual['id'] + ': Python patch differs from the declared task profile')
+                    continue
+                excluded_host = {'pip', 'pipdeptree', 'swegemma', 'adk-submission', 'adk-eval-core'}
+                wanted = {normalize(name): version for name, version in (expected.get('packages') or {}).items()
+                          if normalize(name) not in excluded_host}
+                wanted.update({normalize(name): version
+                               for name, version in expected.get('linux_additional_packages', {}).items()})
+                declaration = expected.get('linux_source_metadata')
+                if declaration:
+                    wanted[normalize(declaration['name'])] = declaration['version']
+                missing = {name: version for name, version in wanted.items() if installed.get(name) != version}
+                if missing:
+                    failures.append(actual['id'] + ': missing/mismatched pins ' + str(missing))
+                    continue
+                if declaration:
+                    metadata = actual.get('source_distribution_metadata', {})
+                    identity_fields = ('instance_id', 'name', 'version', 'pyproject_sha256', 'backend_requirement')
+                    if (any(metadata.get(field) != declaration[field] for field in identity_fields)
+                            or metadata.get('package_code_installed') is not False or not metadata.get('files')):
+                        failures.append(actual['id'] + ': source distribution metadata has no matching frozen-source provenance')
+                        continue
+                    dist_info = site / (declaration['name'].replace('-', '_') + '-' + declaration['version'] + '.dist-info')
+                    changed = [name for name, expected_sha in metadata['files'].items()
+                               if (not re.fullmatch(r'[A-Za-z0-9_.-]+', name)
+                                   or not (dist_info / name).is_file() or sha(dist_info / name) != expected_sha)]
+                    if changed:
+                        failures.append(actual['id'] + ': generated source metadata files changed ' + str(changed))
+                        continue
+            bindings[key] = actual
+            break
+        if key not in bindings:
+            label = declared or (group['id'] if group else expected.get('source_profile') if expected else 'undeclared')
+            problems[key] = {'expected_profile': label, 'observed_problems': failures,
+                             'reason': 'No valid packaged dependency profile; prepare/export the CPU runtime before collection'}
+    return bindings, problems
+
+
+def ensure_cpu_uv(stage, out, prep):
+    # Repair this runtime input only; never install/download a new uv package.
+    target = stage / 'runtime/bin/uv'
+    before = dict(path=str(target), exists=target.exists(), is_symlink=target.is_symlink())
+    try:
+        info = target.lstat()
+        before.update(mode=oct(info.st_mode), size=info.st_size,
+            symlink_target=os.readlink(target) if target.is_symlink() else None,
+            resolved_path=str(target.resolve()),
+            original_sha256=sha(target) if target.is_file() else None)
+    except OSError as error:
+        before['lstat_error'] = f'{type(error).__name__}: {error}'
+    candidates = [target]
+    path_uv = shutil.which('uv')
+    if path_uv:
+        candidates.append(Path(path_uv).resolve())
+    selected, version = None, None
+    attempts, seen = [], set()
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved in seen:
+            attempts.append(dict(path=str(candidate), reason='same already-attempted resolved path'))
+            continue
+        seen.add(resolved)
+        try:
+            if not candidate.is_file() or not os.access(candidate, os.X_OK):
+                attempts.append(dict(path=str(candidate), reason='not an executable file'))
+                continue
+            with candidate.open('rb') as stream:
+                if stream.read(4) != b'\x7fELF':
+                    attempts.append(dict(path=str(candidate), reason='not a native Linux executable; wrapper not run/copied'))
+                    continue
+            result = subprocess.run([str(candidate), '--version'], capture_output=True,
+                                    text=True, timeout=15, check=True)
+            if not result.stdout.startswith('uv '):
+                raise RuntimeError('Unexpected uv executable version output')
+            selected, version = candidate.resolve(), result.stdout.strip()
+            break
+        except Exception as error:
+            attempts.append(dict(path=str(candidate), error=f'{type(error).__name__}: {error}',
+                returncode=getattr(error, 'returncode', None),
+                stdout=getattr(error, 'stdout', None), stderr=getattr(error, 'stderr', None)))
+    origin = 'existing-packaged-or-PATH-executable'
+    wheel_record = None
+    if selected is None:
+        import zipfile
+        wheels = [row for row in prep['runtime_wheels'] if row['name'].startswith('uv-')]
+        if len(wheels) != 1:
+            raise RuntimeError('No unique already-declared uv wheel; do not download a replacement')
+        wheel_record = wheels[0]
+        wheel = stage / 'runtime-wheels' / wheel_record['name']
+        if not wheel.is_file() or sha(wheel) != wheel_record['sha256']:
+            raise RuntimeError('Existing uv wheel is unavailable or its input pin differs')
+        with zipfile.ZipFile(wheel) as archive:
+            names = [name for name in archive.namelist() if name.endswith('/uv') and not name.endswith('/')]
+            if len(names) != 1:
+                raise RuntimeError('Existing uv wheel has no unique binary member')
+            data = archive.read(names[0])
+        if not data.startswith(b'\x7fELF'):
+            raise RuntimeError('Expected the existing Linux uv native binary')
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.is_symlink():
+            target.unlink()
+        target.write_bytes(data)
+        target.chmod(0o755)
+        selected = target.resolve()
+        origin = 'sha-bound-wheel-already-inside-runtime-input'
+    if target.is_symlink() or selected != target.resolve() or not target.exists():
+        # A regular copied ELF remains usable when the repaired runtime is exported;
+        # an absolute symlink to the base image would not be a portable runtime input.
+        with selected.open('rb') as stream:
+            if stream.read(4) != b'\x7fELF':
+                raise RuntimeError('PATH uv is not a native executable; no wrapper is silently repackaged')
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.is_symlink():
+            target.unlink()
+        shutil.copy2(selected, target)
+        target.chmod(0o755)
+    actual = subprocess.run([str(target), '--version'], capture_output=True,
+                            text=True, timeout=15, check=True)
+    if not actual.stdout.startswith('uv '):
+        raise RuntimeError('Restored uv executable did not identify itself')
+    # Repair the executable only. The caller controls dependency network policy.
+    record = dict(before=before, origin=origin, source_path=str(selected),
+        source_sha256=sha(selected), target_path=str(target), target_sha256=sha(target),
+        actual_version=actual.stdout.strip(), executable_attempts=attempts,
+        input_wheel=wheel_record, UV_OFFLINE=os.environ.get('UV_OFFLINE'), uv_downloaded=False)
+    (out / 'uv-runtime-repair.json').write_text(json.dumps(record, indent=2) + '\n')
+    print(json.dumps(dict(phase='actual_cpu_uv_runtime_repair', **record)), flush=True)
+
+
 def prepare_cpu_repairs(stage, source, out, prep):
+    only_selected = bool(ONLY_TASKS) and (not EXPORT_RUNTIME or PREPARE_ONLY_SELECTED_TASKS)
     if not ONLY_TASKS:
         record_capabilities(out)
     profiles = json.loads((source / 'competition/vfarl/l4x4/kaggle/environment-profiles.json').read_text())['profiles']
@@ -318,7 +549,7 @@ def prepare_cpu_repairs(stage, source, out, prep):
         original = next((p for p in profiles if p['source_profile'] == result['source_profile']), None)
         pin = original.get('python_version_pin') if original else None
         if (not pin or result['python_requested'] == pin
-                or (ONLY_TASKS and not set(result['tasks']) & set(ONLY_TASKS))):
+                or (only_selected and not set(result['tasks']) & set(ONLY_TASKS))):
             continue
         target = stage / 'task-envs' / (result['id'] + '-py' + pin.replace('.', ''))
         old_request = result['python_requested']
@@ -342,6 +573,8 @@ def prepare_cpu_repairs(stage, source, out, prep):
         print(json.dumps({'phase': 'python_patch_repair', 'id': result['id'],
                           'python': pin, 'success': result['success'], 'error': result.get('error')}), flush=True)
     for result in prep['task_environments']:
+        if only_selected and not set(result['tasks']) & set(ONLY_TASKS):
+            continue
         if result['success'] or result.get('python_patch_repair_failed'):
             continue
         original = next((p for p in profiles if p['source_profile'] == result['source_profile']), None)
@@ -367,8 +600,9 @@ def prepare_cpu_repairs(stage, source, out, prep):
     prep['success'] = all(p['success'] for p in prep['task_environments'])
     prep['linux_repairs'] = corrections
     stock = json.loads((source / 'competition/vfarl/l4x4/kaggle/stock-environment-pins.json').read_text())
-    stock_groups = stock['profiles']
-    if ONLY_TASKS:
+    selected_ids = {row['instance_id'] for row in json.loads((source.parent / 'selection.json').read_text())['tasks']}
+    stock_groups = [group for group in stock['profiles'] if set(group['tasks']) & selected_ids]
+    if only_selected:
         stock_groups = [group for group in stock_groups if set(group['tasks']) & set(ONLY_TASKS)]
     assigned = {task for group in stock_groups for task in group['tasks']}
     for previous in prep['task_environments']:
@@ -434,7 +668,7 @@ def prepare_cpu_repairs(stage, source, out, prep):
         print(json.dumps({'phase': 'inherited_environment', **result}), flush=True)
     for profile in profiles:
         additions = profile.get('linux_additional_packages', {})
-        if not additions or (ONLY_TASKS and not set(profile['tasks']) & set(ONLY_TASKS)):
+        if not additions or (only_selected and not set(profile['tasks']) & set(ONLY_TASKS)):
             continue
         for prepared in prep['task_environments']:
             if prepared['source_profile'] != profile['source_profile'] or not prepared['success']:
@@ -462,7 +696,7 @@ def prepare_cpu_repairs(stage, source, out, prep):
             prepared['linux_additional_packages_source'] = profile.get('linux_additional_packages_source')
     for profile in profiles:
         declaration = profile.get('linux_source_metadata')
-        if not declaration or (ONLY_TASKS and declaration['instance_id'] not in ONLY_TASKS):
+        if not declaration or (only_selected and declaration['instance_id'] not in ONLY_TASKS):
             continue
         prepared = next(row for row in prep['task_environments']
                         if row['source_profile'] == profile['source_profile'])
@@ -711,6 +945,14 @@ def reuse_collection(out, evidence):
 
 def main():
     global _OUTPUT
+    if RESIDENT_SETTINGS.get('session_prefix_rewind', False) and (
+            not RESIDENT_RL or RESIDENT_SETTINGS.get('session_cache_tokens', 0) <= 0):
+        raise ValueError('Session prefix rewind requires resident RL and a positive session-cache budget')
+    history_format = RESIDENT_SETTINGS.get('history_format', 'raw-preserved')
+    if history_format not in {'raw-preserved', 'canonical-ct-v1'} or (
+            history_format != 'raw-preserved' and (not RESIDENT_RL
+                or RESIDENT_SETTINGS.get('collection_protocol') != 'live-original-pair')):
+        raise ValueError('Canonical history requires resident live-original-pair and an explicit supported history format')
     started = time.monotonic()
     out = Path('/kaggle/working/vfarl-' + MODE)
     out.mkdir(exist_ok=False)
@@ -723,7 +965,7 @@ def main():
         raise RuntimeError('Frozen task material archive identity changed')
     own_input_tree(Path('/kaggle/working/vfarl-input'))
     material_filter = None
-    if ONLY_TASKS:
+    if ONLY_TASKS and not (MODE == 'prevalidate' and EXPORT_RUNTIME):
         with tarfile.open(material_archive) as archive:
             frozen_selection = json.load(archive.extractfile('vfarl-input/selection.json'))
         _, _, comparison_ids = task_scopes(frozen_selection)
@@ -747,7 +989,7 @@ def main():
         raise RuntimeError('Completed runtime archive identity changed')
     own_input_tree(Path('/kaggle/working/vfarl-cpu-stage'))
     runtime_filter = None
-    if ONLY_TASKS == ['Knio__dominate.9082227e.pr_166']:
+    if ONLY_TASKS == ['Knio__dominate.9082227e.pr_166'] and not EXPORT_RUNTIME:
         runtime_filter = lambda name: any(part in name for part in (
             '/runtime/', '/python/cpython-3.12', '/task-envs/profile-00/', '/preparation.json'))
     unpack(runtime_archive, Path('/kaggle/working'), include=runtime_filter)
@@ -765,6 +1007,7 @@ def main():
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content)
     if MODE == 'prevalidate':
+        ensure_cpu_uv(stage, out, prep)
         prepare_cpu_repairs(stage, source, out, prep)
     else:
         # A later pre-policy selection can reuse an immutable dependency
@@ -775,13 +1018,10 @@ def main():
         for prepared in prep['task_environments']:
             if prepared['source_profile'] != 'stock' and prepared['source_profile'] in selected:
                 prepared['tasks'] = list(selected[prepared['source_profile']]['tasks'])
-    by_task = {task: p for p in prep['task_environments'] for task in p['tasks']}
-    by_profile = {p['id']: p for p in prep['task_environments']}
-    selected_entries = {row['instance_id']: row for row in selection['tasks']}
+    task_environments, runtime_problems = bind_task_environments(selection, prep, source)
     for asset in (material / 'assets').iterdir():
         task = json.loads((asset / 'task.json').read_text())
-        declared_profile = selected_entries[task['instance_id']].get('linux_environment_profile_id')
-        actual = by_profile.get(declared_profile) if declared_profile else by_task.get(task['instance_id'])
+        actual = task_environments.get(task['instance_id'])
         config = json.loads((asset / 'runtime.json').read_text())
         historical = json.loads((asset / 'run-summary.json').read_text())
         config['site_packages_mode'] = historical.get('task_site_packages_mode') or 'pth'
@@ -797,6 +1037,9 @@ def main():
             config['site_packages_mode'] = 'copy'
         config['linux_environment_ready'] = bool(actual and actual['success'])
         config['linux_preparation'] = actual
+        config.pop('linux_preparation_error', None)
+        if task['instance_id'] in runtime_problems:
+            config['linux_preparation_error'] = runtime_problems[task['instance_id']]
         if actual and actual.get('environment_path'):
             config['python'] = actual['environment_path'] + '/bin/python'
             abi = actual.get('python_abi') or '.'.join(actual['python_requested'].split('.')[:2])
@@ -827,7 +1070,9 @@ def main():
                 'source_sha256': {p: hashlib.sha256(s.encode()).hexdigest() for p,s in bundle.items()},
                 'isolation': isolation, 'started_at': time.time(),
                 'frozen_task_count': len(task_ids),
-                'collection_task_ids': collection_ids, 'independent_validation_task_ids': validation_ids}
+                'collection_task_ids': collection_ids, 'independent_validation_task_ids': validation_ids,
+                'actual_task_environment_profiles': {key: value['id'] for key, value in task_environments.items()},
+                'runtime_unavailable_tasks': runtime_problems}
     if MODE == 'train':
         evidence['torch_allocator_configuration'] = env['PYTORCH_ALLOC_CONF']
     (out / 'carrier.json').write_text(json.dumps(evidence, indent=2) + '\n')
@@ -861,7 +1106,12 @@ def main():
         with tarfile.open(archive_path, 'w:gz', compresslevel=1) as archive:
             archive.add(stage, arcname=stage.name)
         (out / 'runtime-archive.json').write_text(json.dumps({'sha256': sha(archive_path),
-                'bytes': archive_path.stat().st_size, 'source_runtime_sha256': actual_runtime_sha}, indent=2) + '\n')
+                'bytes': archive_path.stat().st_size, 'source_runtime_sha256': actual_runtime_sha,
+                'preparation_task_scope': list(ONLY_TASKS) if PREPARE_ONLY_SELECTED_TASKS else 'all referenced profiles',
+                'prevalidation_sha256': sha(out / 'prevalidation.jsonl'),
+                'verified_task_ids': [row['instance_id'] for row in
+                    (json.loads(line) for line in (out / 'prevalidation.jsonl').read_text().splitlines() if line.strip())
+                    if row.get('usable') is True]}, indent=2) + '\n')
         # The immutable archive contains all runtime files; publishing the raw
         # venv forest duplicates gigabytes and tens of thousands of small files.
         shutil.rmtree(stage)
@@ -882,16 +1132,28 @@ def main():
     if not merged_reports or (not PREVALIDATION_REPORTS and len(merged_reports) != 1):
         raise RuntimeError('Require explicitly frozen CPU reports or one mounted merged report')
     selected_ids = set(task_ids)
+    sys.path.insert(0, str(source))
+    from competition.vfarl.l4x4.run import cpu_evidence_applicability
+    selected_entries = {row['instance_id']: row for row in selection['tasks']}
     by_id, source_records = {}, []
     for report in merged_reports:
         rows = [json.loads(line) for line in report.read_text().splitlines() if line.strip()]
         source_record = {'path': str(report), 'sha256': sha(report), 'rows': len(rows),
-                         'reused_task_ids': [], 'superseded_task_ids': []}
+                         'reused_task_ids': [], 'superseded_task_ids': [],
+                         'ignored_other_version_task_ids': []}
         for row in rows:
             key = row['instance_id']
             if key not in selected_ids:
                 continue
             if key in by_id:
+                previous = cpu_evidence_applicability(by_id[key], selected_entries[key], material/'assets', isolation)
+                candidate = cpu_evidence_applicability(row, selected_entries[key], material/'assets', isolation)
+                # Prefer direct current-task evidence, then proven statement-only
+                # compatibility, over a later inapplicable historical record.
+                rank = lambda value: (value['matches_current_task'], value['matches_current_verification'])
+                if rank(previous) > rank(candidate):
+                    source_record['ignored_other_version_task_ids'].append(key)
+                    continue
                 source_record['superseded_task_ids'].append(key)
             by_id[key] = row
             source_record['reused_task_ids'].append(key)
@@ -903,11 +1165,29 @@ def main():
     if set(by_id) != selected_ids:
         raise RuntimeError('Missing actual Linux prevalidation records for frozen tasks: ' +
                            ', '.join(sorted(selected_ids - set(by_id))))
-    all_usable = {r['instance_id'] for r in valid if r.get('usable')}
+    # Historical CPU acceptance cannot repair a newly mounted dependency
+    # profile. Exclude only tasks whose actual packaged runtime is unavailable;
+    # retain their historical oracle rewards and never turn null into zero.
+    # Version/isolation applicability must also hold before model loading. An
+    # old row keeps its task/prompt identity. Only actual old task bytes may
+    # prove statement-only fixed-oracle compatibility; the ID alone cannot.
+    cpu_applicability = {key: cpu_evidence_applicability(by_id[key], selected_entries[key],
+        material / 'assets', isolation) for key in selected_ids}
+    evidence['cpu_evidence_applicability'] = cpu_applicability
+    evidence['task_versions_requiring_cpu_acceptance'] = [key for key, value in cpu_applicability.items()
+        if not value['matches_current_verification'] and not value.get('missing_current_asset_files')]
+    evidence['statement_only_cpu_compatibility_task_ids'] = [key for key, value in cpu_applicability.items()
+        if value['matches_current_verification'] and not value['matches_current_task']]
+    evidence['unmaterialized_task_ids'] = [key for key, value in cpu_applicability.items()
+        if value.get('missing_current_asset_files')]
+    all_usable = {r['instance_id'] for r in valid if r.get('usable')
+                  and r['instance_id'] in task_environments
+                  and cpu_applicability[r['instance_id']]['matches_current_verification']}
     usable = all_usable & set(collection_ids)
-    if not usable:
+    numerics_only = globals().get('NUMERICS_ONLY', False)
+    if not usable and not numerics_only:
         raise RuntimeError('No requested task has a real usable baseline/repaired environment')
-    if not COLLECT_ONLY and not CALIBRATION_ONLY and not set(validation_ids) <= all_usable:
+    if not COLLECT_ONLY and not CALIBRATION_ONLY and not numerics_only and not set(validation_ids) <= all_usable:
         raise RuntimeError('Independent comparison requires usable CPU environments for every frozen validation task')
     common = named_tasks(common, [task for task in collection_ids if task in usable])
     evidence.update(planned_task_pool=len(task_ids), usable_task_ids=sorted(usable), usable_task_count=len(usable),
@@ -986,6 +1266,45 @@ def main():
             optimizer_state='Fresh Adam; no optimizer state supplied by this carrier')
     baseline_policy = ('The declared initial adapter '+str(INITIAL_ADAPTER_SHA256)
                        if initial_adapter else 'Original frozen base and fresh config-seed zero-B adapter')
+    if numerics_only:
+        recovered = source / FOCAL_DATA
+        provenance = json.loads((source / FOCAL_PROVENANCE).read_text())
+        raw_rows = [json.loads(line) for line in recovered.read_text().splitlines() if line.strip()]
+        if (sha(recovered) != provenance['focal_sha256'] or not 1 <= len(raw_rows) <= 2
+                or any(row.get('instance_id') not in set(collection_ids) for row in raw_rows)):
+            raise RuntimeError('Short numerical study requires the declared source-bound training pair')
+        evidence.update(numerics_only=True, optimizer_requested=False, optimizer_steps=0,
+            new_rollouts=0, recovered_focal=provenance,
+            study_scope='Complete missing frozen reference; compare real head values/hidden gradients; one zero-update focal backward')
+        evidence['gpu_topology'].update(collector_processes=0, focal_state_quotas=[0, 0],
+            training_ranks=0, training_visible_gpus=0, post_update_task_limit=0,
+            post_update_collectors=0, numerics_processes=1, numerics_visible_gpus=2)
+        (out / 'carrier.json').write_text(json.dumps(evidence, indent=2)+'\n')
+        command = [sys.executable, '-m', 'training.train_vfarl_unsloth',
+            '--config', str(config_path), '--data', str(recovered),
+            '--out', str(out / 'numerics'), '--numerics-only', '--complete-pending-reference',
+            '--policy-gpus', '2']
+        if initial_adapter:
+            command += ['--adapter-run', str(initial_adapter)]
+        log = (out / 'numerics.log').open('w')
+        process = spawn(command, env=dict(env, CUDA_VISIBLE_DEVICES='0,1'),
+                        cwd=source, stdout=log, stderr=subprocess.STDOUT)
+        try:
+            failures = wait_workers([(process, log)])
+            if failures:
+                raise RuntimeError('Zero-update numerical study failed: '+str(failures))
+        finally:
+            if process.poll() is None:
+                stop_worker(process)
+            log.close()
+        study = json.loads((out / 'numerics/numerics-study.json').read_text())
+        if study.get('optimizer_steps') != 0 or study.get('adapter_unchanged') is not True:
+            raise RuntimeError('Numerical study did not prove zero updates and unchanged adapter')
+        evidence.update(one_update_completed=False, optimizer_requested=False,
+            optimizer_steps=0, numerics_result='numerics/numerics-study.json',
+            wall_seconds=time.monotonic()-started)
+        (out / 'carrier.json').write_text(json.dumps(evidence, indent=2)+'\n')
+        return
     if RESIDENT_RL:
         from competition.vfarl.l4x4.resident import run as resident_run
         evidence['resident_settings'] = RESIDENT_SETTINGS
@@ -1009,6 +1328,8 @@ def main():
                 if RESIDENT_SETTINGS.get('session_cache_tokens', 0) else 'Action microbatch with fresh KV')
                 if RESIDENT_SETTINGS.get('batch_size', 1) > 1 else 'Single-sequence cached sampler',
             retained_session_token_budget=RESIDENT_SETTINGS.get('session_cache_tokens', 0))
+        if RESIDENT_SETTINGS.get('session_prefix_rewind', False):
+            evidence['gpu_topology']['session_prefix_rewind'] = True
         (out / 'carrier.json').write_text(json.dumps(evidence, indent=2) + '\n')
         summary = resident_run(config=config_path, selection=material / 'selection.json',
             questions=material / 'questions.jsonl', assets=material / 'assets',
@@ -1029,7 +1350,8 @@ def main():
         if any(json.loads(line).get('instance_id') not in set(collection_ids)
                for line in recovered.read_text().splitlines() if line.strip()):
             raise RuntimeError('Recovered data contains a task outside the declared training scope')
-        reward_rows, recovered_groups = prepare_rows(recovered, CONTEXT_LENGTH)
+        reward_rows, recovered_groups = prepare_rows(recovered, CONTEXT_LENGTH,
+            focal_unit=config.get('rl', {}).get('focal_unit', 'complete_response'))
         if not reward_rows:
             raise RuntimeError('Recovered data has no complete verified mixed state group')
         focal = out / 'focal.jsonl'
@@ -1124,7 +1446,8 @@ def main():
         # Spend comparison rollouts only after this collection produced actual
         # usable reward differences. These tasks never supplied focal rewards.
         from training.train_vfarl import prepare_rows
-        reward_rows, group_summary = prepare_rows(focal, CONTEXT_LENGTH)
+        reward_rows, group_summary = prepare_rows(focal, CONTEXT_LENGTH,
+            focal_unit=config.get('rl', {}).get('focal_unit', 'complete_response'))
         evidence['focal_groups'] = group_summary
         if reward_rows and not validation_after_optimizer:
             print(json.dumps({'phase': 'independent_validation_started', 'stage': 'before',
@@ -1175,17 +1498,25 @@ def main():
         wait_workers([(train_process, log)])
     manifest_path = out / 'update/training_manifest.json'
     updated = json.loads(manifest_path.read_text()) if manifest_path.is_file() else {}
-    evidence['one_update_completed'] = updated.get('optimizer_steps') == 1
+    commit = optimizer_commit_evidence(out / 'update', sha(focal))
+    evidence['optimizer_commit'] = commit
+    evidence['optimizer_steps'] = commit['optimizer_steps']
+    evidence['one_update_completed'] = commit['reusable_adapter_commit']
     if validation_ids and evidence['one_update_completed']:
         measurement_order.append('optimizer_update')
     evidence['training_process_exit_code'] = train_process.returncode
     evidence['post_update_diagnostics_completed'] = updated.get('post_update_diagnostics_completed', False)
     print(json.dumps({'phase': 'training_update_finished', 'exit_code': train_process.returncode,
-                      'optimizer_steps': updated.get('optimizer_steps', 0),
+                      'optimizer_steps': commit['optimizer_steps'],
+                      'optimizer_step_scope': commit['optimizer_step_scope'],
+                      'observed_rank_local_steps': len(commit['rank_local_step_records']),
+                      'adapter_export_completed': commit['adapter_export_completed'],
+                      'reusable_adapter_commit': commit['reusable_adapter_commit'],
                       'post_update_diagnostics_completed': evidence['post_update_diagnostics_completed']}), flush=True)
     (out / 'carrier.json').write_text(json.dumps(evidence, indent=2) + '\n')
-    if train_process.returncode and not evidence['one_update_completed']:
-        raise RuntimeError('Training failed before a real committed optimizer step; inspect retained update.log')
+    if not evidence['one_update_completed']:
+        raise RuntimeError('No reusable adapter commit: ' + '; '.join(commit['errors'])
+            + '. An optimizer step may already have executed; preserve the behavior batch and update.log without automatically repeating it.')
     if train_process.returncode:
         evidence['post_update_diagnostic_failure'] = (
             'The optimizer step and adapter were committed before the failed diagnostic phase. '

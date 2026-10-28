@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+import copy
 import hashlib
 import json
 from pathlib import Path
+import shutil
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -216,10 +219,270 @@ def prepare(output, seed):
     return result
 
 
+def _revision_parent(previous_path):
+    """Read and bind the fixed parent once, retaining original question/task bytes."""
+    previous_path = Path(previous_path).resolve()
+    selection_bytes = previous_path.read_bytes()
+    previous = json.loads(selection_bytes)
+    entries = previous["tasks"]
+    ids = [row["instance_id"] for row in entries]
+    if len(ids) != 100 or len(set(ids)) != 100 or any(row.get("physical_split") != "train" for row in entries):
+        raise ValueError("A problem revision requires the fixed 100 distinct train identities")
+    questions_path = previous_path.parent / previous["questions"]["path"]
+    question_bytes = questions_path.read_bytes()
+    if hashlib.sha256(question_bytes).hexdigest() != previous["questions"]["sha256"]:
+        raise ValueError("The parent questions changed")
+    question_lines = question_bytes.splitlines(keepends=True)
+    question_rows = [json.loads(line) for line in question_lines]
+    if [row["instance_id"] for row in question_rows] != ids:
+        raise ValueError("Parent questions and fixed inventory order differ")
+    substitutions_source = None
+    substitutions_relative = None
+    if previous.get("substitutions"):
+        substitutions_relative = Path(previous["substitutions"])
+        if substitutions_relative.is_absolute() or ".." in substitutions_relative.parts:
+            raise ValueError("Substitutions must have a local selection-relative path")
+        substitutions_source = (previous_path.parent / substitutions_relative).resolve()
+        verified_file(str(substitutions_source.relative_to(ROOT)), previous.get("substitutions_sha256"))
+    inherited_revisions = []
+    for reference in [*previous.get("problem_revisions", []), previous.get("problem_revision"),
+                      *(row.get("problem_revision") for row in entries)]:
+        if reference is None or any(item["sha256"] == reference["sha256"] for item in inherited_revisions):
+            continue
+        verified_file(reference["path"], reference["sha256"])
+        inherited_revisions.append(copy.deepcopy(reference))
+
+    # Locate raw top-level task objects with JSON's decoder, not text matching.
+    # Reuse their original bytes when writing unaffected task records.
+    text = selection_bytes.decode("utf-8")
+    decoder = json.JSONDecoder()
+    def space(position):
+        while position < len(text) and text[position].isspace():
+            position += 1
+        return position
+    position = space(0) + 1
+    while True:
+        key, key_end = decoder.raw_decode(text, space(position))
+        value_start = space(space(key_end) + 1)
+        _, value_end = decoder.raw_decode(text, value_start)
+        if key == "tasks":
+            array_start, array_end = value_start, value_end
+            break
+        position = space(value_end) + 1
+    task_spans = []
+    position = space(array_start + 1)
+    for _ in entries:
+        _, end = decoder.raw_decode(text, position)
+        task_spans.append((position - array_start, end - array_start))
+        position = space(end)
+        if text[position] == ",":
+            position = space(position + 1)
+    return dict(path=previous_path, sha256=hashlib.sha256(selection_bytes).hexdigest(),
+        previous=previous, entries=entries, ids=ids, question_lines=question_lines,
+        question_rows=question_rows, substitutions_source=substitutions_source,
+        substitutions_relative=substitutions_relative, inherited_revisions=inherited_revisions,
+        task_array_text=text[array_start:array_end], task_spans=task_spans)
+
+
+def _problem_change(parent, index, statement_path, expected_statement_sha=None):
+    from swegemma.harness.agent_runner import build_agent_prompt
+
+    entry = parent["entries"][index]
+    old_task = json.loads(verified_file(entry["task_input"], entry["task_input_sha256"]).read_text())
+    statement_path = Path(statement_path).resolve()
+    statement_bytes = statement_path.read_bytes()
+    statement_sha = hashlib.sha256(statement_bytes).hexdigest()
+    if expected_statement_sha is not None and statement_sha != expected_statement_sha:
+        raise ValueError("Planned statement changed: " + str(statement_path))
+    statement = statement_bytes.decode("utf-8")
+    if not statement.strip() or statement == old_task["problem_statement"]:
+        raise ValueError("A revision must contain a new, nonempty behavioral statement")
+    report = json.loads(verified_file(entry["actual_replay_result"], entry["actual_replay_result_sha256"]).read_text())
+    config = SimpleNamespace(budget=SimpleNamespace(**report["evaluation_budget"]),
+        harness=SimpleNamespace(**report["harness_limits"]), graph_dir="", embeddings_dir="",
+        enable_sandbox_testing=True)
+    tools = report.get("initial_prompt_declared_tools")
+    tools_source = "Historical report initial_prompt_declared_tools"
+    if tools is None:
+        imports = report.get("tool_imports", {})
+        if (report.get("six_tools_only") is not True
+                or set(imports) != {"run_command", "read_file", "write_file", "edit_file", "get_status", "submit_patch"}):
+            raise ValueError("Historical prompt tool declarations are unavailable")
+        tools = sorted(imports)
+        tools_source = "Historical six_tools_only report's actual tool_imports; missing declaration field is not rewritten"
+    old_prompt = build_agent_prompt(SimpleNamespace(**old_task), config,
+        declared_tools=tools, enable_sandbox_testing=True)
+    old_sha = hashlib.sha256(old_prompt.encode()).hexdigest()
+    if (old_prompt != parent["question_rows"][index]["official_initial_user_prompt"]
+            or old_sha != entry["official_initial_user_prompt_sha256"]
+            or old_sha != parent["question_rows"][index]["official_initial_user_prompt_sha256"]):
+        raise ValueError("The official prompt builder does not reproduce the frozen parent prompt")
+    new_task = {**old_task, "problem_statement": statement}
+    new_prompt = build_agent_prompt(SimpleNamespace(**new_task), config,
+        declared_tools=tools, enable_sandbox_testing=True)
+    return dict(index=index, entry=entry, statement=statement, statement_sha256=statement_sha,
+        statement_path=statement_path, new_task=new_task, new_prompt=new_prompt, tools_source=tools_source,
+        new_prompt_sha256=hashlib.sha256(new_prompt.encode()).hexdigest())
+
+
+def _write_problem_change(parent, change, destination):
+    destination.mkdir(parents=True, exist_ok=True)
+    entry, index = change["entry"], change["index"]
+    (destination / "problem-statement.txt").write_bytes(change["statement"].encode("utf-8"))
+    task_path = destination / "task-v2.json"
+    new_task = change["new_task"]
+    task_path.write_text(json.dumps(new_task, ensure_ascii=False, indent=2) + "\n")
+    revision_path = destination / "revision.json"
+    revision = {
+        "format": "vfarl-fixed100-problem-revision-v1", "instance_id": entry["instance_id"],
+        "parent_selection": str(parent["path"].relative_to(ROOT)),
+        "parent_selection_sha256": parent["sha256"],
+        "old_task_input": entry["task_input"], "old_task_input_sha256": entry["task_input_sha256"],
+        "new_task_input": str(task_path.resolve().relative_to(ROOT)), "new_task_input_sha256": sha_file(task_path),
+        "old_initial_prompt_sha256": entry["official_initial_user_prompt_sha256"],
+        "new_initial_prompt_sha256": change["new_prompt_sha256"],
+        "problem_statement_sha256": change["statement_sha256"],
+        "prompt_builder": "Actual swegemma.harness.agent_runner.build_agent_prompt; parent prompt reproduced byte-for-byte",
+        "prompt_tools_source": change["tools_source"],
+        "preserved": "Same 100 IDs, order, role, mechanism, family, source snapshot, reference repair, original F2P/P2P and full target files; this record changes only this task's problem statement",
+        "historical_demonstration": {"report": entry["actual_replay_result"],
+            "sha256": entry["actual_replay_result_sha256"], "applies_to": "Original problem version only"},
+        "new_demonstration": "Not replayed; old action traces and supervision are not relabeled as new-prompt demonstrations",
+        "new_cpu_evidence": "Requires actual baseline/reference execution on the unchanged full oracle; old usable is not copied to the revised task hash",
+    }
+    revision_path.write_text(json.dumps(revision, ensure_ascii=False, indent=2) + "\n")
+    reference = {"path": str(revision_path.resolve().relative_to(ROOT)), "sha256": sha_file(revision_path)}
+    question_line = (json.dumps({**parent["question_rows"][index],
+        "official_initial_user_prompt": change["new_prompt"],
+        "official_initial_user_prompt_sha256": change["new_prompt_sha256"]}, ensure_ascii=False) + "\n").encode("utf-8")
+    return revision, reference, question_line
+
+
+def _finish_problem_revisions(parent, changes, output, *, batch=False):
+    output.mkdir(parents=True)
+    if parent["substitutions_source"] is not None:
+        destination = output / parent["substitutions_relative"]
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(parent["substitutions_source"], destination)
+    result = copy.deepcopy(parent["previous"])
+    result["schema_version"] = "vfarl-l4x4-s600-train100-question-revision-v1"
+    result["parent_selection"] = str(parent["path"].relative_to(ROOT))
+    result["parent_selection_sha256"] = parent["sha256"]
+    result["problem_revisions"] = copy.deepcopy(parent["inherited_revisions"])
+    result.pop("problem_revision", None)
+    result.pop("problem_revision_batch", None)
+    question_lines = list(parent["question_lines"])
+    revisions = []
+    for change in changes:
+        index, entry = change["index"], change["entry"]
+        destination = output / "tasks" / entry["instance_id"] if batch else output
+        if not destination.resolve().is_relative_to(output.resolve()):
+            raise ValueError("Task identifier leaves the revision output directory")
+        revision, reference, question_lines[index] = _write_problem_change(parent, change, destination)
+        revisions.append(revision)
+        result["problem_revisions"].append(copy.deepcopy(reference))
+        revised = result["tasks"][index]
+        revised.update(task_input=revision["new_task_input"], task_input_sha256=revision["new_task_input_sha256"],
+            official_initial_user_prompt_sha256=change["new_prompt_sha256"],
+            visible_prompt_profile="curator_authored_behavioral_clarification",
+            actual_replay_result_applies_to="Historical problem version only; new-prompt demonstration not replayed",
+            problem_revision=reference)
+        if not batch:
+            result["problem_revision"] = copy.deepcopy(reference)
+    question_path = output / "questions.jsonl"
+    question_path.write_bytes(b"".join(question_lines))
+    result["questions"] = {**result["questions"], "path": question_path.name, "sha256": sha_file(question_path)}
+    if batch:
+        result["problem_revision_batch"] = {"count": len(changes), "array_indices": [c["index"] for c in changes]}
+    raw_tasks = parent["task_array_text"]
+    for change in sorted(changes, key=lambda c: c["index"], reverse=True):
+        start, end = parent["task_spans"][change["index"]]
+        replacement = json.dumps(result["tasks"][change["index"]], ensure_ascii=False, indent=2).replace("\n", "\n    ")
+        raw_tasks = raw_tasks[:start] + replacement + raw_tasks[end:]
+    marker = "__vfarl_preserve_original_task_object_bytes__"
+    rendered = json.dumps({**result, "tasks": marker}, ensure_ascii=False, indent=2)
+    if rendered.count(json.dumps(marker)) != 1:
+        raise ValueError("Task-array serialization marker is ambiguous")
+    (output / "selection.json").write_bytes((rendered.replace(json.dumps(marker), raw_tasks, 1) + "\n").encode("utf-8"))
+    return revisions
+
+
+def revise_problem(previous_path, instance_id, statement_path, output):
+    """Version one question; preserve the existing single-task API and layout."""
+    output = Path(output).resolve()
+    if output.exists():
+        raise FileExistsError("Preserve the previous revision directory: " + str(output))
+    parent = _revision_parent(previous_path)
+    if instance_id not in parent["ids"]:
+        raise ValueError("Question is outside the frozen training inventory")
+    change = _problem_change(parent, parent["ids"].index(instance_id), statement_path)
+    return _finish_problem_revisions(parent, [change], output)[0]
+
+
+def revise_problems(previous_path, plan_path, output):
+    """Apply explicit index/ID/hash-bound statements, writing the 100-question parent once."""
+    output, plan_path = Path(output).resolve(), Path(plan_path).resolve()
+    if output.exists():
+        raise FileExistsError("Preserve the previous revision directory: " + str(output))
+    parent = _revision_parent(previous_path)
+    plan_bytes = plan_path.read_bytes()
+    plan = json.loads(plan_bytes)
+    entries = plan.get("entries")
+    if not isinstance(entries, list) or not entries or len(entries) > 100:
+        raise ValueError("A revision plan needs 1-100 explicit fixed-inventory entries")
+    for key in ("parent_selection_sha256", "previous_selection_sha256"):
+        if key in plan and plan[key] != parent["sha256"]:
+            raise ValueError("Revision plan belongs to a different parent selection")
+    for key in ("parent_selection", "previous_selection"):
+        if key in plan and (ROOT / plan[key]).resolve() != parent["path"]:
+            raise ValueError("Revision plan references a different parent selection path")
+    changes, seen = [], set()
+    for item in entries:
+        index = item["index"]
+        if type(index) is not int or index < 0 or index >= 100 or index in seen:
+            raise ValueError("Revision plan contains an invalid or repeated array index")
+        entry = parent["entries"][index]
+        if (item["instance_id"] != entry["instance_id"]
+                or item["old_task_input_sha256"] != entry["task_input_sha256"]):
+            raise ValueError("Revision plan index/ID/old task identity differs from the fixed parent")
+        statement_path = Path(item["statement_path"])
+        if not isinstance(item["statement_sha256"], str):
+            raise ValueError("Revision plan must explicitly bind a statement SHA256")
+        if not statement_path.is_absolute():
+            statement_path = ROOT / statement_path
+        changes.append(_problem_change(parent, index, statement_path, item["statement_sha256"]))
+        seen.add(index)
+    revisions = _finish_problem_revisions(parent, changes, output, batch=True)
+    summary = dict(format="vfarl-fixed100-problem-revision-batch-v1",
+        parent_selection=str(parent["path"].relative_to(ROOT)), parent_selection_sha256=parent["sha256"],
+        plan_path=str(plan_path), plan_sha256=hashlib.sha256(plan_bytes).hexdigest(),
+        changed_questions=len(revisions), fixed_inventory=100,
+        selection_sha256=sha_file(output / "selection.json"), questions_sha256=sha_file(output / "questions.jsonl"),
+        revisions=revisions, new_demonstrations="Not replayed; no historical actions relabeled",
+        new_cpu_evidence="Each new task version requires applicable actual CPU evidence; unchanged oracle is retained")
+    (output / "batch-summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n")
+    return summary
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--seed", type=int, default=20261026)
     parser.add_argument("--out", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--revise-selection", type=Path)
+    parser.add_argument("--revise-task")
+    parser.add_argument("--problem-statement", type=Path)
+    parser.add_argument("--revision-plan", type=Path,
+                        help="Batch entries: index, instance_id, old_task_input_sha256, statement_path (repo-relative or absolute), statement_sha256")
     args = parser.parse_args()
-    result = prepare(args.out.resolve(), args.seed)
-    print(json.dumps(result["counts"], ensure_ascii=False, indent=2))
+    if args.revision_plan:
+        if not args.revise_selection or args.revise_task or args.problem_statement:
+            parser.error("Batch revision requires --revise-selection and --revision-plan; omit single-task arguments")
+        result = revise_problems(args.revise_selection.resolve(), args.revision_plan.resolve(), args.out.resolve())
+    elif any((args.revise_selection, args.revise_task, args.problem_statement)):
+        if not all((args.revise_selection, args.revise_task, args.problem_statement)):
+            parser.error("Problem revision requires --revise-selection, --revise-task and --problem-statement")
+        result = revise_problem(args.revise_selection.resolve(), args.revise_task,
+            args.problem_statement.resolve(), args.out.resolve())
+    else:
+        result = prepare(args.out.resolve(), args.seed)["counts"]
+    print(json.dumps(result, ensure_ascii=False, indent=2))

@@ -39,6 +39,11 @@ from swegemma.harness.verification import (
 from swegemma.models import Task
 from swegemma.sandbox import SubprocessManager
 from swegemma.tools import create_tools
+if __name__ == '__main__' and not __package__:
+    # Preserve the existing direct-file CLI when PYTHONPATH contains only the
+    # official host packages rather than this repository root.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from competition.vfarl.l4x4.bytecode import LEGACY, POLICIES, configure_manager
 
 SIX_TOOLS = {"run_command", "read_file", "write_file", "edit_file", "get_status", "submit_patch"}
 EXCLUDED_PARTS = {".git", ".venv", "venv", "__pycache__", ".pytest_cache", ".DS_Store"}
@@ -65,6 +70,72 @@ def sha256_bytes(value: bytes) -> str:
 
 def write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+class ExplicitPromptSetting(argparse.Action):
+    """Record CLI settings that cannot override a selection-bound prompt."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        supplied = list(getattr(namespace, "_explicit_prompt_settings", ()))
+        supplied.append(option_string)
+        namespace._explicit_prompt_settings = supplied
+
+
+def selection_prompt_profile(selection_path: Path, task_path: Path):
+    """Load only hash-bound historical budget/harness for this current task.
+
+    Historical outcomes are not evidence for the selected problem version. The
+    caller must check the unmodified official builder's resulting prompt before
+    creating a sandbox; numeric JSON types are deliberately not coerced.
+    """
+    selection_path, task_path = Path(selection_path).resolve(), Path(task_path).resolve()
+    selection_bytes, task_bytes = selection_path.read_bytes(), task_path.read_bytes()
+    selection, payload = json.loads(selection_bytes), json.loads(task_bytes)
+    entries = selection.get("tasks", ())
+    if (not isinstance(entries, list) or len(entries) != 100
+            or len({entry["instance_id"] for entry in entries}) != 100
+            or any(entry.get("physical_split") != "train" for entry in entries)):
+        raise ValueError("Prompt selection requires the explicit fixed100 training inventory")
+    matches = [entry for entry in entries if entry["instance_id"] == payload["instance_id"]]
+    if len(matches) != 1 or matches[0]["task_input_sha256"] != sha256_bytes(task_bytes):
+        raise ValueError("Prompt selection does not match the actual task instance and input SHA")
+    entry = matches[0]
+    report_path = Path(entry["actual_replay_result"])
+    if not report_path.is_absolute():
+        report_path = Path(__file__).resolve().parents[3] / report_path
+    report_path = report_path.resolve()
+    report_bytes = report_path.read_bytes()
+    if sha256_bytes(report_bytes) != entry["actual_replay_result_sha256"]:
+        raise ValueError("Prompt selection source replay report SHA mismatch")
+    report = json.loads(report_bytes)
+    if report.get("instance_id") != entry["instance_id"]:
+        raise ValueError("Prompt selection source replay instance mismatch")
+    budget = EvaluationBudget(**report["evaluation_budget"])
+    harness = HarnessLimits(**report["harness_limits"])
+    profile = {
+        "format": "selection-bound-official-prompt-profile-v1",
+        "selection_path": str(selection_path),
+        "selection_sha256": sha256_bytes(selection_bytes),
+        "instance_id": entry["instance_id"],
+        "task_input_sha256": sha256_bytes(task_bytes),
+        "source_replay_result_path": str(report_path),
+        "source_replay_result_sha256": sha256_bytes(report_bytes),
+        "expected_prompt_sha256": entry["official_initial_user_prompt_sha256"],
+        "evaluation_budget": dataclasses.asdict(budget),
+        "harness_limits": dataclasses.asdict(harness),
+        "scope": "Historical report supplies prompt configuration only; its outcomes are not reassigned to the current task version",
+    }
+    return budget, harness, profile
+
+
+def bind_selection_prompt(profile: dict, actual_prompt: str) -> dict:
+    """Require actual official prompt bytes, not a reconstructed substitute."""
+    actual_sha256 = sha256_bytes(actual_prompt.encode())
+    if actual_sha256 != profile["expected_prompt_sha256"]:
+        raise ValueError("Official prompt SHA differs from prompt selection: expected "
+                         + profile["expected_prompt_sha256"] + ", actual " + actual_sha256)
+    return {**profile, "actual_prompt_sha256": actual_sha256}
 
 
 def parent_runtime_evidence() -> dict:
@@ -181,24 +252,43 @@ async def replay(args: argparse.Namespace) -> None:
     # Gold patches are retained only in the source task definition, never in the visible prompt.
     if task.repo.lower() in {"fastapi/fastapi", "textualize/rich", "psf/requests", "encode/httpx"}:
         raise ValueError("The four competition repositories are excluded from this training course")
+    prompt_profile = None
+    if getattr(args, "prompt_selection", None):
+        if getattr(args, "_explicit_prompt_settings", ()):
+            raise ValueError("--prompt-selection cannot be combined with explicit budget/harness settings: "
+                             + ", ".join(args._explicit_prompt_settings))
+        budget, harness, prompt_profile = selection_prompt_profile(args.prompt_selection, args.task)
+        args.time_minutes, args.tool_calls = budget.time_minutes, budget.tool_calls
+        args.command_timeout = harness.command_timeout_seconds
+        args.verification_timeout = harness.verification_timeout_seconds
+        config = EvalConfig(tasks_path=args.task, snapshots_dir=args.output,
+                            results_dir=args.output, submission_dir=args.output,
+                            models=ModelRegistry(), sandbox="subprocess", budget=budget,
+                            harness=harness, graph_dir="", embeddings_dir="",
+                            enable_sandbox_testing=True)
+        actual_prompt = build_agent_prompt(task, config, declared_tools=sorted(SIX_TOOLS),
+                                           enable_sandbox_testing=True)
+        prompt_profile = bind_selection_prompt(prompt_profile, actual_prompt)
     if args.output.exists():
         raise FileExistsError(f"Refusing to overwrite an existing replay: {args.output}")
     args.output.mkdir(parents=True)
     inventory = source_inventory(args.workspace)
     write_json(args.output / "source-inventory.json", inventory)
     write_json(args.output / "recipe.json", recipe)
-    budget = EvaluationBudget(time_minutes=args.time_minutes, tool_calls=args.tool_calls, turns=500)
-    harness = HarnessLimits(command_timeout_seconds=args.command_timeout,
-                            verification_timeout_seconds=args.verification_timeout)
-    config = EvalConfig(tasks_path=args.task, snapshots_dir=args.output,
-                        results_dir=args.output, submission_dir=args.output,
-                        models=ModelRegistry(), sandbox="subprocess", budget=budget,
-                        harness=harness, graph_dir="", embeddings_dir="",
-                        enable_sandbox_testing=True)
-    actual_prompt = build_agent_prompt(task, config, declared_tools=sorted(SIX_TOOLS),
-                                       enable_sandbox_testing=True)
+    if prompt_profile is None:
+        budget = EvaluationBudget(time_minutes=args.time_minutes, tool_calls=args.tool_calls, turns=500)
+        harness = HarnessLimits(command_timeout_seconds=args.command_timeout,
+                                verification_timeout_seconds=args.verification_timeout)
+        config = EvalConfig(tasks_path=args.task, snapshots_dir=args.output,
+                            results_dir=args.output, submission_dir=args.output,
+                            models=ModelRegistry(), sandbox="subprocess", budget=budget,
+                            harness=harness, graph_dir="", embeddings_dir="",
+                            enable_sandbox_testing=True)
+        actual_prompt = build_agent_prompt(task, config, declared_tools=sorted(SIX_TOOLS),
+                                           enable_sandbox_testing=True)
     (args.output / "agent-prompt.txt").write_text(actual_prompt, encoding="utf-8")
     manager = SubprocessManager(base_dir=args.output / "sandboxes", system_site_packages=True)
+    bytecode_policy = configure_manager(manager, getattr(args, 'source_bytecode_policy', LEGACY))
     original_start = manager.start
     original_stop = manager.stop
     verification_phase = {"label": "phase-a"}
@@ -319,7 +409,8 @@ async def replay(args: argparse.Namespace) -> None:
 
     # Preserve reports before the original stop deletes temporary files. The
     # optional start hook also adds the declared src layout to the local venv.
-    # Original execution, tools, context and verification functions are unchanged.
+    # Official translation, tools, context and verification functions stay intact;
+    # the separately declared bytecode profile can prepend task-shell exports.
     manager.start = start_with_source_layout
     manager.stop = preserve_reports_then_stop
     started = time.perf_counter()
@@ -434,6 +525,7 @@ async def replay(args: argparse.Namespace) -> None:
             "terminal_response_provenance": "human_authored_reviewed_off_policy_recipe" if final_response else None,
             "same_state_counterfactual": False, "on_policy": False,
             "backend": "official_SubprocessManager_noncontainer",
+            "source_bytecode_policy": bytecode_policy,
             "task_data_adapter": task_class.__name__,
             "verification_target_files": task.test_files,
             "sandbox_source_layout_path": args.source_layout,
@@ -464,6 +556,7 @@ async def replay(args: argparse.Namespace) -> None:
             "phase_b_verification_wall_seconds": verification_wall_seconds,
             "total_wall_seconds": time.perf_counter() - started,
             "tool_imports": imports,
+            **({"prompt_selection_profile": prompt_profile} if prompt_profile is not None else {}),
             **runtime_evidence,
             "limitations": ["Human-authored actions, no model inference or policy logprobs",
                             "Local subprocess shares the host OS; not a security boundary",
@@ -490,17 +583,21 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--verify", action="store_true")
     parser.add_argument("--verify-baseline", action="store_true")
+    parser.add_argument("--prompt-selection", type=Path,
+                        help="Opt in to exact fixed100 selection-bound prompt budget/harness and SHA; conflicts with explicit budget/harness flags")
     parser.add_argument("--source-layout", default="", help="Explicit relative package directory, e.g. src; added to each sandbox venv")
     parser.add_argument("--source-import-alias-root", type=Path, help="Explicit new short directory of workspace symlinks for a documented local path compatibility profile")
     parser.add_argument("--source-preload-module", default="", help="Execute the real package initializer through the explicit alias before pytest changes sys.path")
     parser.add_argument("--task-site-packages", type=Path, help="Explicit preinstalled task-only dependency profile for sandbox Python; official ADK host dependencies remain separate")
     parser.add_argument("--task-site-packages-mode", choices=("pth", "copy"), default="pth", help="Use external dependency search path or copy packages into each private sandbox's normal purelib, excluding old bytecode")
     parser.add_argument("--task-python", type=Path, help="Task-only Python binary; rebuilds sandbox venv without host packages, requires --task-site-packages")
+    parser.add_argument("--source-bytecode-policy", choices=POLICIES, default=LEGACY,
+                        help="Explicit prospective task-Python cache semantics; legacy replay behavior stays default")
     parser.add_argument("--sandbox-executable", action="append", default=[], help="Expose a reviewed installed dependency binary as NAME=ABS_PATH in the sandbox venv/bin; never replaces Python or pytest")
-    parser.add_argument("--time-minutes", type=float, default=60)
-    parser.add_argument("--tool-calls", type=int, default=100)
-    parser.add_argument("--command-timeout", type=int, default=300)
-    parser.add_argument("--verification-timeout", type=int, default=300)
+    parser.add_argument("--time-minutes", action=ExplicitPromptSetting, type=float, default=60)
+    parser.add_argument("--tool-calls", action=ExplicitPromptSetting, type=int, default=100)
+    parser.add_argument("--command-timeout", action=ExplicitPromptSetting, type=int, default=300)
+    parser.add_argument("--verification-timeout", action=ExplicitPromptSetting, type=int, default=300)
     asyncio.run(replay(parser.parse_args()))
 
 

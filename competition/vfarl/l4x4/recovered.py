@@ -324,7 +324,9 @@ def complete_reference(policy, pending_path, out_path):
     temporary = out_path.with_name(out_path.name+'.part')
     temporary.write_text(''.join(json.dumps(row, ensure_ascii=False, allow_nan=False)+'\n' for row in rows))
     try:
-        prepared, groups = prepare_rows(temporary, policy.cfg['max_sequence_length'])
+        focal_unit = policy.rl.get('focal_unit', 'complete_response')
+        prepared, groups = prepare_rows(temporary, policy.cfg['max_sequence_length'],
+                                      focal_unit=focal_unit)
         if len(prepared) != len(rows) or groups['mixed_group_count'] != 1:
             raise ValueError('Scored recovered pair did not pass strict focal learner acceptance')
         scored_sha256 = digest(temporary.read_bytes())
@@ -332,6 +334,7 @@ def complete_reference(policy, pending_path, out_path):
             source_data_sha256=digest(pending_path.read_bytes()), data_sha256=scored_sha256,
             focal_sha256=scored_sha256,
             reference_forwards=len(scorings), scorings=scorings, groups=groups,
+            focal_unit=focal_unit,
             immutable_behavior_preserved=True, eligible_for_training=True,
             new_rollout_performed=False, optimizer_steps=0)
         # Publish the validated data last. A failed sidecar write must not

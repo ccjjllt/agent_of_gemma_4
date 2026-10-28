@@ -173,7 +173,10 @@ def action_examples(record, tokenizer, tools):
         for call in message.get("tool_calls") or []:
             args = call["function"]["arguments"]
             call["function"]["arguments"] = json.loads(args) if isinstance(args, str) else args
-    rendered = Path(record["rendered_text"]).read_text()
+    rendered_bytes = Path(record["rendered_text"]).read_bytes()
+    if hashlib.sha256(rendered_bytes).hexdigest() != record["rendered_text_sha256"]:
+        raise ValueError("Rendered episode bytes changed since its action spans were recorded")
+    rendered = rendered_bytes.decode("utf-8")
     examples = []
     for index, span in enumerate(record["action_spans"]):
         prefix = tokenizer.apply_chat_template(

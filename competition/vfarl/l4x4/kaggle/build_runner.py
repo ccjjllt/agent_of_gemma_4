@@ -48,9 +48,13 @@ parser.add_argument('--focal-provenance', type=Path,
 parser.add_argument('--title')
 parser.add_argument('--dataset-version', type=int, default=1)
 parser.add_argument('--export-runtime', action='store_true', help='Publish repaired runtime even for a CPU task subset.')
+parser.add_argument('--prepare-only-selected-tasks', action='store_true',
+                    help='For CPU prevalidation, prepare only --only-task dependency profiles even when exporting the full base runtime.')
 parser.add_argument('--collect-only', action='store_true', help='Collect requested real rollouts/branches without optimizer or post-update runs.')
 parser.add_argument('--update-only', action='store_true',
                     help='End a short real research run after the optimizer attempt; independent policy rollouts are deferred.')
+parser.add_argument('--numerics-only', action='store_true',
+                    help='Bounded recovered-pair reference/head/backward study; no optimizer or new rollouts.')
 parser.add_argument('--focal-states', type=int, default=5, help='Maximum focal states across both collectors; zero means rollout coverage only.')
 parser.add_argument('--policy-backend', choices=('native', 'unsloth'), default='native',
                     help='Actor execution backend, selected independently of the learner.')
@@ -73,6 +77,11 @@ parser.add_argument('--resident-batch-wait-ms', type=float, default=50)
 parser.add_argument('--resident-batch-max-tokens', type=int, default=32768)
 parser.add_argument('--resident-session-cache-tokens', type=int, default=0,
                     help='LRU token budget for exact-prefix per-session KV; zero preserves fresh-action profile3.')
+parser.add_argument('--resident-session-prefix-rewind', action='store_true',
+                    help='Opt in to cache rewind at the same pre-action prefix; requires resident RL and a positive session-cache budget.')
+parser.add_argument('--resident-history-format', choices=('raw-preserved', 'canonical-ct-v1'),
+                    default='raw-preserved',
+                    help='Explicit strict-native canonical history experiment; nondefault requires resident live-original-pair, independent of cache rewind.')
 parser.add_argument('--resident-exclude-task', action='append', default=[],
                     help='Previously claimed original-inventory task to preserve without resampling after cancellation.')
 parser.add_argument('--resident-task-order', choices=('frozen', 'mixed-course', 'evidence-course'), default='frozen')
@@ -106,6 +115,18 @@ parser.add_argument('--prevalidation-report', type=Path, action='append', defaul
                     help='Actual local CPU report to freeze; later reports supersede earlier task records.')
 parser.add_argument('--jail-source', type=Path, help='Explicit CPU candidate or already CPU-accepted historical GPU jail source to freeze.')
 args = parser.parse_args()
+if args.prepare_only_selected_tasks and (args.mode != 'prevalidate' or not args.only_task):
+    parser.error('--prepare-only-selected-tasks requires CPU prevalidation and explicit --only-task entries')
+if args.resident_session_prefix_rewind and (not args.resident_rl or args.resident_session_cache_tokens <= 0):
+    parser.error('--resident-session-prefix-rewind requires --resident-rl and positive --resident-session-cache-tokens')
+if args.resident_history_format != 'raw-preserved' and (
+        not args.resident_rl or args.collection_protocol != 'live-original-pair'):
+    parser.error('--resident-history-format canonical-ct-v1 requires --resident-rl and --collection-protocol live-original-pair')
+if args.numerics_only and (args.mode != 'train' or not args.focal_data
+        or args.policy_backend != 'unsloth' or args.learner_backend != 'unsloth'
+        or args.resident_rl or args.collect_only or args.update_only
+        or args.calibration_data or args.calibration_only or args.collection_kernel):
+    parser.error('--numerics-only requires recovered Unsloth focal data and forbids training/collection alternatives')
 if args.focal_trigger == 'execution-recovery' and args.collection_protocol != 'live-original-pair':
     parser.error('--focal-trigger execution-recovery requires --collection-protocol live-original-pair')
 if args.resident_rl:
@@ -249,7 +270,7 @@ for index, path in enumerate(args.prevalidation_report):
     bundle[name] = path.read_text()
     prevalidation_paths.append(name)
 packed = base64.b64encode(zlib.compress(json.dumps(bundle).encode())).decode()
-source = f'MODE = {args.mode!r}\nMATERIAL_SHA256 = {material["sha256"]!r}\nMATERIAL_ARCHIVE_NAME = {material_archive_name!r}\nRUNTIME_SHA256 = {args.runtime_sha256!r}\nCONTEXT_LENGTH = {args.context!r}\nTRAINING_CONFIG = {training_config_path!r}\nONLY_TASKS = {args.only_task!r}\nEXPORT_RUNTIME = {args.export_runtime!r}\nCOLLECT_ONLY = {args.collect_only!r}\nFOCAL_STATES = {args.focal_states!r}\nPOLICY_BACKEND = {args.policy_backend!r}\nLEARNER_BACKEND = {args.learner_backend!r}\nDYNAMIC_QUEUE = {args.dynamic_queue!r}\nSTOP_AFTER_MIXED_GROUPS = {args.stop_after_mixed_groups!r}\nSTOP_AFTER_TASKS = {args.stop_after_tasks!r}\nCALIBRATION_DATA = {calibration_path!r}\nCALIBRATION_ONLY = {args.calibration_only!r}\nPREVALIDATION_REPORTS = {prevalidation_paths!r}\nSOURCE_BUNDLE = {packed!r}\n'
+source = f'MODE = {args.mode!r}\nMATERIAL_SHA256 = {material["sha256"]!r}\nMATERIAL_ARCHIVE_NAME = {material_archive_name!r}\nRUNTIME_SHA256 = {args.runtime_sha256!r}\nCONTEXT_LENGTH = {args.context!r}\nTRAINING_CONFIG = {training_config_path!r}\nONLY_TASKS = {args.only_task!r}\nEXPORT_RUNTIME = {args.export_runtime!r}\nPREPARE_ONLY_SELECTED_TASKS = {args.prepare_only_selected_tasks!r}\nCOLLECT_ONLY = {args.collect_only!r}\nFOCAL_STATES = {args.focal_states!r}\nPOLICY_BACKEND = {args.policy_backend!r}\nLEARNER_BACKEND = {args.learner_backend!r}\nDYNAMIC_QUEUE = {args.dynamic_queue!r}\nSTOP_AFTER_MIXED_GROUPS = {args.stop_after_mixed_groups!r}\nSTOP_AFTER_TASKS = {args.stop_after_tasks!r}\nCALIBRATION_DATA = {calibration_path!r}\nCALIBRATION_ONLY = {args.calibration_only!r}\nPREVALIDATION_REPORTS = {prevalidation_paths!r}\nSOURCE_BUNDLE = {packed!r}\n'
 source += (HERE / 'runner.py').read_text()
 resident_settings = dict(batch_task_limit=args.resident_batch_tasks,
     mixed_groups=args.resident_mixed_groups, maximum_states=args.resident_max_states,
@@ -259,6 +280,10 @@ resident_settings = dict(batch_task_limit=args.resident_batch_tasks,
     batch_wait_ms=args.resident_batch_wait_ms, batch_max_tokens=args.resident_batch_max_tokens,
     session_cache_tokens=args.resident_session_cache_tokens,
     excluded_task_ids=args.resident_exclude_task, task_order=args.resident_task_order)
+if args.resident_session_prefix_rewind:
+    resident_settings['session_prefix_rewind'] = True
+if args.resident_history_format != 'raw-preserved':
+    resident_settings['history_format'] = args.resident_history_format
 if args.collection_protocol != 'historical-three-branch':
     resident_settings['collection_protocol'] = args.collection_protocol
 if args.focal_trigger == 'execution-recovery':
@@ -266,6 +291,7 @@ if args.focal_trigger == 'execution-recovery':
 if curriculum_path:
     resident_settings['curriculum'] = curriculum_path
 source = (f'RESIDENT_RL = {args.resident_rl!r}\n'
+          f'NUMERICS_ONLY = {args.numerics_only!r}\n'
           f'COLLECTION_PROTOCOL = {args.collection_protocol!r}\n'
           f'FOCAL_TRIGGER = {args.focal_trigger!r}\n'
           f'RESIDENT_SETTINGS = {resident_settings!r}\n'
@@ -359,6 +385,7 @@ manifest = {'source_sha256': hashlib.sha256(source.encode()).hexdigest(),
             'only_tasks': args.only_task,
             'dataset_version': args.dataset_version,
             'export_runtime': args.export_runtime,
+            'prepare_only_selected_tasks': args.prepare_only_selected_tasks,
             'collect_only': args.collect_only,
             'maximum_focal_states': args.focal_states,
             'policy_backend': args.policy_backend,
@@ -366,6 +393,7 @@ manifest = {'source_sha256': hashlib.sha256(source.encode()).hexdigest(),
             'collection_protocol': args.collection_protocol,
             'focal_trigger': args.focal_trigger,
             'update_only': args.update_only,
+            'numerics_only': args.numerics_only,
             'resident_rl': args.resident_rl,
             'resident_settings': resident_settings if args.resident_rl else None,
             'initial_adapter_kernel': args.initial_adapter_kernel,
@@ -392,8 +420,11 @@ manifest = {'source_sha256': hashlib.sha256(source.encode()).hexdigest(),
             'jail_source_override': jail_override,
             'prevalidation_reports': [{'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
                                      for path in args.prevalidation_report],
-            'command': ['kaggle', 'kernels', 'push', '-p', str(args.out)] + (['--accelerator', 'NvidiaL4'] if gpu else []),
+            'command': (['kaggle', 'kernels', 'push', '-p', str(args.out)]
+                        + (['--accelerator', 'NvidiaL4'] if gpu else [])
+                        + (['--timeout', '1200'] if args.numerics_only else [])),
             'accelerator_note': 'NvidiaL4 is the prior measured four physical L4 competition shape; runner measures exact topology again.',
-            'time_limit': 'No additional task wall-time cap; platform/account limits still apply.'}
+            'time_limit': ('Numerics-only requests a session timeout of 1200 seconds; actual platform acceptance must be read back at submission. Prefer the quota-aware bounded launcher.'
+                           if args.numerics_only else 'No additional task wall-time cap; platform/account limits still apply.')}
 (args.out / 'carrier-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
 print(json.dumps(manifest, indent=2))

@@ -16,7 +16,7 @@ import subprocess
 import sys
 import time
 
-from .run import TaskQueue, write
+from .run import TaskQueue, cpu_evidence_applicability, write
 
 
 def sha(path):
@@ -120,6 +120,11 @@ def evidence_course_order(selected, eligible, selection_path, curriculum_path):
     full_order = identifiers('training_order', full_inventory=True)
     new_order = identifiers('new_collection_order')
     paused = identifiers('paused_scoring_ids')
+    pause_reasons = course.get('paused_scoring_reasons', {})
+    if (not isinstance(pause_reasons, dict) or not set(pause_reasons) <= set(paused)
+            or any(not isinstance(reason, str) or not reason.strip()
+                   for reason in pause_reasons.values())):
+        raise ValueError('Invalid source-bound scoring pause reasons')
     prior_claimed = identifiers('prior_claimed_task_ids')
     reuse_candidates = identifiers('reuse_candidate_ids')
     reserved = identifiers('reserved_validation_task_ids', allow_external=True)
@@ -134,7 +139,8 @@ def evidence_course_order(selected, eligible, selection_path, curriculum_path):
             continue
         why = []
         if task_id in paused:
-            why.append('historical-scoring-invalid; resolve verification cause before new collection')
+            why.append(pause_reasons.get(task_id,
+                'historical-scoring-invalid; resolve verification cause before new collection'))
         if task_id in reserved:
             why.append('reserved-research-validation; no training or adaptive selection')
         if task_id in reuse_candidates:
@@ -149,6 +155,7 @@ def evidence_course_order(selected, eligible, selection_path, curriculum_path):
     record = dict(path=str(path), sha256=sha(path), selection_sha256=selection_sha256,
         full_training_order=full_order, new_collection_order=ordered,
         paused_scoring_ids=paused, prior_claimed_task_ids=prior_claimed,
+        paused_scoring_reasons=pause_reasons,
         reuse_candidate_ids=reuse_candidates, reserved_validation_task_ids=reserved,
         unscheduled_task_reasons=reasons,
         interpretation='Host-only scheduling evidence; historical outcomes are not new rewards, reuse candidates are not verified mixed groups')
@@ -160,9 +167,18 @@ def run(*, config, selection, questions, assets, prevalidation, tools, out,
         mixed_groups=2, maximum_states=4, turns=32, tool_calls=32,
         turn_tokens=768, episode_tokens=8192, thinking_budget=256, isolation='chroot',
         worker_env=None, active_tasks=1, batch_size=1, batch_wait_ms=50,
-        batch_max_tokens=32768, session_cache_tokens=0, excluded_task_ids=None, task_order='frozen',
-        collection_protocol='historical-three-branch', curriculum=None,
+        batch_max_tokens=32768, session_cache_tokens=0, session_prefix_rewind=False,
+        excluded_task_ids=None, task_order='frozen',
+        collection_protocol='historical-three-branch', history_format='raw-preserved', curriculum=None,
         focal_trigger='any-tool-failure'):
+    if type(session_prefix_rewind) is not bool or (session_prefix_rewind
+            and (type(session_cache_tokens) is not int or session_cache_tokens <= 0)):
+        raise ValueError('Session prefix rewind requires an explicit boolean and a positive session-cache budget')
+    if history_format not in {'raw-preserved', 'canonical-ct-v1'} or (
+            history_format != 'raw-preserved' and collection_protocol != 'live-original-pair'):
+        raise ValueError('Canonical history requires live-original-pair and an explicit supported history format')
+    history_source_sha256 = (sha(Path(__file__).with_name('history.py'))
+                             if history_format != 'raw-preserved' else None)
     from training.train_vfarl import prepare_rows
     if collection_protocol not in {'historical-three-branch', 'live-original-pair'}:
         raise ValueError('Unknown resident focal collection protocol')
@@ -191,12 +207,30 @@ def run(*, config, selection, questions, assets, prevalidation, tools, out,
         raise ValueError('Resident task inventory must be nonempty and unique')
     if any(row['physical_split'] != 'train' for row in selected):
         raise ValueError('Resident training permits train inventory only')
-    usable = {row['instance_id'] for row in (json.loads(line) for line in
-        Path(prevalidation).read_text().splitlines() if line.strip()) if row.get('usable')}
+    selected_by_id = {row['instance_id']: row for row in selected}
+    cpu_reports = {}
+    for report in (json.loads(line) for line in Path(prevalidation).read_text().splitlines() if line.strip()):
+        key = report['instance_id']
+        if key not in selected_by_id:
+            continue
+        previous_report = cpu_reports.get(key)
+        if previous_report is not None:
+            previous = cpu_evidence_applicability(previous_report, selected_by_id[key], assets, isolation)
+            candidate = cpu_evidence_applicability(report, selected_by_id[key], assets, isolation)
+            rank = lambda value: (value['matches_current_task'], value['matches_current_verification'])
+            if rank(previous) > rank(candidate):
+                continue  # Prefer direct current-task evidence, then statement-only compatibility.
+        cpu_reports[key] = report
+    cpu_applicability = {row['instance_id']: cpu_evidence_applicability(
+        cpu_reports.get(row['instance_id']), row, assets, isolation) for row in selected}
+    usable = {key for key, report in cpu_reports.items() if report.get('usable')
+              and key in cpu_applicability and cpu_applicability[key]['matches_current_verification']}
     excluded = set(excluded_task_ids or [])
     if not excluded <= {row['instance_id'] for row in selected}:
         raise ValueError('Resume exclusions must belong to the original frozen task inventory')
     eligible = [row for row in selected if row['instance_id'] in usable and row['instance_id'] not in excluded]
+    if not eligible:
+        raise ValueError('No eligible CPU verification evidence applies; changed oracle inputs need actual acceptance, not failure relabeling')
     course_record = None
     if task_order == 'evidence-course':
         task_ids, course_record = evidence_course_order(selected, eligible, selection, curriculum)
@@ -207,6 +241,9 @@ def run(*, config, selection, questions, assets, prevalidation, tools, out,
                     else [row['instance_id'] for row in eligible])
     cfg = json.loads(Path(config).read_text())
     context = cfg['model']['max_sequence_length']
+    focal_unit = cfg.get('rl', {}).get('focal_unit', 'complete_response')
+    if focal_unit == 'bounded_response_segment' and not live_original_pair:
+        raise ValueError('Bounded response segments require live-original-pair collection')
     setup = dict(config=str(Path(config).resolve()), selection=str(Path(selection).resolve()),
         questions=str(Path(questions).resolve()), assets=str(Path(assets).resolve()),
         prevalidation=str(Path(prevalidation).resolve()), tools=str(Path(tools).resolve()), out=str(out.resolve()),
@@ -217,13 +254,19 @@ def run(*, config, selection, questions, assets, prevalidation, tools, out,
         active_tasks=active_tasks, batch_size=batch_size, batch_wait_ms=batch_wait_ms,
         batch_max_tokens=batch_max_tokens, session_cache_tokens=session_cache_tokens,
         collection_protocol=collection_protocol, branches=branches,
-        focal_trigger=focal_trigger)
+        focal_trigger=focal_trigger, complete_fixed_cohort=live_original_pair)
+    if session_prefix_rewind:
+        setup['session_prefix_rewind'] = True
+    if history_format != 'raw-preserved':
+        setup['history_format'] = history_format
+        setup['history_source_sha256'] = history_source_sha256
     if course_record is not None:
         setup['curriculum'] = dict(path=course_record['path'], sha256=course_record['sha256'])
     bootstrap = out / 'resident-bootstrap.json'
     write(bootstrap, setup)
     started = time.monotonic()
     summary = dict(format='vfarl-resident-rl-v2' if batch_size > 1 else 'vfarl-resident-rl-v1', context=context,
+        cpu_evidence_applicability=cpu_applicability,
         frozen_task_ids=[row['instance_id'] for row in selected],
         unusable_task_ids=[row['instance_id'] for row in selected if row['instance_id'] not in usable],
         claimed_task_ids=[], completed_task_ids=[], batches=[], optimizer_steps=0,
@@ -233,6 +276,10 @@ def run(*, config, selection, questions, assets, prevalidation, tools, out,
         maximum_retained_session_tokens=session_cache_tokens,
         sampling_window='All remaining tasks until mixed-group target' if not batch_task_limit else batch_task_limit,
         budget_seconds=stop_after_seconds, stopping='Stop new claims; retain in-flight work and committed updates')
+    if session_prefix_rewind:
+        summary['session_prefix_rewind'] = True
+    if history_format != 'raw-preserved':
+        summary['history_format'] = history_format
     summary.update(collection_protocol=collection_protocol, focal_trigger=focal_trigger,
         requested_sampling_schedule=requested_schedule,
         actual_sampling_schedule=dict(batch_task_limit=batch_task_limit,
@@ -342,9 +389,12 @@ def run(*, config, selection, questions, assets, prevalidation, tools, out,
             ipc = out / f'ipc-{index}'
             ipc.mkdir(exist_ok=False)
             log = (out / f'resident-worker-{index}.log').open('w')
-            process = subprocess.Popen([sys.executable, '-u', '-m',
+            worker_command = [sys.executable, '-u', '-m',
                 'competition.vfarl.l4x4.resident_worker', '--bootstrap', str(bootstrap),
-                '--worker-index', str(index), '--ipc', str(ipc)],
+                '--worker-index', str(index), '--ipc', str(ipc)]
+            if session_prefix_rewind:
+                worker_command.append('--session-prefix-rewind')
+            process = subprocess.Popen(worker_command,
                 env=dict(worker_env or os.environ, CUDA_VISIBLE_DEVICES='0,1' if index == 0 else '2,3'),
                 cwd=str(Path(__file__).resolve().parents[3]),
                 stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
@@ -377,8 +427,12 @@ def run(*, config, selection, questions, assets, prevalidation, tools, out,
                 turn_tokens=turn_tokens, episode_tokens=episode_tokens)
             if live_original_pair:
                 execution_contract['collection_protocol'] = collection_protocol
+                execution_contract['complete_fixed_cohort'] = True
             if focal_trigger == 'execution-recovery':
                 execution_contract['focal_trigger'] = focal_trigger
+            if history_format != 'raw-preserved':
+                execution_contract['history_format'] = history_format
+                execution_contract['history_source_sha256'] = history_source_sha256
             TaskQueue(queue, ids, selection_sha256=sha(selection), maximum_states=maximum_states,
                 stop_after_mixed_groups=target, stop_after_tasks=len(ids), stop_after_seconds=seconds,
                 execution_contract=execution_contract)
@@ -401,16 +455,29 @@ def run(*, config, selection, questions, assets, prevalidation, tools, out,
             paths = [batch / f'worker-{index}' / 'focal.jsonl' for index in range(2)]
             focal = batch / 'focal.jsonl'
             focal.write_bytes(b''.join(path.read_bytes() for path in paths if path.exists()))
-            if focal.stat().st_size:
+            if live_original_pair:
+                # The cohort was fixed before its rewards. Earlier homogeneous
+                # cohorts already supplied zero PG; their random number must
+                # not dilute this cohort's complete-group action denominator.
+                pending = [focal] if focal.stat().st_size else []
+            elif focal.stat().st_size:
                 pending.append(focal)
             data = batch / 'update-input.jsonl'
             data.write_bytes(b''.join(path.read_bytes() for path in pending))
-            rows, groups = prepare_rows(data, context)
+            rows, groups = prepare_rows(data, context, focal_unit=focal_unit)
             pending_mixed = groups['mixed_group_count']
             record = dict(batch=batch_number, claimed_task_ids=claimed,
                 completed_task_ids=completed, focal_sha256=sha(focal),
                 pending_behavior_sha256=sha(data), pending_mixed_groups=pending_mixed,
+                update_input_scope=('current-fixed-cohort-only' if live_original_pair
+                                    else 'historical-pending-same-policy-cohorts'),
+                update_input_focal_files=[str(path) for path in pending],
+                eligible_complete_group_action_count=groups['eligible_complete_group_action_count'],
+                same_reward_complete_group_action_count=groups['same_reward_complete_group_action_count'],
+                identical_action_mixed_group_action_count=groups['identical_action_mixed_group_action_count'],
                 sampled_update_actions=len(rows), optimizer_steps=0)
+            if live_original_pair:
+                record['zero_signal_reuse'] = 'A cohort without a mixed pair is retained as evidence only; never added to a later update input'
             summary['batches'].append(record)
             persist()
             emit('resident_batch_collected', **record)
@@ -490,6 +557,11 @@ def main():
     parser.add_argument('--batch-task-limit', type=int, default=4)
     parser.add_argument('--mixed-groups', type=int, default=2)
     parser.add_argument('--maximum-states', type=int, default=4)
+    parser.add_argument('--session-cache-tokens', type=int, default=0)
+    parser.add_argument('--session-prefix-rewind', action='store_true',
+        help='Opt in to same pre-action prefix cache rewind; requires a positive session-cache budget')
+    parser.add_argument('--history-format', choices=('raw-preserved', 'canonical-ct-v1'),
+        default='raw-preserved', help='Nondefault strict-native canonical history requires live-original-pair')
     parser.add_argument('--task-order', choices=('frozen', 'mixed-course', 'evidence-course'),
         default='frozen')
     parser.add_argument('--curriculum', help='Source-bound train-only course for evidence-course ordering')
