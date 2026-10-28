@@ -1,8 +1,12 @@
-# P005：从真实轨迹到独立LoRA
+# 训练代码入口（当前）与 P005 历史说明
+
+当前训练入口是 [train_vfarl.py](train_vfarl.py)（FSDP PPO＋KL）与 [train_vfarl_unsloth.py](train_vfarl_unsloth.py)，配方见 [configs/](configs/)，当前研究状态见 [l4x4 round100](../competition/vfarl/l4x4/round100/README.md)。下文是 P005 时代的训练实现与历史操作说明，保留作备查；其中指向已删除路径的链接（`docs/plan/005-*`、`research/015/README.md`、`research/006/*`）已随 2026-10-24 重启与 10-28 磁盘清理失效，需从 git 历史恢复对应提交查看，不逐条改写原文。
+
+# P005：从真实轨迹到独立LoRA（历史）
 
 2026-10-22 当前更新：P016 已实现 [FSDP 真续训](../research/016/training/resume-notes.md)，两rank CPU中断/重启与连续路径一致；GPU/NF4续训仍待用户服务器实测。编码器新增因果前缀约束与原始生成流入口，见 [编码说明](../research/016/encoding/notes.md)。公开专家轨迹主线与实际数据状态见 [P016](../research/016/README.md)；下文P005操作和结果保留历史，不代表当前训练规模。
 
-本页保留 P005 起的训练实现与历史操作说明。当前 31B 分片训练、action RFT 与推理对照状态见 [P015 执行记录](../research/015/README.md)；历史评测载体已按轮次整理，入口及重建命令见 [Notebook 目录导航](../notebooks/README.md)。下文 `/kaggle/input/notebooks/...` 是云端挂载路径，不受本地目录迁移影响。
+本页保留 P005 起的训练实现与历史操作说明。P015 整轮目录已删除，当前状态以 [历史索引](../research/README.md)为准（含恢复指引）；历史评测载体已按轮次整理，入口及重建命令见 [Notebook 目录导航](../notebooks/README.md)。下文 `/kaggle/input/notebooks/...` 是云端挂载路径，不受本地目录迁移影响。
 
 本目录包含实际数据转换、Gemma工具对话编码、BF16 LoRA/同源NF4 QLoRA训练、checkpoint恢复和独立PEFT导出。修复后已在Kaggle四张L4上完成真实31B NF4 LoRA的四个诊断更新（256、256、1024、2048长度），四rank参数一致，云端adapter已保存。该轮使用合成代码诊断数据，尚未做真实修复语料SFT或取得比赛增益。详见[四卡实测结果](../research/005/kaggle-training-probe-20261010/ddp-result-summary.json)；[首次FP32转换OOM](../research/005/kaggle-training-probe-20261010/result-summary.json)保留为历史。
 
@@ -16,7 +20,7 @@ NF4默认只将小norm参数提升FP32，保持大embedding/head为原dtype；`l
 
 此命令是给实际运行环境的安装说明，训练脚本不自行安装依赖。默认local_files_only=true；缺少依赖、模型、数据或权重返回非零，不再输出假成功。
 
-**Kaggle例外：保留镜像自带CUDA torch，不直接安装上面的本地CPU版本表。** 使用[requirements-kaggle.txt](requirements-kaggle.txt)在CPU整理wheel；已完成的私有`ccjjllt/p005-training-cpu-stage`输出可直接挂载给离线GPU Notebook。实际准备代码与资源探查见[CPU准备入口](../research/005/kaggle-training-probe-20261010/cpu-stage/stage.py)，训练无需比赛41个推理wheel。四L4利用方案及显存优化交接见[第8节](../docs/plan/005-implementation-handoff.md#8-每周30小时配额下的训练资源交接2026-10-10)。
+**Kaggle例外：保留镜像自带CUDA torch，不直接安装上面的本地CPU版本表。** 使用[requirements-kaggle.txt](requirements-kaggle.txt)在CPU整理wheel；已完成的私有`ccjjllt/p005-training-cpu-stage`输出可直接挂载给离线GPU Notebook。实际准备代码与资源探查见[CPU准备入口](../research/005/kaggle-training-probe-20261010/cpu-stage/stage.py)，训练无需比赛41个推理wheel。四L4利用方案及显存优化交接见《005-implementation-handoff》第8节（`docs/plan/` 已删除，见 git 历史）。
 
 准备官方未压缩QAT基座和相同部署tokenizer的本地目录。指定CT/W4A16文件只用于最终推理，不能直接拿来做普通QLoRA。普通IT备用实验需要明确标注，不能仅改adapter配置名称。
 
@@ -143,19 +147,19 @@ DDP关闭冻结基座的启动广播，并验证各rank初始adapter指纹；其
 
 这只是无权重的配置检查。真实运行需要另行安排GPU额度和已取得的固定QAT权重；新配置的16K只是输入上限，未证明训练可容纳16K。配置只安排一个优化步骤，默认不下载。
 
-10月13日已[冻结数据用途](../research/006/data-replay-20261013/data-usage.json)：未来首步只使用 `research/006/data-replay-20261013/outputs/encoded-12b-train-capacity.jsonl` 中的click（3368输入、519监督tokens）。pydicom单独作为select诊断，不更新参数；MarkupSafe两阶段仍为candidate。原合并文件 `encoded-12b-ct-v2.jsonl` 仅作收集归档，不能整体传入训练。本轮未据此自动启动真实12B训练。
+10月13日已冻结数据用途（`research/006` 已删除，见 git 历史）：未来首步只使用当时 `outputs/encoded-12b-train-capacity.jsonl` 中的click（3368输入、519监督tokens）。pydicom单独作为select诊断，不更新参数；MarkupSafe两阶段仍为candidate。原合并文件 `encoded-12b-ct-v2.jsonl` 仅作收集归档，不能整体传入训练。本轮未据此自动启动真实12B训练。
 
 统一模型沿用完整文本backbone、shifted selected-token loss与softcap、non-reentrant checkpoint和仅小norm转FP32的NF4准备策略。LoRA限于语言decoder的q/o与MLP；vision/audio/embedder/head均不训练。导出保留实际PEFT的 `model.language_model.layers...` 键，不伪造已在CT服务加载；当前没有验证12B vLLM运行时映射。
 
 固定来源的恢复签名包含已核对的manifest、QAT revision/config/权重身份，并以文件指纹替代模型、tokenizer、模板等本地挂载路径。同一资产换挂载位置可恢复；更换manifest或基座时，在恢复优化器和覆盖运行元数据前拒绝。未使用新manifest的31B配方保持历史签名格式；旧12B无基座身份签名不做静默迁移。
 
-CPU随机微型模型已实际比较原HF与selected-token的loss/LoRA梯度，并完成两步Adam、checkpoint恢复和独立导出；另以meta device读取完整12B架构，未分配或下载12B权重。这些只证明实现路径，**真实12B NF4、长序列训练、CT adapter推理和修复收益均未运行**。[实际记录](../research/006/12b-cpu-adaptation-20261013/results.md)。
+CPU随机微型模型已实际比较原HF与selected-token的loss/LoRA梯度，并完成两步Adam、checkpoint恢复和独立导出；另以meta device读取完整12B架构，未分配或下载12B权重。这些只证明实现路径，**真实12B NF4、长序列训练、CT adapter推理和修复收益均未运行**（当时实际记录随 `research/006` 删除，见 git 历史）。
 
 ## 6. 手动验证与研究状态
 
 本仓库不再维护专用测试套件。按当前改动用一次性Shell/Python命令手动核对输入、输出和必要数值，记录结论即可，不新增测试或check脚本。
 
-同源NF4缓存与31B四卡短序列诊断已完成；官方CT上的诊断adapter加载与工具格式兼容已验证。最新训练态6032对照中CPU offload完成前向，但反向仍CUDA OOM，尚无真实修复SFT adapter或SFT带来的修复收益。single_state四题的探索增益来自无adapter推理对照，不是训练结果。下一步见[研究计划](../docs/plan/005-trainmode-save-on-cpu.md)。
+同源NF4缓存与31B四卡短序列诊断已完成；官方CT上的诊断adapter加载与工具格式兼容已验证。最新训练态6032对照中CPU offload完成前向，但反向仍CUDA OOM，尚无真实修复SFT adapter或SFT带来的修复收益。single_state四题的探索增益来自无adapter推理对照，不是训练结果。下一步见已删除的《005-trainmode-save-on-cpu》研究计划（见 git 历史）。
 
 2026-10-11新增[分组注意力候选](attention.py)：默认关闭，训练入口尚未调用；仅替换32Q/4KV、head_dim=512且dropout=0的global SDPA。CPU手动比较支持输出/梯度等价，并观察到K/V共享存储减少；这不能证明CUDA峰值下降或6032训练已可用。[机制结果与下一次无需加载31B的算子研究](../research/005/grouped-attention-20261011/results.md)。
 

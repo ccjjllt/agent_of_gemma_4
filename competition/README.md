@@ -24,7 +24,7 @@
 
 [官方 Data](https://www.kaggle.com/competitions/gemma-4-developer-agent/data) 将这 129 题定义为公共开发/训练数据。排行榜是另一套隐藏任务，官方写约 120 题、公榜/私榜约各半，来自私有仓库。不能把开发集解决率当公榜成绩，也不能用下面的类别占比假定隐藏分布。
 
-训练数据的数量、来源与能力匹配方法见 [data-preparation-plan.md](data-preparation-plan.md)。Verified Focal Agent RL首批96题已完成逐题来源和机制审阅，G36/S20/F20/R20，S2/F2/R2/R5各4题；已推进本地官方六工具重放并保存完整验证通过的人工示范。实际成功数、未重放数与CPU环境边界见 [96题说明](vfarl/pilot96/README.md) 和 [真实重放结果](vfarl/replay/replay-summary.json)。没有模型on-policy数据、已验证动作对或GPU训练。
+训练数据的数量、来源与能力匹配方法见 [data-preparation-plan.md](data-preparation-plan.md)。Verified Focal Agent RL首批96题已完成逐题来源和机制审阅，G36/S20/F20/R20，S2/F2/R2/R5各4题；已推进本地官方六工具重放并保存完整验证通过的人工示范。实际成功数、未重放数与CPU环境边界见 [96题说明](vfarl/pilot96/README.md) 和 [真实重放结果](vfarl/replay/replay-summary.json)。本段“没有模型on-policy数据、已验证动作对或GPU训练”是 10-24 数据准备阶段的事实；后续真实采样、单步更新与 GPU 证据以 [round100 当前记录](vfarl/l4x4/round100/README.md)为准。
 
 ## 数据边界与审阅范围
 
