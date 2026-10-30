@@ -17,6 +17,7 @@ import dataclasses
 import hashlib
 import importlib.metadata
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -135,9 +136,33 @@ def _uid_processes(uid: int) -> list[int]:
     return found
 
 
-def _make_subprocess_manager(uid: int, timeout: int, sandbox_root: Path) -> Any:
+def _make_subprocess_manager(
+    uid: int, timeout: int, sandbox_root: Path,
+    baseline_python: Path = Path("/opt/gemma-sandbox-baseline/bin/python"),
+) -> Any:
     """Reuse official path translation and timeouts, lowering only agent commands."""
     import swegemma.sandbox.subprocess as backend
+    from packaging.tags import sys_tags
+    from packaging.utils import parse_wheel_filename
+
+    baseline = subprocess.run(
+        [str(baseline_python), "-c",
+         "import importlib.metadata as m,json,site,sys;"
+         "print(json.dumps({'version':list(sys.version_info[:2]),'paths':site.getsitepackages(),"
+         "'packages':{d.metadata['Name']:d.version for d in m.distributions()}}))"],
+        check=True, capture_output=True, text=True, timeout=15,
+    )
+    baseline_info = json.loads(baseline.stdout)
+    if baseline_info["version"] != list(sys.version_info[:2]):
+        raise RuntimeError("Sandbox baseline and official runtime Python versions must match.")
+    baseline_sites = [Path(path) for path in baseline_info["paths"] if Path(path).is_dir()]
+    if not baseline_sites:
+        raise RuntimeError("Sandbox baseline has no site-packages directory.")
+    for path in baseline_sites:
+        info = path.stat()
+        if info.st_uid != 0 or info.st_mode & 0o022:
+            raise PermissionError("Sandbox baseline packages must be root-owned and not agent-writable.")
+    compatible_tags = set(sys_tags())
 
     original_execute = backend.execute_subprocess_command
 
@@ -147,13 +172,33 @@ def _make_subprocess_manager(uid: int, timeout: int, sandbox_root: Path) -> Any:
         def __init__(self) -> None:
             super().__init__(timeout_seconds=timeout, base_dir=sandbox_root, system_site_packages=True)
             self.restricted: set[str] = set()
+            self.excluded_wheels: set[str] = set()
+            self.baseline_packages = baseline_info["packages"]
 
         def start(self) -> str:
             # The judge parent stays private throughout setup/verification.
             # Only the agent phase temporarily receives traverse permission.
             sandbox_root.chmod(0o700)
             sandbox_id = super().start()
-            self._sandboxes[sandbox_id]["root"].chmod(0o700)
+            paths = self._sandboxes[sandbox_id]
+            paths["root"].chmod(0o700)
+            # Inherit the official Dockerfile's prepared test/build baseline,
+            # not the harness runtime's unrelated model/API dependencies.
+            for site_path in paths["venv"].glob("lib/python*/site-packages"):
+                (site_path / "_host_env.pth").write_text("\n".join(map(str, baseline_sites)) + "\n")
+            for distribution in importlib.metadata.distributions(path=list(map(str, baseline_sites))):
+                for entry in distribution.entry_points:
+                    if entry.group != "console_scripts" or entry.name.startswith("pip"):
+                        continue
+                    if not re.fullmatch(r"[A-Za-z0-9_.-]+", entry.name):
+                        raise ValueError("Invalid baseline console entry point name.")
+                    script = paths["venv"] / "bin" / entry.name
+                    script.write_text(
+                        f"#!{paths['venv'] / 'bin' / 'python'}\n"
+                        "import sys\nfrom importlib.metadata import EntryPoint\n"
+                        f"sys.exit(EntryPoint({entry.name!r}, {entry.value!r}, 'console_scripts').load()())\n"
+                    )
+                    script.chmod(0o755)
             return sandbox_id
 
         def restrict_agent(self, sandbox_id: str) -> None:
@@ -187,6 +232,19 @@ def _make_subprocess_manager(uid: int, timeout: int, sandbox_root: Path) -> Any:
 
         def _copy_to_sandbox(self, sandbox_id: str, src: Path, dst: str) -> None:
             if sandbox_id not in self.restricted:
+                if src.is_dir() and dst.rstrip("/") == "/wheels":
+                    # The upstream directory copy nests wheels/wheels. Keep
+                    # the expected flat directory, with only this interpreter's
+                    # compatible wheels before the official version selection.
+                    target = self._sandboxes[sandbox_id]["wheels"]
+                    for wheel in src.glob("*.whl"):
+                        if parse_wheel_filename(wheel.name)[3] & compatible_tags:
+                            shutil.copy2(wheel, target / wheel.name)
+                        else:
+                            self.excluded_wheels.add(wheel.name)
+                    if not any(target.glob("*.whl")):
+                        raise RuntimeError("No interpreter-compatible official task wheels were staged.")
+                    return
                 return super()._copy_to_sandbox(sandbox_id, src, dst)
             if not src.is_file():
                 raise ValueError("Agent-phase file transfer expects a single file.")
@@ -283,7 +341,101 @@ def _make_subprocess_manager(uid: int, timeout: int, sandbox_root: Path) -> Any:
     # Worker processes are single-rollout and own this module instance. No
     # process-wide credential changes, preexec_fn, or official-file edits occur.
     backend.execute_subprocess_command = execute_with_uid
+    manager.restore_dependency_setup = _install_subprocess_dependency_setup(manager)
     return manager
+
+
+def _install_subprocess_dependency_setup(manager: Any) -> Any:
+    """Run the original official setup in each fresh subprocess environment.
+
+    The stock subprocess backend skips dependency installation and assumes an
+    already prepared host. Our separate task venv instead receives the official
+    baseline plus the original setup.py's local-wheel dependency discovery.
+    """
+    import importlib
+    import swegemma.harness.container_setup as setup
+
+    original = setup.install_test_dependencies
+
+    def install(docker: Any, container_id: str, repo: str = "", *, fast_path: bool = True,
+                config: Any = None) -> None:
+        if docker is not manager:
+            return original(docker, container_id, repo=repo, fast_path=fast_path, config=config)
+        if container_id in manager.restricted:
+            raise RuntimeError("Task dependencies must be prepared before the agent UID phase.")
+        source = setup.resolve_sandbox_setup_script(config)
+        if source is None:
+            raise setup.ContainerSetupError("The original official sandbox/setup.py is missing.")
+        paths = manager.sandboxes[container_id]
+        if not any(paths["wheels"].glob("*.whl")):
+            wheel_source = setup.resolve_wheels_dir(config)
+            if wheel_source is None:
+                raise setup.ContainerSetupError("The original official task wheel directory is missing.")
+            manager.copy_to(container_id, wheel_source, "/wheels")
+        # Load the original file unchanged. Adapt its two /wheels bindings and
+        # explicit workspace argument; no global host path or shared venv is
+        # modified. New venvs need its full dependency discovery, not fast-path.
+        wrapper = r'''
+import importlib.util, json, subprocess, sys, types
+from pathlib import Path
+source, wheel_dir, workspace, repo = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("official_task_setup", source)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.WHEELS_DIR = Path(wheel_dir)
+module.get_available_packages.__defaults__ = (Path(wheel_dir),)
+failures = {}
+def run(command, *args, **kwargs):
+    command = list(command)
+    editable = "-e" in command
+    key = "editable" if editable else "dependencies"
+    if command[:3] != [sys.executable, "-m", "pip"] or "install" not in command:
+        raise RuntimeError("Unexpected command in the original sandbox setup")
+    for flag in ("--no-index", "--no-build-isolation", f"--find-links={wheel_dir}"):
+        if flag not in command:
+            command.insert(4, flag)
+    try:
+        result = subprocess.run(command, *args, **kwargs)
+    except Exception as error:
+        failures[key] = str(error)
+        raise
+    if result.returncode:
+        failures[key] = {"returncode": result.returncode,
+                         "stderr": (result.stderr or "")[-4000:],
+                         "stdout": (result.stdout or "")[-4000:]}
+    else:
+        failures.pop(key, None)
+    return result
+module.subprocess = types.SimpleNamespace(run=run)
+sys.argv = [source]
+module.main(repo=repo, workspace=Path(workspace), fast_path=False)
+if failures:
+    raise RuntimeError("Official task dependency setup failed: " + json.dumps(failures))
+'''
+        command = " ".join(map(shlex.quote, [
+            "python3", "-c", wrapper, str(source), str(paths["wheels"]), str(paths["workspace"]), repo,
+        ]))
+        result = manager.exec(container_id, command)
+        if result.exit_code:
+            raise setup.ContainerSetupError(f"Official subprocess dependency setup failed: {result.stderr or result.stdout}")
+        # Match the official Dockerfile identity within this repository only.
+        result = manager.exec(container_id, "git config user.email agent@eval && git config user.name Agent")
+        if result.exit_code:
+            raise setup.ContainerSetupError(f"Could not configure sandbox git identity: {result.stderr or result.stdout}")
+
+    patched = []
+    for name in ("swegemma.harness.container_setup", "swegemma.harness", "swegemma.evaluate",
+                 "swegemma.harness.agent_runner", "swegemma.harness.verification"):
+        module = importlib.import_module(name)
+        if getattr(module, "install_test_dependencies", None) is original:
+            module.install_test_dependencies = install
+            patched.append(module)
+
+    def restore() -> None:
+        for module in patched:
+            module.install_test_dependencies = original
+
+    return restore
 
 
 def _check_uid_access(uid: int, data_root: Path, workspace: Path, sandbox_root: Path) -> None:
@@ -323,21 +475,35 @@ def _check_uid_access(uid: int, data_root: Path, workspace: Path, sandbox_root: 
         )
 
 
-def _evaluation_settings(submission: Path) -> dict[str, Any]:
+def _evaluation_settings(submission: Path, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
     import yaml
     path = next((submission / name for name in ("eval_config.yaml", "eval_config.yml") if (submission / name).is_file()), None)
     document = yaml.safe_load(path.read_text(encoding="utf-8")) if path else {}
     document = document or {}
     section = document.get("evaluation", document)
     turns = section.get("max_turns", section.get("max_llm_calls"))
+    # Participant budgets may override the starter's short example session.
     # Defaults match the current official Getting Started notebook.
-    return {
+    settings = {
         "timeout_seconds": int(section.get("timeout_seconds", 300)),
         "verification_timeout_seconds": int(section.get("verification_timeout_seconds", 300)),
         "max_tool_calls": int(section.get("max_tool_calls", 100)),
         "max_time_minutes": float(section.get("max_time_minutes", 60.0)),
         "max_turns": int(turns) if turns is not None else None,
     }
+    if overrides is not None:
+        if not isinstance(overrides, dict):
+            raise ValueError("evaluation overrides must be a JSON object")
+        unknown = set(overrides) - set(settings)
+        if unknown:
+            raise ValueError(f"Unknown evaluation override keys: {sorted(unknown)}")
+        for key, value in overrides.items():
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+                raise ValueError(f"Evaluation override {key} must be a positive finite number")
+            if key != "max_time_minutes" and int(value) != value:
+                raise ValueError(f"Evaluation override {key} must be an integer")
+            settings[key] = float(value) if key == "max_time_minutes" else int(value)
+    return settings
 
 
 def _capture_final_verification(task: Any) -> tuple[dict[str, Any], Any]:
@@ -395,6 +561,7 @@ def _capture_final_verification(task: Any) -> tuple[dict[str, Any], Any]:
 def _training_submission(source: Path, destination: Path) -> Path:
     """Copy agent configuration, never task data, and make sampling explicit."""
     import yaml
+    from adk_submission.yaml_loader import load_yaml
 
     if destination.exists():
         raise FileExistsError(f"A rollout workspace must be fresh: {destination}")
@@ -411,7 +578,10 @@ def _training_submission(source: Path, destination: Path) -> Path:
                 cfg = node.setdefault("generate_content_config", {})
                 if not isinstance(cfg, dict):
                     raise ValueError("Expected mapping generate_content_config in agent configuration.")
-                cfg.update({"temperature": 1.0, "top_p": 1.0, "top_k": 0})
+                cfg.update({"temperature": 1.0, "top_p": 1.0})
+                # ADK's schema requires a positive top_k when supplied. Omit it
+                # here; the local policy explicitly uses top_k=0 (unfiltered).
+                cfg.pop("top_k", None)
                 for name in ("presence_penalty", "frequency_penalty", "stop_sequences", "seed"):
                     cfg.pop(name, None)
                 cfg["thinking_config"] = {"include_thoughts": True}
@@ -421,7 +591,7 @@ def _training_submission(source: Path, destination: Path) -> Path:
     for path in sorted(destination.rglob("*")):
         if path.suffix not in {".yaml", ".yml"} or not path.is_file():
             continue
-        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        document = load_yaml(path, root_dir=destination)
         adjust(document)
         path.write_text(yaml.safe_dump(document, allow_unicode=True, sort_keys=False), encoding="utf-8")
     return destination
@@ -479,7 +649,9 @@ async def run_task(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError(f"Training submission must declare only the official 31B alias: {MODEL_ALIAS}")
     models = _build_cli_model_registry(submission_dir=submission)
     task, position = _select_task(tasks_path, args.task_id, args.task_index)
-    settings = _evaluation_settings(submission)
+    settings = _evaluation_settings(submission, args.evaluation_overrides)
+    print(json.dumps({"event": "evaluation_settings", "effective": settings,
+                      "overrides": args.evaluation_overrides}), flush=True)
     limits, generation_constraints = build_submission_limits()
     generation_constraints = dataclasses.replace(
         generation_constraints,
@@ -515,9 +687,12 @@ async def run_task(args: argparse.Namespace) -> dict[str, Any]:
     evaluator = PublicOnlyEvaluator(config)
     context_class = SwegemmaContext
     if args.sandbox == "subprocess":
-        private_sandboxes = args.sandbox_root / args.rollout_id
-        private_sandboxes.mkdir(mode=0o700)
-        manager = _make_subprocess_manager(args.agent_uid, settings["timeout_seconds"], private_sandboxes)
+        # Rollout IDs repeat across fresh learner runs; allocate a private
+        # directory per attempt instead of colliding with a prior failed run.
+        private_sandboxes = Path(tempfile.mkdtemp(prefix=args.rollout_id + "-", dir=args.sandbox_root))
+        manager = _make_subprocess_manager(
+            args.agent_uid, settings["timeout_seconds"], private_sandboxes, args.sandbox_baseline_python,
+        )
         evaluator.sandbox = evaluator.docker = manager
 
         class AgentContext(SwegemmaContext):
@@ -551,6 +726,9 @@ async def run_task(args: argparse.Namespace) -> dict[str, Any]:
         cleanup = getattr(evaluator.docker, "cleanup_all", None)
         if cleanup:
             cleanup()
+        restore_dependencies = getattr(evaluator.docker, "restore_dependency_setup", None)
+        if restore_dependencies:
+            restore_dependencies()
 
     error = result.error or None
     # A completed pytest verdict is meaningful even if the agent exhausted its
@@ -600,6 +778,7 @@ async def run_task(args: argparse.Namespace) -> dict[str, Any]:
             "official_starter_source_sha256": OFFICIAL_STARTER_SHA256,
             "packages": {name: importlib.metadata.version(name) for name in ("swegemma", "adk-eval-core", "adk-submission", "google-adk", "litellm")},
             "evaluation": settings,
+            "evaluation_overrides": args.evaluation_overrides,
             "context_management": CONTEXT_SETTINGS,
             "sampling": {"temperature": 1.0, "top_p": 1.0, "top_k": 0, "enable_thinking": True},
             "submission_source": str(source_submission),
@@ -611,6 +790,15 @@ async def run_task(args: argparse.Namespace) -> dict[str, Any]:
             ],
             "sandbox": args.sandbox,
             "agent_uid": args.agent_uid if args.sandbox == "subprocess" else None,
+            "subprocess_dependencies": {
+                "baseline_python": str(args.sandbox_baseline_python),
+                "baseline_packages": evaluator.docker.baseline_packages,
+                "baseline_role": "official Dockerfile tools plus explicitly provisioned missing support dependencies",
+                "setup_source_sha256": _sha256(data_root / "sandbox" / "setup.py"),
+                "mode": "official setup slow path in isolated task venv; offline wheels only",
+                "wheel_staging": "flat directory; interpreter-compatible tags before official version selection",
+                "excluded_incompatible_wheels": sorted(evaluator.docker.excluded_wheels),
+            } if args.sandbox == "subprocess" else None,
             "model_alias": MODEL_ALIAS,
             "backend": "caller-supplied endpoint; training model identity is recorded by the learner",
             "secret_hydration": False,
@@ -631,6 +819,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--result-file", type=Path, required=True)
     parser.add_argument("--sandbox", choices=("subprocess", "docker"), default="subprocess")
     parser.add_argument("--agent-uid", type=int, default=61000)
+    parser.add_argument("--sandbox-baseline-python", type=Path, default=Path("/opt/gemma-sandbox-baseline/bin/python"))
+    parser.add_argument("--evaluation-overrides-json", dest="evaluation_overrides", type=json.loads, default={},
+                        help="Explicit participant evaluation-budget overrides; leaves official files unchanged.")
     parser.add_argument("--sandbox-root", type=Path, default=Path("/tmp/gemma-agent-sandboxes"))
     args = parser.parse_args(argv)
     if args.task_index is not None and args.task_index < 0:

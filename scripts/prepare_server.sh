@@ -4,14 +4,16 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: bash scripts/prepare_server.sh {data|learner|runtime} [options]
+Usage: bash scripts/prepare_server.sh {data|learner|runtime|sandbox} [options]
   --base PATH          Persistent data-disk root (default /root/autodl-tmp/gemma4)
   --wheelhouse PATH    Downloaded official metric wheelhouse v31
+  --data-root PATH     Mounted official public assets (default BASE/official/competition)
   --bootstrap-python P Python executable with venv support (default python3)
 
 data:    Optional CLI environment: Python 3.12, Kaggle 2.2.4, Hugging Face Hub 0.36.2.
 learner: Python 3.12, repository requirements/learner.txt (candidate versions).
 runtime: Python 3.13 in /opt/gemma-runtime, CPU PyTorch and official runtime wheels.
+sandbox: Read-only Python 3.13 baseline in /opt/gemma-sandbox-baseline for task venvs.
 
 Download official data, model files, and runtime wheels manually on the server.
 The data phase only installs CLI tools; it does not download any assets.
@@ -25,17 +27,19 @@ if [[ "$phase" == "--help" || "$phase" == "-h" || -z "$phase" ]]; then
   exit 0
 fi
 shift
-case "$phase" in data|learner|runtime) ;; *) usage >&2; exit 2 ;; esac
+case "$phase" in data|learner|runtime|sandbox) ;; *) usage >&2; exit 2 ;; esac
 base=/root/autodl-tmp/gemma4
 wheelhouse=""
+data_root=""
 bootstrap_python=python3
 while (($#)); do
   case "$1" in
-    --base|--wheelhouse|--bootstrap-python)
+    --base|--wheelhouse|--data-root|--bootstrap-python)
       (($# >= 2)) || { printf 'Missing value for %s\n' "$1" >&2; exit 2; }
       case "$1" in
         --base) base="$2" ;;
         --wheelhouse) wheelhouse="$2" ;;
+        --data-root) data_root="$2" ;;
         --bootstrap-python) bootstrap_python="$2" ;;
       esac
       shift 2
@@ -54,8 +58,10 @@ if [[ "$phase" == learner && ! -f "$project_root/requirements/learner.txt" ]]; t
   printf 'Missing requirements/learner.txt; do not install unpinned latest packages.\n' >&2
   exit 2
 fi
+if [[ "$phase" == runtime || "$phase" == sandbox ]]; then
+  [[ "$EUID" -eq 0 ]] || { printf '%s installation needs root for /opt and low-privilege task execution.\n' "$phase" >&2; exit 2; }
+fi
 if [[ "$phase" == runtime ]]; then
-  [[ "$EUID" -eq 0 ]] || { printf 'runtime installation needs root for /opt and low-privilege task execution.\n' >&2; exit 2; }
   [[ -n "$wheelhouse" ]] || wheelhouse="$base/official/wheelhouse-v31"
   runtime_wheels=(
     adk_eval_core-0.1.0-py3-none-any.whl
@@ -69,23 +75,57 @@ if [[ "$phase" == runtime ]]; then
     [[ -f "$wheelhouse/$name" ]] || { printf 'Missing official wheel: %s\n' "$wheelhouse/$name" >&2; exit 2; }
   done
 fi
+if [[ "$phase" == sandbox ]]; then
+  [[ -n "$data_root" ]] || data_root="$base/official/competition"
+  [[ "$data_root" == /* && "$data_root" != / ]] || { printf '--data-root must be an absolute official asset directory.\n' >&2; exit 2; }
+  for tool_name in git patch protoc pigz; do
+    command -v "$tool_name" >/dev/null || {
+      printf 'Missing %s. Install the official system dependencies first: git patch protobuf-compiler pigz.\n' "$tool_name" >&2
+      exit 2
+    }
+  done
+  # Package names follow the official Dockerfile.public baseline; these versions
+  # are the corresponding wheels in the mounted public competition assets.
+  sandbox_wheels=(
+    pytest-9.1.1-py3-none-any.whl
+    typer-0.26.7-py3-none-any.whl
+    pdm_backend-2.4.9-py3-none-any.whl
+    setuptools-83.0.0-py3-none-any.whl
+    wheel-0.47.0-py3-none-any.whl
+    poetry_core-2.4.1-py3-none-any.whl
+    hatchling-1.30.1-py3-none-any.whl
+    flit_core-3.12.0-py3-none-any.whl
+    editables-0.6-py3-none-any.whl
+  )
+  for name in "${sandbox_wheels[@]}"; do
+    [[ -f "$data_root/wheels/$name" ]] || { printf 'Missing official task wheel: %s\n' "$data_root/wheels/$name" >&2; exit 2; }
+  done
+  for name in imp.py telnetlib.py; do
+    [[ -f "$data_root/docker/$name" ]] || { printf 'Missing official compatibility source: %s\n' "$data_root/docker/$name" >&2; exit 2; }
+  done
+fi
 
 umask 077
-mkdir -p "$base/envs" "$base/install-records" "$base/cache/uv"
+mkdir -p "$base/envs" "$base/install-records"
 bootstrap_env="$base/envs/bootstrap"
 if [[ ! -x "$bootstrap_env/bin/python" ]]; then
   "$bootstrap_python" -m venv "$bootstrap_env"
 fi
 "$bootstrap_env/bin/python" -m pip install --disable-pip-version-check 'uv==0.9.26'
 uv_bin="$bootstrap_env/bin/uv"
-export UV_CACHE_DIR="$base/cache/uv"
+export UV_CACHE_DIR="${UV_CACHE_DIR:-$base/cache/uv}"
+mkdir -p "$UV_CACHE_DIR"
 export UV_LINK_MODE=copy
 export CUDA_VISIBLE_DEVICES=""
 
 create_env() {
   local environment="$1" python_version="$2"
+  local interpreter="$python_version"
+  if [[ "$phase" != runtime && "$phase" != sandbox ]] && "$bootstrap_python" -c "import sys;sys.exit(sys.version_info[:2] != tuple(map(int, '$python_version'.split('.'))))"; then
+    interpreter="$bootstrap_python"
+  fi
   if [[ ! -x "$environment/bin/python" ]]; then
-    "$uv_bin" venv --python "$python_version" --seed "$environment"
+    "$uv_bin" venv --python "$interpreter" --seed "$environment"
   fi
   "$environment/bin/python" - "$python_version" <<'PY'
 import sys
@@ -93,6 +133,14 @@ expected = tuple(map(int, sys.argv[1].split('.')))
 if sys.version_info[:2] != expected:
     raise SystemExit(f'Existing environment Python {sys.version_info[:2]} does not match {expected}')
 PY
+}
+
+prepare_public_python() {
+  # The unprivileged task uid cannot traverse a Python installation under /root.
+  export UV_PYTHON_INSTALL_DIR=/opt/gemma-python
+  export UV_PYTHON_PREFERENCE=only-managed
+  mkdir -p "$UV_PYTHON_INSTALL_DIR"
+  "$uv_bin" python install 3.13
 }
 
 case "$phase" in
@@ -114,20 +162,54 @@ case "$phase" in
     ;;
   runtime)
     environment=/opt/gemma-runtime
-    # The tool worker's unprivileged uid must be able to read both the venv and
-    # its managed Python executable; a Python installed under /root will fail.
-    export UV_PYTHON_INSTALL_DIR=/opt/gemma-python
-    export UV_PYTHON_PREFERENCE=only-managed
-    mkdir -p "$UV_PYTHON_INSTALL_DIR"
-    "$uv_bin" python install 3.13
+    prepare_public_python
     create_env "$environment" 3.13
     "$uv_bin" pip install --python "$environment/bin/python" \
       --index-url https://download.pytorch.org/whl/cpu \
       'torch==2.9.1+cpu' 'torchvision==0.24.1+cpu'
     official_paths=()
     for name in "${runtime_wheels[@]}"; do official_paths+=("$wheelhouse/$name"); done
-    "$uv_bin" pip install --python "$environment/bin/python" "${official_paths[@]}"
+    # google-adk 1.36.1's extensions metadata supports LiteLLM 1.83.7..1.83.14.
+    # Newer LiteLLM imports MCP types absent from this official ADK stack.
+    "$uv_bin" pip install --python "$environment/bin/python" \
+      "${official_paths[@]}" 'litellm==1.83.14'
     chmod -R a+rX /opt/gemma-runtime /opt/gemma-python
+    ;;
+  sandbox)
+    environment=/opt/gemma-sandbox-baseline
+    prepare_public_python
+    create_env "$environment" 3.13
+    official_paths=()
+    for name in "${sandbox_wheels[@]}"; do official_paths+=("$data_root/wheels/$name"); done
+    # The task bundle omits some baseline transitive dependencies. Keep the
+    # versions from the first server installation instead of resolving latest.
+    baseline_dependencies=(
+      'annotated-doc==0.0.5' 'iniconfig==2.3.1' 'markdown-it-py==4.2.0'
+      'mdurl==0.1.2' 'packaging==26.3' 'pathspec==1.1.1' 'pip==26.2.2'
+      'pluggy==1.7.0' 'pygments==2.21.0' 'rich==15.0.0' 'shellingham==1.5.4'
+      'trove-classifiers==2026.9.21.13' 'pytest-timeout==2.1.0'
+      # Dependency metadata in the official task wheels requires these packages,
+      # but their compatible wheels are missing from the public bundle.
+      'typing-inspection==0.4.4' 'typing-extensions==4.16.0'
+      'blinker==1.9.0' 'greenlet==3.5.6' 'h11==0.16.0'
+    )
+    "$uv_bin" pip install --python "$environment/bin/python" \
+      --find-links "$data_root/wheels" "${official_paths[@]}" "${baseline_dependencies[@]}"
+    "$environment/bin/python" - "$data_root" <<'PY'
+from pathlib import Path
+import shutil
+import sys
+import sysconfig
+source = Path(sys.argv[1]) / 'docker'
+destination = Path(sysconfig.get_paths()['purelib'])
+if not destination.is_relative_to(Path(sys.prefix)):
+    raise SystemExit('Refusing to install compatibility sources outside the sandbox baseline')
+for name in ('imp.py', 'telnetlib.py'):
+    shutil.copyfile(source / name, destination / name)
+PY
+    "$uv_bin" pip check --python "$environment/bin/python"
+    chown -R root:root "$environment"
+    chmod -R a+rX,go-w "$environment" /opt/gemma-python
     ;;
 esac
 "$uv_bin" pip freeze --python "$environment/bin/python" > "$base/install-records/$phase.freeze.txt"

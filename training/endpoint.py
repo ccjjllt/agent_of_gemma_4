@@ -75,22 +75,34 @@ class PolicyEndpoint:
                     tool_choice = request.get("tool_choice", "auto")
                     if tool_choice not in (None, "auto"):
                         raise ValueError("This baseline requires automatic tool choice")
+                    queued_at = time.perf_counter()
                     with parent.lock:
                         if not parent.collecting:
                             raise RuntimeError("Policy is not collecting trajectories")
+                        queue_wait = time.perf_counter() - queued_at
+                        print(json.dumps({"event": "model_call_started", "rollout_id": token,
+                                          "call_index": len(parent.calls[token]),
+                                          "queue_wait_seconds": queue_wait}), flush=True)
                         result = parent.generate(request)
                         record = {key: result[key] for key in (
                             "prompt_ids", "completion_ids", "behavior_logprobs", "finish_reason")}
-                        for key in ("sampling", "requested_max_tokens", "effective_max_tokens", "context_limited"):
+                        for key in ("sampling", "requested_max_tokens", "effective_max_tokens", "context_limited",
+                                    "generation_elapsed_seconds", "first_scores_seconds"):
                             if key in result:
                                 record[key] = result[key]
                         record.update(rollout_id=token, policy_version=parent.policy_version,
-                                      call_index=len(parent.calls[token]))
+                                      call_index=len(parent.calls[token]), queue_wait_seconds=queue_wait)
                         parent.calls[token].append(record)
                         path = parent.run_dir / token / "model_calls.jsonl"
                         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
                         with path.open("a", encoding="utf-8") as out:
                             out.write(json.dumps(record, ensure_ascii=False) + "\n")
+                        print(json.dumps({"event": "model_call_finished", "rollout_id": token,
+                                          "call_index": record["call_index"],
+                                          "prompt_tokens": len(record["prompt_ids"]),
+                                          "completion_tokens": len(record["completion_ids"]),
+                                          "generation_elapsed_seconds": result.get("generation_elapsed_seconds"),
+                                          "first_scores_seconds": result.get("first_scores_seconds")}), flush=True)
                     parent.send_response(self, request, result)
                 except Exception as exc:
                     # A transport/parsing/capacity failure invalidates this cohort.

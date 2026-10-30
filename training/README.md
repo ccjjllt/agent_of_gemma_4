@@ -1,6 +1,6 @@
 # AutoDL 双 A800 80GB：先准备，再运行真实 RL
 
-当前实现为Unsloth＋TRL GRPO、复合奖励、动态筛题和多次轨迹复用。数据与模型在服务器手动获取；本地没有下载题目或权重，没有启动GPU。依赖元数据与必要代码核对已完成，实际软件兼容、32K容量和CT效果在接入机器后验证。
+当前实现为Unsloth＋TRL GRPO、复合奖励、动态筛题和多次轨迹复用。双A800服务器已完成学习器与官方运行库安装、真实导入和两卡识别；32K实际容量、GRPO更新与CT适配效果以实验记录为准。数据与模型在服务器手动获取，本地不保存题目或权重。
 
 ## 当前 GRPO 训练
 
@@ -20,13 +20,13 @@
 
 到 AutoDL 后按实际网络和存储情况手动获取官方数据、模型及运行库，不使用项目下载脚本。服务器可直接调用 Kaggle/Hugging Face 的官方工具，数据不需要经过本地电脑；取得的官方原始数据作为训练的只读输入。
 
-前提是账号有比赛访问权、已在Kaggle接受规则，且实例可以访问Kaggle及其文件存储域名。具体机房网络还未实测。通过标准Kaggle认证配置令牌，不把密钥写入代码、聊天、命令参数或项目Git。
+当前服务器的Kaggle访问已打通，首批所需公开资产已直接下载到服务器。其他实例仍需账号比赛访问权、接受规则及可用网络。通过标准Kaggle认证配置令牌，不把密钥写入代码、聊天、命令参数或项目Git。
 
 需要准备的内容：
 
 | 来源 | 内容 |
 | --- | --- |
-| 比赛官方公开目录 | 原始 `tasks.jsonl`、`snapshots/`、`graphs/`、`embeddings/`、任务 `wheels/`、`sandbox/` 和 `sample_submission/`，保留原目录层级 |
+| 比赛官方公开目录 | 原始 `tasks.jsonl`、`snapshots/`、`graphs/`、`embeddings/`、任务 `wheels/`、`sandbox/`、`docker/imp.py`、`docker/telnetlib.py` 和 `sample_submission/`，保留原目录层级 |
 | `metric/gemma-4-developer-agent-wheelhouse/31` | 当前环境安装脚本使用的官方运行库 wheels，与任务目录中的 `wheels/` 用途不同 |
 | Google QAT 未量化模型 | 全部权重分片及索引、模型配置、generation 配置、完整 tokenizer 文件与官方 chat/response 模板 |
 
@@ -36,18 +36,20 @@
 
 下面命令均在**AutoDL终端**执行。将本项目源代码放到例如`/root/autodl-tmp/agent_of_gemma_4`；模型、数据、环境放到代码目录之外的`/root/autodl-tmp/gemma4`。不要将原有开发目录的`.git`、`.venv`、凭证或旧研究一起打包上传。
 
-手动准备完成后，安装分离环境。下面目录只是示例，可按实际存放位置调整；`--wheelhouse` 指向手动取得的官方运行库目录。
+手动准备完成后，安装分离环境；先确保系统已有官方Dockerfile要求的 `git`、`patch`、`protoc` 和 `pigz`。`--wheelhouse` 指向官方运行库，`--data-root` 指向公开任务资产。示例使用本机现有的Miniconda解释器引导安装：
 
 ```bash
 cd /root/autodl-tmp/agent_of_gemma_4
-bash scripts/prepare_server.sh runtime --wheelhouse /root/autodl-tmp/gemma4/official/wheelhouse-v31
-bash scripts/prepare_server.sh learner
+bash scripts/prepare_server.sh runtime --bootstrap-python /root/miniconda3/bin/python --wheelhouse /root/autodl-tmp/gemma4/official/wheelhouse-v31
+bash scripts/prepare_server.sh sandbox --bootstrap-python /root/miniconda3/bin/python --data-root /root/autodl-tmp/gemma4/official/competition
+bash scripts/prepare_server.sh learner --bootstrap-python /root/miniconda3/bin/python
 ```
 
 如需独立的 Kaggle/Hugging Face CLI 工具环境，可选运行 `bash scripts/prepare_server.sh data`；这一步仅安装工具，不获取数据或模型。认证按[Kaggle官方说明](https://github.com/Kaggle/kaggle-cli/blob/main/docs/README.md)及 Hugging Face 标准方式处理。
 
-- 学习器：Python3.12，CUDA12.8 Torch2.9.1、Unsloth/zoo2026.10.10、Transformers5.17、TRL1.15、PEFT0.21.2；101包的Linux依赖解析已通过，固定在`requirements/learner.lock.txt`。没有声称实际安装或GPU验证通过。
-- 官方任务环境：Python3.13，在可供低权限工具进程读取的`/opt/gemma-runtime`；使用v31原始官方wheels及CPU Torch。其余依赖安装后记录freeze。没有给CPU工具环境安装vLLM。
+- 学习器：Python3.12，CUDA12.8 Torch2.9.1、Unsloth/zoo2026.10.10、Transformers5.17、TRL1.15、PEFT0.21.2；版本固定在`requirements/learner.lock.txt`，已在服务器安装并识别两张A800。
+- 官方运行库：Python3.13，`/opt/gemma-runtime` 使用v31原始官方wheels及CPU Torch，已完成普通和低权限进程导入。
+- 工具基础环境：`/opt/gemma-sandbox-baseline` 以官方Dockerfile的测试、构建工具及兼容源文件为基础，并按官方wheel依赖声明补齐公开包中缺失的依赖；因此不宣称与原Docker镜像完全一致。环境由root拥有、低权限进程只读，优先使用官方任务wheels，补充依赖固定版本；每条轨迹的项目依赖另行隔离。各环境保存安装freeze。
 - 原图的PyTorch2.8镜像只是基础操作环境，学习器使用自己的虚拟环境。
 
 [AutoDL无卡模式](https://www.autodl.com/docs/save_money/)适合认证、传代码和下载；文档列出的CPU/RAM资源较小，不保证能在无卡模式完成全部编译或安装，更不能用它验证模型加载。无卡模式会释放GPU，之后能否立即取得同一双卡取决于库存。
@@ -66,16 +68,30 @@ AutoDL普通容器不支持Docker。此处采用官方subprocess后端，并增�
 /root/autodl-tmp/gemma4/envs/learner/bin/python -m training.run --describe
 ```
 
-下面是实际GPU训练命令。默认遍历挂载的官方公开题目，按动态策略采集；可在配置的 `data.task_ids` / `exclude_task_ids` 指定范围，或用 `--task-id` / `--task-index` 限定单题。默认最多32个采集批次、每批最多2次优化器更新，仍受2小时总进程上限约束；这些是可修改的运行上限，不代表训练耗时预测。中断和基础设施故障不会被当成零奖励。
+下面是首批GPU训练命令：`first_batch.toml` 只采集1个批次，最多2次更新，关闭warmup，并受2小时进程上限约束。可在 `data.task_ids` / `exclude_task_ids` 或命令参数中限定题目；这些上限不是耗时预测，中断和基础设施故障不会被当成零奖励。当前数据盘只有50GB，约58.25GiB的BF16权重暂存于 `/dev/shm`，已核对官方SHA256；关机后需重新获取权重，结果保留在数据盘。
 
 ```bash
 CUDA_VISIBLE_DEVICES=0,1 /root/autodl-tmp/gemma4/envs/learner/bin/python -m training.run \
-  --config configs/a800_2x80.toml \
+  --config configs/first_batch.toml \
   --data-root /root/autodl-tmp/gemma4/official/competition \
-  --model-path /root/autodl-tmp/gemma4/models/gemma4-31b-qat \
-  --run-dir /root/autodl-tmp/gemma4/runs/grpo-run-001
+  --model-path /dev/shm/gemma4-models/gemma4-31b-qat \
+  --run-dir /root/autodl-tmp/gemma4/runs/first-batch-001
 ```
 
 输出包括官方结果与奖励分项、完整日志/trace/patch、真实调用token/行为概率、课程状态、旧策略偏移、KL/裁剪统计、adapter指纹和显存峰值。新运行使用新目录；`adapters/initial`与`adapters/batch-0001`等保存独立LoRA。筛掉的组仍保留真实采样/验收记录，不能只看入选组成功率。
 
 正式提交只取所选adapter目录的`adapter_config.json`与`adapter_model.safetensors`，按官方YAML引用。不要提交训练基座或合并权重。当前代码没有实现自动比赛提交，也没有在官方CT上取得适配效果证据；训练题上的改善不能称为独立泛化成绩。
+
+## 取回分析日志
+
+在本机复用已认证的SSH会话执行，`--run` 可重复指定多次：
+
+```bash
+python3 scripts/sync_experiment_logs.py \
+  --host root@connect.nma1.seetacloud.com --port 50248 \
+  --control-path /private/tmp/gemma4-autodl-ssh.sock \
+  --known-hosts /private/tmp/gemma4-autodl-known_hosts \
+  --run first-batch-008
+```
+
+默认写入已被Git忽略的 `results/autodl/`，包括学习器日志、配置、奖励与结果摘要、依赖版本，以及服务器端计算的调用token数、排队/生成耗时和行为logprob统计。原始调用token、worker日志、trace、补丁、JUnit、官方题目及权重不取回。文件逐个原子替换；连接失败保留已取得的日志，只有完整同步后才更新带时间与哈希的 `sync_metadata.json`，不将其当作训练完成证明。

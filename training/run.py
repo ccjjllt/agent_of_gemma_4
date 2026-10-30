@@ -207,6 +207,15 @@ def main():
     metrics = run_dir / "metrics.jsonl"
     cfg["policy"]["model_path"] = str(model_path)
     cfg["policy"]["algorithm"] = "trl_clipped_grpo_composite_adaptive"
+    response_template_metadata = None
+    if cfg["policy"].get("response_template_path"):
+        response_template_path = Path(cfg["policy"]["response_template_path"]).expanduser().resolve(strict=True)
+        cfg["policy"]["response_template_path"] = str(response_template_path)
+        response_template_metadata = {
+            "path": str(response_template_path),
+            "sha256": file_hash(response_template_path),
+            "purpose": "response parser only; does not replace checkpoint tokenizer assets",
+        }
     uid_base = 100000 + secrets.randbelow(1000000)
     write_json(run_dir / "run_config.json", {**cfg, "data_root": str(data_root),
                "task_id": args.task_id, "task_index": args.task_index, "training_tasks": tasks,
@@ -216,6 +225,8 @@ def main():
                "model_source": {
                    "declared_repo_id": cfg["policy"]["model_name"],
                    "declared_revision": cfg["policy"].get("model_revision"),
+                   "declared_source_uri": cfg["policy"].get("model_source_uri"),
+                   "response_template_metadata": response_template_metadata,
                    "metadata_sha256": {
                        name: file_hash(model_path / name)
                        for name in ("config.json", "tokenizer_config.json", "chat_template.jinja",
@@ -290,6 +301,8 @@ def main():
                                    "--endpoint", endpoint.url, "--workspace", str(folder / "workspace"),
                                    "--result-file", str(folder / "result.json"), "--rollout-id", identity,
                                    "--sandbox", cfg["runtime"]["sandbox"], "--agent-uid", str(uid_base + i),
+                                   "--sandbox-baseline-python", cfg["runtime"].get("sandbox_baseline_python", "/opt/gemma-sandbox-baseline/bin/python"),
+                                   "--evaluation-overrides-json", json.dumps(cfg["runtime"].get("evaluation", {})),
                                    "--task-id", task_id]
                         futures.append(pool.submit(run_worker, command, folder, deadline, expired,
                                                    processes, process_lock))

@@ -10,8 +10,10 @@ from __future__ import annotations
 import copy
 import json
 import math
+import re
 from pathlib import Path
 import threading
+import time
 import uuid
 
 
@@ -29,6 +31,7 @@ class Policy:
         from unsloth import FastModel
         import torch
         from transformers import AutoTokenizer, GenerationConfig
+        from transformers.utils.chat_parsing.response_templates import load_response_template
 
         self.torch = torch
         self.FastModel = FastModel
@@ -56,6 +59,32 @@ class Policy:
         if raw_config.get("quantization_config"):
             raise ValueError("Use the official QAT-unquantized BF16 checkpoint, not a packed/NF4 base")
         self.model_path = model_path
+        # Validate these small assets before loading the 31B weights. Some official
+        # checkpoint versions only contain response_schema, which Transformers
+        # 5.17 drops. An explicit official tokenizer-config sidecar can supply its
+        # newer response_template without replacing this checkpoint's tokenizer.
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            str(model_path), local_files_only=True, trust_remote_code=False
+        )
+        if not self.tokenizer.chat_template:
+            raise ValueError("The official chat_template must be present")
+        self.response_template = getattr(self.tokenizer, "response_template", None)
+        response_template_path = config.get("response_template_path")
+        if response_template_path:
+            response_metadata = json.loads(
+                Path(response_template_path).expanduser().resolve(strict=True).read_text()
+            )
+            self.response_template = response_metadata.get("response_template")
+        if not self.response_template:
+            raise ValueError(
+                "Transformers 5.17 requires response_template; legacy response_schema is unsupported. "
+                "Set response_template_path to an official tokenizer_config.json with the corresponding "
+                "Gemma 4 response_template, keeping the checkpoint tokenizer assets unchanged."
+            )
+        load_response_template(self.response_template)
+        self.generation_config = GenerationConfig.from_pretrained(
+            str(model_path), local_files_only=True
+        )
         kwargs = {}
         if config.get("max_memory_gib"):
             kwargs["max_memory"] = {
@@ -77,16 +106,6 @@ class Policy:
             trust_remote_code=False,
             **kwargs,
         )
-        # Keep Google's tokenizer and chat/response templates. Do not replace them
-        # with a generic Unsloth chat template or convert the training base.
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            str(model_path), local_files_only=True, trust_remote_code=False
-        )
-        if not self.tokenizer.chat_template or not getattr(self.tokenizer, "response_template", None):
-            raise ValueError("The official chat_template and response_template must be present")
-        self.generation_config = GenerationConfig.from_pretrained(
-            str(model_path), local_files_only=True
-        )
         self.targets = self._lora_targets(self.model, text_config)
         self.model = FastModel.get_peft_model(
             self.model,
@@ -94,7 +113,9 @@ class Policy:
             lora_alpha=int(config.get("lora_alpha", 64)),
             lora_dropout=0.0,
             bias="none",
-            target_modules=self.targets,
+            # Unsloth treats a scoped list as leaf names. An exact regex keeps
+            # our qualified text-only projections, including the K exclusions.
+            target_modules="(?:" + "|".join(map(re.escape, self.targets)) + ")",
             finetune_vision_layers=False,
             finetune_language_layers=True,
             finetune_attention_modules=True,
@@ -194,6 +215,7 @@ class Policy:
             self._messages_for_template(messages),
             tools=tools or None,
             tokenize=True,
+            return_dict=False,
             add_generation_prompt=True,
             enable_thinking=bool(enable_thinking),
             truncation=False,
@@ -205,12 +227,14 @@ class Policy:
         if requested < 1:
             raise ValueError("max_tokens must be positive")
         limit = min(requested, self.max_context - len(prompt_ids))
+        generation_started = time.perf_counter()
 
         class BehaviorObserver(LogitsProcessor):
             def __init__(self):
                 self.pending = None
                 self.pending_length = None
                 self.values = []
+                self.first_scores_seconds = None
 
             def collect_previous(self, ids):
                 if self.pending is None:
@@ -221,6 +245,12 @@ class Policy:
 
             def __call__(self, ids, scores):
                 self.collect_previous(ids)
+                if self.first_scores_seconds is None:
+                    self.first_scores_seconds = time.perf_counter() - generation_started
+                if self.values and len(self.values) % 128 == 0:
+                    print(json.dumps({"event": "generation_progress", "prompt_tokens": len(prompt_ids),
+                                      "generated_tokens": len(self.values),
+                                      "elapsed_seconds": time.perf_counter() - generation_started}), flush=True)
                 self.pending = torch.log_softmax(scores.float(), dim=-1).detach()
                 self.pending_length = ids.shape[-1]
                 return scores
@@ -277,13 +307,16 @@ class Policy:
                 stopping_criteria=StoppingCriteriaList([StopOnRunAbort()]),
             )
             behavior = observer.finish(sequences)
+        generation_elapsed = time.perf_counter() - generation_started
         if self.abort_generation.is_set():
             raise GenerationAborted("Generation cancelled; discard the unfinished group, not a zero task reward")
         completion_ids = sequences[0, len(prompt_ids):].cpu().tolist()
         if len(behavior) != len(completion_ids) or not all(math.isfinite(x) for x in behavior):
             raise RuntimeError("Generation did not produce one finite behavior logprob per sampled token")
         raw_text = self.tokenizer.decode(completion_ids, skip_special_tokens=False)
-        parsed = self.tokenizer.parse_response(completion_ids, prefix=prompt_ids, tools=tools or None)
+        parsed = self.tokenizer.parse_response(
+            completion_ids, schema=self.response_template, prefix=prompt_ids, tools=tools or None
+        )
         message = {"role": "assistant", "content": parsed.get("content") or None}
         if parsed.get("thinking"):
             message["reasoning_content"] = parsed["thinking"]
@@ -316,6 +349,8 @@ class Policy:
             "requested_max_tokens": requested,
             "effective_max_tokens": limit,
             "context_limited": limit < requested,
+            "generation_elapsed_seconds": generation_elapsed,
+            "first_scores_seconds": observer.first_scores_seconds,
         }
 
     def per_token_logprobs(self, call: dict, *, compute_entropy: bool = False):
@@ -396,8 +431,9 @@ class Policy:
         destination.mkdir(parents=True, exist_ok=True)
         self.model.save_pretrained(str(destination), safe_serialization=True)
         (destination / "training_base.json").write_text(json.dumps({
-            "declared_model_source": "google/gemma-4-31B-it-qat-q4_0-unquantized",
+            "declared_model_source": self.config["model_name"],
             "declared_model_revision": self.config.get("model_revision"),
+            "declared_model_source_uri": self.config.get("model_source_uri"),
             "algorithm": "trl_grpo_with_official_multiturn_rollouts",
             "targets": self.targets,
             "max_context": self.max_context,

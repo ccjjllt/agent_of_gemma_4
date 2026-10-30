@@ -1,0 +1,90 @@
+# First actual batch: 8 full trajectories/task, 1 informative group, 2 reuse updates.
+# Multi-task clipped GRPO. GPU capacity and competition CT effects are not yet measured.
+[policy]
+model_name = "google/gemma-4-31B-it-qat-q4_0-unquantized"
+# Declared official revision; the server download must match its original file hashes.
+model_revision = "1e4d8beecacb8b7590c1d8bedd7335f687bf311f"
+model_source_uri = "https://huggingface.co/google/gemma-4-31B-it-qat-q4_0-unquantized/tree/1e4d8beecacb8b7590c1d8bedd7335f687bf311f"
+# Delivery mirror does not change the declared upstream source or prove download completion.
+model_download_endpoint = "https://hf-mirror.com"
+# Parser metadata only; the original checkpoint tokenizer and chat template stay unchanged.
+response_template_path = "/root/autodl-tmp/agent_of_gemma_4/official/gemma4-qat-hf-tokenizer-config.json"
+max_context = 32768
+device_map = "balanced"
+lora_rank = 32
+lora_alpha = 64
+lora_dropout = 0.0
+logprob_chunk_size = 64
+seed = 3407
+
+[run]
+num_generations = 8
+groups_per_batch = 1
+max_batches = 1
+max_candidate_groups_per_batch = 3
+learning_rate = 0.000005
+max_grad_norm = 1.0
+# Explicit execution cap; larger training plans still obey this cap.
+walltime_seconds = 7200
+max_cpu_workers = 4
+
+[data]
+# Empty task_ids means all mounted official public tasks except exclusions.
+task_ids = []
+exclude_task_ids = []
+
+[grpo]
+num_iterations = 2
+epsilon = 0.2
+epsilon_high = 0.28
+beta = 0.01
+loss_type = "dr_grpo"
+max_completion_length = 32768
+scale_rewards = "group"
+# Do not amplify tiny efficiency differences to unit-sized advantages.
+advantage_std_floor = 0.05
+importance_sampling_cap = 2.0
+# Optional stop of remaining optimizer reuse; never stops task verification.
+target_kl = 0.05
+warmup_ratio = 0.0
+warmup_steps = 0
+
+[curriculum]
+uniform_mix = 0.2
+ema_decay = 0.8
+min_group_std = 0.0001
+variance_scale = 0.05
+variance_weight = 1.0
+success_weight = 1.0
+novelty_weight = 0.2
+priority_floor = 0.05
+repo_repeat_penalty = 0.5
+
+[rewards]
+resolved_weight = 1.0
+repair_weight = 0.3
+regression_weight = 0.5
+efficiency_weight = 0.02
+repetition_weight = 0.0
+success_token_budget = 65536
+
+[runtime]
+python = "/opt/gemma-runtime/bin/python"
+sandbox_baseline_python = "/opt/gemma-sandbox-baseline/bin/python"
+sandbox = "subprocess"
+port = 0
+
+[runtime.evaluation]
+# Explicit participant budgets; preserve the starter's 50-turn cap.
+timeout_seconds = 300
+verification_timeout_seconds = 300
+max_tool_calls = 100
+max_time_minutes = 60.0
+max_turns = 50
+
+[sampling]
+# Deliberate unfiltered baseline, so the score-function gradient matches sampling.
+# These are not the model card's top_p=.95/top_k=64 defaults.
+temperature = 1.0
+top_p = 1.0
+top_k = 0
