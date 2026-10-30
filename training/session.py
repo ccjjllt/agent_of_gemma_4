@@ -73,6 +73,10 @@ class TrainingSession:
             self.emit("run_resumed", checkpoint_id=self.checkpoint_id,
                       phase=self.state["phase"], batch=self.state["batch"],
                       optimizer_steps=trainer.completed_optimizer_steps)
+            # Rank-128 Adam checkpoints hold about 10.8 GiB of CPU tensors.
+            # They are no longer needed after copying the learner state to its
+            # devices; keep only the small run state that self.state owns.
+            del payload, saved
         else:
             if self.ledger.groups or self.ledger.batch_updates:
                 raise ValueError("Existing reward evidence has no committed model baseline")

@@ -94,7 +94,7 @@ class _TrackedStream:
 
 class DeliveryTracker:
     def __init__(self, endpoint, rollout_id, receipt_path, *, ack_attempts=3, ack_timeout=5.0,
-                 session_clock=None):
+                 session_clock=None, api_key=None):
         parsed = urlsplit(endpoint)
         if (parsed.scheme not in {"http", "https"} or not parsed.netloc
                 or parsed.username or parsed.password or parsed.query or parsed.fragment
@@ -102,11 +102,15 @@ class DeliveryTracker:
             raise ValueError("Delivery tracking requires the local OpenAI endpoint ending in /v1")
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", rollout_id):
             raise ValueError("Invalid rollout identity")
+        if (not isinstance(api_key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", api_key)
+                or api_key == rollout_id):
+            raise ValueError("Delivery tracking requires a private rollout API key")
         if (type(ack_attempts) is not int or ack_attempts < 1
                 or not math.isfinite(ack_timeout) or ack_timeout <= 0):
             raise ValueError("ACK attempts and timeout must be positive")
         self.endpoint = endpoint.rstrip("/")
         self.rollout_id = rollout_id
+        self.api_key = api_key
         self.receipt_path = Path(receipt_path)
         self.receipt_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.ack_attempts, self.ack_timeout = ack_attempts, float(ack_timeout)
@@ -186,7 +190,7 @@ class DeliveryTracker:
                 async with httpx.AsyncClient(timeout=self.ack_timeout, trust_env=False) as client:
                     response = await client.post(
                         f"{self.endpoint}/requests/{request_id}/{action}",
-                        headers={"Authorization": "Bearer " + self.rollout_id}, json={},
+                        headers={"Authorization": "Bearer " + self.api_key}, json={},
                     )
                 if response.status_code == 200:
                     body = response.json()
@@ -228,7 +232,7 @@ class DeliveryTracker:
                 async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
                     response = await client.post(
                         f"{self.endpoint}/requests/by-key/{invocation.key}/cancel",
-                        headers={"Authorization": "Bearer " + self.rollout_id}, json={},
+                        headers={"Authorization": "Bearer " + self.api_key}, json={},
                     )
                 if response.status_code == 200:
                     body = response.json()
@@ -376,5 +380,6 @@ class DeliveryTracker:
             self._restore = None
 
 
-def install_delivery_tracking(endpoint, rollout_id, receipt_path, *, session_clock=None):
-    return DeliveryTracker(endpoint, rollout_id, receipt_path, session_clock=session_clock).install()
+def install_delivery_tracking(endpoint, rollout_id, receipt_path, *, session_clock=None, api_key=None):
+    return DeliveryTracker(endpoint, rollout_id, receipt_path, session_clock=session_clock,
+                           api_key=api_key).install()

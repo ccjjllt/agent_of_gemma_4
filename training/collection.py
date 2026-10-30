@@ -5,6 +5,7 @@ from collections import deque
 import concurrent.futures
 import copy
 import json
+import os
 from pathlib import Path
 import threading
 import time
@@ -189,14 +190,25 @@ def collect_batch(*, cfg, batch, policy_version, sampler, endpoint, run_dir,
             slot.update(identity=identity, status="running")
             endpoint.register([identity], policy_version)
             folder = run_dir / identity
+            folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+            credential_path = folder / "model_auth_token"
+            descriptor = os.open(credential_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as credential:
+                credential.write(endpoint.rollout_token(identity))
             cancelled = threading.Event()
             cancel_events[identity] = cancelled
             submission_counter += 1
+            # Each attempt has distinct agent/judge identities, including
+            # across batches. Public rollout IDs are never API credentials.
+            batch_uid_span = max_candidates * generations * (retry_limit + 1)
+            agent_uid = uid_base + 2 * (batch * batch_uid_span + submission_counter)
             command = [str(runtime_python), str(Path(__file__).resolve().parent / "official_runtime.py"),
                        "--data-root", str(data_root), "--submission-dir", str(submission),
                        "--endpoint", endpoint.url, "--workspace", str(folder / "workspace"),
                        "--result-file", str(folder / "result.json"), "--rollout-id", identity,
-                       "--sandbox", cfg["runtime"]["sandbox"], "--agent-uid", str(uid_base + submission_counter),
+                       "--sandbox", cfg["runtime"]["sandbox"], "--agent-uid", str(agent_uid),
+                       "--judge-uid", str(agent_uid + 1), "--auth-token-file", str(credential_path),
+                       "--parent-pid", str(os.getpid()),
                        "--sandbox-baseline-python", cfg["runtime"].get("sandbox_baseline_python", "/opt/gemma-sandbox-baseline/bin/python"),
                        "--session-clock", cfg["runtime"].get("session_clock", "queue_excluded"),
                        "--queue-timing-poll-seconds", str(cfg["runtime"].get("queue_timing_poll_seconds", 0.2)),

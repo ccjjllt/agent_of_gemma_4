@@ -1,238 +1,99 @@
-# AutoDL 双 A800 80GB：先准备，再运行真实 RL
+# 双 A800 训练与运行
 
-当前实现为Unsloth＋TRL GRPO、复合奖励、动态筛题和多次轨迹复用。双A800服务器已完成学习器与官方运行库安装、真实导入和两卡识别；32K实际容量、GRPO更新与CT适配效果以实验记录为准。数据与模型在服务器手动获取，本地不保存题目或权重。
+当前实现为 Unsloth LoRA＋TRL GRPO，算法与研究状态见[方案概览](../research/rl-adapter-feasibility.md)。已做 CPU 机制核对；Linux 权限隔离实测、31B 双卡吞吐、完整题组训练和官方 CT 效果尚未验证。**没有可用入口及本次 GPU 预算就不实验。**
 
-## 当前 GRPO 训练
+## 准备环境与资产
 
-- 对应官方 QAT 未量化31B，BF16冻结基座；Unsloth单进程跨两张A800分层，LoRA r32/alpha64/dropout0。保留400个文本投影，暂排除10个共享K/V的full-attention k_proj。
-- 实例化固定TRL 1.15的 `GRPOTrainer` 子类，用其真实裁剪损失、KL和 `Trainer.train()` 优化器生命周期。为适配官方多轮工具环境，外部完成采样和验收，Trainer逐次模型调用重算完整前缀并累积梯度。
-- 每题8条完整轨迹，目标每批4个有效题组，同批最多更新2次。优势在采集后固定，old概率取自第一次完整梯度前向的数值副本；整批参数尚未更新，分母在首次optimizer.step前全部冻结。reference保持初始关闭LoRA的数学基座；Adam状态及学习率调度跨批保留，不跨策略批次回放旧轨迹。
-- 新旧概率比裁剪区间为0.8～1.28，reference KL系数0.01；采用固定32K常数归一。完整奖励使用原组内标准化优势；部分缺失时使用下述区间信号或明确的共同分项回退，以信号RMS归一，分母至少0.05。行为概率修正仍有上限2，不宣称无偏。
-- 每次模型调用总窗口32,768；只对实际生成token计损失。工具反馈保留为条件，不detach前缀KV，不缩短任务或验收。思考受原输出预算约束，无额外强制思考截断；采样为temperature1/top_p1/top_k0。
-- 默认复合奖励：`完整修复 + 0.3×修复率 − 0.5×回归率 − 0.02×成功轨迹token成本`。修复/回归统计来自同一次完整官方JUnit报告；成功奖励始终高于失败最高分，效率成本有上限并只在成功后计算。
-- 修复率与回归率独立判定可靠性，缺失保留None及奖励区间，不再因一条缺失而自动抹掉全部分项。官方二元成功率、精确总奖励、奖励区间与训练优势分别记录。未完成或无法可靠归因的验收异常不冒充模型失败。
-- 动态采题默认20%全局均匀探索、30%未访覆盖、50%按近期可用优势强度、成功率与新颖度分配。当前策略最新完整组没有可用学习信号时暂不分配自适应质量，仍保留均匀复查；策略实际更新后解除。完整8条结束后才筛组，每批最多尝试12个不同题组，不无限重采。
-- 不足4个有效组时按实际组数更新，全部无信号则记录后进入下一批。记录实际选题概率和全部候选/入选组各自成功率；筛组与自适应采样会改变训练分布。
+在 Linux 服务器手动获取官方公开资产和模型，训练直接读取原目录；不在本地复制训练集，不读取 heldout，不使用自建课程数据。题面、base_commit 和官方资产保持原样，参考补丁与验收资产仅供裁判侧使用。
 
-工具和验收在独立CPU进程运行。GPU生成现改为逐步连续批处理：HTTP请求进入队列，单个生成线程每步让多条活动序列共享一次decode forward，新请求可在步间加入，已完成请求单独返回。默认最多4条；`device_map="balanced"`仍只是权重分层，不是张量并行。此改动已做极小真实Gemma4的CPU正确性核对，31B＋Unsloth的双卡兼容性和性能收益仍待实测。GRPO实现位于[grpo_trainer.py](grpo_trainer.py)，生成位于[generation.py](generation.py)，奖励位于[rewards.py](rewards.py)，采题位于[curriculum.py](curriculum.py)。
-
-## 缺失奖励、学习信号与完整分布
-
-裁判从同一次完整官方验收提取各分项。某项的所有要求都已观测时，返回精确率；只观测到部分要求时，修复率区间为`[passed/expected, (passed+missing)/expected]`，回归率区间为`[nonpassed/expected, (nonpassed+missing)/expected]`。已知`expected=0`表示不适用，该项贡献为0；报表或expected缺失表示未知，不能当作0。报表读取失败时也尽量保留裁判已知的要求数量，不重跑或缩短验收。
-
-用未修改的权重把分项区间合成为每条轨迹的`[L_i,U_i]`。只有各分项贡献都确定时，`total`才为数值，否则为`None`。对于完整K=8题组，真实中心化优势的可行区间是：
-
-```text
-a_lower_i = ((K-1)*L_i - sum(U_j, j!=i)) / K
-a_upper_i = ((K-1)*U_i - sum(L_j, j!=i)) / K
-```
-
-下界大于0时取下界，上界小于0时取上界，否则取0。非零原始信号的方向对所有区间内补全都成立；部分观测时不再减均值，否则会破坏这个保证。归一化采用`max(RMS(signal),0.05)`，正缩放保留方向，但归一后的幅度不能称为真实优势的数值下界。全部奖励精确时，这与原`(R-mean)/max(std,0.05)`一致。
-
-宽区间有时会遮住整个组的优势方向，包括成功/失败混合组。若区间信号未达到筛组阈值、但全组共同可靠的分项仍有差异，则使用`common_components_fallback`保留这些对比；它优化明确的缩减目标，不声称符号对应完整复合奖励。模式`exact_composite`、`interval_centered_advantage`及回退各自记录并分开统计。所有策略都保留8条完整轨迹和完整验收，既不只挑可观测候选，也不把未知分项填成0。
-
-筛组与采题依据实际可用原始优势的RMS/二阶矩，完整奖励时等于标准差/方差；缺失时真实奖励均值、标准差及EMA保持`None`，不把无法证明信号说成“奖励确实全零”。`min_group_std`沿用已有配置名，对缺失组检查信号RMS。均匀复查与后续策略更新仍可解除抑制。
-
-运行时新增`reward_groups.jsonl`和`reward_summary.json`，保存全部完整候选（包括过滤组）的分项点值或区间、缺失原因、选择概率、优势和实际生成token数，并汇总分布、分位数及退化诊断。入选、过滤、已确认optimizer更新和未确认更新分别统计，按奖励口径分层。worker、验收与请求秒数可能并发重叠，不是GPU墙钟或账单；未完成及基础设施失败组不进入奖励分母，其成本仍需结合原运行日志分析。日志同步脚本会取回这两份数值记录，不取回题面、token、补丁或测试标识。
-
-摘要包含旧整组回退是否触发、旧方案全失败零分、新方案是否保留信号、缺失下无法证明信号、完整证据下确实无信号等不同计数。另记录同一份观测下去掉修复、回归或效率项的离线敏感性；它不能证明某组权重提升模型收益，也不能把缺失伴随无信号直接归因于缺失。
-
-手动合成核对覆盖5,628个区间端点补全，严格信号的非零符号均一致；完整观测与原优势最大差约2.22e-16。在7条精确失败奖励0至0.3、1条未知奖励[-0.5,0.3]的例子中保留5个非零优势，未知总分仍为None；全缺失全失败不造信号，成功失败混合时共同分项回退保留终局对比。数学、实际采集与ledger记录分别位于`results/local-reward-intervals/2026-10-30/`、`results/local-rewards/2026-10-30/`和`results/local-reward-ledger/2026-10-30/`，均为手动验证而非训练结果。
-
-这不能消除任意缺失机制带来的选择偏置：缺失可能让负信号归零，回退目标也可能不同。完整8条已付出的采样成本不能追回，后验筛组仍只能省更新；改动保留更多可靠信号并用后续采样分配减少重复浪费。现有真实日志仍无完整奖励组，没有GPU入口就不实验，因此真实退化频率和现有权重是否有效仍未知，权重本次保持不变。
-
-## 从早期反馈分配采样预算
-
-`uniform_mix=0.2`覆盖所有未被本批排除的题，`coverage_mix=0.3`分配给其中尚无完整题组反馈的题，其余`1-uniform_mix-coverage_mix=0.5`分配给具有可用反馈或需要新策略复查的已访题。成功率与可用学习信号二阶矩使用同一`ema_decay`的近期统计，累计成功率只作历史记录；未访池只有仓库多样性权重。未知真实奖励方差不进入优先级，仓库惩罚也不降低均匀探索下界。配置要求`0 < uniform_mix < 1`且`0 ≤ coverage_mix < 1-uniform_mix`，为有可用反馈时保留正的自适应质量。
-
-这控制每次选择的条件概率质量，不是每批固定的轨迹配额。例如129题中仅1题有有效奖励差异且仍可选时，该题概率为`0.5 + 0.2/129 ≈ 50.16%`。但它在当前策略最新完整组没有奖励差异时，概率降为仅均匀项`0.2/129 ≈ 0.155%`，不会因独占已访池而无论怎样降权都继续占50%。无可用自适应题但还有未访题时，自适应质量转给覆盖；若全部可选题均为同策略零信号题，退回完整的均匀复查分布。全成功的效率差、全失败的有效dense差异仍是合法学习信号，不按二元成功率直接删除。
-
-`policy_version`来自真实optimizer更新计数，零信号批不增加版本；版本推进后解除同策略抑制。近期EMA保留为带来源版本的先验，不把新策略未知表现冒充已测结果。`reward_signature`记录权重、区间算法、所选优势模式及回退共同分项；口径改变时重置不可比较的信号统计，官方二元成功率EMA继续更新。缺失下无法确定信号会明确标为`uncertain_reward_current_policy`，不与已测零方差混为一谈。
-
-同批已尝试题仍全部排除，因此冷启动首批不会立即重采自己的题；首批完整反馈通常从第二批开始用于复访，无需先采1,032条轨迹。单批`first_batch.toml`仍只用于有限的运行验证，不能用它证明跨批自适应收益。预取最多提前选定2个候选组，并让每个在飞题组占一个剩余目标槽位；只有完整组确认无信号后才补位。选择使用当时已提交的完整反馈，后来到达的反馈不会倒改预取概率，也不按完成速度优先挑题。
-
-每次`group_selected`记录最终边际`selection_probability`、三项贡献、有效池质量、已访/未访/自适应候选数、零信号抑制数、反馈版本及来源策略版本。只做一次混合分布抽样，不虚构它来自某个潜在分支。`selected_pool`表示题已有反馈还是未访；`feedback_status`区分当前策略有效信号、同策略零信号抑制和策略更新后的复查。无有效自适应候选时，`selection_phase`明确记录覆盖加均匀复查或纯均匀复查，不把它标成反馈利用。这些统计不等于均匀评估分数，20/30/50的配比也尚无模型收益证据。
-
-首次三路混合修复的合成129题对照记录在`results/local-curriculum/2026-10-30/sampler_summary.json`：固定32批×4组时从0复访变为72复访；这是当时源码下的机制证据。后续审查又修复了零信号预算独占、累计成功率误导、奖励口径混用及尾部过采，不能把旧记录当作当前所有分支的验证。
-
-本轮手动核对记录在`results/local-curriculum-followup/2026-10-30/signal_summary.json`及`results/local-curriculum/2026-10-30/deeper-audit-flow.json`：同策略连续1/4/16组零信号时，单题概率均由50.155%降到0.155%；10组失败再10组成功时，近期成功率为0.8926而非累计0.5；奖励口径切换后方差直接按新证据建立，不再混入缺失分项。真实采集函数配合假worker的默认全有效场景从40条采集/32条入训练变为32条采集/32条入训练；需要补位时仍完整采集额外组且遵守候选上限。固定预算内复访会减少首次覆盖；保守尾部预取也可能在最后一组无信号时增加等待。未读取官方题目或启动GPU，以上不是模型收益。
-
-## 轨迹复用中的前向合并
-
-首次梯度前向同时提供TRL损失的带梯度logprob和冻结old的CPU数值；不再单独计算old，也不直接把生成端behavior当成learner概率。后续reuse的梯度前向同时计算整批生成token加权的旧策略漂移。完整前缀始终参与反向，每个模型调用反向后释放自己的图，不保留跨调用图或detached前缀KV。
-
-reference一般仍需一次关闭adapter的完整评分，并在建立当前梯度图之前完成，避免影响checkpoint重算。固定reference的已测数值保存在进程内有界CPU LRU，以完整prompt和completion精确匹配，不使用任务ID或仅哈希判定命中；不同Trainer不共享缓存。默认最多128项、100万容量单位，prompt token、completion token和概率值都计入容量。`reference_cache_max_entries=0`可关闭。
-
-`share_zero_reference=true`只在保守结构核对通过时生效：基座冻结、普通未合并LoRA、活动B严格为零、dropout及其他adapter变体关闭。此时当前策略与reference在数学上相同，首次梯度前向的实测概率可同时冻结为reference。未知布局自动使用单独reference评分；不同grad/no-grad或autocast路径不承诺浮点逐位一致。
-
-两次更新都执行时，每个调用的完整前缀前向数如下；不包含反向中的checkpoint重算，也不是墙钟加速倍数：
-
-| 条件 | 原实现 | 当前实现 |
-| --- | --- | --- |
-| β>0，非零adapter，新的完整调用 | 5 | 3：reference＋两次梯度前向 |
-| β>0，reference精确缓存命中 | 5 | 2：两次梯度前向 |
-| β>0，零adapter等价核对通过 | 5 | 2：两次梯度前向 |
-| β=0，无reference项 | 4 | 2：两次梯度前向 |
-
-漂移超阈值时，在整批梯度累积完成后、optimizer.step之前清空全部梯度，停止剩余复用；Adam、学习率调度和步数不推进。这样可能做了最终丢弃的反向，不能保证拒绝场景更快。被拒绝attempt追加的TRL指标会回滚，单独记录`gradient_attempts`及`grpo_gradient_attempt_discarded`。`forward_invocations`记录真实评分/梯度调用数；`probability_reuse`记录old来源与实际reference复用。第一次完整累积结束后才原子发布全部冻结概率，文件明确标注来源，复用期间不刷新。
-
-2026-10-30使用真实TRL1.15、Transformers5.17、PEFT0.21.2、CPU Torch2.15和随机极小Gemma4手动对照旧实现：每批4个完整调用、两次更新，前向数从20降到12（新调用）或8（零adapter、缓存命中）。三批loss、LoRA参数、Adam张量及scheduler状态逐值一致，累计6次真实CPU optimizer更新，前缀位置仍有非零梯度。开启decoder与head的真实checkpoint后，实算reference分支也保持一致；首decoder层含反向重算的调用数为旧28、新20，未把重算计作省掉。低KL阈值、β=0、取消、中途失败及TrainerState重置前失败也已核对；数值证据见`results/local-grpo-reuse/2026-10-30/numerical_summary.json`。未新增测试文件；没有可用入口，本次未做GPU实验，31B BF16数值差异、显存和时间收益仍待实测。
-
-## 生成调度与性能测量
-
-- `generation.max_batch_size`限制活动序列数；`max_batch_tokens`按最长完整请求预算乘批大小预留容量，不通过截短上下文、输出、思考或验收凑批。默认最多4×32K；显存是否足够仍由31B实际运行确认。
-- 每个调度步先推进已有decode，再处理有界prefill；默认每块512 tokens、每步prefill总计最多1024 tokens。完整提示分块计算，中间块不投影大词表、不采样；最后一块才产生首个token。prefill中的请求也占活动槽位。仍未实现张量并行、paged attention或CUDA graphs。
-- 普通decode保留同一批KV。full-attention层按需几何扩容，仅扩容时复制已有前缀；sliding层继续使用原生窗口逻辑。各层保留不同头形状、设备和逐行位置。批成员变化时临时只读视图在重组时物化独立行，LRU快照只保留紧凑独占张量，不持有扩容余量。
-- 同一策略版本内，相同完整prompt的在飞请求只让一个leader计算prefill，其他请求在其完成后独立采样、取得独立可变KV行；关闭LRU时也能合并，不共用生成token。另用有条目数及字节上限的LRU复用完全一致的token前缀。精确命中复用最后位置logits，扩展命中只计算新增后缀；不回滚已丢弃的滑窗历史。结束采集会排空请求并清除KV，之后才计算完整前缀训练概率和更新LoRA。推理缓存不会进入梯度路径。
-- 题组采集共用8个CPU worker，GPU仍最多4个活动请求，让setup、工具和验收与生成重叠；CPU/RAM开销随worker数量增长，可按服务器资源调低。正式配置最多预取2个候选组，轨迹槽位完成后立即补位。完整组按选题顺序计算奖励和选入更新，避免偏向先完成的快题。预取数量受剩余目标槽位约束；正常组完成全部8条及验收，确认无信号后再补位。基础设施重试耗尽的组单独记失败，不评分、不更新采题反馈，也不影响其他预取组的完整性。首批配置预取1组以控制成本。
-- 请求状态的SQLite提交、响应JSON持久化和逐请求日志由单独有界writer处理，GPU owner继续推进其他序列；generated真正落盘前不能HTTP交付或ACK。活动请求加待落盘结果共同受限，磁盘持续拥堵时施加背压。
-- `generation.profiling`可对少量decode迭代采集CPU/CUDA算子、形状和显存。首批默认等待16步、warmup2步、记录8步；正式配置默认关闭。输出在`profiles/<collection_id>/`，不同采集批不会覆盖。profiler额外同步只发生在窗口边界；另在整批采集关闭时同步两卡，确认KV操作排空后才允许训练。profile对吞吐的扰动必须单独报告。
-- 连续批处理的各请求耗时会重叠，不能再把它们相加作为总生成时间。`generation_metrics.jsonl`记录不重叠的引擎活动耗时、token数、实际最大批大小、缓存命中和排除profile窗口后的吞吐；端到端耗时还应计入排队、工具和验收。原来的`first_scores_seconds`只存在于旧单请求日志，新调度记录实际`first_token_seconds`及排队时间。
-
-2026-10-30手动核对使用Transformers5.17、CPU Torch2.14.1及随机极小Gemma4，覆盖混合full/sliding、异构KV头、K=V、共享KV、滑窗跨界、请求中途加入/退出、前缀复用、EOS和取消。实际采样概率对独立完整前缀forward最大差约2.4e-6；HTTP调度及完整题组顺序用一次性模拟核对。数值记录与CPU profiler摘要保存在`results/local-batching/2026-10-30/`。这些结果不代表31B吞吐、显存或修复收益。
-
-本次深度优化的手动证据见`results/local-throughput/2026-10-30/`。`generation_summary.json`中4条相同29-token提示从116降为29个实际prefill token；full层5+64-token追加的cat从130次降为0，已有前缀复制从299008降为15360元素，KV逐值一致；完整prefix概率误差低于1e-6。`replay_summary.json`核对batch1/4强制完整记录路径，包括EOS和共享prefill。`pipeline_summary.json`在注入150ms落盘停顿时，同伴decode最大间隙从约154ms降到1.56ms；这证明I/O隔离，不是GPU加速倍数。所有结果只使用合成输入与真实极小CPU模型，31B吞吐、峰值显存和端到端有效轨迹/小时仍需实测。
-
-新增指标记录真实prefill token、合并减少的重复量、中间head跳过次数及full-KV扩容复制量。`checkpoint_committed`与`grpo_state_exported`分别记录持久化和导出耗时，避免把学习器I/O混进decode速度。
-
-### 排队与会话预算
-
-两份训练配置默认`runtime.session_clock="queue_excluded"`，会话仍为60分钟，单命令和完整验收仍各300秒、50回合与100次工具上限不变。服务端只将同一rollout“有请求排队且没有自己的请求正在生成”的区间作为候选；客户端再与真实LLM等待区间相交，并扣除并发工具工作。生成计算、工具执行、未知网络等待与重复HTTP请求都不能变成免费时间。
-
-官方包文件不改动；CPU预检先核对已安装harness的计时源码，再加载31B。本地只为该evaluator绑定已核对版本的runner、context与executor计时边界，并在有限外层timeout上按已确认排队证据调整截止时间。未知收据、时间基准不一致、服务重启或迟到收据造成无法确认的超时都按基础设施问题处理，不冒充模型失败。整个run的7200秒额度继续覆盖墙钟时间，排队不能延长run或GPU授权。
-
-每个结果并列保存原始墙钟、确认排队、有效会话时间和计时错误。这是训练资源计时口径，不等同比赛官方墙钟评测；需要原计时口径时设`runtime.session_clock="wall"`。官方完整验收仍执行，训练集结果仍不能称独立泛化。
-
-会话在收到HTTP响应ID之前取消时，也会按其逻辑请求key发起一次有短截止时间的取消；服务端先通知GPU，再持久化取消记录，阻止尚在prepare/create中的迟到请求重新启动。它不取消已交付并被上层接收的最终响应，不等待官方验收结束才释放无用生成；取消记录落盘失败会停止无效collection并唤醒等待者。
-
-`session_clock_summary.json`用官方runner/evaluator/context/executor原函数体和真实asyncio核对：110ms预算下180ms排队加约35ms生成能完成，wall模式仍按110ms超时；纯生成和并发工具工作仍耗预算。`integration_summary.json`将真实极小Gemma4接到HTTP/SQLite，核对长prefill期间继续decode、纯排队区间、消费确认和重启。`key_cancel_summary.json`与`transport_cancel_summary.json`覆盖无响应ID取消、create竞态、持久化失败及短清理截止时间。它们没有执行官方任务或GPU实验。
-
-后续有可用GPU入口及本次预算时，可用`training.profile_generation`直接读取服务器保留的完整`model_calls.jsonl`，对同一组完整prompt和completion进行旧串行`generate`及新batch 1/2/4重放。默认关闭跨请求LRU，但仍保留在飞相同prompt合并；因此比较的是完整引擎策略，不能把全部收益归给decode batch。`--prefix-cache`用于另一次LRU对照；`--profile`另跑独立采样窗口，不将profile轮次混入吞吐。输出包含源文件指纹、实际decode批大小、吞吐、显存与逐token概率差汇总，不导出原始token。它强制使用记录中的输出路径，不能称为新轨迹、官方验收或模型收益，采样开销也不完全等同自由生成。
-
-实测记录同时绑定引擎、KV、policy、profiler和重放入口的源码SHA256，以及实际加载的Torch、Transformers、Unsloth等版本和device map。判定整个研究流程是否改善，还须记录一组完整8条轨迹的墙钟时间、验收、GRPO与检查点成本，以及每小时有效完整轨迹数；不能把重放tokens/s直接换算成完整任务收益。墙钟预算与排队扣除预算的结果分别标注，避免把时间口径变化误当吞吐加速。没有可用入口时，这些31B实测结论保持未证实。
-
-重放的调用按源文件、再按行选择，并统一视为时刻0已就绪；它测饱和引擎，不重现同一agent不同轮次之间的工具依赖或真实到达时间。旧路径逐调用进度写盘耗时另列，从decoder吞吐分母扣除，与新路径的最终写盘范围对齐；完整进程墙钟仍保留。每种模式只执行一个完整测量轮次，额外batch形状的编译可能仍在计时内，不能称稳态吞吐。
-
-可在下面相同命令末尾先追加`--plan-only`：只读指定调用和配置，打印包含旧/新warmup及可选profile的完整token账，不加载模型或创建输出目录。例如4个各2000输出token的完整调用、batch1/2/4并开启profile，计划共60000 tokens；开始新引擎前，旧warmup和旧完整轮次已需10000 tokens。1800秒是硬上限，不保证这一计划完成，应先据实际调用长度确认预算安排。
-
-重放子进程继承同一绝对截止时间，并在模型加载前启动自身watchdog；父SIGTERM及等待异常会清理子进程。Linux还用[父进程退出信号](https://man7.org/linux/man-pages/man2/PR_SET_PDEATHSIG.2const.html)绑定learner存活期，避免监督进程被杀后遗留GPU工作。局部CPU核对见`replay_readiness_summary.json`：真实watchdog进程、模拟prctl与父进程控制、完整调用预算和写盘耗时分离；本机未执行Linux内核信号绑定或GPU运行。
-
-例如，确认模型及以下调用记录仍在服务器后，在本次明确授权的时间预算内执行（这里仅提供命令，不表示已经运行）：
-
-```bash
-CUDA_VISIBLE_DEVICES=0,1 /root/autodl-tmp/gemma4/envs/learner/bin/python -m training.profile_generation \
-  --config configs/first_batch.toml \
-  --model-path /dev/shm/gemma4-models/gemma4-31b-qat \
-  --calls /root/autodl-tmp/gemma4/runs/first-batch-008/batch-0000-group-000-rollout-000/model_calls.jsonl \
-  --calls /root/autodl-tmp/gemma4/runs/first-batch-008/batch-0000-group-000-rollout-001/model_calls.jsonl \
-  --max-calls 4 --batch-sizes 1,2,4 --profile \
-  --output-dir /root/autodl-tmp/gemma4/runs/generation-batching-001 \
-  --walltime-seconds 1800
-```
-
-实际额度由本次会话确定；父进程的总时限包含模型加载。用户于10月30日明确要求“没有入口不实验”，本次未执行此GPU命令。
-
-## 手动准备数据与模型
-
-到 AutoDL 后按实际网络和存储情况手动获取官方数据、模型及运行库，不使用项目下载脚本。服务器可直接调用 Kaggle/Hugging Face 的官方工具，数据不需要经过本地电脑；取得的官方原始数据作为训练的只读输入。
-
-当前服务器的Kaggle访问已打通，首批所需公开资产已直接下载到服务器。其他实例仍需账号比赛访问权、接受规则及可用网络。通过标准Kaggle认证配置令牌，不把密钥写入代码、聊天、命令参数或项目Git。
-
-需要准备的内容：
-
-| 来源 | 内容 |
+| 目录 | 必需内容 |
 | --- | --- |
-| 比赛官方公开目录 | 原始 `tasks.jsonl`、`snapshots/`、`graphs/`、`embeddings/`、任务 `wheels/`、`sandbox/`、`docker/imp.py`、`docker/telnetlib.py` 和 `sample_submission/`，保留原目录层级 |
-| `metric/gemma-4-developer-agent-wheelhouse/31` | 当前环境安装脚本使用的官方运行库 wheels，与任务目录中的 `wheels/` 用途不同 |
-| Google QAT 未量化模型 | 全部权重分片及索引、模型配置、generation 配置、完整 tokenizer 文件与官方 chat/response 模板 |
+| 官方公开任务 | `tasks.jsonl`、`snapshots/`、`graphs/`、`embeddings/`、`wheels/`、`sandbox/`、`docker/imp.py`、`docker/telnetlib.py`、`sample_submission/` |
+| 官方运行库 | 安装脚本使用的 metric wheelhouse v31，与任务目录中的 `wheels/` 分开 |
+| QAT 未量化 31B 模型 | 全部 BF16 权重分片、索引、配置、tokenizer 和官方模板；核对配置中的 revision 与 `response_template_path` |
 
-只获取本次训练需要的官方公开资产，保持原文件内容，不读取隐藏或预留评测内容。参考补丁和验收资产仅供裁判侧使用。训练只需通过 `--data-root` 和 `--model-path` 指定实际目录，不要求下载脚本生成的清单或回执文件。
-
-## 服务器准备命令
-
-下面命令均在**AutoDL终端**执行。将本项目源代码放到例如`/root/autodl-tmp/agent_of_gemma_4`；模型、数据、环境放到代码目录之外的`/root/autodl-tmp/gemma4`。不要将原有开发目录的`.git`、`.venv`、凭证或旧研究一起打包上传。
-
-手动准备完成后，安装分离环境；先确保系统已有官方Dockerfile要求的 `git`、`patch`、`protoc` 和 `pigz`。`--wheelhouse` 指向官方运行库，`--data-root` 指向公开任务资产。示例使用本机现有的Miniconda解释器引导安装：
+代码、资产和环境分目录存放。先备好 `git`、`patch`、`protoc`、`pigz` 及支持 venv 的 Python；以下命令在服务器项目根目录执行，路径按实际位置修改：
 
 ```bash
-cd /root/autodl-tmp/agent_of_gemma_4
-bash scripts/prepare_server.sh runtime --bootstrap-python /root/miniconda3/bin/python --wheelhouse /root/autodl-tmp/gemma4/official/wheelhouse-v31
-bash scripts/prepare_server.sh sandbox --bootstrap-python /root/miniconda3/bin/python --data-root /root/autodl-tmp/gemma4/official/competition
-bash scripts/prepare_server.sh learner --bootstrap-python /root/miniconda3/bin/python
+gemma_root=/root/autodl-tmp/gemma4
+gemma_python="$gemma_root/envs/learner/bin/python"
+gemma_model=/path/to/gemma4-31b-qat
+
+bash scripts/prepare_server.sh runtime --base "$gemma_root" --wheelhouse "$gemma_root/official/wheelhouse-v31"
+bash scripts/prepare_server.sh sandbox --base "$gemma_root" --data-root "$gemma_root/official/competition"
+bash scripts/prepare_server.sh learner --base "$gemma_root"
 ```
 
-如需独立的 Kaggle/Hugging Face CLI 工具环境，可选运行 `bash scripts/prepare_server.sh data`；这一步仅安装工具，不获取数据或模型。认证按[Kaggle官方说明](https://github.com/Kaggle/kaggle-cli/blob/main/docs/README.md)及 Hugging Face 标准方式处理。
+学习器依赖固定在 [learner.lock.txt](../requirements/learner.lock.txt)；官方运行库与工具基础环境分别安装到 `/opt/gemma-runtime`、`/opt/gemma-sandbox-baseline`。安装脚本不下载训练资产、不启动训练。若用 `/dev/shm` 存权重，关机后需重新准备。
 
-- 学习器：Python3.12，CUDA12.8 Torch2.9.1、Unsloth/zoo2026.10.10、Transformers5.17、TRL1.15、PEFT0.21.2；版本固定在`requirements/learner.lock.txt`，已在服务器安装并识别两张A800。
-- 官方运行库：Python3.13，`/opt/gemma-runtime` 使用v31原始官方wheels及CPU Torch，已完成普通和低权限进程导入。
-- 工具基础环境：`/opt/gemma-sandbox-baseline` 以官方Dockerfile的测试、构建工具及兼容源文件为基础，并按官方wheel依赖声明补齐公开包中缺失的依赖；因此不宣称与原Docker镜像完全一致。环境由root拥有、低权限进程只读，优先使用官方任务wheels，补充依赖固定版本；每条轨迹的项目依赖另行隔离。各环境保存安装freeze。
-- 原图的PyTorch2.8镜像只是基础操作环境，学习器使用自己的虚拟环境。
+当前 subprocess 后端需要 root：模型工具和验收仓库代码分别使用不同的低权限 UID；数据、裁判结果及每条轨迹的私密 API 凭据由 root 隔离。这不等同正式 Docker 评分环境，最终 adapter 仍需在官方 CT 栈验证。
 
-[AutoDL无卡模式](https://www.autodl.com/docs/save_money/)适合认证、传代码和下载；文档列出的CPU/RAM资源较小，不保证能在无卡模式完成全部编译或安装，更不能用它验证模型加载。无卡模式会释放GPU，之后能否立即取得同一双卡取决于库存。
+## 启动训练
 
-## 模型工具与裁判分开
+统一使用 [a800_2x80.toml](../configs/a800_2x80.toml)：每题 8 条轨迹，每批目标 4 个有效题组、最多尝试 12 组，最多运行 32 批。
 
-AutoDL普通容器不支持Docker。此处采用官方subprocess后端，并增加独立低权限UID：官方准备工作和裁判保持root，模型执行的工具命令降权。官方数据及结果根目录为root-owned 0700，模型不能读原始tasks.jsonl中的裁判资产；只得到官方构造的题面和自己的工作区。
+LoRA 为 `r=128 / alpha=256`。基座按 BF16 加载，评分使用 BF16 autocast；LoRA 训练参数可保留 FP32。adapter 默认导出 BF16 副本并核对文件内实际精度，完整续跑检查点保留训练精度。更改 rank 后须新建 run，不能用 rank 32 的检查点继续训练。
 
-这种方式不等于正式Docker评分环境的网络和资源隔离。最终adapter仍需在官方CT评分栈验证。程序明确禁用官方Evaluator自动向父目录寻找secret数据的逻辑；不读取隐藏评测资产。
-
-## GPU开启后运行
-
-先看有效配置，这条命令不读取题目、不加载CUDA：
+同批最多更新 2 次、8 个 CPU worker、4 个 GPU 活动请求；单次调用窗口 32K，run 初始额度 7200 秒并包含模型加载。学习率按最多 64 次更新设置 7 步预热；时间额度不保证完成全部批次。候选组须完成全部轨迹及验收，基础设施失败不算零奖励。
 
 ```bash
-/root/autodl-tmp/gemma4/envs/learner/bin/python -m training.run --describe
+# 只显示配置，不读取题目或加载 CUDA
+"$gemma_python" -m training.run --config configs/a800_2x80.toml --describe
+
+# 获得本次 GPU 授权与预算后执行；新运行使用新目录
+CUDA_VISIBLE_DEVICES=0,1 "$gemma_python" -m training.run \
+  --config configs/a800_2x80.toml \
+  --data-root "$gemma_root/official/competition" \
+  --model-path "$gemma_model" \
+  --run-dir "$gemma_root/runs/grpo-001"
 ```
 
-下面是首批GPU训练命令：`first_batch.toml` 只采集1个批次，最多2次更新，关闭warmup，初始run额度为2小时并包含模型加载；续跑不重置额度。可在 `data.task_ids` / `exclude_task_ids` 或命令参数中限定题目；这些上限不是耗时预测，中断和基础设施故障不会被当成零奖励。此前服务器数据盘只有50GB，约58.25GiB的BF16权重暂存于 `/dev/shm`，已核对官方SHA256；关机后需重新获取权重，结果保留在数据盘。没有可用入口与本次授权预算时，不执行这些GPU命令。
+可用 `data.task_ids`、`exclude_task_ids` 或 `--task-id` 限定公开任务。首次运行前核对配置中的实际路径；程序会记录来源指纹并检查运行库兼容性。
+
+## 会话预算与续跑
+
+默认 `runtime.session_clock="queue_excluded"`：60 分钟会话只扣除已确认的纯 GPU 排队区间，生成和工具执行仍计时，原墙钟同时记录。这是训练口径，不等同官方墙钟评测；设为 `wall` 可恢复原口径。单命令与完整验收各 300 秒、50 回合、100 次工具及整个 run 的墙钟上限保持生效。
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 /root/autodl-tmp/gemma4/envs/learner/bin/python -m training.run \
-  --config configs/first_batch.toml \
-  --data-root /root/autodl-tmp/gemma4/official/competition \
-  --model-path /dev/shm/gemma4-models/gemma4-31b-qat \
-  --run-dir /root/autodl-tmp/gemma4/runs/first-batch-001
+CUDA_VISIBLE_DEVICES=0,1 "$gemma_python" -m training.run \
+  --resume --run-dir "$gemma_root/runs/grpo-001"
 ```
 
-输出包括官方结果与奖励分项、完整日志/trace/patch、真实调用token/行为概率、课程状态、旧策略偏移、KL/裁剪统计、adapter指纹和显存峰值。新运行使用新目录，已有目录须显式`--resume`；`adapters/initial`与`adapters/batch-0001`等保存独立LoRA，完整续跑状态另在`recovery/`。筛掉的组仍保留真实采样/验收记录，不能只看入选组成功率。
+续跑沿用已保存的配置和路径，核对来源并独占运行目录；恢复已持久化轨迹、采样器、LoRA、Adam、scheduler、RNG、冻结概率与更新进度。未完成会话用新身份重跑；只有 adapter 的旧运行不能完整续跑。
 
-正式提交只取所选adapter目录的`adapter_config.json`与`adapter_model.safetensors`，按官方YAML引用。不要提交训练基座或合并权重。当前代码没有实现自动比赛提交，也没有在官方CT上取得适配效果证据；训练题上的改善不能称为独立泛化成绩。
+预算不会重置；非正常中断的失联时间保守扣入旧额度。仅在另获授权后使用 `--additional-walltime-seconds N` 增加额度。基础设施故障默认额外重试一次；单次采集达到 3 个失败组后收尾，若仍有计划批次则保存下一批状态并退出 75，供显式续跑。
 
-## 中断恢复、失败重试与消费确认
+## 吞吐测量
 
-恢复已有run使用同一目录；省略配置和数据、模型、submission路径时沿用其`run_config.json`，并核对来源指纹与检查点绑定。它不是把一个adapter作为新run的初始化，也不允许从未提交的临时文件猜测训练进度。单独保存adapter或旧版本日志的历史run不等于具备完整续跑检查点。
+生成端已实现连续批处理、分块与共享 prefill、KV 扩容及异步持久化。`device_map="balanced"` 是跨卡分层，不是张量并行；实际速度与显存容量待 31B 实测。
+
+用服务器保留的 `model_calls.jsonl` 重放至少 4 个完整调用，`--calls` 可重复指定。先查看含暖机的 token 预算，不加载模型、不创建输出目录：
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 /root/autodl-tmp/gemma4/envs/learner/bin/python -m training.run \
-  --resume --run-dir /root/autodl-tmp/gemma4/runs/first-batch-001
+"$gemma_python" -m training.profile_generation \
+  --config configs/a800_2x80.toml --model-path "$gemma_model" \
+  --calls /path/to/model_calls.jsonl --max-calls 4 --batch-sizes 1,2,4 \
+  --output-dir "$gemma_root/runs/generation-profile-001" \
+  --walltime-seconds 1800 --plan-only
 ```
 
-同一run只能有一个持锁进程；CPU监督进程把同一独占锁传给learner，即使监督进程意外退出，仍存活的learner也会阻止第二个实例进入。额度记录跨重启保留，正常停止后的停机时间不计入活动时间；非正常中断未能结算时，从上次开始到恢复的失联时段保守计入旧额度，最多扣完上次剩余量。这是预算约束，不能当作GPU实际运行时间或账单。剩余额度耗尽时不自动重新获得配置中的7200秒；只有本次明确增加额度时才使用`--additional-walltime-seconds`，例如另获1800秒授权后在上述命令追加`--additional-walltime-seconds 1800`。
+获准实测后去掉 `--plan-only`；`--profile` 添加独立分析轮次，`--prefix-cache` 启用 LRU 对照。重放按所有调用同时就绪测量引擎，报告吞吐、显存及概率差，不能代表真实 agent 排队或模型收益。完整流程还需计入 8 条轨迹、验收、GRPO 和检查点的总耗时。
 
-采集小快照保存已完成slot、题组选择与提交位置、采题器及RNG状态，并绑定当时的模型检查点。只有已经进入持久快照、官方结果和已消费调用指纹都一致的完整slot才复用；未结束的agent会话用新attempt身份和工作区重跑，不能续接任意中途工具状态。磁盘上有输出但尚未进入快照的结果不会被捡回当作完成，基础设施失败也不变成零奖励。
+## 输出与日志
 
-完整学习器检查点在old/reference全部冻结的首步前边界、每次optimizer step及批次状态边界提交，包含LoRA、Adam、scheduler、更新计数、当前批冻结概率、reuse进度和RNG，不复制冻结基座。首步前检查点不保存活动梯度；恢复时按记录的随机状态重算完整前缀梯度，沿用已冻结old/reference。半次梯度累积或未提交更新不能冒充已完成step。采集小快照与学习器大检查点分开；各状态流保留当前与上一代已提交快照，校验失败拒绝恢复，临时目录不会自动成为候选。完整调用及验收资产继续留在原隔离目录，不随检查点复制成一份官方训练数据。
+| 位置 | 用途 |
+| --- | --- |
+| `run_config.json`、`metrics.jsonl` | 配置、来源及运行事件 |
+| `reward_groups.jsonl`、`reward_summary.json` | 全部完整候选组的奖励、缺失原因、筛选与更新统计 |
+| `generation_metrics.jsonl`、`profiles/` | 生成与缓存指标、性能分析 |
+| `adapters/`、`recovery/` | 独立 LoRA 与完整续跑状态 |
 
-两份配置默认`run.max_worker_retries=1`：一个slot发生基础设施或消费确认故障时，最多额外尝试一次，只重试该slot；正常完整验收的失败不因此重试。该slot仍失败则整组不评分、不进入奖励分布或采题反馈，保留失败证据和已经完成的slot记录。单次采集会话累计`max_failed_groups_per_session=3`个耗尽重试的组后，停止新增选择，收尾其他已在飞组；有有效完整组就完成本批更新，没有则记录本批0步。若还有计划批次，保存下一批采集检查点并以退出码75暂停，显式`--resume`从下一批继续；已经达到`max_batches`则保存finished并正常结束，不追加批次或重开已结束的失败批次。
+只有消费确认且完成官方验收的轨迹才能训练。原始 token、trace、补丁和 JUnit 留在服务器；提交时仅取所选 adapter 的 `adapter_config.json` 与 `adapter_model.safetensors`，按官方 YAML 引用。
 
-请求状态分别记录`generated`、`delivered`、`consumed`：模型生成完不等于HTTP交付，HTTP写成功也不等于上层接收。每个逻辑LLM调用有独立`Idempotency-Key`，同调用的HTTP重试复用原键和完整请求体，重放原响应与工具ID；不同逻辑调用不会因文本相同而误去重。只有真实ADK成功解析最终消息、上层接收并把响应迭代器正常消费完，才向endpoint显式ACK；流式还要求原始OpenAI流的终帧及正常耗尽，避免LiteLLM在截断EOF后自动补`stop`造成误判。ACK只证明模型响应已被接收，不证明工具执行完成。进入训练仍须有完整任务轨迹、官方完整验收和消费确认；ACK持续失败即使被ADK转为agent错误，worker也会标为无效，不将其验收结果伪装成可训练奖励。
-
-奖励journal追加先flush与fsync，完成后才推进内存组记录；summary另作耐久原子替换。续跑在持独占锁时只能隔离未换行的中断末尾，先保存原始tail取证，再原子保留全部完整行；中间损坏或重复冲突仍拒绝。已提交组的相同证据可幂等重放，optimizer更新归属以恢复的学习器检查点为准，回退另有记录。
-
-手动CPU证据位于`results/local-recovery/2026-10-30/`：合成worker在21个采集边界中断后保留已提交slot与采题状态；真实TRL＋极小Gemma4在首步前、一步后、两步后恢复，LoRA/Adam最大差为0，scheduler与RNG一致。`results/local-delivery-ack-2026-10-30.json`记录真实ADK/LiteLLM/OpenAI SDK的重试、解析、断流与ACK边界，以及真实ADK Runner工具回合；`results/local-recovery-ledger-2026-10-30.json`补充journal耐久与尾部恢复。旧collection记录中的torn-tail限制由后一个记录对应修复解决，各记录保留当时源码指纹。以上没有使用官方题目、没有新增测试文件，也没有验证31B双卡恢复耗时或训练收益。
-
-后续入口联动记录中，[session_summary.json](../results/local-recovery/2026-10-30/session_summary.json)使用真实CPU训练器及合成worker，覆盖采集、冻结、step、adapter导出、下一批提交和finished恢复，LoRA/Adam/scheduler/RNG/sampler与连续执行一致，ledger不重复；还核对了失败阈值退出75后从下一批继续。[cli_summary.json](../results/local-recovery/2026-10-30/cli_summary.json)使用真实CLI与合成输入、假learner，核对省略配置路径的续跑、预算不重置、显式追加额度、超时清理及权重变化拒绝。[supervisor_summary.json](../results/local-recovery/2026-10-30/supervisor_summary.json)用真实继承锁FD的子进程和模拟进程登记核对父异常后的互斥、退出竞态、PID复用保护及子deadline不重复赠送启动前耗时；这些局部CPU记录仍不能替代实际31B进程与官方任务实验。
-
-## 取回分析日志
-
-在本机复用已认证的SSH会话执行，`--run` 可重复指定多次：
+在本机用可用 SSH 地址取回数值日志，具体参数见 [sync_experiment_logs.py](../scripts/sync_experiment_logs.py) 的 `--help`：
 
 ```bash
-python3 scripts/sync_experiment_logs.py \
-  --host root@connect.nma1.seetacloud.com --port 50248 \
-  --control-path /private/tmp/gemma4-autodl-ssh.sock \
-  --known-hosts /private/tmp/gemma4-autodl-known_hosts \
-  --run first-batch-008
+python3 scripts/sync_experiment_logs.py --host root@example.com --port 22 --run grpo-001
 ```
 
-默认写入已被Git忽略的 `results/autodl/`，包括学习器日志、配置、奖励与结果摘要、依赖版本、`reward_groups.jsonl`、`reward_summary.json`、`generation_metrics.jsonl`、profiler算子表与元数据，以及服务器端计算的调用token数、排队/生成耗时和行为logprob统计。原始调用token、worker日志、官方trace、补丁、JUnit、官方题目及权重不取回；较大的原始profiler trace也留在服务器。文件逐个原子替换；连接失败保留已取得的日志，只有完整同步后才更新带时间与哈希的 `sync_metadata.json`，不将其当作训练完成证明。
+将示例地址和端口替换为实际入口。同步默认写入 `results/autodl/`，不取回题目、原始调用、补丁或权重；日志取得成功不代表训练完成。

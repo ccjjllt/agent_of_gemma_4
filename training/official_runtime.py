@@ -2,9 +2,9 @@
 
 This module belongs in the separate Python 3.13 official runtime environment.
 It does not load a model or start a GPU service. The caller supplies an existing
-OpenAI-compatible endpoint and a unique rollout ID used as its API routing key.
+OpenAI-compatible endpoint, a public rollout ID and a private credential file.
 
-The subprocess backend adds a Linux UID boundary around model-executed commands.
+The subprocess backend uses separate Linux UIDs for agent and judge repository commands.
 It is not a replacement for a network-isolated Docker sandbox. Official task
 assets and judge outputs must remain inaccessible to the agent UID.
 """
@@ -117,6 +117,19 @@ def _private_root(path: Path, *, create: bool = False) -> None:
         raise PermissionError(f"Judge-owned directory must be root-owned and mode 0700: {path}")
 
 
+def _read_auth_token(path: Path, rollout_id: str) -> str:
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, "rb") as source:
+        info = os.fstat(source.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_size > 129
+                or stat.S_IMODE(info.st_mode) != 0o600):
+            raise PermissionError("Model credential must be a private, owner-controlled mode 0600 file")
+        token = source.read(129).decode("ascii").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token) or token == rollout_id:
+        raise ValueError("Model credential must be a private random token, not the public rollout ID")
+    return token
+
+
 def _drop_prefix(uid: int) -> list[str]:
     binary = shutil.which("setpriv")
     if not binary:
@@ -150,8 +163,9 @@ def _uid_processes(uid: int) -> list[int]:
 def _make_subprocess_manager(
     uid: int, timeout: int, sandbox_root: Path,
     baseline_python: Path = Path("/opt/gemma-sandbox-baseline/bin/python"),
+    *, judge_uid: int,
 ) -> Any:
-    """Reuse official path translation and timeouts, lowering only agent commands."""
+    """Keep official setup, then isolate each untrusted repository under its own UID."""
     import swegemma.sandbox.subprocess as backend
     from packaging.tags import sys_tags
     from packaging.utils import parse_wheel_filename
@@ -183,12 +197,13 @@ def _make_subprocess_manager(
         def __init__(self) -> None:
             super().__init__(timeout_seconds=timeout, base_dir=sandbox_root, system_site_packages=True)
             self.restricted: set[str] = set()
+            self.execution_uids: dict[str, int] = {}
             self.excluded_wheels: set[str] = set()
             self.baseline_packages = baseline_info["packages"]
 
         def start(self) -> str:
-            # The judge parent stays private throughout setup/verification.
-            # Only the agent phase temporarily receives traverse permission.
+            # Setup is private; a sandbox's distinct UID receives traverse
+            # permission only after its ownership boundary is established.
             sandbox_root.chmod(0o700)
             sandbox_id = super().start()
             paths = self._sandboxes[sandbox_id]
@@ -212,13 +227,53 @@ def _make_subprocess_manager(
                     script.chmod(0o755)
             return sandbox_id
 
-        def restrict_agent(self, sandbox_id: str) -> None:
+        def _restrict(self, sandbox_id: str, execution_uid: int) -> None:
             with self._lock:
+                if sandbox_id in self.execution_uids:
+                    if self.execution_uids[sandbox_id] != execution_uid:
+                        raise RuntimeError("An agent sandbox cannot become a judge sandbox")
+                    return
                 root = self._sandboxes[sandbox_id]["root"]
-                _chown_tree(root, uid)
+                _chown_tree(root, execution_uid)
                 root.chmod(0o700)
-                self.restricted.add(sandbox_id)
+                self.execution_uids[sandbox_id] = execution_uid
                 sandbox_root.chmod(0o711)
+
+        def restrict_agent(self, sandbox_id: str) -> None:
+            self._restrict(sandbox_id, uid)
+            self.restricted.add(sandbox_id)
+
+        def restrict_judge(self, sandbox_id: str) -> None:
+            self._restrict(sandbox_id, judge_uid)
+
+        def exec(self, sandbox_id: str, command: str, *, timeout: int | None = None) -> Any:
+            if sandbox_id not in self.execution_uids:
+                return super().exec(sandbox_id, command, timeout=timeout)
+            with self._lock:
+                paths = dict(self._sandboxes[sandbox_id])
+            # Match the pinned backend's virtual paths without its root-side
+            # mkdir or global wheel fallback after the sandbox becomes writable
+            # by repository code. Even its venv/bin can now be a hostile symlink.
+            root = str(paths["root"])
+            sentinel = "__SWEGEMMA_SANDBOX_ROOT__"
+            translated = command.replace(root, sentinel)
+            translated = re.sub(r"(?<![\w.-])/(?:\.\.?/)+(tmp|workspace|usr/local/bin|wheels)(?![\w.-])",
+                                r"/\1", translated)
+            for virtual, actual in (("tmp", paths["tmp"]), ("workspace", paths["workspace"]),
+                                    ("usr/local/bin", paths["venv"] / "bin"), ("wheels", paths["wheels"])):
+                translated = re.sub(r"(?<![\w.-])/" + virtual + r"(?![\w.-])", str(actual), translated)
+            translated = translated.replace(sentinel, root)
+            env = backend.build_sanitized_env(
+                work_dir=paths["workspace"], tmp_dir=paths["tmp"], extra_env={
+                    "VIRTUAL_ENV": str(paths["venv"]),
+                    "PATH": f"{paths['venv'] / 'bin'}:{Path(sys.executable).parent}:{os.environ.get('PATH', '/usr/bin:/bin')}",
+                    "PYTHONPATH": str(paths["workspace"]),
+                },
+            )
+            return backend.execute_subprocess_command(
+                command=["/bin/bash", "-c", translated], cwd=paths["workspace"], env=env,
+                timeout=timeout if timeout is not None else self.timeout_seconds, shell=False,
+            )
 
         def _agent_path(self, sandbox_id: str, raw: str) -> Path:
             with self._lock:
@@ -238,11 +293,11 @@ def _make_subprocess_manager(
             if target is None:
                 target = root / raw.lstrip("/") if raw.startswith("/") else paths["workspace"] / raw
             if not target.resolve().is_relative_to(root):
-                raise PermissionError("Copied path escapes the agent sandbox.")
+                raise PermissionError("Copied path escapes the sandbox.")
             return target
 
         def _copy_to_sandbox(self, sandbox_id: str, src: Path, dst: str) -> None:
-            if sandbox_id not in self.restricted:
+            if sandbox_id not in self.execution_uids:
                 if src.is_dir() and dst.rstrip("/") == "/wheels":
                     # The upstream directory copy nests wheels/wheels. Keep
                     # the expected flat directory, with only this interpreter's
@@ -258,18 +313,19 @@ def _make_subprocess_manager(
                     return
                 return super()._copy_to_sandbox(sandbox_id, src, dst)
             if not src.is_file():
-                raise ValueError("Agent-phase file transfer expects a single file.")
+                raise ValueError("Unprivileged file transfer expects a single file.")
+            execution_uid = self.execution_uids[sandbox_id]
             target = self._agent_path(sandbox_id, dst)
             if dst.endswith("/") or target.is_dir():
                 target = target / src.name
-            # Root never writes through agent-controlled symlinks. The final
-            # filesystem operation runs as the agent, also removing repeated
+            # Root never writes through repository-controlled symlinks. The final
+            # filesystem operation runs as that sandbox's UID, avoiding repeated
             # whole-repository ownership walks on every write_file invocation.
             with tempfile.TemporaryDirectory(prefix="transfer_", dir=sandbox_root) as folder:
                 transfer = Path(folder)
                 payload = transfer / "payload"
                 shutil.copy2(src, payload)
-                _chown_tree(transfer, uid)
+                _chown_tree(transfer, execution_uid)
                 with self._lock:
                     workspace = self._sandboxes[sandbox_id]["workspace"]
                     relative_payload = os.path.relpath(payload, workspace)
@@ -281,15 +337,16 @@ def _make_subprocess_manager(
                 )
                 result = self.exec(sandbox_id, command)
                 if result.exit_code:
-                    raise OSError(f"Agent file write failed: {result.stderr or result.stdout}")
+                    raise OSError(f"Sandbox file write failed: {result.stderr or result.stdout}")
 
         def _copy_from_sandbox(self, sandbox_id: str, src: str, dst: Path) -> None:
-            if sandbox_id not in self.restricted:
+            if sandbox_id not in self.execution_uids:
                 return super()._copy_from_sandbox(sandbox_id, src, dst)
+            execution_uid = self.execution_uids[sandbox_id]
             source = self._agent_path(sandbox_id, src)
             with tempfile.TemporaryDirectory(prefix="transfer_", dir=sandbox_root) as folder:
                 transfer = Path(folder)
-                os.chown(transfer, uid, uid)
+                os.chown(transfer, execution_uid, execution_uid)
                 payload = transfer / "payload"
                 with self._lock:
                     workspace = self._sandboxes[sandbox_id]["workspace"]
@@ -297,30 +354,32 @@ def _make_subprocess_manager(
                     relative_source = os.path.relpath(source, workspace)
                 result = self.exec(sandbox_id, f"cp -- {shlex.quote(relative_source)} {shlex.quote(relative_payload)}")
                 if result.exit_code:
-                    raise OSError(f"Agent file read failed: {result.stderr or result.stdout}")
+                    raise OSError(f"Sandbox file read failed: {result.stderr or result.stdout}")
                 # Open the copied file without following a last-moment symlink
                 # swap by an agent background process. Its parent is created
                 # beneath a root-owned, non-writable directory.
                 descriptor = os.open(payload, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
                 with os.fdopen(descriptor, "rb") as incoming:
                     info = os.fstat(incoming.fileno())
-                    if not stat.S_ISREG(info.st_mode) or info.st_uid != uid:
-                        raise PermissionError("Unexpected agent transfer file.")
+                    if not stat.S_ISREG(info.st_mode) or info.st_uid != execution_uid:
+                        raise PermissionError("Unexpected sandbox transfer file.")
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     with dst.open("wb") as outgoing:
                         shutil.copyfileobj(incoming, outgoing)
 
         def stop(self, sandbox_id: str) -> None:
-            if sandbox_id in self.restricted:
+            execution_uid = self.execution_uids.get(sandbox_id)
+            if execution_uid is not None:
                 sandbox_root.chmod(0o700)
                 # Commands may spawn a detached process beyond the official
                 # per-command process group. This UID was unused on entry.
-                for pid in _uid_processes(uid):
+                for pid in _uid_processes(execution_uid):
                     try:
                         os.kill(pid, signal.SIGKILL)
                     except ProcessLookupError:
                         pass
             self.restricted.discard(sandbox_id)
+            self.execution_uids.pop(sandbox_id, None)
             super().stop(sandbox_id)
 
     manager = SubprocessManager()
@@ -328,15 +387,14 @@ def _make_subprocess_manager(
     def execute_with_uid(*args: Any, **kwargs: Any) -> Any:
         cwd = Path(kwargs["cwd"])
         with manager._lock:
-            restricted = any(
-                sid in manager.restricted and cwd == paths["workspace"]
+            execution_uid = next((manager.execution_uids[sid]
                 for sid, paths in manager._sandboxes.items()
-            )
-        if restricted:
+                if sid in manager.execution_uids and cwd == paths["workspace"]), None)
+        if execution_uid is not None:
             command = kwargs.get("command")
             if not isinstance(command, list) or kwargs.get("shell", False):
                 raise RuntimeError("Official subprocess execution API changed; expected an argv list.")
-            kwargs["command"] = _drop_prefix(uid) + command
+            kwargs["command"] = _drop_prefix(execution_uid) + command
             # The official helper already sanitizes its environment. Apply an
             # explicit second allowlist at our privilege boundary so a future
             # harness change cannot leak Kaggle/HF/API credentials to tools.
@@ -346,7 +404,7 @@ def _make_subprocess_manager(
                 "PYTHONPATH", "VIRTUAL_ENV", "PYTHONSAFEPATH",
             }
             kwargs["env"] = {key: value for key, value in kwargs["env"].items() if key in allowed}
-            kwargs["env"].update({"CUDA_VISIBLE_DEVICES": "", "USER": str(uid), "LOGNAME": str(uid)})
+            kwargs["env"].update({"CUDA_VISIBLE_DEVICES": "", "USER": str(execution_uid), "LOGNAME": str(execution_uid)})
         return original_execute(*args, **kwargs)
 
     # Worker processes are single-rollout and own this module instance. No
@@ -383,6 +441,12 @@ def _install_subprocess_dependency_setup(manager: Any) -> Any:
             if wheel_source is None:
                 raise setup.ContainerSetupError("The original official task wheel directory is missing.")
             manager.copy_to(container_id, wheel_source, "/wheels")
+        if container_id in manager.execution_uids:
+            # The original source remains under the private public-data mount.
+            # Only this helper, not tasks/patches, is staged for the judge UID.
+            staged = f"/tmp/_official_setup_{os.getpid()}.py"
+            manager.copy_to(container_id, source, staged)
+            source = paths["tmp"] / Path(staged).name
         # Load the original file unchanged. Adapt its two /wheels bindings and
         # explicit workspace argument; no global host path or shared venv is
         # modified. New venvs need its full dependency discovery, not fast-path.
@@ -449,20 +513,23 @@ if failures:
     return restore
 
 
-def _check_uid_access(uid: int, data_root: Path, workspace: Path, sandbox_root: Path) -> None:
+def _check_uid_access(uid: int, data_root: Path, workspace: Path, sandbox_root: Path, *, judge_uid: int) -> None:
     if sys.platform != "linux" or os.geteuid() != 0:
         raise RuntimeError("UID-isolated subprocess execution requires a Linux root judge process.")
-    if uid < 10000 or uid >= 2**31:
-        raise ValueError("Use a dedicated unprivileged agent UID in [10000, 2^31).")
+    if judge_uid == uid:
+        raise ValueError("Agent and judge must use different unprivileged UIDs")
     import pwd
-    try:
-        pwd.getpwuid(uid)
-    except KeyError:
-        pass
-    else:
-        raise ValueError("The agent UID is already assigned to a host account; choose an unused UID.")
-    if _uid_processes(uid):
-        raise ValueError("The agent UID already has running processes; choose an unused UID.")
+    for role, value in (("agent", uid), ("judge", judge_uid)):
+        if type(value) is not int or value < 10000 or value >= 2**31:
+            raise ValueError(f"Use a dedicated unprivileged {role} UID in [10000, 2^31).")
+        try:
+            pwd.getpwuid(value)
+        except KeyError:
+            pass
+        else:
+            raise ValueError(f"The {role} UID is assigned to a host account; choose an unused UID.")
+        if _uid_processes(value):
+            raise ValueError(f"The {role} UID has running processes; choose an unused UID.")
     _private_root(data_root)
     _private_root(workspace, create=True)
     sandbox_root.mkdir(parents=True, exist_ok=True, mode=0o711)
@@ -472,18 +539,19 @@ def _check_uid_access(uid: int, data_root: Path, workspace: Path, sandbox_root: 
     sandbox_root.chmod(0o711)
     # Check actual permissions under the destination UID without reading any
     # task content; /opt runtime installations are normally traversable.
-    probe = subprocess.run(
-        _drop_prefix(uid) + [sys.executable, "-c",
-            "import os,sys;sys.exit(0 if not os.access(sys.argv[1],os.R_OK) "
-            "and not os.access(sys.argv[2],os.R_OK) and os.access(sys.argv[3],os.X_OK) else 1)",
-            str(data_root / "tasks.jsonl"), str(workspace), str(sandbox_root)],
-        check=False, capture_output=True, text=True, timeout=15,
-    )
-    if probe.returncode:
-        raise PermissionError(
-            "Agent UID isolation could not be established. Keep official data and judge outputs "
-            "root-owned mode 0700; install the official Python runtime at a traversable path such as /opt/gemma-runtime."
+    for role, value in (("agent", uid), ("judge", judge_uid)):
+        probe = subprocess.run(
+            _drop_prefix(value) + [sys.executable, "-I", "-c",
+                "import os,sys;sys.exit(0 if not os.access(sys.argv[1],os.R_OK) "
+                "and not os.access(sys.argv[2],os.R_OK) and os.access(sys.argv[3],os.X_OK) else 1)",
+                str(data_root / "tasks.jsonl"), str(workspace), str(sandbox_root)],
+            check=False, capture_output=True, text=True, timeout=15,
         )
+        if probe.returncode:
+            raise PermissionError(
+                f"{role.capitalize()} UID isolation could not be established. Keep official data and judge outputs "
+                "root-owned mode 0700; install the official Python runtime at a traversable path such as /opt/gemma-runtime."
+            )
 
 
 def _evaluation_settings(submission: Path, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -517,7 +585,7 @@ def _evaluation_settings(submission: Path, overrides: dict[str, Any] | None = No
     return settings
 
 
-def _capture_final_verification(task: Any) -> tuple[dict[str, Any], Any]:
+def _capture_final_verification(task: Any, manager: Any = None) -> tuple[dict[str, Any], Any]:
     """Read the final judge JUnit before its sandbox is destroyed.
 
     The official verifier itself retains only a binary verdict and reads XML
@@ -532,6 +600,14 @@ def _capture_final_verification(task: Any) -> tuple[dict[str, Any], Any]:
         from rewards import junit_reward_features
 
     original = verification.sandbox_exec
+    original_apply = verification.apply_patch_in_container
+
+    def restricted_apply(docker: Any, sandbox_id: str, *args: Any, **kwargs: Any) -> Any:
+        if manager is not None and docker is manager:
+            # The verifier reruns pip/editable setup after applying model code.
+            # Lower privileges before the first patch, not merely before pytest.
+            manager.restrict_judge(sandbox_id)
+        return original_apply(docker, sandbox_id, *args, **kwargs)
 
     def missing_features(reason):
         # Expected requirement counts are judge metadata even when the XML
@@ -557,11 +633,13 @@ def _capture_final_verification(task: Any) -> tuple[dict[str, Any], Any]:
     captured: dict[str, Any] = {"reward_features": missing_features("no_completed_pytest_capture")}
 
     async def observed(docker: Any, sandbox_id: str, command: str, *args: Any, **kwargs: Any) -> Any:
-        started = time.monotonic()
-        output = await original(docker, sandbox_id, command, *args, **kwargs)
         parts = shlex.split(command) if isinstance(command, str) else []
         is_pytest = any(parts[index:index + 2] == ["-m", "pytest"] for index in range(len(parts) - 1))
         reports = [part.split("=", 1)[1] for part in parts if part.startswith("--junitxml=")]
+        if is_pytest and manager is not None and docker is manager:
+            manager.restrict_judge(sandbox_id)  # Also covers an empty effective model/test patch.
+        started = time.monotonic()
+        output = await original(docker, sandbox_id, command, *args, **kwargs)
         if is_pytest and len(reports) == 1 and re.fullmatch(r"/tmp/_swegemma_junit_[a-f0-9]+\.xml", reports[0]):
             captured.update({"pytest_exit_code": output.exit_code,
                              "verification_duration_seconds": time.monotonic() - started})
@@ -580,9 +658,11 @@ def _capture_final_verification(task: Any) -> tuple[dict[str, Any], Any]:
         return output
 
     verification.sandbox_exec = observed
+    verification.apply_patch_in_container = restricted_apply
 
     def restore() -> None:
         verification.sandbox_exec = original
+        verification.apply_patch_in_container = original_apply
 
     return captured, restore
 
@@ -627,6 +707,16 @@ def _training_submission(source: Path, destination: Path) -> Path:
 
 
 async def run_task(args: argparse.Namespace) -> dict[str, Any]:
+    api_key = _read_auth_token(args.auth_token_file, args.rollout_id)
+    try:
+        return await _run_task(args, api_key)
+    finally:
+        for name in ("OPENAI_API_KEY", "LOCAL_API_KEY", "LITELLM_API_KEY"):
+            if os.environ.get(name) == api_key:
+                os.environ.pop(name, None)
+
+
+async def _run_task(args: argparse.Namespace, api_key: str) -> dict[str, Any]:
     started = time.monotonic()
     data_root = _public_path(args.data_root)
     tasks_path = _public_path(data_root / "tasks.jsonl")
@@ -634,7 +724,7 @@ async def run_task(args: argparse.Namespace) -> dict[str, Any]:
     workspace = args.workspace.resolve()
     workspace.mkdir(parents=True, exist_ok=True, mode=0o700)
     if args.sandbox == "subprocess":
-        _check_uid_access(args.agent_uid, data_root, workspace, args.sandbox_root)
+        _check_uid_access(args.agent_uid, data_root, workspace, args.sandbox_root, judge_uid=args.judge_uid)
     submission = _training_submission(source_submission, workspace / "runtime_submission")
     endpoint = urlsplit(args.endpoint)
     if endpoint.scheme not in {"http", "https"} or not endpoint.netloc or endpoint.username or endpoint.password:
@@ -646,9 +736,9 @@ async def run_task(args: argparse.Namespace) -> dict[str, Any]:
         "OPENAI_BASE_URL": args.endpoint.rstrip("/"),
         "LOCAL_INFERENCE_URL": args.endpoint.rstrip("/"),
         "LITELLM_API_BASE": args.endpoint.rstrip("/"),
-        "OPENAI_API_KEY": args.rollout_id,
-        "LOCAL_API_KEY": args.rollout_id,
-        "LITELLM_API_KEY": args.rollout_id,
+        "OPENAI_API_KEY": api_key,
+        "LOCAL_API_KEY": api_key,
+        "LITELLM_API_KEY": api_key,
         "LITELLM_MODE": "PRODUCTION",
         "LITELLM_LOCAL_MODEL_COST_MAP": "True",
         "LITELLM_TELEMETRY": "False",
@@ -722,14 +812,16 @@ async def run_task(args: argparse.Namespace) -> dict[str, Any]:
 
     evaluator = PublicOnlyEvaluator(config)
     session_clock = SessionClock(args.endpoint, args.rollout_id, mode=args.session_clock,
-                                 poll_seconds=args.queue_timing_poll_seconds)
+                                 poll_seconds=args.queue_timing_poll_seconds, api_key=api_key)
     context_class = timed_context_class(SwegemmaContext, session_clock)
+    manager = None
     if args.sandbox == "subprocess":
         # Rollout IDs repeat across fresh learner runs; allocate a private
         # directory per attempt instead of colliding with a prior failed run.
         private_sandboxes = Path(tempfile.mkdtemp(prefix=args.rollout_id + "-", dir=args.sandbox_root))
         manager = _make_subprocess_manager(
             args.agent_uid, settings["timeout_seconds"], private_sandboxes, args.sandbox_baseline_python,
+            judge_uid=args.judge_uid,
         )
         evaluator.sandbox = evaluator.docker = manager
 
@@ -737,7 +829,7 @@ async def run_task(args: argparse.Namespace) -> dict[str, Any]:
             def create_tools(self) -> dict[str, Any]:
                 # Official setup is complete here; every subsequent shell/skill
                 # command in this sandbox runs under the agent UID. The judge
-                # starts a separate, unrestricted sandbox after this one stops.
+                # starts a fresh sandbox with its own independent UID.
                 manager.restrict_agent(self.container_id)
                 return super().create_tools()
 
@@ -757,8 +849,8 @@ async def run_task(args: argparse.Namespace) -> dict[str, Any]:
     )
     bind_timed_runner(evaluator, context, session_clock)
     delivery = install_delivery_tracking(args.endpoint, args.rollout_id, workspace / "model_delivery.jsonl",
-                                         session_clock=session_clock)
-    captured, restore_verification = _capture_final_verification(task)
+                                         session_clock=session_clock, api_key=api_key)
+    captured, restore_verification = _capture_final_verification(task, manager)
     delivery_error = None
     timing_error = None
     try:
@@ -861,6 +953,7 @@ async def run_task(args: argparse.Namespace) -> dict[str, Any]:
             ],
             "sandbox": args.sandbox,
             "agent_uid": args.agent_uid if args.sandbox == "subprocess" else None,
+            "judge_uid": args.judge_uid if args.sandbox == "subprocess" else None,
             "subprocess_dependencies": {
                 "baseline_python": str(args.sandbox_baseline_python),
                 "baseline_packages": evaluator.docker.baseline_packages,
@@ -886,10 +979,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--submission-dir", type=Path, required=True)
     parser.add_argument("--endpoint", required=True, help="Existing OpenAI-compatible API base, including /v1.")
     parser.add_argument("--rollout-id", required=True)
+    parser.add_argument("--auth-token-file", type=Path, required=True)
+    parser.add_argument("--parent-pid", type=int, help="Terminate with the trusted collector process on Linux.")
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--result-file", type=Path, required=True)
     parser.add_argument("--sandbox", choices=("subprocess", "docker"), default="subprocess")
     parser.add_argument("--agent-uid", type=int, default=61000)
+    parser.add_argument("--judge-uid", type=int, help="Distinct unused low-privilege UID for the verification repository.")
     parser.add_argument("--sandbox-baseline-python", type=Path, default=Path("/opt/gemma-sandbox-baseline/bin/python"))
     parser.add_argument("--evaluation-overrides-json", dest="evaluation_overrides", type=json.loads, default={},
                         help="Explicit participant evaluation-budget overrides; leaves official files unchanged.")
@@ -899,6 +995,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="Live queue-receipt polling interval, between 0.02 and 1 second.")
     parser.add_argument("--sandbox-root", type=Path, default=Path("/tmp/gemma-agent-sandboxes"))
     args = parser.parse_args(argv)
+    if args.sandbox == "subprocess" and args.judge_uid is None:
+        parser.error("subprocess execution requires --judge-uid distinct from --agent-uid")
     if args.task_index is not None and args.task_index < 0:
         parser.error("task-index must be nonnegative")
     if not math.isfinite(args.queue_timing_poll_seconds) or not 0.02 <= args.queue_timing_poll_seconds <= 1.0:
@@ -909,6 +1007,12 @@ def main(argv: list[str] | None = None) -> int:
         raise KeyboardInterrupt("Official rollout termination requested")
     signal.signal(signal.SIGTERM, terminate)
     try:
+        if args.parent_pid is not None:
+            if __package__:
+                from .recovery import bind_parent_lifetime
+            else:
+                from recovery import bind_parent_lifetime
+            bind_parent_lifetime(args.parent_pid)
         result = asyncio.run(run_task(args))
     except (Exception, KeyboardInterrupt) as error:
         result = {

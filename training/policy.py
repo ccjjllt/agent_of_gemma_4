@@ -109,8 +109,8 @@ class Policy:
         self.targets = self._lora_targets(self.model, text_config)
         self.model = FastModel.get_peft_model(
             self.model,
-            r=int(config.get("lora_rank", 32)),
-            lora_alpha=int(config.get("lora_alpha", 64)),
+            r=int(config.get("lora_rank", 128)),
+            lora_alpha=int(config.get("lora_alpha", 256)),
             lora_dropout=0.0,
             bias="none",
             # Unsloth treats a scoped list as leaf names. An exact regex keeps
@@ -175,6 +175,12 @@ class Policy:
             "max_context": self.max_context,
             "targets": sorted(self.targets),
             "active_adapters": list(self.model.active_adapters),
+            "lora_layout": {name: {
+                "rank": item.r, "alpha": item.lora_alpha,
+                "use_rslora": bool(item.use_rslora),
+                "rank_pattern": dict(item.rank_pattern or {}),
+                "alpha_pattern": dict(item.alpha_pattern or {}),
+            } for name, item in self.model.peft_config.items()},
         }
 
     def export_adapter_state(self):
@@ -639,9 +645,43 @@ class Policy:
             return logprobs.detach().cpu().tolist()
 
     def save_adapter(self, path: str | Path):
+        """Export independent PEFT weights without changing the live learner.
+
+        By default export a BF16 copy in the submission format. Exact
+        optimizer/RNG continuation uses export_adapter_state(), whose tensors
+        retain their training precision; this export is never that checkpoint.
+        """
+        export_dtype = self.config.get("adapter_export_dtype", "bfloat16")
+        if export_dtype not in {"preserve", "bfloat16"}:
+            raise ValueError("adapter_export_dtype must be preserve or bfloat16")
+        parameters = dict(self.model.named_parameters())
+        if any(parameter.requires_grad and ".lora_" not in name for name, parameter in parameters.items()):
+            raise RuntimeError("A LoRA export cannot omit other trainable parameters")
+        adapter = {name: parameter for name, parameter in parameters.items() if ".lora_" in name}
+        if not adapter:
+            raise ValueError("No LoRA parameters are available for export")
+        tensors = {}
+        for name, parameter in adapter.items():
+            # Copy one adapter tensor at a time. Never materialize a CPU copy of
+            # the frozen 31B state dict or cast the training parameter in place.
+            value = parameter.detach().to(device="cpu", copy=True)
+            if export_dtype == "bfloat16":
+                value = value.to(dtype=self.torch.bfloat16)
+            if not bool(self.torch.isfinite(value).all()):
+                raise ValueError(f"Adapter export contains nonfinite values: {name}")
+            tensors[name] = value
         destination = Path(path)
         destination.mkdir(parents=True, exist_ok=True)
-        self.model.save_pretrained(str(destination), safe_serialization=True)
+        self.model.save_pretrained(str(destination), safe_serialization=True,
+                                   state_dict=tensors, save_embedding_layers=False)
+        from safetensors import safe_open
+
+        weights_path = destination / "adapter_model.safetensors"
+        with safe_open(str(weights_path), framework="pt", device="cpu") as saved:
+            serialized_dtypes = sorted({saved.get_slice(name).get_dtype() for name in saved.keys()})
+            serialized_tensor_count = len(saved.keys())
+        if export_dtype == "bfloat16" and serialized_dtypes != ["BF16"]:
+            raise ValueError("BF16 adapter export did not serialize every tensor as BF16")
         (destination / "training_base.json").write_text(json.dumps({
             "declared_model_source": self.config["model_name"],
             "declared_model_revision": self.config.get("model_revision"),
@@ -650,4 +690,20 @@ class Policy:
             "targets": self.targets,
             "max_context": self.max_context,
             "sampler": "temperature=1, top_p=1, top_k=0; no separate thinking cap",
+            "adapter_export": {
+                "requested_dtype": export_dtype,
+                "training_dtypes": sorted({str(parameter.dtype) for parameter in adapter.values()}),
+                "exported_dtypes": sorted({str(value.dtype) for value in tensors.values()}),
+                "tensor_count": len(tensors),
+                "parameter_count": sum(value.numel() for value in tensors.values()),
+                "training_tensor_bytes": sum(parameter.numel() * parameter.element_size()
+                                              for parameter in adapter.values()),
+                "exported_tensor_bytes": sum(value.numel() * value.element_size() for value in tensors.values()),
+                "serialized_dtypes": serialized_dtypes,
+                "serialized_tensor_count": serialized_tensor_count,
+                "serialized_file_bytes": weights_path.stat().st_size,
+                "precision_converted": any(tensors[name].dtype != parameter.dtype for name, parameter in adapter.items()),
+                "exact_training_checkpoint": False,
+                "resume_source": "Use the committed recovery checkpoint, not the submission adapter export",
+            },
         }, indent=2) + "\n")

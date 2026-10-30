@@ -12,6 +12,7 @@ import json
 import math
 import os
 import re
+import secrets
 import tempfile
 import threading
 import time
@@ -38,6 +39,7 @@ class PolicyEndpoint:
         self.condition = threading.Condition(self.lock)
         self.calls, self.errors = {}, {}
         self.active_ids, self._registered_ids, self._cancelled_rollouts = set(), set(), set()
+        self._auth_tokens, self._auth_identities = {}, {}
         self.collecting, self.policy_version = False, 0
         self._pending, self._barriers = deque(), deque()
         self._requests, self._record_locks = {}, {}
@@ -81,7 +83,8 @@ class PolicyEndpoint:
                 self.wfile.flush()
 
             def token(self):
-                return self.headers.get("Authorization", "").removeprefix("Bearer ")
+                value = self.headers.get("Authorization", "")
+                return value[7:] if value.startswith("Bearer ") else ""
 
             def read_json(self, *, required=True):
                 self.connection.settimeout(30)
@@ -109,36 +112,36 @@ class PolicyEndpoint:
                 timing = re.fullmatch(r"/v1/rollouts/([A-Za-z0-9][A-Za-z0-9_.-]{0,127})/timing", self.path)
                 if timing:
                     claimed = False
-                    token = self.token()
+                    identity = None
                     try:
-                        if timing[1] != token:
-                            raise PermissionError("Timing belongs to another rollout")
-                        parent._claim(token, generate=False)
+                        identity = parent._claim_authenticated(self.token(), generate=False)
                         claimed = True
-                        self.respond(200, parent.rollout_timing(token))
+                        if timing[1] != identity:
+                            raise PermissionError("Timing belongs to another rollout")
+                        self.respond(200, parent.rollout_timing(identity))
                     except Exception as error:
                         self.error_response(error)
                     finally:
                         if claimed:
-                            parent._release_handler(token)
+                            parent._release_handler(identity)
                     return
                 match = re.fullmatch(r"/v1/requests/([a-f0-9]{32})", self.path)
                 if not match:
                     self.respond(404, {"error": "Unknown endpoint"})
                     return
                 claimed = False
-                token = self.token()
+                identity = None
                 try:
-                    parent._claim(token, generate=False)
+                    identity = parent._claim_authenticated(self.token(), generate=False)
                     claimed = True
-                    row = parent.store.status(match[1], token, parent.policy_version)
+                    row = parent.store.status(match[1], identity, parent.policy_version)
                     self.respond(200, {"request_id": row["request_id"], "state": row["state"],
                                        "call_index": row["call_index"], "policy_version": row["policy_version"]})
                 except Exception as error:
                     self.error_response(error)
                 finally:
                     if claimed:
-                        parent._release_handler(token)
+                        parent._release_handler(identity)
 
             def error_response(self, error):
                 status = (401 if isinstance(error, PermissionError) else 404 if isinstance(error, KeyError)
@@ -151,29 +154,29 @@ class PolicyEndpoint:
                     pass
 
             def do_POST(self):
-                token, claimed = self.token(), False
+                identity, claimed = None, False
                 match = re.fullmatch(r"/v1/requests/([a-f0-9]{32})/(ack|cancel)", self.path)
                 key_cancel = re.fullmatch(r"/v1/requests/by-key/([A-Za-z0-9_.:-]{1,200})/cancel", self.path)
                 if self.path != "/v1/chat/completions" and not match and not key_cancel:
                     self.respond(404, {"error": "Unknown endpoint"})
                     return
                 try:
-                    parent._claim(token, generate=match is None and key_cancel is None)
+                    identity = parent._claim_authenticated(self.token(), generate=match is None and key_cancel is None)
                     claimed = True
                     request = self.read_json(required=match is None and key_cancel is None)
                     if key_cancel:
-                        self.respond(200, parent.cancel_by_key(token, key_cancel[1]))
+                        self.respond(200, parent.cancel_by_key(identity, key_cancel[1]))
                         return
                     if match:
                         if match[2] == "ack":
-                            row = parent.acknowledge(match[1], token)
+                            row = parent.acknowledge(match[1], identity)
                         else:
-                            row = parent.cancel_request(match[1], token, reason="client_cancelled")
+                            row = parent.cancel_request(match[1], identity, reason="client_cancelled")
                         self.respond(200, {"request_id": row["request_id"], "state": row["state"]})
                         return
                     started = time.perf_counter()
                     prepared = parent.prepare(request)
-                    item = parent.enqueue(token, prepared, request=request,
+                    item = parent.enqueue(identity, prepared, request=request,
                                           idempotency_key=self.headers.get("Idempotency-Key"),
                                           preparation_elapsed_seconds=time.perf_counter() - started)
                     while True:
@@ -183,7 +186,7 @@ class PolicyEndpoint:
                         except FutureTimeout:
                             if parent.policy.abort_generation.is_set():
                                 parent._fail(RuntimeError("Run cancelled while waiting for generation"))
-                    row = parent.store.get(item["request_id"], token, parent.policy_version)
+                    row = parent.store.get(item["request_id"], identity, parent.policy_version)
                     if row["state"] in {"cancelled", "failed"}:
                         raise parent._request_exception(row)
                     try:
@@ -197,7 +200,7 @@ class PolicyEndpoint:
                     self.error_response(error)
                 finally:
                     if claimed:
-                        parent._release_handler(token)
+                        parent._release_handler(identity)
 
         try:
             self.server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
@@ -215,6 +218,34 @@ class PolicyEndpoint:
     def fatal_error(self):
         with self.condition:
             return self._fatal_error
+
+    def _authenticate(self, token):
+        """Resolve a private credential; public rollout names are never keys."""
+        with self.condition:
+            identity = self._auth_identities.get(token)
+            if identity is None or self._closed:
+                raise PermissionError("Unknown or expired rollout credential")
+            return identity
+
+    def rollout_token(self, identity):
+        """Trusted collector access only; never serialize this into run logs."""
+        with self.condition:
+            if identity not in self.active_ids or identity in self._cancelled_rollouts:
+                raise PermissionError("Rollout no longer has an active credential")
+            return self._auth_tokens[identity]
+
+    def _claim_authenticated(self, token, *, generate):
+        # Resolve and register the handler under one lock, so release/end
+        # cannot revoke a credential between authentication and accounting.
+        with self.condition:
+            identity = self._authenticate(token)
+            self._claim(identity, generate=generate)
+            return identity
+
+    def _revoke_token_locked(self, identity):
+        token = self._auth_tokens.pop(identity, None)
+        if token is not None:
+            self._auth_identities.pop(token, None)
 
     def _timing_change_locked(self, item, phase, now=None):
         """Track queue-only wall intervals, never credit overlapping service."""
@@ -376,6 +407,8 @@ class PolicyEndpoint:
         self.end(raise_errors=False)
         with self.condition:
             self._closed = True
+            self._auth_tokens.clear()
+            self._auth_identities.clear()
         if self._http_started:
             self.server.shutdown()
             self.thread.join()
@@ -390,6 +423,8 @@ class PolicyEndpoint:
                 raise RuntimeError("The enclosing run has cancelled generation")
             self.calls, self.errors = {}, {}
             self.active_ids, self._registered_ids, self._cancelled_rollouts = set(), set(), set()
+            self._auth_tokens.clear()
+            self._auth_identities.clear()
             self._pending.clear()
             self._requests.clear()
             self._barriers.clear()
@@ -432,6 +467,11 @@ class PolicyEndpoint:
                 raise ValueError("Unsafe rollout identity")
             self._registered_ids.update(identities)
             for identity in identities:
+                token = secrets.token_urlsafe(32)
+                while token == identity or token in self._auth_identities:
+                    token = secrets.token_urlsafe(32)
+                self._auth_tokens[identity] = token
+                self._auth_identities[token] = identity
                 self.calls[identity], self.errors[identity] = [], []
                 self._record_locks[identity] = threading.Lock()
                 self._timings[identity] = {"queued": set(), "serving": set(), "intervals": [],
@@ -478,6 +518,8 @@ class PolicyEndpoint:
             if self._generation_thread is worker:
                 self._generation_thread = None
             self.active_ids.clear()
+            self._auth_tokens.clear()
+            self._auth_identities.clear()
             self._requests.clear()
             self._pending.clear()
             self._storage_thread = None
@@ -655,6 +697,8 @@ class PolicyEndpoint:
         with self.condition:
             self._cancelled_rollouts.update(identities)
             self.active_ids.difference_update(identities)
+            for identity in identities:
+                self._revoke_token_locked(identity)
             version = self.policy_version
             selected = [item for item in self._requests.values() if item["rollout_id"] in identities]
             selected_ids = {item["request_id"] for item in selected}

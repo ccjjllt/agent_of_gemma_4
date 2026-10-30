@@ -25,6 +25,7 @@ import time
 import tomllib
 
 from .generation import GenerationEngine
+from .recovery import bind_parent_lifetime as _bind_parent_lifetime
 
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -535,27 +536,6 @@ def _known_progress(output):
             "partial_pass_tokens_not_counted": True}
 
 
-def _bind_parent_lifetime(parent_pid):
-    """Do not leave a GPU replay alive if its CPU supervisor disappears.
-
-    Linux PR_SET_PDEATHSIG is cleared by fork, so install it in the exec'd
-    learner and recheck ppid afterwards to close the parent-exit race.
-    https://man7.org/linux/man-pages/man2/PR_SET_PDEATHSIG.2const.html
-    """
-    import ctypes
-
-    if type(parent_pid) is not int or parent_pid <= 1:
-        raise ValueError("Replay worker requires its supervisor PID")
-    libc = ctypes.CDLL(None, use_errno=True)
-    libc.prctl.argtypes = [ctypes.c_int, *([ctypes.c_ulong] * 4)]
-    libc.prctl.restype = ctypes.c_int
-    if libc.prctl(1, int(signal.SIGKILL), 0, 0, 0) != 0:  # PR_SET_PDEATHSIG
-        error = ctypes.get_errno()
-        raise OSError(error, os.strerror(error))
-    if os.getppid() != parent_pid:
-        raise RuntimeError("Replay supervisor exited before worker startup")
-
-
 def _deadline_watchdog(deadline_unix):
     """Enforce the inherited deadline before imports/model loading begin."""
     if deadline_unix is None or not math.isfinite(deadline_unix):
@@ -594,7 +574,7 @@ def _stop_replay(child):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, default=PROJECT / "configs/first_batch.toml")
+    parser.add_argument("--config", type=Path, default=PROJECT / "configs/a800_2x80.toml")
     parser.add_argument("--model-path", type=Path, required=True)
     parser.add_argument("--calls", type=Path, action="append", required=True)
     parser.add_argument("--max-calls", type=int, default=4)

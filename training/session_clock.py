@@ -13,6 +13,7 @@ import functools
 import hashlib
 import inspect
 import math
+import re
 import threading
 import textwrap
 import time
@@ -95,14 +96,18 @@ def _intersect(left, right):
 
 
 class SessionClock:
-    def __init__(self, endpoint, rollout_id, *, mode="queue_excluded", poll_seconds=0.2):
+    def __init__(self, endpoint, rollout_id, *, mode="queue_excluded", poll_seconds=0.2, api_key=None):
         if mode not in {"queue_excluded", "wall"}:
             raise ValueError("session_clock must be queue_excluded or wall")
         if not math.isfinite(poll_seconds) or not 0.02 <= poll_seconds <= 1.0:
             raise ValueError("Queue timing poll interval must be finite and between 0.02 and 1 second")
         if urlsplit(endpoint).hostname not in {"127.0.0.1", "localhost", "::1"}:
             raise ValueError("Queue accounting requires the same-host loopback endpoint and monotonic clock")
+        if (not isinstance(api_key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", api_key)
+                or api_key == rollout_id):
+            raise ValueError("Session timing requires a private rollout API key")
         self.endpoint, self.rollout_id = endpoint.rstrip("/"), rollout_id
+        self.api_key = api_key
         self.mode, self.poll_seconds = mode, float(poll_seconds)
         self.started = self.stopped = None
         self._lock = threading.RLock()
@@ -226,7 +231,7 @@ class SessionClock:
             requested = time.perf_counter()
             try:
                 response = await self._client.get(f"{self.endpoint}/rollouts/{self.rollout_id}/timing",
-                                                  headers={"Authorization": "Bearer " + self.rollout_id})
+                                                  headers={"Authorization": "Bearer " + self.api_key})
                 response.raise_for_status()
                 self.observe(response.json(), requested, time.perf_counter())
             except (httpx.HTTPError, ValueError, SessionTimingError) as error:

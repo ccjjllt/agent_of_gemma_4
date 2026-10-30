@@ -147,6 +147,13 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
             raise RuntimeError("Official rewards must arrive with completed external trajectories")
         return rewards
 
+    class OfficialTaskGRPOConfig(GRPOConfig):
+        @property
+        def place_model_on_device(self):
+            # Transformers exposes this integration hook as a property, not
+            # a constructor field. Preserve Policy's existing GPU placement.
+            return False
+
     class CohortCallback(TrainerCallback):
         def on_step_begin(self, args, state, control, **kwargs):
             if owner._pending_rng_state is not None:
@@ -195,7 +202,7 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
             )
             # beta=0 at construction prevents TRL from making a second reference
             # adapter. We supply frozen disabled-adapter probabilities ourselves.
-            args = GRPOConfig(
+            args = OfficialTaskGRPOConfig(
                 output_dir=str(output_dir),
                 per_device_train_batch_size=1,
                 gradient_accumulation_steps=1,
@@ -232,7 +239,6 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
                 logging_steps=1,
                 disable_tqdm=True,
                 seed=int(cfg.get("seed", 3407)),
-                place_model_on_device=False,
             )
             super().__init__(model=policy.model, args=args, reward_funcs=[environment_rewards],
                              train_dataset=Dataset.from_dict({"prompt": [""]}),
@@ -264,6 +270,18 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
             if isinstance(value, tuple):
                 return tuple(OfficialTaskGRPOTrainer._cpu_state(item) for item in value)
             return copy.deepcopy(value)
+
+        @staticmethod
+        def _clone_cpu_tensors(value):
+            if isinstance(value, torch.Tensor):
+                return value.detach().clone() if value.device.type == "cpu" else value
+            if isinstance(value, dict):
+                return {key: OfficialTaskGRPOTrainer._clone_cpu_tensors(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [OfficialTaskGRPOTrainer._clone_cpu_tensors(item) for item in value]
+            if isinstance(value, tuple):
+                return tuple(OfficialTaskGRPOTrainer._clone_cpu_tensors(item) for item in value)
+            return value
 
         def _checkpoint(self, phase):
             self._checkpoint_phase = phase
@@ -378,6 +396,12 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
             # saved param-group LR afterwards so it cannot reset resumed LR.
             if state.get("optimizer") is not None:
                 self.optimizer.load_state_dict(state["optimizer"])
+                # Adam retains CPU step tensors by identity even for CUDA
+                # parameters. Break their mmap backing so a tiny counter does
+                # not keep an entire pruned checkpoint file allocated. State
+                # already transferred to a GPU needs no further copy.
+                for parameter, values in self.optimizer.state.items():
+                    self.optimizer.state[parameter] = self._clone_cpu_tensors(values)
             if state.get("scheduler") is not None:
                 self.lr_scheduler.load_state_dict(state["scheduler"])
             self.completed_optimizer_steps = completed
@@ -587,12 +611,16 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
                     for call in trajectory["calls"]:
                         if self.policy.abort_generation.is_set():
                             raise RuntimeError("Run cancelled during GRPO gradient accumulation")
-                        if calibrating:
-                            self._reference_for_call(call)
                         logp = entropy = loss = loss_inputs = None
                         try:
-                            with self.compute_loss_context_manager():
+                            # The full-prefix scorer calls the decoder directly,
+                            # bypassing Accelerate's outer model.forward AMP
+                            # wrapper. Trainer's context is a no-op in the
+                            # pinned Transformers release; explicitly apply the
+                            # same compute precision to reference and learner.
+                            with self.accelerator.autocast(), self.compute_loss_context_manager():
                                 if calibrating:
+                                    self._reference_for_call(call)
                                     call["_first_gradient_rng"] = capture_rng_state(torch)
                                 elif local_step == 0:
                                     # Replay a frozen-before-step checkpoint

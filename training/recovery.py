@@ -9,9 +9,12 @@ from contextlib import contextmanager
 import hashlib
 import json
 import math
+import mmap
 import os
 from pathlib import Path
+import re
 import shutil
+import signal
 import tempfile
 import time
 import uuid
@@ -23,6 +26,26 @@ class WorkerAttemptError(RuntimeError):
 
 class CollectionInterrupted(RuntimeError):
     """Preserve this collection for a later explicitly budgeted continuation."""
+
+
+def bind_parent_lifetime(parent_pid):
+    """Linux child lifetime follows its trusted supervisor, including SIGKILL.
+
+    Install after exec and recheck ppid to cover a supervisor exiting before
+    prctl was armed. No model, data or accelerator imports are required.
+    """
+    import ctypes
+
+    if type(parent_pid) is not int or parent_pid <= 1:
+        raise ValueError("A worker requires its supervisor PID")
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.prctl.argtypes = [ctypes.c_int, *([ctypes.c_ulong] * 4)]
+    libc.prctl.restype = ctypes.c_int
+    if libc.prctl(1, int(signal.SIGKILL), 0, 0, 0) != 0:  # PR_SET_PDEATHSIG
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+    if os.getppid() != parent_pid:
+        raise RuntimeError("Supervisor exited before worker startup")
 
 
 def file_digest(path):
@@ -99,6 +122,56 @@ class CheckpointStore:
             raise ValueError("Unknown recovery stream")
         return self.root / (kind + "_latest.json")
 
+    def discard_uncommitted(self):
+        """Reclaim interrupted writes while the caller exclusively owns this run.
+
+        Rank-128 snapshots are large enough for abandoned staging files to
+        prevent the next save. Retain both committed generations; never promote
+        an uncommitted directory or touch a different source binding.
+        """
+        keep = set()
+        for kind in ("checkpoint", "collection"):
+            pointer = self._pointer(kind)
+            if not pointer.exists():
+                continue
+            manifest = json.loads(pointer.read_text())
+            identifier = manifest.get("id", "")
+            if (not isinstance(identifier, str)
+                    or not re.fullmatch(kind + r"-\d+-[0-9a-f]{12}", identifier)
+                    or manifest.get("binding") != self.binding
+                    or (self.root / identifier).is_symlink()
+                    or json.loads((self.root / identifier / "manifest.json").read_text()) != manifest):
+                raise ValueError("Cannot clean checkpoints with an invalid committed pointer")
+            keep.update((identifier, manifest.get("previous_id")))
+        discarded = []
+        for path in self.root.iterdir():
+            if not path.is_dir() or path.is_symlink() or path.name in keep:
+                continue
+            if path.name.startswith(".staging-"):
+                # SIGKILL can also leave atomic_json's temporary manifest.
+                if any((item.name not in {"state.pt", "manifest.json"}
+                        and not item.name.startswith(".commit-"))
+                       or item.is_symlink() or not item.is_file()
+                       for item in path.iterdir()):
+                    continue
+                metadata = path / "manifest.json"
+                if metadata.exists() and json.loads(metadata.read_text()).get("binding") != self.binding:
+                    continue
+            elif re.fullmatch(r"(?:checkpoint|collection)-\d+-[0-9a-f]{12}", path.name):
+                metadata = path / "manifest.json"
+                if not metadata.is_file():
+                    continue
+                manifest = json.loads(metadata.read_text())
+                if manifest.get("id") != path.name or manifest.get("binding") != self.binding:
+                    continue
+            else:
+                continue
+            shutil.rmtree(path)
+            discarded.append(path.name)
+        if discarded:
+            _sync_directory(self.root)
+        return discarded
+
     def save(self, kind, payload):
         pointer = self._pointer(kind)
         previous = json.loads(pointer.read_text())["id"] if pointer.exists() else None
@@ -136,7 +209,8 @@ class CheckpointStore:
             if path.name not in keep:
                 shutil.rmtree(path)
 
-    def load(self, kind):
+    def inspect(self, kind):
+        """Verify a committed file before model loading without materializing it."""
         pointer = self._pointer(kind)
         if not pointer.is_file():
             return None
@@ -154,7 +228,18 @@ class CheckpointStore:
         path = directory / "state.pt"
         if path.is_symlink() or path.stat().st_size != manifest["bytes"] or file_digest(path) != manifest["sha256"]:
             raise ValueError("Checkpoint payload checksum failed")
-        state = self.torch.load(path, map_location="cpu", weights_only=True)
+        return manifest
+
+    def load(self, kind):
+        manifest = self.inspect(kind)
+        if manifest is None:
+            return None
+        identifier = manifest["id"]
+        path = self.root / identifier / "state.pt"
+        # Large adapter/Adam states need not be copied wholesale into host RAM
+        # before restoration. Private mappings cannot mutate the saved file.
+        with self.torch.serialization.set_default_mmap_options(mmap.MAP_PRIVATE):
+            state = self.torch.load(path, map_location="cpu", weights_only=True, mmap=True)
         if state.get("schema_version") != 1 or state.get("binding") != self.binding:
             raise ValueError("Checkpoint payload binding is invalid")
         return identifier, state["payload"]

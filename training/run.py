@@ -24,7 +24,7 @@ from .endpoint import PolicyEndpoint
 from .curriculum import TaskSampler, load_tasks
 from .reward_ledger import RewardLedger
 from .recovery import (CheckpointStore, CollectionInterrupted, RunBudget, WorkerAttemptError,
-                       atomic_json, file_digest, run_lock, value_digest)
+                       atomic_json, bind_parent_lifetime, file_digest, run_lock, value_digest)
 
 PROJECT = Path(__file__).resolve().parents[1]
 
@@ -261,10 +261,20 @@ def run_learner(launch, run_dir):
         store = CheckpointStore(run_dir, torch, launch['source_binding'])
         # Reject malformed/mismatched state before allocating the model.
         if launch['resume']:
-            store.load('checkpoint')
+            store.inspect('checkpoint')
+            discarded = store.discard_uncommitted()
+            if discarded:
+                log('interrupted_checkpoint_writes_removed', generations=discarded)
         log('loading_policy', declared_model_revision=cfg['policy'].get('model_revision'),
             eligible_tasks=len(launch['training_tasks']), resume=launch['resume'])
         policy = Policy(cfg['policy'])
+        precision = {}
+        for parameter in policy.model.parameters():
+            group = 'trainable' if parameter.requires_grad else 'frozen'
+            item = precision.setdefault(group, {}).setdefault(str(parameter.dtype), {'parameters': 0, 'bytes': 0})
+            item['parameters'] += parameter.numel()
+            item['bytes'] += parameter.numel() * parameter.element_size()
+        log('policy_parameter_precision', populations=precision)
         endpoint = PolicyEndpoint(policy, run_dir, int(cfg['runtime'].get('port', 0)),
                                   generation_config=cfg.get('generation', {}))
         session = TrainingSession(
@@ -331,6 +341,7 @@ def main():
         launch = json.loads((run_dir / 'recovery' / 'launch.json').read_text())
         if launch['invocation_id'] != args._invocation_id:
             parser.error('The run launch record changed')
+        bind_parent_lifetime(launch.get('parent_pid'))
         signal.signal(signal.SIGTERM, terminate)
         return run_learner(launch, run_dir)
 
@@ -431,6 +442,7 @@ def main():
             invocation_id = secrets.token_hex(12)
             launch = {'recipe': cfg, 'training_tasks': tasks, 'data_root': str(data_root),
                       'submission_dir': str(submission), 'source_binding': binding, 'resume': args.resume,
+                      'parent_pid': os.getpid(),
                       'invocation_id': invocation_id, 'agent_uid_base': 100000 + secrets.randbelow(1000000),
                       'deadline_unix': time.time() + max(0.0, budget.remaining_seconds -
                                                         (time.monotonic() - budget.started))}
