@@ -11,6 +11,7 @@ import argparse
 from collections import deque
 import copy
 import hashlib
+import importlib.metadata
 import json
 import math
 import os
@@ -19,6 +20,7 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 import tomllib
 
@@ -139,6 +141,7 @@ def _old_serial_replay(policy, records, destination):
         for device in range(torch.cuda.device_count()):
             torch.cuda.reset_peak_memory_stats(device)
     probabilities, calls = {}, []
+    progress_write_seconds = 0.0
     all_started = time.perf_counter()
     for record in records:
         prompt, completion = record["prompt_ids"], record["completion_ids"]
@@ -191,15 +194,21 @@ def _old_serial_replay(policy, records, destination):
         calls.append({"id": record["id"], "prompt_tokens": len(prompt), "completion_tokens": len(completion),
                       "generation_elapsed_seconds": elapsed, "first_logits_seconds": observer.first_logits_seconds,
                       "tokens_per_second": len(completion) / elapsed})
+        write_started = time.perf_counter()
         _write(destination / "progress.json", {"completed_calls": len(calls),
                                                 "completed_tokens": sum(item["completion_tokens"] for item in calls),
                                                 "elapsed_seconds": time.perf_counter() - all_started})
-    elapsed = time.perf_counter() - all_started
+        progress_write_seconds += time.perf_counter() - write_started
+    wall_elapsed = time.perf_counter() - all_started
+    elapsed = max(0.0, wall_elapsed - progress_write_seconds)
     tokens = sum(item["completion_tokens"] for item in calls)
     return {
         "backend": "old_serial_hf_unsloth_generate", "batch_size_limit": 1,
         "profiled_pass": False, "calls": len(calls), "completion_tokens": tokens,
         "elapsed_seconds": elapsed, "tokens_per_second": tokens / elapsed,
+        "wall_seconds_including_progress_writes": wall_elapsed,
+        "progress_write_seconds_excluded": progress_write_seconds,
+        "timing_scope": "complete replay loop excluding progress-file writes; no final result-file write",
         "prefill_boundary_synchronization": True, "per_call": calls,
         "peak_memory_allocated_gib": [torch.cuda.max_memory_allocated(i) / 2**30
                                       for i in range(torch.cuda.device_count())] if torch.cuda.is_available() else [],
@@ -237,32 +246,27 @@ class _ReplayEngine(GenerationEngine):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.first_logits_seconds = {}
-        self._prefill_request = None
 
-    def _prefill(self, request):
-        self._prefill_request = request
-        try:
-            result = super()._prefill(request)
-            if request.request_id not in self.first_logits_seconds:
-                # Exact-prefix hits have no model forward; include cache access.
-                _synchronize(self.torch)
-                self.first_logits_seconds[request.request_id] = time.perf_counter() - request.started_at
-            return result
-        finally:
-            self._prefill_request = None
-
-    def _forward(self, ids, mask, positions, cache, phase):
-        result = super()._forward(ids, mask, positions, cache, phase)
-        if phase == "prefill":
-            # The extra prefill boundary sync makes this a readiness measurement,
-            # not CPU enqueue time. Ordinary decode steps still use the engine.
+    def _prefill(self, request, token_limit):
+        result = super()._prefill(request, token_limit)
+        if result[3] and request.request_id not in self.first_logits_seconds:
+            # Only the completed prompt produces logits. Intermediate chunks
+            # must not add a device synchronization or vocabulary projection.
+            # Exact-prefix hits have no forward; include their cache access.
             _synchronize(self.torch)
-            request = self._prefill_request
             self.first_logits_seconds[request.request_id] = time.perf_counter() - request.started_at
         return result
 
     def _sample(self, requests, logits, profiled):
         torch = self.torch
+        first_ready = [request for request in requests if request.request_id not in self.first_logits_seconds]
+        if first_ready:
+            # An identical-prompt follower receives its leader's ready logits
+            # without invoking _prefill itself. Include the final batch copy.
+            _synchronize(torch)
+            ready = time.perf_counter()
+            for request in first_ready:
+                self.first_logits_seconds[request.request_id] = ready - request.started_at
         with self.profiler.region("sample_logprobs"):
             log_distribution = torch.log_softmax(logits.float(), dim=-1)
             # Retain categorical-sampling cost, then discard its proposals. The
@@ -336,6 +340,14 @@ def _replay(policy, records, batch_size, generation_config, destination, *, prof
             "profiling_elapsed_seconds_not_for_throughput": elapsed if profiled else None,
             "prefill_boundary_synchronization": True,
             "prefix_cache": engine.prefixes.stats(),
+            "prefill_forward_tokens": engine.prefill_forward_tokens,
+            "prefill_chunks": engine.prefill_chunks,
+            "intermediate_prefill_head_skips": engine.intermediate_head_skips,
+            "deduplicated_prefill_requests": engine.deduplicated_prefill_requests,
+            "deduplicated_prefill_tokens": engine.deduplicated_prefill_tokens,
+            "full_kv_capacity_updates": dict(engine.kv_capacity_counters),
+            "scheduling": {key: config.get(key) for key in
+                           ("prefill_chunk_tokens", "max_prefill_tokens_per_step", "kv_capacity_increment")},
             "peak_memory_allocated_gib": [torch.cuda.max_memory_allocated(i) / 2**30
                                           for i in range(torch.cuda.device_count())] if torch.cuda.is_available() else [],
             "per_call": [{"id": record["id"], "prompt_tokens": len(record["prompt_ids"]),
@@ -378,6 +390,23 @@ def _probability_difference(reference, measured, atol, *, reference_description=
             "per_call": by_call}
 
 
+def _workload_plan(records, batch_sizes, profiled):
+    tokens = sum(len(record["completion_ids"]) for record in records)
+    first = len(records[0]["completion_ids"])
+    new_passes = len(batch_sizes) * (2 if profiled else 1)
+    return {"complete_calls": len(records), "completion_tokens_per_full_pass": tokens,
+            "old_warmup_tokens": first, "old_serial_pass_tokens": tokens,
+            "tokens_before_first_new_engine_pass": first + tokens,
+            "new_warmup_tokens": first, "new_full_passes": new_passes,
+            "planned_total_completion_tokens": 2 * first + (1 + new_passes) * tokens,
+            "prompt_tokens_per_full_pass_before_reuse": sum(len(record["prompt_ids"]) for record in records),
+            "selection_order": "source-major, then line order; early sources can fill max_calls",
+            "arrival_model": "all complete calls ready at time zero; original agent dependencies are not replayed",
+            "queue_wait_interpretation": "synthetic saturation queue, not observed agent-session waiting",
+            "time_estimate": None,
+            "note": "Counts include warmups and optional profile passes, not model loading, compilation or prefill time"}
+
+
 def _worker(args, cfg):
     worker_started = time.monotonic()
     output = args.output_dir.resolve(strict=True)
@@ -397,6 +426,8 @@ def _worker(args, cfg):
     manifest = {
         "experiment": "complete-call teacher-forced generation replay", "sources": sources,
         "config_path": str(args.config.resolve()), "config_sha256": _sha256(args.config),
+        "implementation_sha256": {name: _sha256(PROJECT / "training" / name) for name in
+                                  ("profile_generation.py", "generation.py", "kv_cache.py", "policy.py", "profiling.py")},
         "model_path": str(model_path), "declared_model_name": model_config.get("model_name"),
         "declared_model_revision": model_config.get("model_revision"), "model_metadata_sha256": metadata,
         "response_template_metadata": response_template_metadata,
@@ -404,6 +435,8 @@ def _worker(args, cfg):
         "batch_sizes": args.batch_sizes, "walltime_seconds": args.walltime_seconds,
         "prefix_cache_enabled": args.prefix_cache, "separate_profiled_passes": args.profile,
         "historical_behavior_logprobs_used": False,
+        "workload_plan": _workload_plan(records, args.batch_sizes, args.profile),
+        "measurement_kind": "one-pass fixed-workload replay; additional batch-shape compilation may remain timed",
         "workload": (
             "One complete first-call warmup for old serial generate, its complete fixed-workload pass, "
             "one complete first-call warmup for the new engine, then that same complete call list for B1/B2/B4. "
@@ -415,6 +448,7 @@ def _worker(args, cfg):
             "official verification or repair-success measurement. Device mapping is not tensor parallelism. "
             "Reduced-precision batch differences are reported, not asserted to be zero or unbiased. "
             "Prefill boundaries synchronize every visible GPU; profiled passes are excluded from throughput."
+            " Old serial progress-file writes are reported separately and excluded from decoder throughput."
             " Warmup contains one complete call per backend; compilation for additional batch shapes remains measured. "
             "Old model.generate samples a forced distribution, whereas new-engine replay discards a full-category "
             "proposal, so sampling overheads and free-generation speed are not identical."
@@ -426,8 +460,17 @@ def _worker(args, cfg):
 
     policy = Policy(model_config)
     torch = policy.torch
+    packages = {}
+    for name in ("torch", "transformers", "unsloth", "unsloth-zoo", "peft", "accelerate", "triton", "xformers"):
+        try:
+            packages[name] = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            packages[name] = None
     manifest["environment"] = {"torch": str(torch.__version__), "cuda": str(torch.version.cuda),
-                               "devices": [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())]}
+                               "packages": packages,
+                               "devices": [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())],
+                               "device_map": {name: str(device) for name, device in
+                                              (getattr(policy.model, "hf_device_map", None) or {}).items()}}
     _write(output / "experiment.json", manifest)
     generation = dict(cfg.get("generation", {}))
     if not args.prefix_cache:
@@ -492,6 +535,63 @@ def _known_progress(output):
             "partial_pass_tokens_not_counted": True}
 
 
+def _bind_parent_lifetime(parent_pid):
+    """Do not leave a GPU replay alive if its CPU supervisor disappears.
+
+    Linux PR_SET_PDEATHSIG is cleared by fork, so install it in the exec'd
+    learner and recheck ppid afterwards to close the parent-exit race.
+    https://man7.org/linux/man-pages/man2/PR_SET_PDEATHSIG.2const.html
+    """
+    import ctypes
+
+    if type(parent_pid) is not int or parent_pid <= 1:
+        raise ValueError("Replay worker requires its supervisor PID")
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.prctl.argtypes = [ctypes.c_int, *([ctypes.c_ulong] * 4)]
+    libc.prctl.restype = ctypes.c_int
+    if libc.prctl(1, int(signal.SIGKILL), 0, 0, 0) != 0:  # PR_SET_PDEATHSIG
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+    if os.getppid() != parent_pid:
+        raise RuntimeError("Replay supervisor exited before worker startup")
+
+
+def _deadline_watchdog(deadline_unix):
+    """Enforce the inherited deadline before imports/model loading begin."""
+    if deadline_unix is None or not math.isfinite(deadline_unix):
+        raise ValueError("Replay worker requires its supervisor's absolute deadline")
+    remaining = deadline_unix - time.time()
+    if remaining <= 0:
+        raise TimeoutError("Replay budget expired before worker startup")
+    stopped = threading.Event()
+
+    def watch():
+        if stopped.wait(remaining):
+            return
+        os.kill(os.getpid(), signal.SIGTERM)
+        # A stuck native operation may not return to the Python signal handler.
+        # Keep the same bounded teardown grace as the CPU supervisor.
+        if not stopped.wait(5):
+            os.kill(os.getpid(), signal.SIGKILL)
+
+    thread = threading.Thread(target=watch, name="replay-budget-watchdog", daemon=True)
+    thread.start()
+    return stopped.set
+
+
+def _stop_replay(child):
+    if child.poll() is not None:
+        return
+    try:
+        os.killpg(child.pid, signal.SIGTERM)
+        child.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        os.killpg(child.pid, signal.SIGKILL)
+        child.wait()
+    except ProcessLookupError:
+        pass
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=PROJECT / "configs/first_batch.toml")
@@ -503,8 +603,11 @@ def main(argv=None):
     parser.add_argument("--walltime-seconds", type=float, required=True, help="Explicit whole-process GPU budget")
     parser.add_argument("--prefix-cache", action="store_true", help="Measure prefix reuse in an additional experiment")
     parser.add_argument("--profile", action="store_true", help="Run separate profiled passes after all throughput passes")
+    parser.add_argument("--plan-only", action="store_true", help="Print full replay token costs without loading the model or CUDA")
     parser.add_argument("--logprob-atol", type=float, default=0.02, help="Reporting threshold; exceeding it is reported")
     parser.add_argument("--_worker", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--_parent-pid", type=int, help=argparse.SUPPRESS)
+    parser.add_argument("--_deadline-unix", type=float, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     try:
         args.batch_sizes = sorted(set(int(value) for value in args.batch_sizes.split(",")))
@@ -516,48 +619,56 @@ def main(argv=None):
         parser.error("--walltime-seconds must be positive and finite")
     if not math.isfinite(args.logprob_atol) or args.logprob_atol < 0:
         parser.error("--logprob-atol must be nonnegative and finite")
-    if sys.platform != "linux":
-        parser.error("Run this experiment on the authorized Linux GPU server")
     cfg = tomllib.loads(args.config.read_text())
+    if args.plan_only:
+        records, sources = _load_calls(args.calls, args.max_calls, int(cfg["policy"].get("max_context", 32768)))
+        if len(records) < max(args.batch_sizes):
+            parser.error("Fewer complete calls than the largest requested batch")
+        print(json.dumps({"plan_only": True, "gpu_started": False, "sources": sources,
+                          "workload_plan": _workload_plan(records, args.batch_sizes, args.profile),
+                          "walltime_seconds": args.walltime_seconds}, ensure_ascii=False, indent=2))
+        return 0
+    if sys.platform != "linux":
+        parser.error("Run this experiment on the authorized Linux GPU server; --plan-only does not require CUDA")
     os.umask(0o077)
+
+    def terminate(*_):
+        raise KeyboardInterrupt("Run budget terminated replay")
+
+    signal.signal(signal.SIGTERM, terminate)
     if not args._worker:
         args.output_dir = args.output_dir.expanduser().resolve()
         args.output_dir.mkdir(parents=True, exist_ok=False, mode=0o700)
+        parent_started = time.monotonic()
+        deadline_unix = time.time() + args.walltime_seconds
         command_args = ["--config", str(args.config.expanduser().resolve()),
                         "--model-path", str(args.model_path.expanduser().resolve()),
                         "--output-dir", str(args.output_dir), "--max-calls", str(args.max_calls),
                         "--batch-sizes", ",".join(map(str, args.batch_sizes)),
                         "--walltime-seconds", str(args.walltime_seconds),
-                        "--logprob-atol", str(args.logprob_atol), "--_worker"]
+                        "--logprob-atol", str(args.logprob_atol), "--_worker",
+                        "--_parent-pid", str(os.getpid()), "--_deadline-unix", str(deadline_unix)]
         for path in args.calls:
             command_args.extend(("--calls", str(path.expanduser().resolve())))
         for enabled, flag in ((args.prefix_cache, "--prefix-cache"), (args.profile, "--profile")):
             if enabled:
                 command_args.append(flag)
-        parent_started = time.monotonic()
         child = subprocess.Popen([sys.executable, "-m", "training.profile_generation", *command_args],
                                  cwd=PROJECT, start_new_session=True)
         try:
-            return child.wait(timeout=args.walltime_seconds)
+            return child.wait(timeout=max(0.01, args.walltime_seconds - (time.monotonic() - parent_started)))
         except (subprocess.TimeoutExpired, KeyboardInterrupt) as exc:
-            try:
-                os.killpg(child.pid, signal.SIGTERM)
-                child.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                os.killpg(child.pid, signal.SIGKILL)
-                child.wait()
-            except ProcessLookupError:
-                pass
+            _stop_replay(child)
             _write(args.output_dir / "interruption.json", {"complete": False, "reason": type(exc).__name__,
                                                           "walltime_seconds": args.walltime_seconds,
                                                           "elapsed_parent_seconds": time.monotonic() - parent_started,
                                                           **_known_progress(args.output_dir),
                                                           "note": "Keep completed passes; do not infer missing outcomes."})
             return 124
-    def terminate(*_):
-        raise KeyboardInterrupt("Run budget terminated replay")
-
-    signal.signal(signal.SIGTERM, terminate)
+        finally:
+            _stop_replay(child)
+    _bind_parent_lifetime(args._parent_pid)
+    stop_watchdog = _deadline_watchdog(args._deadline_unix)
     child_started = time.monotonic()
     try:
         _worker(args, cfg)
@@ -566,6 +677,8 @@ def main(argv=None):
                                                  "error": str(exc), "elapsed_worker_seconds": time.monotonic() - child_started,
                                                  **_known_progress(args.output_dir)})
         raise
+    finally:
+        stop_watchdog()
     return 0
 
 

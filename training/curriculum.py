@@ -7,6 +7,7 @@ This module never downloads, rewrites, or returns question/patch/test contents.
 """
 from __future__ import annotations
 
+import copy
 import json
 import math
 from pathlib import Path
@@ -355,3 +356,31 @@ class TaskSampler:
             "statistics": {identifier: dict(item) for identifier, item in self.stats.items()},
             "rng_state": self.rng.getstate(),
         }
+
+    def load_state_dict(self, state):
+        """Restore only an identical public task universe and sampling recipe."""
+        if state.get("config") != self.config or state.get("tasks") != list(self.tasks.values()):
+            raise ValueError("Sampler checkpoint belongs to a different task universe or recipe")
+        if set(state.get("statistics", {})) != set(self.tasks):
+            raise ValueError("Sampler checkpoint is missing task statistics")
+        for name in ("draws", "feedback_revision", "policy_version", "seed"):
+            if type(state.get(name)) is not int or state[name] < 0:
+                raise ValueError("Invalid sampler checkpoint counter")
+        if state["seed"] != self.seed:
+            raise ValueError("Sampler seed differs from the checkpoint")
+        for identifier, item in state["statistics"].items():
+            if set(item) != set(self.stats[identifier]):
+                raise ValueError("Sampler checkpoint schema differs from this implementation")
+
+        def tuples(value):
+            return tuple(tuples(item) for item in value) if isinstance(value, (tuple, list)) else value
+
+        restored_rng = random.Random()
+        restored_rng.setstate(tuples(state["rng_state"]))
+        # Validate the serializable snapshot before replacing live state.
+        json.dumps(state, allow_nan=False)
+        self.stats = copy.deepcopy(state["statistics"])
+        self.rng = restored_rng
+        self.draws = state["draws"]
+        self.feedback_revision = state["feedback_revision"]
+        self.policy_version = state["policy_version"]

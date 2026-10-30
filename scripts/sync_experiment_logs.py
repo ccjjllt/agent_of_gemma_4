@@ -62,8 +62,12 @@ for run in runs:
     if not folder.is_dir() or folder.is_symlink():
         raise ValueError("Requested run does not exist as a real directory: " + run)
     for name in ("metrics.jsonl", "run_config.json", "curriculum_state.json", "generation_metrics.jsonl",
-                 "reward_groups.jsonl", "reward_summary.json"):
+                 "reward_groups.jsonl", "reward_summary.json", "reward_update_recovery.jsonl"):
         copy(folder / name)
+    # Only small recovery metadata. Optimizer state and the request database
+    # contain complete generated token records and remain on the server.
+    for name in ("checkpoint_latest.json", "collection_latest.json", "budget.json"):
+        copy(folder / "recovery" / name)
     # Operator summaries have no prompt/token contents. Keep large raw profiler
     # traces on the server; they are separate from the official agent traces.
     for path in sorted((folder / "profiles").glob("*/*")):
@@ -96,7 +100,7 @@ for run in runs:
             values = call.get("behavior_logprobs", [])
             valid = [value for value in values if finite(value) is not None]
             row = {key: call.get(key) for key in (
-                "rollout_id", "call_index", "policy_version", "finish_reason",
+                "rollout_id", "call_index", "policy_version", "finish_reason", "request_id", "delivery_state", "consumed_at",
                 "requested_max_tokens", "effective_max_tokens", "context_limited",
                 "generation_backend", "timing_semantics", "reused_prefix_tokens", "profiled_tokens",
             )}

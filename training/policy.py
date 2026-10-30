@@ -168,6 +168,54 @@ class Policy:
     def trainable_parameters(self):
         return [p for p in self.model.parameters() if p.requires_grad]
 
+    def _adapter_checkpoint_metadata(self):
+        return {
+            "model_name": self.config.get("model_name"),
+            "model_revision": self.config.get("model_revision"),
+            "max_context": self.max_context,
+            "targets": sorted(self.targets),
+            "active_adapters": list(self.model.active_adapters),
+        }
+
+    def export_adapter_state(self):
+        """Return only LoRA tensors for a caller's atomic training checkpoint.
+
+        This is not a merged model or another copy of the frozen base. The
+        trainer calls it only at a completed optimizer-step boundary.
+        """
+        parameters = dict(self.model.named_parameters())
+        if any(parameter.requires_grad and ".lora_" not in name for name, parameter in parameters.items()):
+            raise RuntimeError("A LoRA checkpoint cannot omit other trainable parameters")
+        tensors = {name: parameter.detach().cpu().clone()
+                   for name, parameter in parameters.items() if ".lora_" in name}
+        if not tensors or not all(bool(self.torch.isfinite(value).all()) for value in tensors.values()):
+            raise ValueError("Adapter checkpoint requires finite LoRA tensors")
+        return {"schema_version": 1, "metadata": self._adapter_checkpoint_metadata(), "tensors": tensors}
+
+    def restore_adapter_state(self, state):
+        """Load a validated checkpoint into this corresponding fresh adapter.
+
+        Validate every tensor before copying any. The caller still verifies
+        checkpoint integrity and the original base/model fingerprints.
+        """
+        if not isinstance(state, dict) or state.get("schema_version") != 1:
+            raise ValueError("Unsupported adapter checkpoint schema")
+        if state.get("metadata") != self._adapter_checkpoint_metadata():
+            raise ValueError("Adapter checkpoint belongs to a different base or adapter layout")
+        current = {name: parameter for name, parameter in self.model.named_parameters() if ".lora_" in name}
+        tensors = state.get("tensors")
+        if not isinstance(tensors, dict) or not current or set(tensors) != set(current):
+            raise ValueError("Adapter checkpoint parameter names do not match")
+        for name, parameter in current.items():
+            value = tensors[name]
+            if (not isinstance(value, self.torch.Tensor) or value.shape != parameter.shape
+                    or value.dtype != parameter.dtype or not bool(self.torch.isfinite(value).all())):
+                raise ValueError(f"Invalid adapter checkpoint tensor: {name}")
+        with self.torch.no_grad():
+            for name, parameter in current.items():
+                parameter.copy_(tensors[name].to(device=parameter.device))
+        self._mode = None
+
     def reference_matches_current(self) -> bool:
         """Prove the current ordinary zero-LoRA has the disabled-adapter reference.
 
@@ -310,7 +358,7 @@ class Policy:
 
         return DynamicCache(config=self.text_config)
 
-    def forward_generation(self, input_ids, attention_mask, position_ids, cache):
+    def forward_generation(self, input_ids, attention_mask, position_ids, cache, *, project_logits=True):
         """One text forward with per-row positions and native hybrid KV state.
 
         Project only the last hidden position. This is the same text decoder,
@@ -324,6 +372,10 @@ class Policy:
             input_ids=input_ids, attention_mask=attention_mask, position_ids=position_ids,
             past_key_values=cache, use_cache=True, return_dict=True, output_hidden_states=False,
         )
+        if not project_logits:
+            # Intermediate prefill chunks only advance complete-prefix KV.
+            # Projecting the 262k-vocabulary head here cannot produce a token.
+            return None, output.past_key_values
         head = base.lm_head
         logits = head(output.last_hidden_state[:, -1, :].to(head.weight.device, dtype=head.weight.dtype))
         if self.softcap:

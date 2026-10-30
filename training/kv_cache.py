@@ -13,6 +13,89 @@ from dataclasses import dataclass
 from typing import Any
 
 
+_CAPACITY_LAYER = None
+
+
+def enable_capacity_cache(cache, increment, capacity_limit, counters=None):
+    """Grow full-attention KV storage in blocks, retaining native mask semantics.
+
+    Sliding layers retain the pinned Transformers implementation. Only this
+    generation owner mutates these caches; snapshots/membership helpers reset
+    backing storage when replacing tensors. No detached cache enters training.
+    """
+    global _CAPACITY_LAYER
+    increment, capacity_limit = int(increment), int(capacity_limit)
+    if increment < 0 or capacity_limit < 1:
+        raise ValueError("KV capacity increment must be nonnegative and limit positive")
+    if not increment:
+        return cache
+    if _CAPACITY_LAYER is None:
+        from transformers.cache_utils import DynamicLayer
+
+        class CapacityDynamicLayer(DynamicLayer):
+            def set_storage(self, keys, values):
+                self.keys, self.values = keys, values
+                self._key_storage, self._value_storage = keys, values
+                self._length = keys.shape[-2] if keys.ndim == 4 else 0
+
+            def update(self, key_states, value_states, *args, **kwargs):
+                if not self.is_initialized:
+                    self.lazy_initialization(key_states, value_states)
+                    self.set_storage(self.keys, self.values)
+                old_length = self._length
+                new_length = old_length + key_states.shape[-2]
+                if new_length > self.capacity_limit:
+                    raise ValueError("Complete generation KV exceeds its declared context")
+                capacity = self._key_storage.shape[-2] if self._key_storage.ndim == 4 else 0
+                if new_length > capacity:
+                    rounded = ((new_length + self.capacity_increment - 1) // self.capacity_increment) * self.capacity_increment
+                    capacity = min(self.capacity_limit, max(capacity * 2, rounded))
+                    key_shape, value_shape = list(key_states.shape), list(value_states.shape)
+                    key_shape[-2] = value_shape[-2] = capacity
+                    new_keys, new_values = key_states.new_empty(key_shape), value_states.new_empty(value_shape)
+                    if old_length:
+                        new_keys[..., :old_length, :].copy_(self.keys)
+                        new_values[..., :old_length, :].copy_(self.values)
+                        self.prefix_elements_copied += self.keys.numel() + self.values.numel()
+                        if self.capacity_counters is not None:
+                            self.capacity_counters["prefix_elements_copied"] += self.keys.numel() + self.values.numel()
+                    self._key_storage, self._value_storage = new_keys, new_values
+                    self.capacity_growths += 1
+                    if self.capacity_counters is not None:
+                        self.capacity_counters["growths"] += 1
+                self._key_storage[..., old_length:new_length, :].copy_(key_states)
+                self._value_storage[..., old_length:new_length, :].copy_(value_states)
+                self._length = new_length
+                if self.capacity_counters is not None:
+                    self.capacity_counters["appended_elements"] += key_states.numel() + value_states.numel()
+                self.keys = self._key_storage[..., :new_length, :]
+                self.values = self._value_storage[..., :new_length, :]
+                return self.keys, self.values
+
+            def crop(self, tokens_to_remove):
+                super().crop(tokens_to_remove)
+                self._length = self.keys.shape[-2]
+
+        _CAPACITY_LAYER = CapacityDynamicLayer
+    converted = []
+    for layer in cache.layers:
+        if type(layer).__name__ == "DynamicLayer":
+            replacement = _CAPACITY_LAYER()
+            replacement.__dict__.update(layer.__dict__)
+            replacement.capacity_increment, replacement.capacity_limit = increment, capacity_limit
+            replacement.capacity_growths = replacement.prefix_elements_copied = 0
+            replacement.capacity_counters = counters
+            if layer.is_initialized:
+                replacement.set_storage(layer.keys, layer.values)
+            converted.append(replacement)
+        elif type(layer).__name__ in {"DynamicSlidingWindowLayer", "CapacityDynamicLayer"}:
+            converted.append(layer)
+        else:
+            raise TypeError("Capacity caching supports only native Gemma dynamic/full-sliding layers")
+    cache.layers = converted
+    return cache
+
+
 def _layers(cache):
     if type(cache).__name__ != "DynamicCache":
         raise TypeError(f"Expected native DynamicCache, found {type(cache).__name__}")
@@ -22,7 +105,7 @@ def _layers(cache):
     if not layers:
         raise ValueError("Expected an initialized native DynamicCache")
     for layer in layers:
-        if type(layer).__name__ not in {"DynamicLayer", "DynamicSlidingWindowLayer"}:
+        if type(layer).__name__ not in {"DynamicLayer", "DynamicSlidingWindowLayer", "CapacityDynamicLayer"}:
             raise TypeError(f"Unsupported batching cache layer: {type(layer).__name__}")
         if not layer.is_initialized or layer.keys is None or layer.values is None:
             raise ValueError("Every non-shared KV layer must have been initialized")
@@ -57,6 +140,8 @@ def _replace_layer(layer, keys, values, length):
     result.is_initialized = True
     if result.is_sliding:
         result.cumulative_length = int(length)
+    elif type(result).__name__ == "CapacityDynamicLayer":
+        result.set_storage(keys, values)
     return result
 
 
@@ -68,6 +153,7 @@ def clone_cache(cache):
                        int(layer.get_seq_length()))
         for layer in _layers(cache)
     ]
+    result._membership_view = False
     return result
 
 
@@ -90,6 +176,7 @@ def merge_caches(caches, lengths):
     physical_length = max(lengths)
     result = copy.copy(caches[0])
     result.layers = []
+    result._membership_view = False
     for index, template in enumerate(caches[0].layers):
         layers = [cache.layers[index] for cache in caches]
         if any(type(layer) is not type(template) or
@@ -116,11 +203,13 @@ def merge_caches(caches, lengths):
     return result
 
 
-def select_cache(cache, row, actual_length, physical_length=None):
-    """Remove batch padding and detach a row, without retaining batch storage.
+def select_cache(cache, row, actual_length, physical_length=None, *, copy_tensors=True):
+    """Remove batch padding; use a temporary view only for immediate rebuilding.
 
     actual_length includes every token already consumed by forward, and excludes
     the most recently sampled token until a later forward has consumed it.
+    Default copies own their tensors. Views must not survive a membership
+    transition; merge/clone or PrefixCache.put materializes their ownership.
     """
     row, actual_length = int(row), int(actual_length)
     layers = _layers(cache)
@@ -136,10 +225,12 @@ def select_cache(cache, row, actual_length, physical_length=None):
                 layer.values.shape[-2] != _stored_length(layer, physical_length)):
             raise ValueError("Batched cache shape differs from its declared physical length")
         stored = _stored_length(layer, actual_length)
-        # clone(), not a view: completed rows must release the other batch rows.
-        keys = layer.keys[row:row + 1, :, -stored:, :].detach().clone()
-        values = layer.values[row:row + 1, :, -stored:, :].detach().clone()
+        keys = layer.keys[row:row + 1, :, -stored:, :].detach()
+        values = layer.values[row:row + 1, :, -stored:, :].detach()
+        if copy_tensors:
+            keys, values = keys.clone(), values.clone()
         result.layers.append(_replace_layer(layer, keys, values, actual_length))
+    result._membership_view = not copy_tensors
     return result
 
 

@@ -18,16 +18,26 @@ max_batches = 32
 max_candidate_groups_per_batch = 12
 learning_rate = 0.000005
 max_grad_norm = 1.0
-# Explicit execution cap; larger training plans still obey this cap.
+# Initial run allowance, including model loading; --resume does not renew it.
+# Only --additional-walltime-seconds explicitly extends an existing allowance.
 walltime_seconds = 7200
-max_cpu_workers = 4
+# Keep CPU setup/tools/verification overlapped with four GPU generation slots.
+max_cpu_workers = 8
 prefetch_groups = 2
+# One extra attempt per failed infrastructure slot; failed official tests are not retried.
+max_worker_retries = 1
+# Stop new selection after this many exhausted groups in one collection session.
+# Drain/update valid groups; if batches remain, save the next batch and pause (exit 75).
+max_failed_groups_per_session = 3
 
 [generation]
 max_batch_size = 4
 # Reserve complete original context budgets; never truncate to fit a batch.
 max_batch_tokens = 131072
 batch_wait_ms = 5
+prefill_chunk_tokens = 512
+max_prefill_tokens_per_step = 1024
+kv_capacity_increment = 256
 prefix_cache_entries = 8
 prefix_cache_bytes = 2147483648
 
@@ -88,6 +98,9 @@ success_token_budget = 65536
 python = "/opt/gemma-runtime/bin/python"
 sandbox = "subprocess"
 port = 0
+# Training-only clock: exclude confirmed GPU queue wait, record wall time too.
+session_clock = "queue_excluded"
+queue_timing_poll_seconds = 0.2
 
 [runtime.evaluation]
 # Explicit participant budgets; preserve the starter's 50-turn cap.

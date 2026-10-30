@@ -16,6 +16,8 @@ import re
 import statistics
 import tempfile
 
+from .recovery import atomic_json, _sync_directory
+
 
 _COMPONENTS = ("resolved", "repair", "regression", "efficiency", "repetition")
 _FLAGS = (
@@ -109,14 +111,21 @@ def _cost_sum(values):
 
 
 def _atomic_json(path, payload):
+    atomic_json(path, payload)
+
+
+def _atomic_bytes(path, payload):
+    """Preserve exact journal bytes, including an undecodable interrupted tail."""
     temporary = None
     try:
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
-                                         prefix=".reward-summary-", delete=False) as output:
+        with tempfile.NamedTemporaryFile(mode="wb", dir=path.parent,
+                                         prefix=".reward-journal-", delete=False) as output:
             temporary = Path(output.name)
-            json.dump(payload, output, ensure_ascii=False, indent=2, allow_nan=False)
-            output.write("\n")
+            output.write(payload)
+            output.flush()
+            os.fsync(output.fileno())
         os.replace(temporary, path)
+        _sync_directory(path.parent)
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
@@ -130,7 +139,13 @@ class RewardLedger:
     Interrupted/infrastructure-failed groups are outside this ledger's cost scope.
     """
 
-    def __init__(self, run_dir):
+    def __init__(self, run_dir, *, recover_incomplete_tail=False):
+        """Load the ledger; tail recovery requires the caller's exclusive run_lock.
+
+        The default never repairs a journal that another writer may still own.
+        Recovery preserves the exact incomplete bytes before replacing the file
+        with its fully validated newline-terminated prefix.
+        """
         self.run_dir = Path(run_dir)
         self.run_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.group_path = self.run_dir / "reward_groups.jsonl"
@@ -138,23 +153,41 @@ class RewardLedger:
         self.groups = []
         self.batch_updates = {}
         self._group_ids = set()
+        journal = prefix = tail = b""
         if self.group_path.exists():
-            with self.group_path.open(encoding="utf-8") as source:
-                for line in source:
-                    if not line.endswith("\n"):
-                        raise ValueError("Reward journal has an incomplete tail; refusing to overwrite it")
-                    row = json.loads(line)
-                    if row.get("schema_version") != 1 or row.get("record_type") != "complete_group":
-                        raise ValueError("Unsupported reward-journal record")
-                    if row["group_id"] in self._group_ids:
-                        raise ValueError("Reward journal contains a duplicate group")
-                    self._group_ids.add(row["group_id"])
-                    self.groups.append(row)
+            journal = self.group_path.read_bytes()
+            committed_end = journal.rfind(b"\n") + 1
+            prefix, tail = journal[:committed_end], journal[committed_end:]
+            # Validate every complete row before any recovery mutation. A bad
+            # interior record or duplicate is never discarded as a partial tail.
+            for line in prefix.splitlines(keepends=True):
+                row = json.loads(line)
+                if (not isinstance(row, dict) or row.get("schema_version") != 1
+                        or row.get("record_type") != "complete_group"):
+                    raise ValueError("Unsupported reward-journal record")
+                if row["group_id"] in self._group_ids:
+                    raise ValueError("Reward journal contains a duplicate group")
+                self._group_ids.add(row["group_id"])
+                self.groups.append(row)
+            if tail and not recover_incomplete_tail:
+                raise ValueError("Reward journal has an incomplete tail; exclusive run recovery is required")
         if self.summary_path.exists():
             previous = json.loads(self.summary_path.read_text())
             if previous.get("schema_version") != 1:
                 raise ValueError("Unsupported reward-summary schema")
             self.batch_updates = dict(previous.get("batch_updates") or {})
+        if tail:
+            evidence = self.group_path.with_name(
+                "reward_groups.incomplete-" + hashlib.sha256(journal).hexdigest() + ".tail"
+            )
+            if evidence.exists() and evidence.read_bytes() != tail:
+                raise ValueError("Interrupted journal tail conflicts with preserved recovery evidence")
+            _atomic_bytes(evidence, tail)
+            # run_lock owns the interval between this check and replacement.
+            # Reject an unexpected concurrent modification instead of truncating it.
+            if self.group_path.read_bytes() != journal:
+                raise RuntimeError("Reward journal changed during exclusive recovery")
+            _atomic_bytes(self.group_path, prefix)
         self._write_summary()
 
     @staticmethod
@@ -220,8 +253,6 @@ class RewardLedger:
                      exclusion_reason, reward_mode, reward_signature, diagnostics=None):
         batch, policy_version = _integer(batch), _integer(policy_version)
         group_id, task_id = _identity(group_id), _identity(task_id)
-        if group_id in self._group_ids:
-            raise ValueError("A complete group may be recorded only once")
         if not isinstance(selected_for_update, bool):
             raise ValueError("selected_for_update must be explicit")
         n = len(scored)
@@ -274,8 +305,16 @@ class RewardLedger:
             "group_statistics": statistics_row, "diagnostics": self._diagnostics(diagnostics),
         }
         payload = json.dumps(row, ensure_ascii=False, allow_nan=False)
+        if group_id in self._group_ids:
+            existing = next(item for item in self.groups if item["group_id"] == group_id)
+            if existing != row:
+                raise ValueError("Recovered group differs from its already committed reward evidence")
+            return existing
         with self.group_path.open("a", encoding="utf-8") as output:
             output.write(payload + "\n")
+            output.flush()
+            os.fsync(output.fileno())
+        _sync_directory(self.group_path.parent)
         self.groups.append(row)
         self._group_ids.add(group_id)
         self._write_summary()
@@ -292,6 +331,32 @@ class RewardLedger:
                     or previous.get("adapter_changed") is not None or adapter_changed is None):
                 raise ValueError("An acknowledged batch update cannot be silently rewritten")
         self.batch_updates[str(batch)] = value
+        self._write_summary()
+
+    def restore_updates(self, updates, checkpoint_id):
+        """Reconcile optimizer membership to the loaded durable model state.
+
+        A crash can occur after an in-memory optimizer update but before its
+        checkpoint commits. Keep a recovery event instead of silently treating
+        that lost state as part of the resumed learner.
+        """
+        restored = {}
+        for batch, value in updates.items():
+            batch_number = int(batch)
+            _integer(batch_number)
+            steps = _integer(value["optimizer_steps"])
+            changed = value.get("adapter_changed")
+            if changed is not None and not isinstance(changed, bool):
+                raise ValueError("Invalid saved update membership")
+            restored[str(batch_number)] = {"optimizer_steps": steps, "adapter_changed": changed}
+        if restored != self.batch_updates:
+            with (self.run_dir / "reward_update_recovery.jsonl").open("a", encoding="utf-8") as output:
+                output.write(json.dumps({"checkpoint_id": checkpoint_id,
+                                         "before": self.batch_updates, "restored": restored}) + "\n")
+                output.flush()
+                os.fsync(output.fileno())
+            _sync_directory(self.run_dir)
+        self.batch_updates = restored
         self._write_summary()
 
     def _aggregate(self, groups):

@@ -81,15 +81,41 @@ reference一般仍需一次关闭adapter的完整评分，并在建立当前梯�
 ## 生成调度与性能测量
 
 - `generation.max_batch_size`限制活动序列数；`max_batch_tokens`按最长完整请求预算乘批大小预留容量，不通过截短上下文、输出、思考或验收凑批。默认最多4×32K；显存是否足够仍由31B实际运行确认。
-- 普通decode步持续使用同一批KV；只有请求加入或退出时拆合缓存。各层保留原生full/sliding KV的不同头形状、设备和滑窗计数，逐行使用真实position IDs。新请求的prefill目前在decode步间逐个处理，长prefill仍会延迟其他请求；尚未实现chunked prefill、paged attention或CUDA graphs。
-- 同一策略版本内用有条目数及字节上限的LRU复用完全一致的token前缀。精确命中复用最后位置logits，扩展命中只计算新增后缀；不回滚已丢弃的滑窗历史。结束采集会排空请求并清除KV，之后才计算完整前缀训练概率和更新LoRA。推理缓存不会进入梯度路径。
-- 题组采集共用CPU池，正式配置最多预取2个候选组，轨迹槽位完成后立即补位。完整组按选题顺序计算奖励和选入更新，避免偏向先完成的快题。预取数量受剩余目标槽位约束，避免正常情况下采出整组有效余量后再丢弃；已启动组仍完成全部8条及验收，确认无信号后再补位。首批配置预取1组以控制成本。
+- 每个调度步先推进已有decode，再处理有界prefill；默认每块512 tokens、每步prefill总计最多1024 tokens。完整提示分块计算，中间块不投影大词表、不采样；最后一块才产生首个token。prefill中的请求也占活动槽位。仍未实现张量并行、paged attention或CUDA graphs。
+- 普通decode保留同一批KV。full-attention层按需几何扩容，仅扩容时复制已有前缀；sliding层继续使用原生窗口逻辑。各层保留不同头形状、设备和逐行位置。批成员变化时临时只读视图在重组时物化独立行，LRU快照只保留紧凑独占张量，不持有扩容余量。
+- 同一策略版本内，相同完整prompt的在飞请求只让一个leader计算prefill，其他请求在其完成后独立采样、取得独立可变KV行；关闭LRU时也能合并，不共用生成token。另用有条目数及字节上限的LRU复用完全一致的token前缀。精确命中复用最后位置logits，扩展命中只计算新增后缀；不回滚已丢弃的滑窗历史。结束采集会排空请求并清除KV，之后才计算完整前缀训练概率和更新LoRA。推理缓存不会进入梯度路径。
+- 题组采集共用8个CPU worker，GPU仍最多4个活动请求，让setup、工具和验收与生成重叠；CPU/RAM开销随worker数量增长，可按服务器资源调低。正式配置最多预取2个候选组，轨迹槽位完成后立即补位。完整组按选题顺序计算奖励和选入更新，避免偏向先完成的快题。预取数量受剩余目标槽位约束；正常组完成全部8条及验收，确认无信号后再补位。基础设施重试耗尽的组单独记失败，不评分、不更新采题反馈，也不影响其他预取组的完整性。首批配置预取1组以控制成本。
+- 请求状态的SQLite提交、响应JSON持久化和逐请求日志由单独有界writer处理，GPU owner继续推进其他序列；generated真正落盘前不能HTTP交付或ACK。活动请求加待落盘结果共同受限，磁盘持续拥堵时施加背压。
 - `generation.profiling`可对少量decode迭代采集CPU/CUDA算子、形状和显存。首批默认等待16步、warmup2步、记录8步；正式配置默认关闭。输出在`profiles/<collection_id>/`，不同采集批不会覆盖。profiler额外同步只发生在窗口边界；另在整批采集关闭时同步两卡，确认KV操作排空后才允许训练。profile对吞吐的扰动必须单独报告。
 - 连续批处理的各请求耗时会重叠，不能再把它们相加作为总生成时间。`generation_metrics.jsonl`记录不重叠的引擎活动耗时、token数、实际最大批大小、缓存命中和排除profile窗口后的吞吐；端到端耗时还应计入排队、工具和验收。原来的`first_scores_seconds`只存在于旧单请求日志，新调度记录实际`first_token_seconds`及排队时间。
 
 2026-10-30手动核对使用Transformers5.17、CPU Torch2.14.1及随机极小Gemma4，覆盖混合full/sliding、异构KV头、K=V、共享KV、滑窗跨界、请求中途加入/退出、前缀复用、EOS和取消。实际采样概率对独立完整前缀forward最大差约2.4e-6；HTTP调度及完整题组顺序用一次性模拟核对。数值记录与CPU profiler摘要保存在`results/local-batching/2026-10-30/`。这些结果不代表31B吞吐、显存或修复收益。
 
-后续有可用GPU入口及本次预算时，可用`training.profile_generation`直接读取服务器保留的完整`model_calls.jsonl`，对同一组完整prompt和completion进行旧串行`generate`及新batch 1/2/4重放。默认关闭前缀缓存以隔离批处理效应，`--prefix-cache`用于另一次缓存对照；`--profile`另跑独立采样窗口，不将profile轮次混入吞吐。输出包含源文件指纹、实际decode批大小、吞吐、显存与逐token概率差汇总，不导出原始token。它强制使用记录中的输出路径，不能称为新轨迹、官方验收或模型收益，采样开销也不完全等同自由生成。
+本次深度优化的手动证据见`results/local-throughput/2026-10-30/`。`generation_summary.json`中4条相同29-token提示从116降为29个实际prefill token；full层5+64-token追加的cat从130次降为0，已有前缀复制从299008降为15360元素，KV逐值一致；完整prefix概率误差低于1e-6。`replay_summary.json`核对batch1/4强制完整记录路径，包括EOS和共享prefill。`pipeline_summary.json`在注入150ms落盘停顿时，同伴decode最大间隙从约154ms降到1.56ms；这证明I/O隔离，不是GPU加速倍数。所有结果只使用合成输入与真实极小CPU模型，31B吞吐、峰值显存和端到端有效轨迹/小时仍需实测。
+
+新增指标记录真实prefill token、合并减少的重复量、中间head跳过次数及full-KV扩容复制量。`checkpoint_committed`与`grpo_state_exported`分别记录持久化和导出耗时，避免把学习器I/O混进decode速度。
+
+### 排队与会话预算
+
+两份训练配置默认`runtime.session_clock="queue_excluded"`，会话仍为60分钟，单命令和完整验收仍各300秒、50回合与100次工具上限不变。服务端只将同一rollout“有请求排队且没有自己的请求正在生成”的区间作为候选；客户端再与真实LLM等待区间相交，并扣除并发工具工作。生成计算、工具执行、未知网络等待与重复HTTP请求都不能变成免费时间。
+
+官方包文件不改动；CPU预检先核对已安装harness的计时源码，再加载31B。本地只为该evaluator绑定已核对版本的runner、context与executor计时边界，并在有限外层timeout上按已确认排队证据调整截止时间。未知收据、时间基准不一致、服务重启或迟到收据造成无法确认的超时都按基础设施问题处理，不冒充模型失败。整个run的7200秒额度继续覆盖墙钟时间，排队不能延长run或GPU授权。
+
+每个结果并列保存原始墙钟、确认排队、有效会话时间和计时错误。这是训练资源计时口径，不等同比赛官方墙钟评测；需要原计时口径时设`runtime.session_clock="wall"`。官方完整验收仍执行，训练集结果仍不能称独立泛化。
+
+会话在收到HTTP响应ID之前取消时，也会按其逻辑请求key发起一次有短截止时间的取消；服务端先通知GPU，再持久化取消记录，阻止尚在prepare/create中的迟到请求重新启动。它不取消已交付并被上层接收的最终响应，不等待官方验收结束才释放无用生成；取消记录落盘失败会停止无效collection并唤醒等待者。
+
+`session_clock_summary.json`用官方runner/evaluator/context/executor原函数体和真实asyncio核对：110ms预算下180ms排队加约35ms生成能完成，wall模式仍按110ms超时；纯生成和并发工具工作仍耗预算。`integration_summary.json`将真实极小Gemma4接到HTTP/SQLite，核对长prefill期间继续decode、纯排队区间、消费确认和重启。`key_cancel_summary.json`与`transport_cancel_summary.json`覆盖无响应ID取消、create竞态、持久化失败及短清理截止时间。它们没有执行官方任务或GPU实验。
+
+后续有可用GPU入口及本次预算时，可用`training.profile_generation`直接读取服务器保留的完整`model_calls.jsonl`，对同一组完整prompt和completion进行旧串行`generate`及新batch 1/2/4重放。默认关闭跨请求LRU，但仍保留在飞相同prompt合并；因此比较的是完整引擎策略，不能把全部收益归给decode batch。`--prefix-cache`用于另一次LRU对照；`--profile`另跑独立采样窗口，不将profile轮次混入吞吐。输出包含源文件指纹、实际decode批大小、吞吐、显存与逐token概率差汇总，不导出原始token。它强制使用记录中的输出路径，不能称为新轨迹、官方验收或模型收益，采样开销也不完全等同自由生成。
+
+实测记录同时绑定引擎、KV、policy、profiler和重放入口的源码SHA256，以及实际加载的Torch、Transformers、Unsloth等版本和device map。判定整个研究流程是否改善，还须记录一组完整8条轨迹的墙钟时间、验收、GRPO与检查点成本，以及每小时有效完整轨迹数；不能把重放tokens/s直接换算成完整任务收益。墙钟预算与排队扣除预算的结果分别标注，避免把时间口径变化误当吞吐加速。没有可用入口时，这些31B实测结论保持未证实。
+
+重放的调用按源文件、再按行选择，并统一视为时刻0已就绪；它测饱和引擎，不重现同一agent不同轮次之间的工具依赖或真实到达时间。旧路径逐调用进度写盘耗时另列，从decoder吞吐分母扣除，与新路径的最终写盘范围对齐；完整进程墙钟仍保留。每种模式只执行一个完整测量轮次，额外batch形状的编译可能仍在计时内，不能称稳态吞吐。
+
+可在下面相同命令末尾先追加`--plan-only`：只读指定调用和配置，打印包含旧/新warmup及可选profile的完整token账，不加载模型或创建输出目录。例如4个各2000输出token的完整调用、batch1/2/4并开启profile，计划共60000 tokens；开始新引擎前，旧warmup和旧完整轮次已需10000 tokens。1800秒是硬上限，不保证这一计划完成，应先据实际调用长度确认预算安排。
+
+重放子进程继承同一绝对截止时间，并在模型加载前启动自身watchdog；父SIGTERM及等待异常会清理子进程。Linux还用[父进程退出信号](https://man7.org/linux/man-pages/man2/PR_SET_PDEATHSIG.2const.html)绑定learner存活期，避免监督进程被杀后遗留GPU工作。局部CPU核对见`replay_readiness_summary.json`：真实watchdog进程、模拟prctl与父进程控制、完整调用预算和写盘耗时分离；本机未执行Linux内核信号绑定或GPU运行。
 
 例如，确认模型及以下调用记录仍在服务器后，在本次明确授权的时间预算内执行（这里仅提供命令，不表示已经运行）：
 
@@ -158,7 +184,7 @@ AutoDL普通容器不支持Docker。此处采用官方subprocess后端，并增�
 /root/autodl-tmp/gemma4/envs/learner/bin/python -m training.run --describe
 ```
 
-下面是首批GPU训练命令：`first_batch.toml` 只采集1个批次，最多2次更新，关闭warmup，并受2小时进程上限约束。可在 `data.task_ids` / `exclude_task_ids` 或命令参数中限定题目；这些上限不是耗时预测，中断和基础设施故障不会被当成零奖励。当前数据盘只有50GB，约58.25GiB的BF16权重暂存于 `/dev/shm`，已核对官方SHA256；关机后需重新获取权重，结果保留在数据盘。
+下面是首批GPU训练命令：`first_batch.toml` 只采集1个批次，最多2次更新，关闭warmup，初始run额度为2小时并包含模型加载；续跑不重置额度。可在 `data.task_ids` / `exclude_task_ids` 或命令参数中限定题目；这些上限不是耗时预测，中断和基础设施故障不会被当成零奖励。此前服务器数据盘只有50GB，约58.25GiB的BF16权重暂存于 `/dev/shm`，已核对官方SHA256；关机后需重新获取权重，结果保留在数据盘。没有可用入口与本次授权预算时，不执行这些GPU命令。
 
 ```bash
 CUDA_VISIBLE_DEVICES=0,1 /root/autodl-tmp/gemma4/envs/learner/bin/python -m training.run \
@@ -168,9 +194,34 @@ CUDA_VISIBLE_DEVICES=0,1 /root/autodl-tmp/gemma4/envs/learner/bin/python -m trai
   --run-dir /root/autodl-tmp/gemma4/runs/first-batch-001
 ```
 
-输出包括官方结果与奖励分项、完整日志/trace/patch、真实调用token/行为概率、课程状态、旧策略偏移、KL/裁剪统计、adapter指纹和显存峰值。新运行使用新目录；`adapters/initial`与`adapters/batch-0001`等保存独立LoRA。筛掉的组仍保留真实采样/验收记录，不能只看入选组成功率。
+输出包括官方结果与奖励分项、完整日志/trace/patch、真实调用token/行为概率、课程状态、旧策略偏移、KL/裁剪统计、adapter指纹和显存峰值。新运行使用新目录，已有目录须显式`--resume`；`adapters/initial`与`adapters/batch-0001`等保存独立LoRA，完整续跑状态另在`recovery/`。筛掉的组仍保留真实采样/验收记录，不能只看入选组成功率。
 
 正式提交只取所选adapter目录的`adapter_config.json`与`adapter_model.safetensors`，按官方YAML引用。不要提交训练基座或合并权重。当前代码没有实现自动比赛提交，也没有在官方CT上取得适配效果证据；训练题上的改善不能称为独立泛化成绩。
+
+## 中断恢复、失败重试与消费确认
+
+恢复已有run使用同一目录；省略配置和数据、模型、submission路径时沿用其`run_config.json`，并核对来源指纹与检查点绑定。它不是把一个adapter作为新run的初始化，也不允许从未提交的临时文件猜测训练进度。单独保存adapter或旧版本日志的历史run不等于具备完整续跑检查点。
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 /root/autodl-tmp/gemma4/envs/learner/bin/python -m training.run \
+  --resume --run-dir /root/autodl-tmp/gemma4/runs/first-batch-001
+```
+
+同一run只能有一个持锁进程；CPU监督进程把同一独占锁传给learner，即使监督进程意外退出，仍存活的learner也会阻止第二个实例进入。额度记录跨重启保留，正常停止后的停机时间不计入活动时间；非正常中断未能结算时，从上次开始到恢复的失联时段保守计入旧额度，最多扣完上次剩余量。这是预算约束，不能当作GPU实际运行时间或账单。剩余额度耗尽时不自动重新获得配置中的7200秒；只有本次明确增加额度时才使用`--additional-walltime-seconds`，例如另获1800秒授权后在上述命令追加`--additional-walltime-seconds 1800`。
+
+采集小快照保存已完成slot、题组选择与提交位置、采题器及RNG状态，并绑定当时的模型检查点。只有已经进入持久快照、官方结果和已消费调用指纹都一致的完整slot才复用；未结束的agent会话用新attempt身份和工作区重跑，不能续接任意中途工具状态。磁盘上有输出但尚未进入快照的结果不会被捡回当作完成，基础设施失败也不变成零奖励。
+
+完整学习器检查点在old/reference全部冻结的首步前边界、每次optimizer step及批次状态边界提交，包含LoRA、Adam、scheduler、更新计数、当前批冻结概率、reuse进度和RNG，不复制冻结基座。首步前检查点不保存活动梯度；恢复时按记录的随机状态重算完整前缀梯度，沿用已冻结old/reference。半次梯度累积或未提交更新不能冒充已完成step。采集小快照与学习器大检查点分开；各状态流保留当前与上一代已提交快照，校验失败拒绝恢复，临时目录不会自动成为候选。完整调用及验收资产继续留在原隔离目录，不随检查点复制成一份官方训练数据。
+
+两份配置默认`run.max_worker_retries=1`：一个slot发生基础设施或消费确认故障时，最多额外尝试一次，只重试该slot；正常完整验收的失败不因此重试。该slot仍失败则整组不评分、不进入奖励分布或采题反馈，保留失败证据和已经完成的slot记录。单次采集会话累计`max_failed_groups_per_session=3`个耗尽重试的组后，停止新增选择，收尾其他已在飞组；有有效完整组就完成本批更新，没有则记录本批0步。若还有计划批次，保存下一批采集检查点并以退出码75暂停，显式`--resume`从下一批继续；已经达到`max_batches`则保存finished并正常结束，不追加批次或重开已结束的失败批次。
+
+请求状态分别记录`generated`、`delivered`、`consumed`：模型生成完不等于HTTP交付，HTTP写成功也不等于上层接收。每个逻辑LLM调用有独立`Idempotency-Key`，同调用的HTTP重试复用原键和完整请求体，重放原响应与工具ID；不同逻辑调用不会因文本相同而误去重。只有真实ADK成功解析最终消息、上层接收并把响应迭代器正常消费完，才向endpoint显式ACK；流式还要求原始OpenAI流的终帧及正常耗尽，避免LiteLLM在截断EOF后自动补`stop`造成误判。ACK只证明模型响应已被接收，不证明工具执行完成。进入训练仍须有完整任务轨迹、官方完整验收和消费确认；ACK持续失败即使被ADK转为agent错误，worker也会标为无效，不将其验收结果伪装成可训练奖励。
+
+奖励journal追加先flush与fsync，完成后才推进内存组记录；summary另作耐久原子替换。续跑在持独占锁时只能隔离未换行的中断末尾，先保存原始tail取证，再原子保留全部完整行；中间损坏或重复冲突仍拒绝。已提交组的相同证据可幂等重放，optimizer更新归属以恢复的学习器检查点为准，回退另有记录。
+
+手动CPU证据位于`results/local-recovery/2026-10-30/`：合成worker在21个采集边界中断后保留已提交slot与采题状态；真实TRL＋极小Gemma4在首步前、一步后、两步后恢复，LoRA/Adam最大差为0，scheduler与RNG一致。`results/local-delivery-ack-2026-10-30.json`记录真实ADK/LiteLLM/OpenAI SDK的重试、解析、断流与ACK边界，以及真实ADK Runner工具回合；`results/local-recovery-ledger-2026-10-30.json`补充journal耐久与尾部恢复。旧collection记录中的torn-tail限制由后一个记录对应修复解决，各记录保留当时源码指纹。以上没有使用官方题目、没有新增测试文件，也没有验证31B双卡恢复耗时或训练收益。
+
+后续入口联动记录中，[session_summary.json](../results/local-recovery/2026-10-30/session_summary.json)使用真实CPU训练器及合成worker，覆盖采集、冻结、step、adapter导出、下一批提交和finished恢复，LoRA/Adam/scheduler/RNG/sampler与连续执行一致，ledger不重复；还核对了失败阈值退出75后从下一批继续。[cli_summary.json](../results/local-recovery/2026-10-30/cli_summary.json)使用真实CLI与合成输入、假learner，核对省略配置路径的续跑、预算不重置、显式追加额度、超时清理及权重变化拒绝。[supervisor_summary.json](../results/local-recovery/2026-10-30/supervisor_summary.json)用真实继承锁FD的子进程和模拟进程登记核对父异常后的互斥、退出竞态、PID复用保护及子deadline不重复赠送启动前耗时；这些局部CPU记录仍不能替代实际31B进程与官方任务实验。
 
 ## 取回分析日志
 

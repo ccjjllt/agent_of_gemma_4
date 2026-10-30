@@ -48,7 +48,19 @@
 
 题面、`base_commit`和官方资产保持原样，参考补丁与验收资产仅供裁判侧；排除列表中的题不进入采样器。工具与验收使用独立CPU进程及低权限UID。10月30日已将生成入口改为逐步连续批处理、同策略版本的有界前缀KV复用和跨题组有界预取；这是新代码状态，下面的`first-batch-008`仍是此前串行版本的实测记录。
 
-首批先取1个有效题组、每题仍采8条完整轨迹，最多尝试3题；同批最多更新2次，总进程上限2小时。正式配置仍为每批4组、最多32批。会话预算显式设为60分钟、100次工具调用、50回合，命令与验收超时各300秒；原版示例的1分钟/10次工具预算仅在运行配置中覆盖。
+首批先取1个有效题组、每题仍采8条完整轨迹，最多尝试3题；同批最多更新2次，run初始额度2小时，包含模型加载且续跑不重置。正式配置仍为每批4组、最多32批。会话预算显式设为60分钟、100次工具调用、50回合，命令与验收超时各300秒；原版示例的1分钟/10次工具预算仅在运行配置中覆盖。
+
+执行现支持`--resume --run-dir <已有目录>`，可省略配置、数据、模型与submission路径，沿用并核对`run_config.json`绑定的输入。每个run独占执行，存活learner继承监督进程的同一锁；重启不会重新获得2小时额度。正常停止后的停机时间不计入活动时间，非正常中断的失联时段则保守计入上次剩余额度。仅`--additional-walltime-seconds`显式增加额度，这个记录不是GPU计费证明；没有入口仍不实验。
+
+恢复复用的对象是已持久化的完整slot与组、sampler/RNG、LoRA、Adam、scheduler、当前批冻结old/reference和reuse进度。完整学习器状态在首步前冻结边界、每次optimizer step及批次状态边界提交，采集状态另存小快照；不复制冻结基座，不从半次梯度或未提交输出推断完成。未结束会话用新attempt身份和工作区重跑；即使磁盘已有结果，尚未进入快照也不捡回。只有adapter的旧run不能据此宣称可完整续跑。
+
+默认每个故障slot最多额外重试一次（`max_worker_retries=1`），只针对基础设施及消费确认失败，正常验收失败不重试。重试耗尽的组不评分、不作为采题反馈；单次采集会话达到3个失败组后停止新选择，收尾在飞组，并用有效组完成本批更新，没有有效组则记0步。仍有计划批次时保存下一批采集状态并以退出码75暂停，显式恢复从下一批继续；达到总批数则保存finished并正常结束，不重开已结束批次或增加批数。
+
+生成、HTTP交付和上层消费分别记录。HTTP重试用同一逻辑请求的幂等键与完整body，保留响应和工具ID；只有真实ADK完整接收已解析消息后显式ACK才计入`consumed`。流式核对原始终帧，不能把LiteLLM自动补出的结束标记当作完整交付。ACK不是工具执行完成证明；训练仍要求完整轨迹和完整官方验收，消费不确定时不生成可训练奖励。奖励journal与summary持久化，恢复只隔离无换行尾部并保留原字节证据，完整行不丢弃，中间损坏和冲突仍拒绝。
+
+手动证据见`results/local-recovery/2026-10-30/`：21个采集边界中断保留已持久化slot与采题状态；真实TRL＋极小Gemma4从首步前及更新后恢复，LoRA/Adam最大差为0，scheduler与RNG一致。真实SDK消费与工具回合记录在`results/local-delivery-ack-2026-10-30.json`，后续journal修复单列于`results/local-recovery-ledger-2026-10-30.json`，不覆盖旧证据与源码指纹。它们证明局部恢复机制，不能代替31B＋Unsloth双卡续跑、完整官方任务或训练收益实验；详细入口见[中断恢复说明](../training/README.md#中断恢复失败重试与消费确认)。
+
+入口联动另见[session_summary.json](../results/local-recovery/2026-10-30/session_summary.json)：真实CPU训练器配合合成worker，在采集、冻结、step、导出与状态提交边界恢复后，学习器、RNG及sampler与连续执行一致，ledger无重复，失败阈值后从下一批恢复。[cli_summary.json](../results/local-recovery/2026-10-30/cli_summary.json)以真实CLI和假learner核对路径/config继承、额度与超时清理；[supervisor_summary.json](../results/local-recovery/2026-10-30/supervisor_summary.json)记录真实父子继承锁和模拟进程清理边界。这些验证未启动GPU，也未执行官方题目。
 
 `first-batch-008` 于北京时间01:21:20启动，首题为 `fastapi_15023`。已取回的01:29:50日志快照记录11次完成调用、1297个输出tokens、410.75秒生成时间，合计3.16 tokens/s；首次logits返回前计时合计27.12秒（6.6%），最长GPU排队184.78秒。加载约30GiB/卡，生成约33GiB/卡。尚无完整题组、奖励或GRPO更新的证据。
 
@@ -56,10 +68,14 @@
 
 当前证据指向解码开销和GPU串行队列；原CPU线程池已经会在轨迹完成时立即补位。新调度让活动序列共用decode forward，并在步间接纳新请求；题组之间也能有界重叠，完整组仍按选题顺序决定是否训练。前缀缓存只作为补充，不把它当成解决主要解码瓶颈的依据。
 
-实现沿用原生逐层`DynamicCache`，没有直接打开Transformers5.17的paged连续批处理：该版本[缓存分配源码](https://github.com/huggingface/transformers/blob/v5.17.0/src/transformers/generation/continuous_batching/cache.py)采用统一KV头形状，与Gemma4异构full/sliding层不符。当前保留跨卡分层，未实现张量并行；长prefill仍逐个处理。详细配置与限制见[生成调度说明](../training/README.md#生成调度与性能测量)。
+实现沿用原生逐层`DynamicCache`，没有直接打开Transformers5.17的paged连续批处理：该版本[缓存分配源码](https://github.com/huggingface/transformers/blob/v5.17.0/src/transformers/generation/continuous_batching/cache.py)采用统一KV头形状，与Gemma4异构full/sliding层不符。当前保留跨卡分层，未实现张量并行；新增decode优先的分块prefill、相同在飞prompt合并及full-KV几何扩容，长提示不再一次占满整个prefill调度步。详细配置与限制见[生成调度说明](../training/README.md#生成调度与性能测量)。
 
 必要手动核对已用极小随机Gemma4在CPU完成：批内异长前缀、滑窗跨界及共享KV与独立完整前缀forward一致到浮点误差；实际连续采样19个token的behavior logprob最大绝对差约2.4e-6，最大活动batch为3，覆盖中途加入和退出。HTTP调度、取消与完整题组选入顺序也已核对，未新增测试文件。CPU数值记录在`results/local-batching/2026-10-30/`，不能用CPU吞吐声称31B加速。
 
-尚缺31B＋Unsloth双卡的真实运行证据。下一次实验应先在同一BF16基座、同一完整调用上比较batch 1/2/4的吞吐与每token概率，再单独采集CPU/CUDA profiler；采样profile窗口不混入常规吞吐。继续保留完整历史、思考和验收，不凭低GPU利用率归因PCIe或概率记录。原SSH入口在本次只读探测时关闭连接，未启动远程机器或GPU实验。
+深度优化现默认8个CPU worker配4个GPU活动槽位，覆盖工具与验收造成的空档；SQLite/响应提交移到有界writer，仍在持久化后才交付。训练会话默认仅扣除服务端证实的纯排队且客户端确在等待的区间，工具和生成仍计时，原墙钟并列保存；60分钟会话、300秒命令/验收、50回合、100工具及7200秒run上限保留。该训练时钟不等于官方wall-clock评测，可切回`runtime.session_clock="wall"`。
+
+手动机制证据见`results/local-throughput/2026-10-30/`：4个相同29-token提示只forward一次29-token前缀；full层追加的旧前缀复制由299008降为15360元素，真实小模型logprob对完整prefix最大误差低于1e-6。注入150ms磁盘延迟时其他decode不再等待该提交；这些CPU数值与注入延迟仅证明实现行为，不能换算为31B加速比例。
+
+尚缺31B＋Unsloth双卡的真实运行证据。下一次实验应先在同一BF16基座、同一完整调用上比较batch 1/2/4的吞吐与每token概率，再单独采集CPU/CUDA profiler；采样profile窗口不混入常规吞吐。继续保留完整历史、思考和验收，不凭低GPU利用率归因PCIe或概率记录。用户已明确没有入口不实验，本次未连接远程机器或启动GPU实验。
 
 参数见[首批配置](../configs/first_batch.toml)和[双A800配置](../configs/a800_2x80.toml)，部署见[训练说明](../training/README.md)，实现入口为[GRPO Trainer](../training/grpo_trainer.py)、[奖励](../training/rewards.py)和[动态采题](../training/curriculum.py)。

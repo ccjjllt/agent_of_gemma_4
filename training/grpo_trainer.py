@@ -16,8 +16,10 @@ import json
 import math
 import os
 from pathlib import Path
+import random
 import sys
 import tempfile
+import time
 import uuid
 
 from .probability_cache import ReferenceProbabilityCache
@@ -25,6 +27,63 @@ from .probability_cache import ReferenceProbabilityCache
 
 class _ReuseStopped(Exception):
     """A complete cohort needs fresh rollouts before another optimizer update."""
+
+
+def capture_rng_state(torch_module=None):
+    """Snapshot RNGs as primitives/CPU tensors suitable for weights_only load."""
+    torch = torch_module
+    if torch is None:
+        import torch
+    import numpy as np
+
+    numpy_state = np.random.get_state()
+    return {
+        "schema_version": 1,
+        "python": random.getstate(),
+        "numpy": {"algorithm": numpy_state[0], "keys": numpy_state[1].tolist(),
+                  "position": int(numpy_state[2]), "has_gauss": int(numpy_state[3]),
+                  "cached_gaussian": float(numpy_state[4])},
+        "torch_cpu": torch.get_rng_state().cpu().clone(),
+        "torch_cuda": [value.cpu().clone() for value in torch.cuda.get_rng_state_all()]
+                      if torch.cuda.is_available() else [],
+    }
+
+
+def restore_rng_state(state, torch_module=None):
+    """Restore a checkpoint's RNGs without reseeding an active random stream."""
+    torch = torch_module
+    if torch is None:
+        import torch
+    import numpy as np
+
+    if not isinstance(state, dict) or state.get("schema_version") != 1:
+        raise ValueError("Unsupported RNG checkpoint schema")
+    cuda = state.get("torch_cuda")
+    visible = torch.cuda.device_count() if torch.cuda.is_available() else 0
+    if not isinstance(cuda, list) or len(cuda) != visible:
+        raise ValueError("RNG checkpoint CUDA topology differs from this process")
+    cpu = state.get("torch_cpu")
+    if not isinstance(cpu, torch.Tensor) or cpu.dtype != torch.uint8 or cpu.ndim != 1:
+        raise ValueError("Invalid CPU Torch RNG state")
+    for value in cuda:
+        if not isinstance(value, torch.Tensor) or value.dtype != torch.uint8 or value.ndim != 1:
+            raise ValueError("Invalid CUDA RNG state")
+    data = state["numpy"]
+    # Validate Python/NumPy using independent generators before changing globals.
+    python_state = tuple(state["python"])
+    if isinstance(python_state[1], list):
+        python_state = (python_state[0], tuple(python_state[1]), python_state[2])
+    random.Random().setstate(python_state)
+    numpy_state = (data["algorithm"], np.asarray(data["keys"], dtype=np.uint32),
+                   int(data["position"]), int(data["has_gauss"]), float(data["cached_gaussian"]))
+    np.random.RandomState().set_state(numpy_state)
+    probe = torch.Generator(device="cpu")
+    probe.set_state(cpu.cpu())
+    random.setstate(python_state)
+    np.random.set_state(numpy_state)
+    torch.set_rng_state(cpu.cpu())
+    if cuda:
+        torch.cuda.set_rng_state_all([value.cpu() for value in cuda])
 
 
 def _trl_implementation():
@@ -50,7 +109,7 @@ def _trl_implementation():
     return sys.modules[name]
 
 
-def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callback=None):
+def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callback=None, checkpoint_callback=None):
     """Construct an actual TRL trainer; importing this module never loads CUDA.
 
     optimize_batch accepts trajectory dictionaries with calls, advantage,
@@ -90,15 +149,25 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
 
     class CohortCallback(TrainerCallback):
         def on_step_begin(self, args, state, control, **kwargs):
-            owner._begin_reuse_step(int(state.global_step))
+            if owner._pending_rng_state is not None:
+                restore_rng_state(owner._pending_rng_state, torch)
+                owner._pending_rng_state = None
+            owner._begin_reuse_step(owner._reuse_start + int(state.global_step))
 
         def on_step_end(self, args, state, control, **kwargs):
-            row = {"event": "grpo_optimizer_step", "optimizer_step": owner._offset + state.global_step,
-                   "reuse_index": state.global_step, **owner._last_step_metrics}
+            completed = owner._reuse_start + int(state.global_step)
+            row = {"event": "grpo_optimizer_step", "optimizer_step": owner._offset + completed,
+                   "reuse_index": completed, **owner._last_step_metrics}
             owner._step_history.append(row)
             owner._attempt_history[-1]["status"] = "optimizer_applied"
+            owner.completed_optimizer_steps = owner._offset + completed
+            owner._checkpoint_safe = True
+            for trajectory in owner._cohort:
+                for call in trajectory["calls"]:
+                    call.pop("_first_gradient_rng", None)
             if emit_callback:
                 emit_callback(row["event"], **{key: value for key, value in row.items() if key != "event"})
+            owner._checkpoint("optimizer_step")
 
     class OfficialTaskGRPOTrainer(GRPOTrainer):
         def __init__(self):
@@ -112,6 +181,13 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
             self._last_step_metrics = {}
             self._reuse_reason = None
             self._preupdate_diagnostics = {}
+            self._attempt_history = []
+            self._reuse_start = 0
+            self._pending_rng_state = None
+            self._restored_batch = False
+            self._checkpoint_safe = True
+            self._checkpoint_phase = "idle"
+            self._optimizing = False
             self._reference_cache = ReferenceProbabilityCache(
                 "disabled-adapter-" + uuid.uuid4().hex,
                 max_entries=int(cfg.get("reference_cache_max_entries", 128)),
@@ -166,13 +242,182 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
             self.model_accepts_loss_kwargs = False
             if self.accelerator.num_processes != 1:
                 raise RuntimeError("Use one process with the model split across GPUs, not DDP launch")
+            self._optimizer_parameter_names = [name for name, parameter in self.policy.model.named_parameters()
+                                               if parameter.requires_grad]
+            if not self._optimizer_parameter_names:
+                raise RuntimeError("Trainer construction requires the fresh trainable LoRA parameters")
+
+        @property
+        def has_pending_batch(self):
+            # A checkpoint taken at the final step still needs the caller's
+            # batch commit/export, even though no optimizer steps remain.
+            return self._restored_batch and self._cohort is not None
+
+        @staticmethod
+        def _cpu_state(value):
+            if isinstance(value, torch.Tensor):
+                return value.detach().cpu().clone()
+            if isinstance(value, dict):
+                return {key: OfficialTaskGRPOTrainer._cpu_state(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [OfficialTaskGRPOTrainer._cpu_state(item) for item in value]
+            if isinstance(value, tuple):
+                return tuple(OfficialTaskGRPOTrainer._cpu_state(item) for item in value)
+            return copy.deepcopy(value)
+
+        def _checkpoint(self, phase):
+            self._checkpoint_phase = phase
+            if checkpoint_callback is not None:
+                started = time.perf_counter()
+                state = self.export_training_state()
+                export_seconds = time.perf_counter() - started
+                rng = copy.deepcopy(state["rng"])
+                try:
+                    checkpoint_callback(state)
+                    if emit_callback:
+                        emit_callback("grpo_state_exported", phase=phase, state_export_seconds=export_seconds,
+                                      optimizer_steps=state["completed_optimizer_steps"])
+                finally:
+                    # Checkpoint I/O/name allocation must not perturb the
+                    # model's random stream relative to uninterrupted training.
+                    restore_rng_state(rng, torch)
+
+        def export_training_state(self):
+            """Export a consistent step boundary; the caller commits it atomically.
+
+            The frozen-before-first-step boundary intentionally excludes live
+            gradients. Per-call RNGs let recovery reproduce that first gradient
+            with its already frozen old/reference probabilities.
+            """
+            if (not self._checkpoint_safe or self._active_call is not None
+                    or self._active_scores is not None):
+                raise RuntimeError("Training state is not at a recoverable checkpoint boundary")
+            if torch.cuda.is_available():
+                for device in range(torch.cuda.device_count()):
+                    torch.cuda.synchronize(device)
+            active = None
+            if self._cohort is not None:
+                active = {
+                    "cohort": self._cohort, "offset": self._offset,
+                    "completed_reuses": len(self._step_history),
+                    "probabilities_frozen": self._probabilities_frozen,
+                    "probability_file": self._probability_path.name,
+                    "reference_matches_learner": self._reference_matches_learner,
+                    "step_history": self._step_history,
+                    "attempt_history": self._attempt_history,
+                    "last_step_metrics": self._last_step_metrics,
+                    "preupdate_diagnostics": self._preupdate_diagnostics,
+                    "forward_invocations": dict(self._forward_invocations),
+                    "probability_reuse": dict(self._probability_reuse),
+                    "reuse_stop_reason": self._reuse_reason,
+                }
+            completed = self._offset + len(self._step_history) if active is not None else self.completed_optimizer_steps
+            return {
+                "schema_version": 1, "checkpoint_phase": self._checkpoint_phase,
+                "trainer_config": copy.deepcopy(cfg),
+                "completed_optimizer_steps": completed,
+                "adapter": self.policy.export_adapter_state(),
+                "optimizer_parameter_names": list(self._optimizer_parameter_names),
+                "optimizer": self._cpu_state(self.optimizer.state_dict()) if self.optimizer is not None else None,
+                "scheduler": self._cpu_state(self.lr_scheduler.state_dict()) if self.lr_scheduler is not None else None,
+                "active_batch": self._cpu_state(active),
+                "rng": capture_rng_state(torch),
+            }
+
+        def restore_training_state(self, state):
+            """Restore only an explicit checkpoint into a fresh zero-B trainer.
+
+            The caller verifies the committed checkpoint's checksum and base
+            fingerprints. Ordinary construction still rejects nonzero adapters.
+            """
+            if self._optimizing or self.optimizer is not None or self.completed_optimizer_steps or self._cohort is not None:
+                raise RuntimeError("Restore requires a fresh, inactive trainer")
+            if not isinstance(state, dict) or state.get("schema_version") != 1 or state.get("trainer_config") != cfg:
+                raise ValueError("Checkpoint trainer configuration differs from this run")
+            completed = state.get("completed_optimizer_steps")
+            if type(completed) is not int or completed < 0:
+                raise ValueError("Invalid checkpoint optimizer-step count")
+            if state.get("optimizer_parameter_names") != self._optimizer_parameter_names:
+                raise ValueError("Checkpoint optimizer parameter ordering differs")
+            active = copy.deepcopy(state.get("active_batch"))
+            if active is not None:
+                if not isinstance(active, dict):
+                    raise ValueError("Invalid active-cohort checkpoint")
+                offset, done = active.get("offset"), active.get("completed_reuses")
+                if (type(offset) is not int or offset < 0 or type(done) is not int or not 0 <= done <= repetitions
+                        or completed != offset + done or len(active.get("step_history", [])) != done):
+                    raise ValueError("Checkpoint cohort/update counters disagree")
+                if not active.get("probabilities_frozen") or not active.get("cohort"):
+                    raise ValueError("Active-cohort recovery requires fully frozen probabilities")
+                filename = active.get("probability_file")
+                if not isinstance(filename, str) or Path(filename).name != filename or not filename.endswith(".jsonl"):
+                    raise ValueError("Invalid frozen-probability checkpoint filename")
+                for trajectory in active["cohort"]:
+                    if not math.isfinite(float(trajectory["advantage"])) or not trajectory.get("calls"):
+                        raise ValueError("Invalid checkpoint trajectory")
+                    for call in trajectory["calls"]:
+                        n = len(call["completion_ids"])
+                        if not call["prompt_ids"] or not n or len(call["prompt_ids"]) + n > self.policy.max_context:
+                            raise ValueError("Invalid complete call in checkpoint")
+                        for name in ("behavior_logprobs", "old_learner_logprobs", *( ["reference_logprobs"] if beta else [])):
+                            values = call.get(name)
+                            if not isinstance(values, list) or len(values) != n or not all(map(math.isfinite, values)):
+                                raise ValueError(f"Invalid frozen checkpoint probabilities: {name}")
+                        if done == 0 and not isinstance(call.get("_first_gradient_rng"), dict):
+                            raise ValueError("Frozen zero-step recovery requires each call's gradient RNG")
+            if completed and (state.get("optimizer") is None or state.get("scheduler") is None):
+                raise ValueError("Completed updates require both Adam and scheduler state")
+            self.policy.restore_adapter_state(state["adapter"])
+            if state.get("optimizer") is not None:
+                self.create_optimizer()
+            if state.get("scheduler") is not None:
+                if self.optimizer is None:
+                    raise ValueError("Scheduler checkpoint requires an optimizer")
+                self.create_scheduler(total_optimizer_steps)
+            # Scheduler construction performs its initial step; load Adam's
+            # saved param-group LR afterwards so it cannot reset resumed LR.
+            if state.get("optimizer") is not None:
+                self.optimizer.load_state_dict(state["optimizer"])
+            if state.get("scheduler") is not None:
+                self.lr_scheduler.load_state_dict(state["scheduler"])
+            self.completed_optimizer_steps = completed
+            self._checkpoint_phase = state.get("checkpoint_phase", "restored")
+            self._reference_cache.clear()
+            if active is not None:
+                self._cohort = active["cohort"]
+                self._offset, self._reuse_start = active["offset"], active["completed_reuses"]
+                self._reuse_index = self._reuse_start
+                self._probabilities_frozen = True
+                self._probability_path = Path(output_dir) / "frozen_probabilities" / active["probability_file"]
+                self._reference_matches_learner = active["reference_matches_learner"]
+                self._step_history, self._attempt_history = active["step_history"], active["attempt_history"]
+                if self._reuse_start == 0 and self._attempt_history:
+                    self._attempt_history[-1]["status"] = "gradient_replay_required"
+                self._last_step_metrics = active["last_step_metrics"]
+                self._preupdate_diagnostics = active["preupdate_diagnostics"]
+                self._preupdate_diagnostics["frozen_probabilities_source"] = "checkpoint"
+                self._preupdate_diagnostics["frozen_probabilities_path"] = (
+                    str(self._probability_path) if self._probability_path.is_file() else None)
+                self._forward_invocations = active["forward_invocations"]
+                self._probability_reuse = active["probability_reuse"]
+                self._reuse_reason = active["reuse_stop_reason"]
+                self._restored_batch = True
+                self._pending_rng_state = copy.deepcopy(state["rng"])
+            restore_rng_state(state["rng"], torch)
+            self.policy.model.zero_grad(set_to_none=True)
+            self.policy._mode = None
+            self._checkpoint_safe = True
 
         def get_train_dataloader(self):
             if self._cohort is None:
                 raise RuntimeError("Call optimize_batch with completed official trajectories")
             # One item contains one complete cohort. Trainer repeats this one-item
             # epoch mu times; native prompt repetition/generation is bypassed.
-            return DataLoader([0], batch_size=1, collate_fn=lambda _: {"official_cohort": True})
+            # Dummy-loader iterator seeds must not perturb model/actor RNGs
+            # differently after constructing a new Trainer during recovery.
+            generator = torch.Generator(device="cpu").manual_seed(0)
+            return DataLoader([0], batch_size=1, generator=generator,
+                              collate_fn=lambda _: {"official_cohort": True})
 
         def _prepare_inputs(self, inputs):
             if not isinstance(inputs, dict) or inputs.get("official_cohort") is not True:
@@ -328,6 +573,8 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
             self.policy._for_training()
             self.current_gradient_accumulation_steps = 1
             local_step = self._reuse_index
+            self._checkpoint_safe = False
+            calibrating = local_step == 0 and not self._probabilities_frozen
             lengths = {key: len(value) for key, value in self._metrics["train"].items()}
             total_loss = kl_sum = ratio_max = 0.0
             tokens = calls_forward = calls_backward = 0
@@ -340,17 +587,23 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
                     for call in trajectory["calls"]:
                         if self.policy.abort_generation.is_set():
                             raise RuntimeError("Run cancelled during GRPO gradient accumulation")
-                        if local_step == 0:
+                        if calibrating:
                             self._reference_for_call(call)
                         logp = entropy = loss = loss_inputs = None
                         try:
                             with self.compute_loss_context_manager():
+                                if calibrating:
+                                    call["_first_gradient_rng"] = capture_rng_state(torch)
+                                elif local_step == 0:
+                                    # Replay a frozen-before-step checkpoint
+                                    # without regenerating its old/reference.
+                                    restore_rng_state(call["_first_gradient_rng"], torch)
                                 self._forward_invocations["gradient"] += 1
                                 calls_forward += 1
                                 logp, entropy = self.policy.per_token_logprobs(call, compute_entropy=True)
-                                if local_step == 0:
+                                if calibrating:
                                     self._freeze_from_gradient(call, logp)
-                                else:
+                                elif local_step > 0:
                                     # This complete-prefix gradient forward is
                                     # also the reuse diagnostic; no separate pass.
                                     delta = logp.detach().double().cpu() - torch.tensor(
@@ -397,10 +650,17 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
                     if target is not None and float(target) > 0 and drift > float(target):
                         self._reuse_reason = "target_kl"
                         raise _ReuseStopped(self._reuse_reason)
-                else:
+                elif calibrating:
                     # Every denominator is now frozen under the pre-update
                     # weights. Publish only a complete snapshot, before step().
                     self._publish_frozen_probabilities()
+                    attempt.update(status="gradients_frozen", gradient_forwards=calls_forward,
+                                   backwards=calls_backward)
+                    self._checkpoint_safe = True
+                    try:
+                        self._checkpoint("frozen_before_first_step")
+                    finally:
+                        self._checkpoint_safe = False
                 self._last_step_metrics = {
                     "loss": total_loss, "generated_tokens": tokens,
                     "gradient_forwards": calls_forward, "backwards": calls_backward,
@@ -427,12 +687,18 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
                 self._active_call = self._active_scores = None
 
         def optimize_batch(self, trajectories):
+            if self.has_pending_batch:
+                raise RuntimeError("Resume the checkpoint's active cohort before collecting another policy batch")
+            if self._optimizing or not self._checkpoint_safe:
+                raise RuntimeError("Restore a safe checkpoint before starting another optimization")
             self._step_history = []
             self._offset = self.completed_optimizer_steps
+            self._optimizing = True
             try:
                 return self._optimize_batch(trajectories)
             except BaseException:
                 self.policy.model.zero_grad(set_to_none=True)
+                self._checkpoint_safe = False
                 raise
             finally:
                 # Trainer can fail before replacing the preceding TrainerState.
@@ -441,6 +707,30 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
                 self.policy._mode = None
                 self._active_call = self._active_scores = None
                 self._cohort = None
+                self._optimizing = False
+                self._restored_batch = False
+                self._pending_rng_state = None
+
+        def resume_batch(self):
+            """Finish the restored cohort, never recalibrating its denominators."""
+            if not self.has_pending_batch or self._optimizing or not self._checkpoint_safe:
+                raise RuntimeError("No safe restored cohort is pending")
+            self._optimizing = True
+            self._reuse_start = len(self._step_history)
+            try:
+                return self._run_active_batch()
+            except BaseException:
+                self.policy.model.zero_grad(set_to_none=True)
+                self._checkpoint_safe = False
+                raise
+            finally:
+                self.completed_optimizer_steps = self._offset + len(self._step_history)
+                self.policy._mode = None
+                self._active_call = self._active_scores = None
+                self._cohort = None
+                self._optimizing = False
+                self._restored_batch = False
+                self._pending_rng_state = None
 
         def _optimize_batch(self, trajectories):
             if not trajectories:
@@ -449,6 +739,7 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
             self._step_history, self._attempt_history = [], []
             self._reuse_reason = None
             self._offset = self.completed_optimizer_steps
+            self._reuse_start = 0
             self._reuse_index = 0
             self._probabilities_frozen = False
             self._preupdate_diagnostics = {}
@@ -477,19 +768,30 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
                     for key in ("old_learner_logprobs", "reference_logprobs",
                                 "old_probability_source", "reference_probability_source"):
                         call.pop(key, None)
-            self._probability_path = Path(output_dir) / "frozen_probabilities" / f"optimizer-{self._offset:08d}.jsonl"
-            if self._probability_path.exists():
-                raise FileExistsError("A frozen snapshot already exists for this optimizer offset")
-            self.args.max_steps = repetitions
-            self._step = 0
-            try:
-                self.train()
-            except _ReuseStopped:
-                self.optimizer.zero_grad(set_to_none=True)
-                self.is_in_train = False
-                self._memory_tracker.stop_and_update_metrics({})
-                self.control = self.callback_handler.on_train_end(self.args, self.state, self.control)
+            self._probability_path = (Path(output_dir) / "frozen_probabilities" /
+                                      f"optimizer-{self._offset:08d}-{uuid.uuid4().hex}.jsonl")
+            return self._run_active_batch()
+
+        def _run_active_batch(self):
+            before = len(self._step_history)
+            remaining = repetitions - before
+            self._step = before
+            if remaining and self._reuse_reason is None:
+                self.args.max_steps = remaining
+                try:
+                    self.train()
+                except _ReuseStopped:
+                    self.optimizer.zero_grad(set_to_none=True)
+                    self.is_in_train = False
+                    self._memory_tracker.stop_and_update_metrics({})
+                    self.control = self.callback_handler.on_train_end(self.args, self.state, self.control)
+                    self._checkpoint_safe = True
+                    self._checkpoint("cohort_stopped")
+            self._checkpoint_safe = True
+            self._checkpoint_phase = "cohort_finished"
             return {"optimizer_steps": len(self._step_history),
+                    "optimizer_steps_this_invocation": len(self._step_history) - before,
+                    "cohort_start_optimizer_step": self._offset,
                     "total_optimizer_steps": self._offset + len(self._step_history),
                     "reuse_stop_reason": self._reuse_reason,
                     "updates": list(self._step_history), "gradient_attempts": list(self._attempt_history),

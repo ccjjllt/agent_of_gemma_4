@@ -7,8 +7,6 @@ within the current policy-version batch. Official assets are never rewritten.
 from __future__ import annotations
 
 import argparse
-from collections import deque
-import concurrent.futures
 import hashlib
 import json
 import math
@@ -24,8 +22,9 @@ import tomllib
 
 from .endpoint import PolicyEndpoint
 from .curriculum import TaskSampler, load_tasks
-from .rewards import score_group_rewards
 from .reward_ledger import RewardLedger
+from .recovery import (CheckpointStore, CollectionInterrupted, RunBudget, WorkerAttemptError,
+                       atomic_json, file_digest, run_lock, value_digest)
 
 PROJECT = Path(__file__).resolve().parents[1]
 
@@ -38,7 +37,7 @@ def process_identity(pid):
         return None
 
 
-def stop_process_tree(proc, grace=2):
+def stop_process_tree(proc, grace=2, *, expected_start=None):
     """Also stop official command processes that created their own sessions."""
     snapshot = {}
     for path in Path("/proc").glob("[0-9]*/stat"):
@@ -46,6 +45,8 @@ def stop_process_tree(proc, grace=2):
         identity = process_identity(pid)
         if identity:
             snapshot[pid] = identity
+    if expected_start is not None and snapshot.get(proc.pid, (None, None))[1] != expected_start:
+        return
     selected = {proc.pid}
     while True:
         more = {pid for pid, (ppid, _) in snapshot.items() if ppid in selected}
@@ -75,8 +76,7 @@ def stop_process_tree(proc, grace=2):
 
 
 def write_json(path, value):
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+    atomic_json(path, value)
 
 
 def emit(path, event, **fields):
@@ -111,20 +111,36 @@ def reward_batch_summary(trajectories):
     }
 
 
-def run_worker(command, folder, deadline, expired, processes, process_lock):
+def run_worker(command, folder, deadline, expired, processes, process_lock, *, attempt_cancelled=None):
     if expired.is_set() or time.monotonic() >= deadline:
-        raise TimeoutError("Run expired before launching this task worker")
+        raise CollectionInterrupted("Run expired before launching this task worker")
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (folder / "worker.log").open("w", encoding="utf-8") as out:
-        proc = subprocess.Popen(command, stdout=out, stderr=subprocess.STDOUT,
-                                start_new_session=True, cwd=str(PROJECT))
+        try:
+            proc = subprocess.Popen(command, stdout=out, stderr=subprocess.STDOUT,
+                                    start_new_session=True, cwd=str(PROJECT))
+        except OSError as exc:
+            raise WorkerAttemptError(f"Worker launch failed: {exc}") from exc
         with process_lock:
             processes.add(proc)
         try:
+            identity = process_identity(proc.pid)
+            atomic_json(folder / "worker_process.json", {
+                "pid": proc.pid, "start_identity": list(identity) if identity else None,
+                "workspace": str(folder.resolve()), "command_sha256": value_digest(command),
+            })
             # Cancellation can race Popen and registration in the shared set.
             if expired.is_set() or time.monotonic() >= deadline:
-                raise TimeoutError("Run expired while launching this task worker")
-            proc.wait(timeout=max(1, deadline - time.monotonic()))
+                raise CollectionInterrupted("Run expired while launching this task worker")
+            while proc.poll() is None:
+                if expired.is_set() or time.monotonic() >= deadline:
+                    raise CollectionInterrupted("Run expired during this task worker")
+                if attempt_cancelled is not None and attempt_cancelled.is_set():
+                    raise WorkerAttemptError("This worker attempt was cancelled")
+                try:
+                    proc.wait(timeout=min(0.2, max(0.01, deadline - time.monotonic())))
+                except subprocess.TimeoutExpired:
+                    pass
         except BaseException:
             stop_process_tree(proc)
             raise
@@ -133,452 +149,310 @@ def run_worker(command, folder, deadline, expired, processes, process_lock):
                 processes.discard(proc)
     result_path = folder / "result.json"
     if not result_path.is_file():
-        raise RuntimeError(f"Official worker exited {proc.returncode} without a verdict: {folder / 'worker.log'}")
-    result = json.loads(result_path.read_text())
+        raise WorkerAttemptError(f"Official worker exited {proc.returncode} without a verdict: {folder / 'worker.log'}")
+    try:
+        result = json.loads(result_path.read_text())
+    except (ValueError, OSError) as exc:
+        raise WorkerAttemptError(f"Worker result could not be read: {result_path}") from exc
+    if not isinstance(result, dict):
+        raise WorkerAttemptError(f"Worker result is not a verdict object: {result_path}")
     if proc.returncode or result.get("infrastructure_error"):
-        raise RuntimeError(f"Official worker failed; see {result_path}")
+        raise WorkerAttemptError(f"Official worker failed; see {result_path}")
     if not result.get("verdict_valid") or not result.get("verification_complete"):
-        raise RuntimeError(f"Official verification is incomplete; see {result_path}")
+        raise WorkerAttemptError(f"Official verification is incomplete; see {result_path}")
     if result.get("reward") not in (0, 1):
-        raise RuntimeError("Official binary outcome is missing; refusing to invent a reward")
+        raise WorkerAttemptError("Official binary outcome is missing; refusing to invent a reward")
     return result
 
 
-def collect_batch(*, cfg, batch, policy_version, sampler, endpoint, run_dir,
-                  runtime_python, data_root, submission, uid_base, deadline,
-                  expired, processes, process_lock, cancel_run, reward_ledger=None):
-    """Collect bounded, overlapping groups under one unchanged learner policy.
+def collect_batch(**kwargs):
+    from .collection import collect_batch as collect_recoverable_batch
 
-    Worker slots are filled as soon as a trajectory ends, including from other
-    groups. Completed groups are scored and committed in their selection order,
-    never their completion order. That prevents fast tasks from winning the
-    batch's learning slots. Every pending group reserves one remaining learning
-    slot; only completed low-signal groups release a slot for another candidate.
-    All started groups still finish their complete trajectories and acceptance.
-    """
-    generations = int(cfg["run"]["num_generations"])
-    target_groups = int(cfg["run"]["groups_per_batch"])
-    max_candidates = int(cfg["run"]["max_candidate_groups_per_batch"])
-    prefetch_groups = min(int(cfg["run"].get("prefetch_groups", 2)), max_candidates)
-    workers = int(cfg["run"]["max_cpu_workers"])
-    std_floor = float(cfg["grpo"]["advantage_std_floor"])
-    scaling = cfg["grpo"].get("scale_rewards", "group")
-    metrics = run_dir / "metrics.jsonl"
-    # Main supplies one run-scoped ledger. Standalone callers restore existing
-    # records rather than resetting the denominator at every collection batch.
-    if reward_ledger is None:
-        reward_ledger = RewardLedger(run_dir)
-    accepted, attempted, used_repos = [], set(), set()
-    pending, runnable = deque(), deque()
-    futures = {}
-    completed_groups = candidate_successes = candidate_trajectories = 0
-    next_candidate = 0
-    catalog_exhausted = False
-    sampler.set_policy_version(policy_version)
-
-    emit(metrics, "batch_collection_started", batch=batch, policy_version=policy_version,
-         target_groups=target_groups, group_size=generations, prefetch_groups=prefetch_groups,
-         max_cpu_workers=workers, group_commit_order="selection_order")
-    endpoint.begin([], policy_version)
-    pool = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
-
-    def select_groups():
-        nonlocal next_candidate, catalog_exhausted
-        while (len(pending) < min(prefetch_groups, target_groups - len(accepted))
-               and next_candidate < max_candidates and not catalog_exhausted):
-            selection = sampler.choose(exclude_ids=attempted, used_repos=used_repos)
-            if selection is None:
-                catalog_exhausted = True
-                break
-            candidate = next_candidate
-            next_candidate += 1
-            attempted.add(selection["id"])
-            used_repos.add(selection["repo"])
-            group_id = f"batch-{batch:04d}-group-{candidate:03d}"
-            identities = [f"{group_id}-rollout-{i:03d}" for i in range(generations)]
-            endpoint.register(identities, policy_version)
-            state = {"candidate": candidate, "selection": selection, "group_id": group_id,
-                     "identities": identities, "results": [None] * generations,
-                     "next_rollout": 0, "completed": 0, "selected_at": time.monotonic()}
-            pending.append(state)
-            runnable.append(state)
-            emit(metrics, "group_selected", batch=batch, group_id=group_id,
-                 prefetched_groups=len(pending), **selection)
-
-    def fill_worker_slots():
-        # Only submit runnable work, rather than burying whole groups in the
-        # executor's FIFO. Round-robin submission gives every prefetched group
-        # access to CPU tools and the shared GPU request scheduler.
-        while runnable and len(futures) < workers:
-            state = runnable.popleft()
-            index = state["next_rollout"]
-            state["next_rollout"] += 1
-            if state["next_rollout"] < generations:
-                runnable.append(state)
-            identity = state["identities"][index]
-            folder = run_dir / identity
-            # Overlapping groups must never share their low-privilege agent UID.
-            agent_uid = uid_base + (batch * max_candidates + state["candidate"]) * generations + index
-            command = [str(runtime_python), str(PROJECT / "training/official_runtime.py"),
-                       "--data-root", str(data_root), "--submission-dir", str(submission),
-                       "--endpoint", endpoint.url, "--workspace", str(folder / "workspace"),
-                       "--result-file", str(folder / "result.json"), "--rollout-id", identity,
-                       "--sandbox", cfg["runtime"]["sandbox"], "--agent-uid", str(agent_uid),
-                       "--sandbox-baseline-python", cfg["runtime"].get("sandbox_baseline_python", "/opt/gemma-sandbox-baseline/bin/python"),
-                       "--evaluation-overrides-json", json.dumps(cfg["runtime"].get("evaluation", {})),
-                       "--task-id", state["selection"]["id"]]
-            future = pool.submit(run_worker, command, folder, deadline, expired, processes, process_lock)
-            futures[future] = (state, index)
-
-    def commit_group(state):
-        nonlocal completed_groups, candidate_successes, candidate_trajectories
-        selection, identities, results = state["selection"], state["identities"], state["results"]
-        task_id, group_id = selection["id"], state["group_id"]
-        if any(endpoint.errors.get(identity) for identity in identities):
-            raise RuntimeError("A candidate group has failed model calls; no partial update")
-        calls = [endpoint.calls[identity] for identity in identities]
-        if any(not items for items in calls):
-            raise RuntimeError("An official trajectory has no recorded model actions")
-        if any(result["task_id"] != task_id for result in results):
-            raise RuntimeError("Official task identity differs from the selected group")
-        if any(call["policy_version"] != policy_version for items in calls for call in items):
-            raise RuntimeError("A collected trajectory crossed learner policy versions")
-
-        # Preserve independently reliable components and compare missing values
-        # through explicit intervals. The scorer owns any documented reduced-
-        # objective fallback; never impute a missing component or recenter a
-        # conservative signed signal here.
-        group_reward = score_group_rewards(
-            results, calls, cfg["rewards"], scale_rewards=scaling,
-            advantage_std_floor=std_floor,
-            min_group_std=float(sampler.config["min_group_std"]),
-        )
-        scored, rewards = group_reward["scored"], group_reward["rewards"]
-        learning_signal = group_reward["learning_signal"]
-        advantages, advantage_bounds = group_reward["advantages"], group_reward["advantage_bounds"]
-        reward_mode, reward_signature = group_reward["reward_mode"], group_reward["reward_signature"]
-        diagnostics = group_reward["diagnostics"]
-        outcomes = [bool(result["success"]) for result in results]
-        candidate_successes += sum(outcomes)
-        candidate_trajectories += len(outcomes)
-        group_stats = sampler.observe(task_id, rewards, outcomes, policy_version=policy_version,
-                                      reward_signature=reward_signature, learning_signal=learning_signal)
-        completed_groups += 1
-        selected = bool(group_stats["informative"])
-        if selected and len(accepted) >= target_groups:
-            raise RuntimeError("Pending candidate groups exceeded the remaining learning slots")
-        exclusion = None if selected else "no_safe_learning_signal"
-        trajectories = []
-        for identity, items, official, score, signal, advantage, bounds in zip(
-                identities, calls, results, scored, learning_signal, advantages, advantage_bounds):
-            trajectories.append({
-                "task_id": task_id, "group_id": group_id, "rollout_id": identity,
-                "policy_version": policy_version, "calls": items,
-                "reward": score["total"], "reward_bounds": score["reward_bounds"],
-                "reward_components": score["components"], "learning_signal": signal,
-                "advantage": advantage, "advantage_bounds": bounds,
-                "reward_mode": reward_mode, "official_success": official["success"],
-                "selection_probability": selection["selection_probability"],
-            })
-            write_json(run_dir / identity / "reward.json", {
-                "official_reward": official["reward"], "group_reward_mode": reward_mode,
-                "reward_signature": reward_signature,
-                "effective_reward_weights": dict(cfg["rewards"]), **score,
-                "learning_signal": signal, "advantage": advantage, "advantage_bounds": bounds,
-                "group_diagnostics": diagnostics,
-                "selected_for_update": selected, "exclusion_reason": exclusion,
-            })
-        # Every complete candidate group enters this denominator, including
-        # filtered groups and selected groups whose optimizer update later fails.
-        reward_ledger.record_group(
-            batch=batch, group_id=group_id, task_id=task_id, policy_version=policy_version,
-            selection=selection, scored=scored, advantages=advantages, group_stats=group_stats,
-            results=results, calls=calls, selected_for_update=selected, exclusion_reason=exclusion,
-            reward_mode=reward_mode, reward_signature=reward_signature, diagnostics=diagnostics,
-        )
-        emit(metrics, "group_verified", batch=batch, group_id=group_id, **group_stats,
-             rewards=rewards, advantages=advantages, reward_mode=reward_mode,
-             learning_signal=learning_signal, advantage_bounds=advantage_bounds,
-             reward_diagnostics=diagnostics,
-             selected_for_update=selected, exclusion_reason=exclusion,
-             selection_to_commit_seconds=time.monotonic() - state["selected_at"])
-        write_json(run_dir / "curriculum_state.json", sampler.state_dict())
-        if selected:
-            accepted.append(trajectories)
-        endpoint.release_rollouts(identities)
-
-    try:
-        select_groups()
-        fill_worker_slots()
-        while pending:
-            if expired.is_set() or time.monotonic() >= deadline:
-                raise TimeoutError("Run budget exhausted during group collection")
-            # Commit all currently complete predecessors before drawing again.
-            # Reward observations and target decisions thus ignore completion order.
-            while pending and pending[0]["completed"] == generations:
-                commit_group(pending.popleft())
-            select_groups()
-            fill_worker_slots()
-            if not pending:
-                break
-            if not futures:
-                raise RuntimeError("Incomplete candidate group has no runnable trajectories")
-            done, _ = concurrent.futures.wait(
-                futures, timeout=min(0.5, max(0, deadline - time.monotonic())),
-                return_when=concurrent.futures.FIRST_COMPLETED,
-            )
-            for future in done:
-                state, index = futures.pop(future)
-                state["results"][index] = future.result()
-                state["completed"] += 1
-                if state["completed"] == generations:
-                    emit(metrics, "group_rollouts_completed", batch=batch, group_id=state["group_id"],
-                         trajectories=generations, elapsed_seconds=time.monotonic() - state["selected_at"])
-        if futures or runnable:
-            raise RuntimeError("Collection ended with outstanding official workers")
-    except BaseException:
-        cancel_run()
-        for future in futures:
-            future.cancel()
-        raise
-    finally:
-        pool.shutdown(wait=True, cancel_futures=True)
-        # end() drains admitted GPU requests and clears retained inference KV
-        # before any probability recomputation or optimizer update can begin.
-        endpoint.end()
-    if expired.is_set() or time.monotonic() >= deadline:
-        raise TimeoutError("Run budget exhausted before collection drained")
-    return {"accepted": accepted, "attempted": attempted, "completed_groups": completed_groups,
-            "candidate_successes": candidate_successes, "candidate_trajectories": candidate_trajectories}
+    return collect_recoverable_batch(**kwargs, worker_fn=run_worker, emit_fn=emit)
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, default=PROJECT / "configs/a800_2x80.toml")
-    parser.add_argument("--describe", action="store_true", help="Print the recipe without loading data or CUDA")
-    parser.add_argument("--_worker", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--data-root", type=Path)
-    parser.add_argument("--model-path", type=Path)
-    parser.add_argument("--submission-dir", type=Path, help="Defaults to the official sample_submission")
-    parser.add_argument("--run-dir", type=Path)
-    task = parser.add_mutually_exclusive_group()
-    task.add_argument("--task-id")
-    task.add_argument("--task-index", type=int, help="Optional index within eligible public tasks; default trains the catalog")
-    args = parser.parse_args()
-    cfg = tomllib.loads(args.config.read_text())
-    if args.describe:
-        print(json.dumps({"recipe": cfg, "algorithm": "trl_clipped_grpo_composite_adaptive",
-                          "data_access": "official public tasks on server only",
-                          "gpu_validation": "not yet performed"}, ensure_ascii=False, indent=2))
-        return 0
-    if sys.platform != "linux":
-        parser.error("Run training on the Linux GPU server; local preparation uses --describe.")
-    if args.data_root is None or args.model_path is None or args.run_dir is None:
-        parser.error("Training requires --data-root, --model-path, and a new --run-dir.")
-    if not args._worker:
-        # Keep a CPU-only parent outside CUDA/imports so even a stalled model
-        # load or GPU kernel cannot silently run past the configured walltime.
-        child = subprocess.Popen([sys.executable, "-m", "training.run", *sys.argv[1:], "--_worker"],
-                                 cwd=str(PROJECT), start_new_session=True)
+
+def cleanup_orphan_workers(run_dir):
+    """Stop only registered live attempts whose Linux process identity matches."""
+    class ExistingProcess:
+        def __init__(self, pid, started):
+            self.pid, self.started = pid, started
+
+        def poll(self):
+            current = process_identity(self.pid)
+            if current is None or current[1] != self.started:
+                return 0
+            try:
+                status = (Path('/proc') / str(self.pid) / 'stat').read_text().rpartition(')')[2].split()[0]
+                return 0 if status == 'Z' else None
+            except OSError:
+                return 0
+
+        def wait(self, timeout):
+            until = time.monotonic() + timeout
+            while self.poll() is None:
+                if time.monotonic() >= until:
+                    raise subprocess.TimeoutExpired('registered worker', timeout)
+                time.sleep(0.02)
+            return 0
+
+    stopped = []
+    for path in run_dir.glob('batch-*-group-*-rollout-*/worker_process.json'):
+        if path.is_symlink() or path.parent.is_symlink():
+            raise ValueError('Worker process registry cannot be a symlink')
+        record = json.loads(path.read_text())
+        expected = record.get('start_identity')
+        pid = record.get('pid')
+        if (type(pid) is not int or pid <= 1 or pid == os.getpid()
+                or record.get('workspace') != str(path.parent.resolve())):
+            raise ValueError('Invalid worker process registry')
+        current = process_identity(pid)
+        if expected is None or current is None or current[1] != expected[1]:
+            continue
         try:
-            return child.wait(timeout=float(cfg["run"]["walltime_seconds"]))
-        except (subprocess.TimeoutExpired, KeyboardInterrupt):
-            print("Run interrupted or walltime exhausted; terminating the learner and its task workers.", flush=True)
-            stop_process_tree(child, grace=10)
-            return 124
+            command = (Path('/proc') / str(pid) / 'cmdline').read_bytes().split(b'\0')
+        except (FileNotFoundError, ProcessLookupError):
+            continue  # The registered worker exited between the two reads.
+        command = [item.decode() for item in command if item]
+        process = ExistingProcess(pid, expected[1])
+        if process.poll() is not None:
+            continue
+        if value_digest(command) != record['command_sha256']:
+            raise ValueError('Registered live worker command identity changed; refusing to signal it')
+        stop_process_tree(process, expected_start=expected[1])
+        stopped.append(pid)
+    return stopped
 
-    def terminate_worker(signum, frame):
-        raise KeyboardInterrupt("Parent requested run termination")
 
-    signal.signal(signal.SIGTERM, terminate_worker)
-    if cfg["runtime"]["sandbox"] == "subprocess" and os.geteuid() != 0:
-        parser.error("The isolated subprocess backend needs root to lower the agent tool uid.")
-    data_root = args.data_root.resolve(strict=True)
-    model_path = args.model_path.resolve(strict=True)
-    runtime_python = Path(cfg["runtime"]["python"])
-    if not runtime_python.is_file():
-        parser.error("Prepare the separate official runtime environment before starting the GPU run.")
-    if not (data_root / "tasks.jsonl").is_file():
-        parser.error("Missing original official public tasks.jsonl under --data-root.")
-    if not (model_path / "config.json").is_file():
-        parser.error("Missing model config.json under --model-path.")
-    generations = int(cfg["run"]["num_generations"])
-    batches = int(cfg["run"]["max_batches"])
-    groups_per_batch = int(cfg["run"]["groups_per_batch"])
-    max_candidates = int(cfg["run"]["max_candidate_groups_per_batch"])
-    workers = int(cfg["run"]["max_cpu_workers"])
-    prefetch_groups = int(cfg["run"].get("prefetch_groups", 2))
-    iterations = int(cfg["grpo"]["num_iterations"])
-    if min(batches, groups_per_batch, workers, prefetch_groups, iterations) < 1 or generations < 2 or max_candidates < groups_per_batch:
-        parser.error("Require K>=2, positive batch/worker/prefetch/reuse counts, and enough candidate groups.")
-    cfg["run"]["prefetch_groups"] = min(prefetch_groups, max_candidates)
-    if cfg["sampling"] != {"temperature": 1.0, "top_p": 1.0, "top_k": 0}:
-        parser.error("The current actor uses full categorical sampling; other sampling distributions need an explicit adapter.")
-    walltime = float(cfg["run"]["walltime_seconds"])
-    std_floor = float(cfg["grpo"]["advantage_std_floor"])
-    if not math.isfinite(walltime) or walltime <= 0 or not math.isfinite(std_floor) or std_floor <= 0:
-        parser.error("Positive finite walltime and advantage_std_floor are required.")
-    scaling = cfg["grpo"].get("scale_rewards", "group")
-    if scaling not in ("group", "none"):
-        parser.error("scale_rewards must be group or none.")
-    includes = cfg.get("data", {}).get("task_ids") or None
-    excludes = cfg.get("data", {}).get("exclude_task_ids") or []
-    if args.task_id is not None:
-        includes = [args.task_id]
-    tasks = load_tasks(data_root / "tasks.jsonl", include_ids=includes, exclude_ids=excludes)
-    if args.task_index is not None:
-        if not 0 <= args.task_index < len(tasks):
-            parser.error("task-index is outside the eligible public task catalog.")
-        tasks = [tasks[args.task_index]]
-    sampler = TaskSampler(tasks, cfg.get("curriculum"), seed=cfg["policy"].get("seed", 3407))
-    os.umask(0o077)
-    run_dir = args.run_dir.resolve()
-    run_dir.mkdir(parents=True, exist_ok=False, mode=0o700)
-    submission = (args.submission_dir or data_root / "sample_submission").resolve(strict=True)
-    metrics = run_dir / "metrics.jsonl"
-    cfg["policy"]["model_path"] = str(model_path)
-    cfg["policy"]["algorithm"] = "trl_clipped_grpo_composite_adaptive"
-    response_template_metadata = None
-    if cfg["policy"].get("response_template_path"):
-        response_template_path = Path(cfg["policy"]["response_template_path"]).expanduser().resolve(strict=True)
-        cfg["policy"]["response_template_path"] = str(response_template_path)
-        response_template_metadata = {
-            "path": str(response_template_path),
-            "sha256": file_hash(response_template_path),
-            "purpose": "response parser only; does not replace checkpoint tokenizer assets",
-        }
-    uid_base = 100000 + secrets.randbelow(1000000)
-    write_json(run_dir / "run_config.json", {**cfg, "data_root": str(data_root),
-               "task_id": args.task_id, "task_index": args.task_index, "training_tasks": tasks,
-               "submission_dir": str(submission), "algorithm": "trl_clipped_grpo_composite_adaptive",
-               "public_tasks_sha256": file_hash(data_root / "tasks.jsonl"),
-               "agent_uid_base": uid_base,
-               "model_source": {
-                   "declared_repo_id": cfg["policy"]["model_name"],
-                   "declared_revision": cfg["policy"].get("model_revision"),
-                   "declared_source_uri": cfg["policy"].get("model_source_uri"),
-                   "response_template_metadata": response_template_metadata,
-                   "metadata_sha256": {
-                       name: file_hash(model_path / name)
-                       for name in ("config.json", "tokenizer_config.json", "chat_template.jinja",
-                                    "generation_config.json", "model.safetensors.index.json")
-                       if (model_path / name).is_file()
-                   },
-               }})
-    reward_ledger = RewardLedger(run_dir)
-    emit(metrics, "loading_policy", declared_model_revision=cfg["policy"].get("model_revision"),
-         eligible_tasks=len(tasks))
-    started = time.monotonic()
-    deadline = started + walltime
+def run_learner(launch, run_dir):
+    """The CPU supervisor owns the budget; its inherited lock protects both."""
     from .policy import Policy
-    policy = Policy(cfg["policy"])
-    from .grpo_trainer import make_grpo_trainer
-    trainer_config = {**cfg["grpo"], "learning_rate": float(cfg["run"]["learning_rate"]),
-                      "max_grad_norm": float(cfg["run"]["max_grad_norm"]),
-                      "total_optimizer_steps": batches * iterations,
-                      "num_generations": generations, "seed": int(cfg["policy"].get("seed", 3407))}
-    trainer = make_grpo_trainer(
-        policy, trainer_config, run_dir / "trainer",
-        lambda event, **fields: emit(metrics, event, **fields),
-    )
+    from .grpo_trainer import make_grpo_trainer, capture_rng_state, restore_rng_state
+    from .session import TrainingSession
     import torch
-    endpoint = PolicyEndpoint(policy, run_dir, int(cfg["runtime"].get("port", 0)),
-                              generation_config=cfg.get("generation", {}))
-    processes, process_lock = set(), threading.Lock()
+
+    cfg = launch['recipe']
+    metrics = run_dir / 'metrics.jsonl'
+    started = time.monotonic()
+    deadline = started + max(0.0, launch['deadline_unix'] - time.time())
     expired = threading.Event()
+    processes, process_lock = set(), threading.Lock()
+    policy = endpoint = session = None
+
+    def log(event, **fields):
+        emit(metrics, event, **fields)
 
     def cancel_run():
         expired.set()
-        policy.abort_generation.set()
+        if policy is not None:
+            policy.abort_generation.set()
         with process_lock:
             for proc in list(processes):
                 stop_process_tree(proc, grace=0.5)
 
-    timer = threading.Timer(max(0, deadline - time.monotonic()), cancel_run)
+    timer = threading.Timer(max(0.0, deadline - time.monotonic()), cancel_run)
     timer.daemon = True
     timer.start()
-    endpoint.start()
-    policy_version = 0
     try:
-        initial = run_dir / "adapters" / "initial"
-        policy.save_adapter(initial)
-        previous_hash = file_hash(initial / "adapter_model.safetensors")
-        for batch in range(batches):
-            if expired.is_set():
-                raise TimeoutError("Run budget exhausted before collection")
-            collection = collect_batch(
-                cfg=cfg, batch=batch, policy_version=policy_version, sampler=sampler,
-                endpoint=endpoint, run_dir=run_dir, runtime_python=runtime_python,
-                data_root=data_root, submission=submission, uid_base=uid_base,
-                deadline=deadline, expired=expired, processes=processes,
-                process_lock=process_lock, cancel_run=cancel_run, reward_ledger=reward_ledger,
-            )
-            accepted, attempted = collection["accepted"], collection["attempted"]
-            completed_groups = collection["completed_groups"]
-            candidate_successes = collection["candidate_successes"]
-            candidate_trajectories = collection["candidate_trajectories"]
-            if not accepted:
-                reward_ledger.mark_batch_update(batch, 0, adapter_changed=False)
-                emit(metrics, "batch_no_learning_signal", batch=batch,
-                     completed_groups=completed_groups, attempted_tasks=sorted(attempted),
-                     sampled_official_success_rate=(candidate_successes / candidate_trajectories
-                                                    if candidate_trajectories else None))
-                continue
-            trajectories = [trajectory for group in accepted for trajectory in group]
-            emit(metrics, "grpo_update_started", batch=batch, policy_version=policy_version,
-                 accepted_groups=len(accepted), trajectories=len(trajectories),
-                 candidate_groups=completed_groups, reuse_iterations=iterations)
-            # No actor requests are active during optimization. Old learner,
-            # behavior and initial-reference probabilities remain separate.
-            before_optimizer_steps = trainer.completed_optimizer_steps
-            try:
-                stats = trainer.optimize_batch(trajectories)
-            except BaseException as error:
-                # A later reuse can fail after earlier optimizer steps applied.
-                # The trainer counts observed step callbacks even on exceptions.
-                applied_steps = trainer.completed_optimizer_steps - before_optimizer_steps
-                if applied_steps > 0:
-                    try:
-                        reward_ledger.mark_batch_update(batch, applied_steps, adapter_changed=None)
-                    except Exception as accounting_error:
-                        error.add_note(f"Reward update accounting also failed: {type(accounting_error).__name__}")
-                # With no completed callback, an arbitrary optimizer exception
-                # does not prove that no parameters changed. Keep it unconfirmed.
-                raise
-            # Optimizer work has already happened even if the following budget
-            # check or adapter export fails. Fill the hash comparison afterwards.
-            reward_ledger.mark_batch_update(batch, int(stats["optimizer_steps"]), adapter_changed=None)
-            if expired.is_set():
-                raise TimeoutError("Run budget exhausted during GRPO updates")
-            policy_version += int(stats["optimizer_steps"])
-            destination = run_dir / "adapters" / f"batch-{batch + 1:04d}"
-            policy.save_adapter(destination)
-            current_hash = file_hash(destination / "adapter_model.safetensors")
-            reward_ledger.mark_batch_update(batch, int(stats["optimizer_steps"]),
-                                            adapter_changed=current_hash != previous_hash)
-            emit(metrics, "batch_finished", batch=batch, policy_version=policy_version,
-                 accepted_groups=len(accepted), candidate_groups=completed_groups,
-                 sampled_official_success_rate=candidate_successes / candidate_trajectories,
-                 selected_official_success_rate=sum(item["official_success"] for item in trajectories) / len(trajectories),
-                 **reward_batch_summary(trajectories),
-                 adapter_changed=current_hash != previous_hash, adapter_sha256=current_hash,
-                 adapter_path=str(destination), grpo=stats,
-                 peak_memory_gib=[torch.cuda.max_memory_allocated(i) / 2**30
-                                  for i in range(torch.cuda.device_count())])
-            previous_hash = current_hash
-        emit(metrics, "run_finished", elapsed_seconds=time.monotonic() - started,
-             optimizer_steps=policy_version)
-        return 0
-    except BaseException as exc:
+        if expired.is_set():
+            raise CollectionInterrupted('Run budget exhausted before model loading')
+        sampler = TaskSampler(launch['training_tasks'], cfg.get('curriculum'), seed=cfg['policy'].get('seed', 3407))
+        ledger = RewardLedger(run_dir, recover_incomplete_tail=launch['resume'])
+        store = CheckpointStore(run_dir, torch, launch['source_binding'])
+        # Reject malformed/mismatched state before allocating the model.
+        if launch['resume']:
+            store.load('checkpoint')
+        log('loading_policy', declared_model_revision=cfg['policy'].get('model_revision'),
+            eligible_tasks=len(launch['training_tasks']), resume=launch['resume'])
+        policy = Policy(cfg['policy'])
+        endpoint = PolicyEndpoint(policy, run_dir, int(cfg['runtime'].get('port', 0)),
+                                  generation_config=cfg.get('generation', {}))
+        session = TrainingSession(
+            cfg=cfg, sampler=sampler, policy=policy, endpoint=endpoint, ledger=ledger, store=store,
+            run_dir=run_dir, collect=collect_batch, emit=log, capture_rng=capture_rng_state,
+            restore_rng=restore_rng_state, expired=expired, deadline=deadline,
+            reward_summary=reward_batch_summary, torch=torch,
+            collect_kwargs=dict(runtime_python=Path(cfg['runtime']['python']), data_root=Path(launch['data_root']),
+                                submission=Path(launch['submission_dir']), uid_base=launch['agent_uid_base'],
+                                deadline=deadline, expired=expired, processes=processes,
+                                process_lock=process_lock, cancel_run=cancel_run))
+        trainer_config = {**cfg['grpo'], 'learning_rate': float(cfg['run']['learning_rate']),
+                          'max_grad_norm': float(cfg['run']['max_grad_norm']),
+                          'total_optimizer_steps': int(cfg['run']['max_batches']) * int(cfg['grpo']['num_iterations']),
+                          'num_generations': int(cfg['run']['num_generations']),
+                          'seed': int(cfg['policy'].get('seed', 3407))}
+        trainer = make_grpo_trainer(policy, trainer_config, run_dir / 'trainer', log,
+                                    checkpoint_callback=session.checkpoint_training)
+        endpoint.start()
+        return session.run(trainer, resume=launch['resume'])
+    except BaseException as error:
         cancel_run()
-        emit(metrics, "run_failed", error=f"{type(exc).__name__}: {exc}",
-             elapsed_seconds=time.monotonic() - started)
+        log('run_failed', error=f'{type(error).__name__}: {error}',
+            elapsed_seconds=time.monotonic() - started,
+            checkpoint_id=session.checkpoint_id if session else None)
         raise
     finally:
         timer.cancel()
-        endpoint.end()
-        endpoint.close()
+        if endpoint is not None:
+            endpoint.close()
 
 
-if __name__ == "__main__":
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--config', type=Path, help='Defaults to the saved recipe on resume, otherwise configs/a800_2x80.toml')
+    parser.add_argument('--describe', action='store_true', help='Print the recipe without loading data or CUDA')
+    parser.add_argument('--resume', action='store_true', help='Resume the committed state in an existing --run-dir')
+    parser.add_argument('--additional-walltime-seconds', type=float, default=0.0,
+                        help='Explicit extra run allowance; resume otherwise uses only unspent time')
+    parser.add_argument('--_worker', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--_lock-fd', type=int, help=argparse.SUPPRESS)
+    parser.add_argument('--_invocation-id', help=argparse.SUPPRESS)
+    parser.add_argument('--data-root', type=Path)
+    parser.add_argument('--model-path', type=Path)
+    parser.add_argument('--submission-dir', type=Path, help='Defaults to the official sample_submission')
+    parser.add_argument('--run-dir', type=Path)
+    task = parser.add_mutually_exclusive_group()
+    task.add_argument('--task-id')
+    task.add_argument('--task-index', type=int, help='Index within eligible public tasks; default trains the catalog')
+    args = parser.parse_args()
+
+    def terminate(signum, frame):
+        raise KeyboardInterrupt('Run termination requested')
+
+    if args._worker:
+        if args.run_dir is None or args._lock_fd is None or not args._invocation_id:
+            parser.error('The internal learner requires its live CPU supervisor and inherited run lock')
+        import fcntl
+        run_dir = args.run_dir.resolve(strict=True)
+        info, expected = os.fstat(args._lock_fd), (run_dir / '.run.lock').stat()
+        if (info.st_dev, info.st_ino) != (expected.st_dev, expected.st_ino):
+            parser.error('The inherited descriptor does not belong to this run')
+        fcntl.flock(args._lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        launch = json.loads((run_dir / 'recovery' / 'launch.json').read_text())
+        if launch['invocation_id'] != args._invocation_id:
+            parser.error('The run launch record changed')
+        signal.signal(signal.SIGTERM, terminate)
+        return run_learner(launch, run_dir)
+
+    saved = None
+    if args.resume:
+        if args.run_dir is None:
+            parser.error('--resume requires the existing --run-dir')
+        saved = json.loads((args.run_dir.expanduser().resolve(strict=True) / 'run_config.json').read_text())
+        if 'source_binding' not in saved or 'recipe' not in saved:
+            parser.error('This older run has no recovery/source baseline; it cannot be resumed safely')
+    cfg = (tomllib.loads(args.config.read_text()) if args.config else
+           saved['recipe'] if saved else tomllib.loads((PROJECT / 'configs/a800_2x80.toml').read_text()))
+    if args.describe:
+        print(json.dumps({'recipe': cfg, 'algorithm': 'trl_clipped_grpo_composite_adaptive',
+                          'data_access': 'official public tasks on server only',
+                          'gpu_validation': 'not yet performed'}, ensure_ascii=False, indent=2))
+        return 0
+    if sys.platform != 'linux':
+        parser.error('Run training on the Linux GPU server; local preparation uses --describe.')
+    if not math.isfinite(args.additional_walltime_seconds) or args.additional_walltime_seconds < 0:
+        parser.error('--additional-walltime-seconds must be finite and nonnegative')
+    if args.additional_walltime_seconds and not args.resume:
+        parser.error('Use run.walltime_seconds for a new run; additional allowance is for explicit resume')
+    if saved:
+        args.data_root = args.data_root or Path(saved['data_root'])
+        args.model_path = args.model_path or Path(saved['recipe']['policy']['model_path'])
+        args.submission_dir = args.submission_dir or Path(saved['submission_dir'])
+        if args.task_id is None and args.task_index is None:
+            args.task_id, args.task_index = saved.get('task_id'), saved.get('task_index')
+    if args.data_root is None or args.model_path is None or args.run_dir is None:
+        parser.error('New training requires --data-root, --model-path, and a new --run-dir')
+    if cfg['runtime']['sandbox'] == 'subprocess' and os.geteuid() != 0:
+        parser.error('The isolated subprocess backend needs root to lower the agent tool uid')
+    data_root, model_path = args.data_root.expanduser().resolve(strict=True), args.model_path.expanduser().resolve(strict=True)
+    # Keep a venv's executable entry point; resolving its symlink can switch
+    # sys.prefix and silently inspect/run the base Python environment instead.
+    runtime_python = Path(cfg['runtime']['python']).expanduser().absolute()
+    cfg['runtime']['python'] = str(runtime_python)
+    if not runtime_python.is_file() or not (data_root / 'tasks.jsonl').is_file() or not (model_path / 'config.json').is_file():
+        parser.error('Prepare the official runtime, original public tasks.jsonl, and model directory on the server')
+    counts = {name: int(cfg['run'][name]) for name in ('num_generations', 'max_batches', 'groups_per_batch',
+                                                     'max_candidate_groups_per_batch', 'max_cpu_workers')}
+    prefetch = int(cfg['run'].get('prefetch_groups', 2))
+    iterations = int(cfg['grpo']['num_iterations'])
+    if (min(*counts.values(), prefetch, iterations) < 1 or counts['num_generations'] < 2
+            or counts['max_candidate_groups_per_batch'] < counts['groups_per_batch']):
+        parser.error('Require K>=2, positive batch/worker/prefetch/reuse counts, and enough candidate groups')
+    cfg['run']['prefetch_groups'] = min(prefetch, counts['max_candidate_groups_per_batch'])
+    cfg['run'].setdefault('max_worker_retries', 1)
+    cfg['run'].setdefault('max_failed_groups_per_session', 3)
+    cfg['runtime'].setdefault('session_clock', 'queue_excluded')
+    cfg['runtime'].setdefault('queue_timing_poll_seconds', 0.2)
+    poll_seconds = float(cfg['runtime']['queue_timing_poll_seconds'])
+    if (cfg['runtime']['session_clock'] not in ('queue_excluded', 'wall')
+            or not math.isfinite(poll_seconds) or not 0.02 <= poll_seconds <= 1):
+        parser.error('session_clock must be queue_excluded/wall; require 0.02<=poll seconds<=1')
+    if int(cfg['run']['max_worker_retries']) < 0 or int(cfg['run']['max_failed_groups_per_session']) < 1:
+        parser.error('Worker retries must be nonnegative; the failed-group limit must be positive')
+    if cfg['sampling'] != {'temperature': 1.0, 'top_p': 1.0, 'top_k': 0}:
+        parser.error('The current actor uses full categorical sampling')
+    walltime, std_floor = float(cfg['run']['walltime_seconds']), float(cfg['grpo']['advantage_std_floor'])
+    if not math.isfinite(walltime) or walltime <= 0 or not math.isfinite(std_floor) or std_floor <= 0:
+        parser.error('Positive finite walltime and advantage_std_floor are required')
+    if cfg['grpo'].get('scale_rewards', 'group') not in ('group', 'none'):
+        parser.error('scale_rewards must be group or none')
+    includes = [args.task_id] if args.task_id is not None else cfg.get('data', {}).get('task_ids') or None
+    tasks = load_tasks(data_root / 'tasks.jsonl', include_ids=includes,
+                       exclude_ids=cfg.get('data', {}).get('exclude_task_ids') or [])
+    if args.task_index is not None:
+        if not 0 <= args.task_index < len(tasks):
+            parser.error('task-index is outside the eligible public task catalog')
+        tasks = [tasks[args.task_index]]
+    TaskSampler(tasks, cfg.get('curriculum'), seed=cfg['policy'].get('seed', 3407))
+    submission = (args.submission_dir or data_root / 'sample_submission').expanduser().resolve(strict=True)
+    cfg['policy']['model_path'] = str(model_path)
+    cfg['policy']['algorithm'] = 'trl_clipped_grpo_composite_adaptive'
+    if cfg['policy'].get('response_template_path'):
+        cfg['policy']['response_template_path'] = str(Path(cfg['policy']['response_template_path']).expanduser().resolve(strict=True))
+    os.umask(0o077)
+    run_dir = args.run_dir.expanduser().resolve()
+    run_dir.mkdir(parents=True, exist_ok=args.resume, mode=0o700)
+    signal.signal(signal.SIGTERM, terminate)
+    from .run_context import source_binding
+    with run_lock(run_dir) as lock_fd:
+        stopped = cleanup_orphan_workers(run_dir) if args.resume else []
+        binding = source_binding(cfg, data_root=data_root, model_path=model_path, submission=submission,
+                                 runtime_python=runtime_python, tasks=tasks)
+        if saved and saved['source_binding'] != binding:
+            raise ValueError('Resume source/configuration differs from the committed run; refusing to mix states')
+        if not saved:
+            saved = {**cfg, 'recipe': cfg, 'training_tasks': tasks, 'data_root': str(data_root),
+                     'submission_dir': str(submission), 'task_id': args.task_id, 'task_index': args.task_index,
+                     'source_binding': binding, 'public_tasks_sha256': file_digest(data_root / 'tasks.jsonl')}
+            write_json(run_dir / 'run_config.json', saved)
+        budget = RunBudget(run_dir, walltime, args.additional_walltime_seconds)
+        child = None
+        try:
+            invocation_id = secrets.token_hex(12)
+            launch = {'recipe': cfg, 'training_tasks': tasks, 'data_root': str(data_root),
+                      'submission_dir': str(submission), 'source_binding': binding, 'resume': args.resume,
+                      'invocation_id': invocation_id, 'agent_uid_base': 100000 + secrets.randbelow(1000000),
+                      'deadline_unix': time.time() + max(0.0, budget.remaining_seconds -
+                                                        (time.monotonic() - budget.started))}
+            write_json(run_dir / 'recovery' / 'launch.json', launch)
+            emit(run_dir / 'metrics.jsonl', 'run_launch', resume=args.resume, invocation_id=invocation_id,
+                 remaining_seconds=budget.remaining_seconds, additional_seconds=args.additional_walltime_seconds,
+                 stopped_orphan_workers=stopped, agent_uid_base=launch['agent_uid_base'])
+            child = subprocess.Popen([sys.executable, '-m', 'training.run', '--_worker', '--run-dir', str(run_dir),
+                                      '--_lock-fd', str(lock_fd), '--_invocation-id', invocation_id],
+                                     cwd=str(PROJECT), start_new_session=True, pass_fds=(lock_fd,))
+            return child.wait(timeout=max(0.01, budget.remaining_seconds - (time.monotonic() - budget.started)))
+        except (subprocess.TimeoutExpired, KeyboardInterrupt):
+            print('Run interrupted or walltime exhausted; preserving its last committed state.', flush=True)
+            return 124
+        finally:
+            if child is not None and child.poll() is None:
+                stop_process_tree(child, grace=10)
+            # A SIGKILLed learner cannot reap its own registered CPU workers.
+            # Clean up only those exact recorded process identities.
+            cleanup_orphan_workers(run_dir)
+            budget.close()
+
+
+if __name__ == '__main__':
     raise SystemExit(main())

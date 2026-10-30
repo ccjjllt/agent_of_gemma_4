@@ -63,9 +63,20 @@ def _public_path(path: Path) -> Path:
 def _write_json(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    temporary.chmod(0o600)
-    temporary.replace(path)
+    try:
+        with temporary.open("w", encoding="utf-8") as output:
+            os.fchmod(output.fileno(), 0o600)
+            output.write(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n")
+            output.flush()
+            os.fsync(output.fileno())
+        temporary.replace(path)
+        directory = os.open(str(path.parent), os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _select_task(path: Path, task_id: str | None, index: int | None) -> tuple[Any, int]:
@@ -638,6 +649,7 @@ async def run_task(args: argparse.Namespace) -> dict[str, Any]:
         "OPENAI_API_KEY": args.rollout_id,
         "LOCAL_API_KEY": args.rollout_id,
         "LITELLM_API_KEY": args.rollout_id,
+        "LITELLM_MODE": "PRODUCTION",
         "LITELLM_LOCAL_MODEL_COST_MAP": "True",
         "LITELLM_TELEMETRY": "False",
         "OTEL_SDK_DISABLED": "true",
@@ -659,6 +671,12 @@ async def run_task(args: argparse.Namespace) -> dict[str, Any]:
     from swegemma.context import SwegemmaContext
     from swegemma.evaluate import Evaluator
     from swegemma.results import append_task_result
+    if __package__:
+        from .model_transport import ConsumptionConfirmationError, install_delivery_tracking
+        from .session_clock import SessionClock, SessionTimingError, bind_timed_runner, timed_context_class
+    else:
+        from model_transport import ConsumptionConfirmationError, install_delivery_tracking
+        from session_clock import SessionClock, SessionTimingError, bind_timed_runner, timed_context_class
 
     litellm.drop_params = True
     install_litellm_reasoning_patch()
@@ -703,7 +721,9 @@ async def run_task(args: argparse.Namespace) -> dict[str, Any]:
             return original_task
 
     evaluator = PublicOnlyEvaluator(config)
-    context_class = SwegemmaContext
+    session_clock = SessionClock(args.endpoint, args.rollout_id, mode=args.session_clock,
+                                 poll_seconds=args.queue_timing_poll_seconds)
+    context_class = timed_context_class(SwegemmaContext, session_clock)
     if args.sandbox == "subprocess":
         # Rollout IDs repeat across fresh learner runs; allocate a private
         # directory per attempt instead of colliding with a prior failed run.
@@ -713,7 +733,7 @@ async def run_task(args: argparse.Namespace) -> dict[str, Any]:
         )
         evaluator.sandbox = evaluator.docker = manager
 
-        class AgentContext(SwegemmaContext):
+        class AgentContext(context_class):
             def create_tools(self) -> dict[str, Any]:
                 # Official setup is complete here; every subsequent shell/skill
                 # command in this sandbox runs under the agent UID. The judge
@@ -735,11 +755,32 @@ async def run_task(args: argparse.Namespace) -> dict[str, Any]:
         budget=config.budget,
         harness=config.harness,
     )
+    bind_timed_runner(evaluator, context, session_clock)
+    delivery = install_delivery_tracking(args.endpoint, args.rollout_id, workspace / "model_delivery.jsonl",
+                                         session_clock=session_clock)
     captured, restore_verification = _capture_final_verification(task)
+    delivery_error = None
+    timing_error = None
     try:
         result = await evaluator.evaluate_task(task, task_index=position + 1, total_tasks=1, context=context)
+        try:
+            delivery.assert_delivery_complete()
+        except ConsumptionConfirmationError as error:
+            # ADK may catch a model exception and still run official tests. Keep
+            # that judge result intact, but never train an unconfirmed trajectory.
+            delivery_error = str(error)
+        try:
+            # Obtain the final server evidence after the normal agent-loop
+            # cancellation and complete official acceptance have both finished.
+            await session_clock.refresh()
+            session_clock.assert_valid()
+        except SessionTimingError as error:
+            if args.session_clock == "queue_excluded":
+                timing_error = str(error)
         append_task_result(result, config.results_dir, [result])
     finally:
+        delivery.restore()
+        await session_clock.close()
         restore_verification()
         cleanup = getattr(evaluator.docker, "cleanup_all", None)
         if cleanup:
@@ -753,8 +794,9 @@ async def run_task(args: argparse.Namespace) -> dict[str, Any]:
     # own official budget. Infrastructure failures must never become reward 0.
     agent_error = error if error and error.startswith(("Agent ", "Failed to apply agent patch:")) else None
     verification_ran = result.test_output.startswith("STDOUT:\n")
-    verdict_valid = verification_ran and result.test_exit_code in (0, 1) and (not error or agent_error is not None)
-    infrastructure_error = None if verdict_valid else (error or f"No complete official verification verdict (exit={result.test_exit_code}).")
+    verdict_valid = (verification_ran and result.test_exit_code in (0, 1)
+                     and (not error or agent_error is not None) and delivery_error is None and timing_error is None)
+    infrastructure_error = None if verdict_valid else (timing_error or delivery_error or error or f"No complete official verification verdict (exit={result.test_exit_code}).")
     safe_id = task.instance_id.replace("/", "__")
     patch_path = config.results_dir / "patches" / f"{safe_id}.patch"
     reward_features = dict(captured.get("reward_features") or {
@@ -774,14 +816,20 @@ async def run_task(args: argparse.Namespace) -> dict[str, Any]:
         "reward": float(bool(result.resolved)) if verdict_valid else None,
         "verification_complete": verification_ran,
         "verdict_valid": verdict_valid,
-        "verdict_kind": "tests_completed" if verdict_valid else "unclassified_verification_failure",
+        "verdict_kind": "tests_completed" if verdict_valid else (
+            "unconfirmed_session_timing" if timing_error else
+            "unconfirmed_model_consumption" if delivery_error else "unclassified_verification_failure"
+        ),
         "failure_stage": None if verdict_valid else (
+            "session_timing" if timing_error else "model_delivery" if delivery_error else
             "patch_application" if error and error.startswith("Failed to apply agent patch:")
             else "pytest" if captured.get("pytest_exit_code") is not None
             else "setup_or_agent"
         ),
         "infrastructure_error": infrastructure_error,
         "agent_error": agent_error,
+        "model_delivery": delivery.summary(),
+        "session_timing": session_clock.summary(),
         "reward_features": reward_features,
         "test_exit_code": result.test_exit_code,
         "duration_seconds": time.monotonic() - started,
@@ -796,6 +844,11 @@ async def run_task(args: argparse.Namespace) -> dict[str, Any]:
             "official_starter_source_sha256": OFFICIAL_STARTER_SHA256,
             "packages": {name: importlib.metadata.version(name) for name in ("swegemma", "adk-eval-core", "adk-submission", "google-adk", "litellm")},
             "evaluation": settings,
+            "session_clock": args.session_clock,
+            "session_clock_comparability": (
+                "training active-time accounting; not the official wall-clock evaluation"
+                if args.session_clock == "queue_excluded" else "official wall-clock session budget"
+            ),
             "evaluation_overrides": args.evaluation_overrides,
             "context_management": CONTEXT_SETTINGS,
             "sampling": {"temperature": 1.0, "top_p": 1.0, "top_k": 0, "enable_thinking": True},
@@ -840,10 +893,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sandbox-baseline-python", type=Path, default=Path("/opt/gemma-sandbox-baseline/bin/python"))
     parser.add_argument("--evaluation-overrides-json", dest="evaluation_overrides", type=json.loads, default={},
                         help="Explicit participant evaluation-budget overrides; leaves official files unchanged.")
+    parser.add_argument("--session-clock", choices=("queue_excluded", "wall"), default="queue_excluded",
+                        help="Training time excludes confirmed idle GPU queue; wall preserves the official clock.")
+    parser.add_argument("--queue-timing-poll-seconds", type=float, default=0.2,
+                        help="Live queue-receipt polling interval, between 0.02 and 1 second.")
     parser.add_argument("--sandbox-root", type=Path, default=Path("/tmp/gemma-agent-sandboxes"))
     args = parser.parse_args(argv)
     if args.task_index is not None and args.task_index < 0:
         parser.error("task-index must be nonnegative")
+    if not math.isfinite(args.queue_timing_poll_seconds) or not 0.02 <= args.queue_timing_poll_seconds <= 1.0:
+        parser.error("queue-timing-poll-seconds must be finite and between 0.02 and 1 second")
     def terminate(_signum: int, _frame: Any) -> None:
         # Let asyncio unwind official sandbox finally blocks before the parent
         # escalates to SIGKILL; agent commands have their own process groups.
