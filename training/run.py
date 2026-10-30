@@ -24,7 +24,8 @@ import tomllib
 
 from .endpoint import PolicyEndpoint
 from .curriculum import TaskSampler, load_tasks
-from .rewards import compute_reward
+from .rewards import score_group_rewards
+from .reward_ledger import RewardLedger
 
 PROJECT = Path(__file__).resolve().parents[1]
 
@@ -94,6 +95,22 @@ def file_hash(path):
     return h.hexdigest()
 
 
+def reward_batch_summary(trajectories):
+    """Report selected reward evidence without treating unknown totals as zero."""
+    exact = [item["reward"] for item in trajectories if item["reward"] is not None]
+    exact_mean = sum(exact) / len(exact) if exact else None
+    bounds_mean = ({
+        key: sum(item["reward_bounds"][key] for item in trajectories) / len(trajectories)
+        for key in ("lower", "upper")
+    } if trajectories else None)
+    return {
+        "composite_reward_mean": exact_mean if len(exact) == len(trajectories) else None,
+        "exact_composite_reward_mean": exact_mean, "exact_composite_reward_count": len(exact),
+        "composite_reward_count": len(trajectories), "composite_reward_bounds_mean": bounds_mean,
+        "composite_reward_population": "selected_for_update",
+    }
+
+
 def run_worker(command, folder, deadline, expired, processes, process_lock):
     if expired.is_set() or time.monotonic() >= deadline:
         raise TimeoutError("Run expired before launching this task worker")
@@ -129,7 +146,7 @@ def run_worker(command, folder, deadline, expired, processes, process_lock):
 
 def collect_batch(*, cfg, batch, policy_version, sampler, endpoint, run_dir,
                   runtime_python, data_root, submission, uid_base, deadline,
-                  expired, processes, process_lock, cancel_run):
+                  expired, processes, process_lock, cancel_run, reward_ledger=None):
     """Collect bounded, overlapping groups under one unchanged learner policy.
 
     Worker slots are filled as soon as a trajectory ends, including from other
@@ -147,6 +164,10 @@ def collect_batch(*, cfg, batch, policy_version, sampler, endpoint, run_dir,
     std_floor = float(cfg["grpo"]["advantage_std_floor"])
     scaling = cfg["grpo"].get("scale_rewards", "group")
     metrics = run_dir / "metrics.jsonl"
+    # Main supplies one run-scoped ledger. Standalone callers restore existing
+    # records rather than resetting the denominator at every collection batch.
+    if reward_ledger is None:
+        reward_ledger = RewardLedger(run_dir)
     accepted, attempted, used_repos = [], set(), set()
     pending, runnable = deque(), deque()
     futures = {}
@@ -223,56 +244,62 @@ def collect_batch(*, cfg, batch, policy_version, sampler, endpoint, run_dir,
         if any(call["policy_version"] != policy_version for items in calls for call in items):
             raise RuntimeError("A collected trajectory crossed learner policy versions")
 
-        # Use one common reward feature set for every trajectory in the group.
-        reward_config = dict(cfg["rewards"])
-        dense_features = [result.get("reward_features") or {} for result in results]
-        dense_available = (
-            all(item.get("junit_available") and item.get("dense_coverage_complete")
-                for item in dense_features)
-            and len({(item.get("repair_fraction") is None, item.get("regression_fraction") is None)
-                     for item in dense_features}) == 1
+        # Preserve independently reliable components and compare missing values
+        # through explicit intervals. The scorer owns any documented reduced-
+        # objective fallback; never impute a missing component or recenter a
+        # conservative signed signal here.
+        group_reward = score_group_rewards(
+            results, calls, cfg["rewards"], scale_rewards=scaling,
+            advantage_std_floor=std_floor,
+            min_group_std=float(sampler.config["min_group_std"]),
         )
-        reward_config["dense_shaping_enabled"] = dense_available
-        reward_mode = "full_composite" if dense_available else "terminal_efficiency_only_missing_dense_evidence"
-        # Compare recent reward statistics only when the effective formula and
-        # observable dense components agree. This contains no test identifiers.
-        reward_signature = json.dumps({
-            "reward_config": reward_config,
-            "repair_available": dense_available and dense_features[0].get("repair_fraction") is not None,
-            "regression_available": dense_available and dense_features[0].get("regression_fraction") is not None,
-        }, sort_keys=True, separators=(",", ":"))
-        scored = [compute_reward(result, items, reward_config) for result, items in zip(results, calls)]
-        rewards = [item["total"] for item in scored]
+        scored, rewards = group_reward["scored"], group_reward["rewards"]
+        learning_signal = group_reward["learning_signal"]
+        advantages, advantage_bounds = group_reward["advantages"], group_reward["advantage_bounds"]
+        reward_mode, reward_signature = group_reward["reward_mode"], group_reward["reward_signature"]
+        diagnostics = group_reward["diagnostics"]
         outcomes = [bool(result["success"]) for result in results]
         candidate_successes += sum(outcomes)
         candidate_trajectories += len(outcomes)
         group_stats = sampler.observe(task_id, rewards, outcomes, policy_version=policy_version,
-                                      reward_signature=reward_signature)
+                                      reward_signature=reward_signature, learning_signal=learning_signal)
         completed_groups += 1
-        mean_reward, deviation = group_stats["reward_mean"], group_stats["reward_std"]
-        denominator = max(deviation, std_floor) if scaling == "group" else 1.0
-        advantages = [(value - mean_reward) / denominator for value in rewards]
         selected = bool(group_stats["informative"])
         if selected and len(accepted) >= target_groups:
             raise RuntimeError("Pending candidate groups exceeded the remaining learning slots")
-        exclusion = None if selected else "low_reward_variance"
+        exclusion = None if selected else "no_safe_learning_signal"
         trajectories = []
-        for identity, items, official, score, advantage in zip(identities, calls, results, scored, advantages):
+        for identity, items, official, score, signal, advantage, bounds in zip(
+                identities, calls, results, scored, learning_signal, advantages, advantage_bounds):
             trajectories.append({
                 "task_id": task_id, "group_id": group_id, "rollout_id": identity,
                 "policy_version": policy_version, "calls": items,
-                "reward": score["total"], "reward_components": score["components"],
-                "advantage": advantage, "official_success": official["success"],
+                "reward": score["total"], "reward_bounds": score["reward_bounds"],
+                "reward_components": score["components"], "learning_signal": signal,
+                "advantage": advantage, "advantage_bounds": bounds,
+                "reward_mode": reward_mode, "official_success": official["success"],
                 "selection_probability": selection["selection_probability"],
             })
             write_json(run_dir / identity / "reward.json", {
                 "official_reward": official["reward"], "group_reward_mode": reward_mode,
                 "reward_signature": reward_signature,
-                "effective_reward_weights": reward_config, **score, "advantage": advantage,
+                "effective_reward_weights": dict(cfg["rewards"]), **score,
+                "learning_signal": signal, "advantage": advantage, "advantage_bounds": bounds,
+                "group_diagnostics": diagnostics,
                 "selected_for_update": selected, "exclusion_reason": exclusion,
             })
+        # Every complete candidate group enters this denominator, including
+        # filtered groups and selected groups whose optimizer update later fails.
+        reward_ledger.record_group(
+            batch=batch, group_id=group_id, task_id=task_id, policy_version=policy_version,
+            selection=selection, scored=scored, advantages=advantages, group_stats=group_stats,
+            results=results, calls=calls, selected_for_update=selected, exclusion_reason=exclusion,
+            reward_mode=reward_mode, reward_signature=reward_signature, diagnostics=diagnostics,
+        )
         emit(metrics, "group_verified", batch=batch, group_id=group_id, **group_stats,
              rewards=rewards, advantages=advantages, reward_mode=reward_mode,
+             learning_signal=learning_signal, advantage_bounds=advantage_bounds,
+             reward_diagnostics=diagnostics,
              selected_for_update=selected, exclusion_reason=exclusion,
              selection_to_commit_seconds=time.monotonic() - state["selected_at"])
         write_json(run_dir / "curriculum_state.json", sampler.state_dict())
@@ -438,6 +465,7 @@ def main():
                        if (model_path / name).is_file()
                    },
                }})
+    reward_ledger = RewardLedger(run_dir)
     emit(metrics, "loading_policy", declared_model_revision=cfg["policy"].get("model_revision"),
          eligible_tasks=len(tasks))
     started = time.monotonic()
@@ -483,13 +511,14 @@ def main():
                 endpoint=endpoint, run_dir=run_dir, runtime_python=runtime_python,
                 data_root=data_root, submission=submission, uid_base=uid_base,
                 deadline=deadline, expired=expired, processes=processes,
-                process_lock=process_lock, cancel_run=cancel_run,
+                process_lock=process_lock, cancel_run=cancel_run, reward_ledger=reward_ledger,
             )
             accepted, attempted = collection["accepted"], collection["attempted"]
             completed_groups = collection["completed_groups"]
             candidate_successes = collection["candidate_successes"]
             candidate_trajectories = collection["candidate_trajectories"]
             if not accepted:
+                reward_ledger.mark_batch_update(batch, 0, adapter_changed=False)
                 emit(metrics, "batch_no_learning_signal", batch=batch,
                      completed_groups=completed_groups, attempted_tasks=sorted(attempted),
                      sampled_official_success_rate=(candidate_successes / candidate_trajectories
@@ -501,18 +530,37 @@ def main():
                  candidate_groups=completed_groups, reuse_iterations=iterations)
             # No actor requests are active during optimization. Old learner,
             # behavior and initial-reference probabilities remain separate.
-            stats = trainer.optimize_batch(trajectories)
+            before_optimizer_steps = trainer.completed_optimizer_steps
+            try:
+                stats = trainer.optimize_batch(trajectories)
+            except BaseException as error:
+                # A later reuse can fail after earlier optimizer steps applied.
+                # The trainer counts observed step callbacks even on exceptions.
+                applied_steps = trainer.completed_optimizer_steps - before_optimizer_steps
+                if applied_steps > 0:
+                    try:
+                        reward_ledger.mark_batch_update(batch, applied_steps, adapter_changed=None)
+                    except Exception as accounting_error:
+                        error.add_note(f"Reward update accounting also failed: {type(accounting_error).__name__}")
+                # With no completed callback, an arbitrary optimizer exception
+                # does not prove that no parameters changed. Keep it unconfirmed.
+                raise
+            # Optimizer work has already happened even if the following budget
+            # check or adapter export fails. Fill the hash comparison afterwards.
+            reward_ledger.mark_batch_update(batch, int(stats["optimizer_steps"]), adapter_changed=None)
             if expired.is_set():
                 raise TimeoutError("Run budget exhausted during GRPO updates")
             policy_version += int(stats["optimizer_steps"])
             destination = run_dir / "adapters" / f"batch-{batch + 1:04d}"
             policy.save_adapter(destination)
             current_hash = file_hash(destination / "adapter_model.safetensors")
+            reward_ledger.mark_batch_update(batch, int(stats["optimizer_steps"]),
+                                            adapter_changed=current_hash != previous_hash)
             emit(metrics, "batch_finished", batch=batch, policy_version=policy_version,
                  accepted_groups=len(accepted), candidate_groups=completed_groups,
                  sampled_official_success_rate=candidate_successes / candidate_trajectories,
                  selected_official_success_rate=sum(item["official_success"] for item in trajectories) / len(trajectories),
-                 composite_reward_mean=sum(item["reward"] for item in trajectories) / len(trajectories),
+                 **reward_batch_summary(trajectories),
                  adapter_changed=current_hash != previous_hash, adapter_sha256=current_hash,
                  adapter_path=str(destination), grpo=stats,
                  peak_memory_gib=[torch.cuda.max_memory_allocated(i) / 2**30

@@ -61,7 +61,8 @@ for run in runs:
     folder = base / "runs" / run
     if not folder.is_dir() or folder.is_symlink():
         raise ValueError("Requested run does not exist as a real directory: " + run)
-    for name in ("metrics.jsonl", "run_config.json", "curriculum_state.json", "generation_metrics.jsonl"):
+    for name in ("metrics.jsonl", "run_config.json", "curriculum_state.json", "generation_metrics.jsonl",
+                 "reward_groups.jsonl", "reward_summary.json"):
         copy(folder / name)
     # Operator summaries have no prompt/token contents. Keep large raw profiler
     # traces on the server; they are separate from the official agent traces.

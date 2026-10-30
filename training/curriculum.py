@@ -120,8 +120,11 @@ class TaskSampler:
             "groups": 0, "trajectories": 0, "successes": 0,
             "success_rate_ema": 0.0,
             "reward_mean_ema": 0.0, "reward_variance_ema": 0.0,
+            "learning_signal_second_moment_ema": 0.0,
             "reward_signature": None, "reward_signature_groups": 0,
             "informative_groups": 0, "zero_variance_groups": 0,
+            "no_signal_groups": 0, "missing_evidence_groups": 0, "uncertainty_blocked_groups": 0,
+            "last_signal_status": None,
             "last_informative": None, "last_observed_policy_version": None,
             "last_selected_draw": None,
         } for identifier in self.tasks}
@@ -142,7 +145,9 @@ class TaskSampler:
         # totals are audit data, not a stationary difficulty estimate.
         success_rate = item["success_rate_ema"]
         medium_difficulty = 4.0 * success_rate * (1.0 - success_rate)
-        variance = item["reward_variance_ema"]
+        # With interval rewards, true reward variance can be unknown. Rank the
+        # observed usable learning signal instead of inventing a scalar reward.
+        variance = item["learning_signal_second_moment_ema"]
         reward_signal = variance / (variance + self.config["variance_scale"])
         novelty = 1.0 / math.sqrt(1.0 + item["groups"])
         priority = (self.config["priority_floor"] +
@@ -209,7 +214,9 @@ class TaskSampler:
             }
             last_version = self.stats[identifier]["last_observed_policy_version"]
             feedback_status = (
-                "unseen" if not seen else "no_signal_current_policy" if identifier in suppressed
+                "unseen" if not seen else (
+                    "uncertain_reward_current_policy" if self.stats[identifier]["last_signal_status"] == "no_provable_signal_with_missing"
+                    else "no_signal_current_policy") if identifier in suppressed
                 else "reprobe_after_policy_update" if last_version < self.policy_version
                 else "informative_current_policy"
             )
@@ -258,7 +265,8 @@ class TaskSampler:
             "draw": self.draws,
         }
 
-    def observe(self, task_id, rewards, resolved, *, policy_version=None, reward_signature="default"):
+    def observe(self, task_id, rewards, resolved, *, policy_version=None, reward_signature="default",
+                learning_signal=None):
         """Record a complete group's scalar rewards and official binary results."""
         if task_id not in self.tasks:
             raise ValueError("Cannot observe a task outside the declared training universe")
@@ -270,36 +278,63 @@ class TaskSampler:
         values, outcomes = list(rewards), list(resolved)
         if len(values) < 2 or len(values) != len(outcomes):
             raise ValueError("Observe a complete group of at least two trajectories with matching outcomes")
-        if any(value is None or not math.isfinite(float(value)) for value in values):
-            raise ValueError("Incomplete/non-finite rewards are infrastructure errors, not zero scores")
+        if any(value is not None and not math.isfinite(float(value)) for value in values):
+            raise ValueError("Non-finite rewards are not valid observations")
         if any(value not in (False, True, 0, 1) or value is None for value in outcomes):
             raise ValueError("resolved must contain complete official binary outcomes")
-        values = [float(value) for value in values]
-        mean = statistics.fmean(values)
-        variance = statistics.pvariance(values)
-        deviation = math.sqrt(variance)
-        informative = deviation > self.config["min_group_std"]
+        values = [float(value) if value is not None else None for value in values]
+        reward_complete = all(value is not None for value in values)
+        mean = statistics.fmean(values) if reward_complete else None
+        variance = statistics.pvariance(values) if reward_complete else None
+        deviation = math.sqrt(variance) if reward_complete else None
+        if learning_signal is None:
+            if not reward_complete:
+                raise ValueError("Unknown rewards require an explicit evidence-based learning signal")
+            signal = [value - mean for value in values]
+        else:
+            signal = list(learning_signal)
+            if (len(signal) != len(values) or
+                    any(value is None or not math.isfinite(float(value)) for value in signal)):
+                raise ValueError("Learning signal must be finite and cover the complete group")
+            signal = [float(value) for value in signal]
+        second_moment = statistics.fmean(value * value for value in signal)
+        if not math.isfinite(second_moment):
+            raise ValueError("Learning signal magnitude must be finite")
+        signal_rms = math.sqrt(second_moment)
+        informative = signal_rms > self.config["min_group_std"]
+        signal_status = ("complete_evidence_informative" if reward_complete else "informative_with_missing_evidence") if informative else (
+            "complete_evidence_zero_signal" if reward_complete else "no_provable_signal_with_missing")
         item = self.stats[task_id]
         decay = self.config["ema_decay"] if item["groups"] else 0.0
         success_rate = sum(outcomes) / len(outcomes)
         signature_changed = item["reward_signature"] != reward_signature
         reward_decay = 0.0 if signature_changed else decay
         item["success_rate_ema"] = decay * item["success_rate_ema"] + (1.0 - decay) * success_rate
-        item["reward_mean_ema"] = reward_decay * item["reward_mean_ema"] + (1.0 - reward_decay) * mean
-        item["reward_variance_ema"] = reward_decay * item["reward_variance_ema"] + (1.0 - reward_decay) * variance
+        item["reward_mean_ema"] = (None if mean is None else mean if item["reward_mean_ema"] is None
+                                    else reward_decay * item["reward_mean_ema"] + (1.0 - reward_decay) * mean)
+        item["reward_variance_ema"] = (None if variance is None else variance if item["reward_variance_ema"] is None
+                                        else reward_decay * item["reward_variance_ema"] + (1.0 - reward_decay) * variance)
+        item["learning_signal_second_moment_ema"] = (reward_decay * item["learning_signal_second_moment_ema"]
+                                                    + (1.0 - reward_decay) * second_moment)
         item["reward_signature_groups"] = 1 if signature_changed else item["reward_signature_groups"] + 1
         item["reward_signature"] = reward_signature
         item["last_informative"] = informative
+        item["last_signal_status"] = signal_status
         item["last_observed_policy_version"] = version
         item["groups"] += 1
         item["trajectories"] += len(values)
         item["successes"] += sum(int(value) for value in outcomes)
         item["informative_groups"] += int(informative)
-        item["zero_variance_groups"] += int(not informative)
+        item["zero_variance_groups"] += int(reward_complete and not informative)
+        item["no_signal_groups"] += int(not informative)
+        item["missing_evidence_groups"] += int(not reward_complete)
+        item["uncertainty_blocked_groups"] += int(not reward_complete and not informative)
         self.feedback_revision += 1
         return {
             "task_id": task_id, "group_size": len(values),
             "reward_mean": mean, "reward_std": deviation,
+            "reward_complete": reward_complete, "learning_signal_rms": signal_rms,
+            "learning_signal_second_moment": second_moment, "signal_status": signal_status,
             "official_success_rate": success_rate,
             "informative": informative,
             "cumulative_groups": item["groups"],

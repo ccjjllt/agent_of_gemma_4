@@ -521,7 +521,29 @@ def _capture_final_verification(task: Any) -> tuple[dict[str, Any], Any]:
         from rewards import junit_reward_features
 
     original = verification.sandbox_exec
-    captured: dict[str, Any] = {}
+
+    def missing_features(reason):
+        # Expected requirement counts are judge metadata even when the XML
+        # capture fails. Preserve not-applicable versus unknown components.
+        try:
+            fallback = ()
+            if not task.FAIL_TO_PASS and not task.PASS_TO_PASS:
+                fallback = tuple(verification._extract_test_functions_from_patch(task.test_patch))
+            features = junit_reward_features(
+                "", fail_to_pass=task.FAIL_TO_PASS, pass_to_pass=task.PASS_TO_PASS,
+                fallback_requirements=fallback, node_matcher=verification._node_matches_requirement,
+            )
+            features["unavailable_reason"] = reason
+            for name in ("repair", "regression"):
+                if features[name + "_counts"]["expected"]:
+                    features[name + "_unavailable_reason"] = reason
+            return features
+        except Exception:
+            return {"junit_available": False, "dense_coverage_complete": False,
+                    "repair_fraction": None, "regression_fraction": None,
+                    "unavailable_reason": reason}
+
+    captured: dict[str, Any] = {"reward_features": missing_features("no_completed_pytest_capture")}
 
     async def observed(docker: Any, sandbox_id: str, command: str, *args: Any, **kwargs: Any) -> Any:
         started = time.monotonic()
@@ -543,11 +565,7 @@ def _capture_final_verification(task: Any) -> tuple[dict[str, Any], Any]:
                     fallback_requirements=fallback, node_matcher=verification._node_matches_requirement,
                 )
             except Exception as error:
-                captured["reward_features"] = {
-                    "junit_available": False, "dense_coverage_complete": False,
-                    "repair_fraction": None, "regression_fraction": None,
-                    "unavailable_reason": f"junit_capture_{type(error).__name__}",
-                }
+                captured["reward_features"] = missing_features(f"junit_capture_{type(error).__name__}")
         return output
 
     verification.sandbox_exec = observed
