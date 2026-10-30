@@ -2,7 +2,7 @@
 
 2026-10-28，按用户要求清空此前研究，重新开始。旧研究文档、训练与采样实现、自建数据、实验结果和提交载体已从工作目录删除。
 
-实施入口：[AutoDL 双 A800 的训练准备与运行说明](training/README.md)。当前采用 Unsloth BF16 LoRA＋TRL GRPO，包含官方任务验收、复合奖励、动态采题、同批轨迹复用和 adapter 导出。数据与模型在服务器手动获取；GPU兼容性、32K容量和实际收益尚待接入机器后验证。
+实施入口：[AutoDL 双 A800 的训练准备与运行说明](training/README.md)。当前采用 Unsloth BF16 LoRA＋TRL GRPO，包含官方任务验收、复合奖励、动态采题、同批轨迹复用和 adapter 导出。生成端已实现逐步连续批处理、有界前缀KV复用、题组预取与CPU/CUDA profiler；已做极小Gemma4的CPU正确性核对，31B双卡吞吐、32K容量和实际收益仍待实测。数据与模型在服务器手动获取。
 
 方案概览：[当前 GRPO 方案](research/rl-adapter-feasibility.md)。集中记录当前算法、奖励、采题策略和运行配置。
 

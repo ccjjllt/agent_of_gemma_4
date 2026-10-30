@@ -14,7 +14,35 @@
 - 动态采题先覆盖未访问题，再按奖励方差、中等成功率、新颖度调整优先级，保留20%均匀探索并兼顾仓库多样性。完整8条结束后才筛掉低方差组；每批最多尝试12个不同题组补位，不无限重采。
 - 不足4个有效组时按实际组数更新，全部无信号则记录后进入下一批。记录实际选题概率和全部候选/入选组各自成功率；筛组与自适应采样会改变训练分布。
 
-工具和验收在独立CPU进程运行；GPU生成仍串行，连续批处理与跨工具KV复用尚未实现。GRPO实现位于[grpo_trainer.py](grpo_trainer.py)，分项奖励位于[rewards.py](rewards.py)，动态采题位于[curriculum.py](curriculum.py)。本次不以GPU运行结果作为上述实现的前置条件，也不声称已经取得模型收益。
+工具和验收在独立CPU进程运行。GPU生成现改为逐步连续批处理：HTTP请求进入队列，单个生成线程每步让多条活动序列共享一次decode forward，新请求可在步间加入，已完成请求单独返回。默认最多4条；`device_map="balanced"`仍只是权重分层，不是张量并行。此改动已做极小真实Gemma4的CPU正确性核对，31B＋Unsloth的双卡兼容性和性能收益仍待实测。GRPO实现位于[grpo_trainer.py](grpo_trainer.py)，生成位于[generation.py](generation.py)，奖励位于[rewards.py](rewards.py)，采题位于[curriculum.py](curriculum.py)。
+
+## 生成调度与性能测量
+
+- `generation.max_batch_size`限制活动序列数；`max_batch_tokens`按最长完整请求预算乘批大小预留容量，不通过截短上下文、输出、思考或验收凑批。默认最多4×32K；显存是否足够仍由31B实际运行确认。
+- 普通decode步持续使用同一批KV；只有请求加入或退出时拆合缓存。各层保留原生full/sliding KV的不同头形状、设备和滑窗计数，逐行使用真实position IDs。新请求的prefill目前在decode步间逐个处理，长prefill仍会延迟其他请求；尚未实现chunked prefill、paged attention或CUDA graphs。
+- 同一策略版本内用有条目数及字节上限的LRU复用完全一致的token前缀。精确命中复用最后位置logits，扩展命中只计算新增后缀；不回滚已丢弃的滑窗历史。结束采集会排空请求并清除KV，之后才计算完整前缀训练概率和更新LoRA。推理缓存不会进入梯度路径。
+- 题组采集共用CPU池，正式配置最多预取2个候选组，轨迹槽位完成后立即补位。完整组按选题顺序计算奖励和选入更新，避免偏向先完成的快题。达到有效组目标时，已预取的余量仍完成全部8条及验收，明确标为`prefetch_after_target`，计入全部候选统计；首批配置预取1组以控制成本。
+- `generation.profiling`可对少量decode迭代采集CPU/CUDA算子、形状和显存。首批默认等待16步、warmup2步、记录8步；正式配置默认关闭。输出在`profiles/<collection_id>/`，不同采集批不会覆盖。profiler额外同步只发生在窗口边界；另在整批采集关闭时同步两卡，确认KV操作排空后才允许训练。profile对吞吐的扰动必须单独报告。
+- 连续批处理的各请求耗时会重叠，不能再把它们相加作为总生成时间。`generation_metrics.jsonl`记录不重叠的引擎活动耗时、token数、实际最大批大小、缓存命中和排除profile窗口后的吞吐；端到端耗时还应计入排队、工具和验收。原来的`first_scores_seconds`只存在于旧单请求日志，新调度记录实际`first_token_seconds`及排队时间。
+
+2026-10-30手动核对使用Transformers5.17、CPU Torch2.14.1及随机极小Gemma4，覆盖混合full/sliding、异构KV头、K=V、共享KV、滑窗跨界、请求中途加入/退出、前缀复用、EOS和取消。实际采样概率对独立完整前缀forward最大差约2.4e-6；HTTP调度及完整题组顺序用一次性模拟核对。数值记录与CPU profiler摘要保存在`results/local-batching/2026-10-30/`。这些结果不代表31B吞吐、显存或修复收益。
+
+后续有可用GPU入口及本次预算时，可用`training.profile_generation`直接读取服务器保留的完整`model_calls.jsonl`，对同一组完整prompt和completion进行旧串行`generate`及新batch 1/2/4重放。默认关闭前缀缓存以隔离批处理效应，`--prefix-cache`用于另一次缓存对照；`--profile`另跑独立采样窗口，不将profile轮次混入吞吐。输出包含源文件指纹、实际decode批大小、吞吐、显存与逐token概率差汇总，不导出原始token。它强制使用记录中的输出路径，不能称为新轨迹、官方验收或模型收益，采样开销也不完全等同自由生成。
+
+例如，确认模型及以下调用记录仍在服务器后，在本次明确授权的时间预算内执行（这里仅提供命令，不表示已经运行）：
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 /root/autodl-tmp/gemma4/envs/learner/bin/python -m training.profile_generation \
+  --config configs/first_batch.toml \
+  --model-path /dev/shm/gemma4-models/gemma4-31b-qat \
+  --calls /root/autodl-tmp/gemma4/runs/first-batch-008/batch-0000-group-000-rollout-000/model_calls.jsonl \
+  --calls /root/autodl-tmp/gemma4/runs/first-batch-008/batch-0000-group-000-rollout-001/model_calls.jsonl \
+  --max-calls 4 --batch-sizes 1,2,4 --profile \
+  --output-dir /root/autodl-tmp/gemma4/runs/generation-batching-001 \
+  --walltime-seconds 1800
+```
+
+实际额度由本次会话确定；父进程的总时限包含模型加载。用户于10月30日明确要求“没有入口不实验”，本次未执行此GPU命令。
 
 ## 手动准备数据与模型
 
@@ -94,4 +122,4 @@ python3 scripts/sync_experiment_logs.py \
   --run first-batch-008
 ```
 
-默认写入已被Git忽略的 `results/autodl/`，包括学习器日志、配置、奖励与结果摘要、依赖版本，以及服务器端计算的调用token数、排队/生成耗时和行为logprob统计。原始调用token、worker日志、trace、补丁、JUnit、官方题目及权重不取回。文件逐个原子替换；连接失败保留已取得的日志，只有完整同步后才更新带时间与哈希的 `sync_metadata.json`，不将其当作训练完成证明。
+默认写入已被Git忽略的 `results/autodl/`，包括学习器日志、配置、奖励与结果摘要、依赖版本、`generation_metrics.jsonl`、profiler算子表与元数据，以及服务器端计算的调用token数、排队/生成耗时和行为logprob统计。原始调用token、worker日志、官方trace、补丁、JUnit、官方题目及权重不取回；较大的原始profiler trace也留在服务器。文件逐个原子替换；连接失败保留已取得的日志，只有完整同步后才更新带时间与哈希的 `sync_metadata.json`，不将其当作训练完成证明。

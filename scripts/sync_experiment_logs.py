@@ -61,8 +61,13 @@ for run in runs:
     folder = base / "runs" / run
     if not folder.is_dir() or folder.is_symlink():
         raise ValueError("Requested run does not exist as a real directory: " + run)
-    for name in ("metrics.jsonl", "run_config.json", "curriculum_state.json"):
+    for name in ("metrics.jsonl", "run_config.json", "curriculum_state.json", "generation_metrics.jsonl"):
         copy(folder / name)
+    # Operator summaries have no prompt/token contents. Keep large raw profiler
+    # traces on the server; they are separate from the official agent traces.
+    for path in sorted((folder / "profiles").glob("*/*")):
+        if path.name.endswith(".operators.txt") or (path.name.endswith(".json") and not path.name.endswith(".trace.json")):
+            copy(path)
     # Learner stdout contains program diagnostics and numerical events, not
     # the worker's task trace. Do not collect worker.log or official_results/.
     copy(base / "install-records" / (run + ".log"))
@@ -92,6 +97,7 @@ for run in runs:
             row = {key: call.get(key) for key in (
                 "rollout_id", "call_index", "policy_version", "finish_reason",
                 "requested_max_tokens", "effective_max_tokens", "context_limited",
+                "generation_backend", "timing_semantics", "reused_prefix_tokens", "profiled_tokens",
             )}
             row.update(
                 prompt_tokens=len(call.get("prompt_ids", [])),
@@ -103,10 +109,12 @@ for run in runs:
                 behavior_logprob_min=min(valid) if valid else None,
                 behavior_logprob_max=max(valid) if valid else None,
             )
-            for key in ("generation_elapsed_seconds", "first_scores_seconds", "queue_wait_seconds"):
+            for key in ("generation_elapsed_seconds", "first_scores_seconds", "first_token_seconds",
+                        "queue_wait_seconds", "scheduler_queue_wait_seconds"):
                 row[key] = finite(call.get(key))
             elapsed = row["generation_elapsed_seconds"]
             row["generation_tokens_per_second"] = row["completion_tokens"] / elapsed if elapsed and elapsed > 0 else None
+            row["throughput_scope"] = "individual request; overlapping times must not be summed for batch throughput"
             rows.append(json.dumps(row, allow_nan=False))
         output = ("\n".join(rows) + ("\n" if rows else "")).encode()
         send((rollout.relative_to(base) / "model_calls.summary.jsonl").as_posix(), output, payload)

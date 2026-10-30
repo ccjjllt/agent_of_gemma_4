@@ -7,6 +7,7 @@ within the current policy-version batch. Official assets are never rewritten.
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import concurrent.futures
 import hashlib
 import json
@@ -103,6 +104,9 @@ def run_worker(command, folder, deadline, expired, processes, process_lock):
         with process_lock:
             processes.add(proc)
         try:
+            # Cancellation can race Popen and registration in the shared set.
+            if expired.is_set() or time.monotonic() >= deadline:
+                raise TimeoutError("Run expired while launching this task worker")
             proc.wait(timeout=max(1, deadline - time.monotonic()))
         except BaseException:
             stop_process_tree(proc)
@@ -121,6 +125,193 @@ def run_worker(command, folder, deadline, expired, processes, process_lock):
     if result.get("reward") not in (0, 1):
         raise RuntimeError("Official binary outcome is missing; refusing to invent a reward")
     return result
+
+
+def collect_batch(*, cfg, batch, policy_version, sampler, endpoint, run_dir,
+                  runtime_python, data_root, submission, uid_base, deadline,
+                  expired, processes, process_lock, cancel_run):
+    """Collect bounded, overlapping groups under one unchanged learner policy.
+
+    Worker slots are filled as soon as a trajectory ends, including from other
+    groups. Completed groups are scored and committed in their selection order,
+    never their completion order. That prevents fast tasks from winning the
+    batch's learning slots. Already selected lookahead groups always finish;
+    surplus informative groups are recorded but not used for this update.
+    """
+    generations = int(cfg["run"]["num_generations"])
+    target_groups = int(cfg["run"]["groups_per_batch"])
+    max_candidates = int(cfg["run"]["max_candidate_groups_per_batch"])
+    prefetch_groups = min(int(cfg["run"].get("prefetch_groups", 2)), max_candidates)
+    workers = int(cfg["run"]["max_cpu_workers"])
+    std_floor = float(cfg["grpo"]["advantage_std_floor"])
+    scaling = cfg["grpo"].get("scale_rewards", "group")
+    metrics = run_dir / "metrics.jsonl"
+    accepted, attempted, used_repos = [], set(), set()
+    pending, runnable = deque(), deque()
+    futures = {}
+    completed_groups = candidate_successes = candidate_trajectories = 0
+    next_candidate = 0
+    catalog_exhausted = False
+
+    emit(metrics, "batch_collection_started", batch=batch, policy_version=policy_version,
+         target_groups=target_groups, group_size=generations, prefetch_groups=prefetch_groups,
+         max_cpu_workers=workers, group_commit_order="selection_order")
+    endpoint.begin([], policy_version)
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
+
+    def select_groups():
+        nonlocal next_candidate, catalog_exhausted
+        while (len(pending) < prefetch_groups and len(accepted) < target_groups
+               and next_candidate < max_candidates and not catalog_exhausted):
+            selection = sampler.choose(exclude_ids=attempted, used_repos=used_repos)
+            if selection is None:
+                catalog_exhausted = True
+                break
+            candidate = next_candidate
+            next_candidate += 1
+            attempted.add(selection["id"])
+            used_repos.add(selection["repo"])
+            group_id = f"batch-{batch:04d}-group-{candidate:03d}"
+            identities = [f"{group_id}-rollout-{i:03d}" for i in range(generations)]
+            endpoint.register(identities, policy_version)
+            state = {"candidate": candidate, "selection": selection, "group_id": group_id,
+                     "identities": identities, "results": [None] * generations,
+                     "next_rollout": 0, "completed": 0, "selected_at": time.monotonic()}
+            pending.append(state)
+            runnable.append(state)
+            emit(metrics, "group_selected", batch=batch, group_id=group_id,
+                 prefetched_groups=len(pending), **selection)
+
+    def fill_worker_slots():
+        # Only submit runnable work, rather than burying whole groups in the
+        # executor's FIFO. Round-robin submission gives every prefetched group
+        # access to CPU tools and the shared GPU request scheduler.
+        while runnable and len(futures) < workers:
+            state = runnable.popleft()
+            index = state["next_rollout"]
+            state["next_rollout"] += 1
+            if state["next_rollout"] < generations:
+                runnable.append(state)
+            identity = state["identities"][index]
+            folder = run_dir / identity
+            # Overlapping groups must never share their low-privilege agent UID.
+            agent_uid = uid_base + (batch * max_candidates + state["candidate"]) * generations + index
+            command = [str(runtime_python), str(PROJECT / "training/official_runtime.py"),
+                       "--data-root", str(data_root), "--submission-dir", str(submission),
+                       "--endpoint", endpoint.url, "--workspace", str(folder / "workspace"),
+                       "--result-file", str(folder / "result.json"), "--rollout-id", identity,
+                       "--sandbox", cfg["runtime"]["sandbox"], "--agent-uid", str(agent_uid),
+                       "--sandbox-baseline-python", cfg["runtime"].get("sandbox_baseline_python", "/opt/gemma-sandbox-baseline/bin/python"),
+                       "--evaluation-overrides-json", json.dumps(cfg["runtime"].get("evaluation", {})),
+                       "--task-id", state["selection"]["id"]]
+            future = pool.submit(run_worker, command, folder, deadline, expired, processes, process_lock)
+            futures[future] = (state, index)
+
+    def commit_group(state):
+        nonlocal completed_groups, candidate_successes, candidate_trajectories
+        selection, identities, results = state["selection"], state["identities"], state["results"]
+        task_id, group_id = selection["id"], state["group_id"]
+        if any(endpoint.errors.get(identity) for identity in identities):
+            raise RuntimeError("A candidate group has failed model calls; no partial update")
+        calls = [endpoint.calls[identity] for identity in identities]
+        if any(not items for items in calls):
+            raise RuntimeError("An official trajectory has no recorded model actions")
+        if any(result["task_id"] != task_id for result in results):
+            raise RuntimeError("Official task identity differs from the selected group")
+        if any(call["policy_version"] != policy_version for items in calls for call in items):
+            raise RuntimeError("A collected trajectory crossed learner policy versions")
+
+        # Use one common reward feature set for every trajectory in the group.
+        reward_config = dict(cfg["rewards"])
+        dense_features = [result.get("reward_features") or {} for result in results]
+        dense_available = (
+            all(item.get("junit_available") and item.get("dense_coverage_complete")
+                for item in dense_features)
+            and len({(item.get("repair_fraction") is None, item.get("regression_fraction") is None)
+                     for item in dense_features}) == 1
+        )
+        reward_config["dense_shaping_enabled"] = dense_available
+        reward_mode = "full_composite" if dense_available else "terminal_efficiency_only_missing_dense_evidence"
+        scored = [compute_reward(result, items, reward_config) for result, items in zip(results, calls)]
+        rewards = [item["total"] for item in scored]
+        outcomes = [bool(result["success"]) for result in results]
+        candidate_successes += sum(outcomes)
+        candidate_trajectories += len(outcomes)
+        group_stats = sampler.observe(task_id, rewards, outcomes)
+        completed_groups += 1
+        mean_reward, deviation = group_stats["reward_mean"], group_stats["reward_std"]
+        denominator = max(deviation, std_floor) if scaling == "group" else 1.0
+        advantages = [(value - mean_reward) / denominator for value in rewards]
+        selected = bool(group_stats["informative"] and len(accepted) < target_groups)
+        exclusion = None if selected else (
+            "prefetch_after_target" if group_stats["informative"] else "low_reward_variance"
+        )
+        trajectories = []
+        for identity, items, official, score, advantage in zip(identities, calls, results, scored, advantages):
+            trajectories.append({
+                "task_id": task_id, "group_id": group_id, "rollout_id": identity,
+                "policy_version": policy_version, "calls": items,
+                "reward": score["total"], "reward_components": score["components"],
+                "advantage": advantage, "official_success": official["success"],
+                "selection_probability": selection["selection_probability"],
+            })
+            write_json(run_dir / identity / "reward.json", {
+                "official_reward": official["reward"], "group_reward_mode": reward_mode,
+                "effective_reward_weights": reward_config, **score, "advantage": advantage,
+                "selected_for_update": selected, "exclusion_reason": exclusion,
+            })
+        emit(metrics, "group_verified", batch=batch, group_id=group_id, **group_stats,
+             rewards=rewards, advantages=advantages, reward_mode=reward_mode,
+             selected_for_update=selected, exclusion_reason=exclusion,
+             selection_to_commit_seconds=time.monotonic() - state["selected_at"])
+        write_json(run_dir / "curriculum_state.json", sampler.state_dict())
+        if selected:
+            accepted.append(trajectories)
+        endpoint.release_rollouts(identities)
+
+    try:
+        select_groups()
+        fill_worker_slots()
+        while pending:
+            if expired.is_set() or time.monotonic() >= deadline:
+                raise TimeoutError("Run budget exhausted during group collection")
+            # Commit all currently complete predecessors before drawing again.
+            # Reward observations and target decisions thus ignore completion order.
+            while pending and pending[0]["completed"] == generations:
+                commit_group(pending.popleft())
+            select_groups()
+            fill_worker_slots()
+            if not pending:
+                break
+            if not futures:
+                raise RuntimeError("Incomplete candidate group has no runnable trajectories")
+            done, _ = concurrent.futures.wait(
+                futures, timeout=min(0.5, max(0, deadline - time.monotonic())),
+                return_when=concurrent.futures.FIRST_COMPLETED,
+            )
+            for future in done:
+                state, index = futures.pop(future)
+                state["results"][index] = future.result()
+                state["completed"] += 1
+                if state["completed"] == generations:
+                    emit(metrics, "group_rollouts_completed", batch=batch, group_id=state["group_id"],
+                         trajectories=generations, elapsed_seconds=time.monotonic() - state["selected_at"])
+        if futures or runnable:
+            raise RuntimeError("Collection ended with outstanding official workers")
+    except BaseException:
+        cancel_run()
+        for future in futures:
+            future.cancel()
+        raise
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
+        # end() drains admitted GPU requests and clears retained inference KV
+        # before any probability recomputation or optimizer update can begin.
+        endpoint.end()
+    if expired.is_set() or time.monotonic() >= deadline:
+        raise TimeoutError("Run budget exhausted before collection drained")
+    return {"accepted": accepted, "attempted": attempted, "completed_groups": completed_groups,
+            "candidate_successes": candidate_successes, "candidate_trajectories": candidate_trajectories}
 
 
 def main():
@@ -178,9 +369,11 @@ def main():
     groups_per_batch = int(cfg["run"]["groups_per_batch"])
     max_candidates = int(cfg["run"]["max_candidate_groups_per_batch"])
     workers = int(cfg["run"]["max_cpu_workers"])
+    prefetch_groups = int(cfg["run"].get("prefetch_groups", 2))
     iterations = int(cfg["grpo"]["num_iterations"])
-    if min(batches, groups_per_batch, workers, iterations) < 1 or generations < 2 or max_candidates < groups_per_batch:
-        parser.error("Require K>=2, positive batch/worker/reuse counts, and enough candidate groups.")
+    if min(batches, groups_per_batch, workers, prefetch_groups, iterations) < 1 or generations < 2 or max_candidates < groups_per_batch:
+        parser.error("Require K>=2, positive batch/worker/prefetch/reuse counts, and enough candidate groups.")
+    cfg["run"]["prefetch_groups"] = min(prefetch_groups, max_candidates)
     if cfg["sampling"] != {"temperature": 1.0, "top_p": 1.0, "top_k": 0}:
         parser.error("The current actor uses full categorical sampling; other sampling distributions need an explicit adapter.")
     walltime = float(cfg["run"]["walltime_seconds"])
@@ -250,7 +443,8 @@ def main():
         lambda event, **fields: emit(metrics, event, **fields),
     )
     import torch
-    endpoint = PolicyEndpoint(policy, run_dir, int(cfg["runtime"].get("port", 0)))
+    endpoint = PolicyEndpoint(policy, run_dir, int(cfg["runtime"].get("port", 0)),
+                              generation_config=cfg.get("generation", {}))
     processes, process_lock = set(), threading.Lock()
     expired = threading.Event()
 
@@ -273,98 +467,17 @@ def main():
         for batch in range(batches):
             if expired.is_set():
                 raise TimeoutError("Run budget exhausted before collection")
-            accepted, attempted, used_repos = [], set(), set()
-            completed_groups = 0
-            candidate_successes = 0
-            candidate_trajectories = 0
-            emit(metrics, "batch_collection_started", batch=batch, policy_version=policy_version,
-                 target_groups=groups_per_batch, group_size=generations)
-            for candidate in range(max_candidates):
-                if len(accepted) >= groups_per_batch:
-                    break
-                selection = sampler.choose(exclude_ids=attempted, used_repos=used_repos)
-                if selection is None:
-                    break
-                task_id = selection["id"]
-                attempted.add(task_id)
-                used_repos.add(selection["repo"])
-                group_id = f"batch-{batch:04d}-group-{candidate:03d}"
-                identities = [f"{group_id}-rollout-{i:03d}" for i in range(generations)]
-                endpoint.begin(identities, policy_version)
-                emit(metrics, "group_selected", batch=batch, group_id=group_id, **selection)
-                futures = []
-                with concurrent.futures.ThreadPoolExecutor(max_workers=min(workers, generations)) as pool:
-                    for i, identity in enumerate(identities):
-                        folder = run_dir / identity
-                        command = [str(runtime_python), str(PROJECT / "training/official_runtime.py"),
-                                   "--data-root", str(data_root), "--submission-dir", str(submission),
-                                   "--endpoint", endpoint.url, "--workspace", str(folder / "workspace"),
-                                   "--result-file", str(folder / "result.json"), "--rollout-id", identity,
-                                   "--sandbox", cfg["runtime"]["sandbox"], "--agent-uid", str(uid_base + i),
-                                   "--sandbox-baseline-python", cfg["runtime"].get("sandbox_baseline_python", "/opt/gemma-sandbox-baseline/bin/python"),
-                                   "--evaluation-overrides-json", json.dumps(cfg["runtime"].get("evaluation", {})),
-                                   "--task-id", task_id]
-                        futures.append(pool.submit(run_worker, command, folder, deadline, expired,
-                                                   processes, process_lock))
-                    try:
-                        results = [future.result() for future in futures]
-                    except BaseException:
-                        cancel_run()
-                        raise
-                endpoint.end()
-                if expired.is_set() or any(endpoint.errors.values()):
-                    raise RuntimeError("A candidate group has failed/interrupted model calls; no partial update")
-                calls = [endpoint.calls[identity] for identity in identities]
-                if any(not items for items in calls):
-                    raise RuntimeError("An official trajectory has no recorded model actions")
-                if any(result["task_id"] != task_id for result in results):
-                    raise RuntimeError("Official task identity differs from the selected group")
-
-                # A missing test report cannot give one candidate an advantage
-                # merely by omitting its regression penalty. Compare the whole
-                # group with the same available reward components.
-                reward_config = dict(cfg["rewards"])
-                dense_features = [result.get("reward_features") or {} for result in results]
-                dense_available = (
-                    all(item.get("junit_available") and item.get("dense_coverage_complete")
-                        for item in dense_features)
-                    and len({(item.get("repair_fraction") is None, item.get("regression_fraction") is None)
-                             for item in dense_features}) == 1
-                )
-                reward_config["dense_shaping_enabled"] = dense_available
-                reward_mode = "full_composite" if dense_available else "terminal_efficiency_only_missing_dense_evidence"
-                scored = [compute_reward(result, items, reward_config) for result, items in zip(results, calls)]
-                rewards = [item["total"] for item in scored]
-                outcomes = [bool(result["success"]) for result in results]
-                candidate_successes += sum(outcomes)
-                candidate_trajectories += len(outcomes)
-                group_stats = sampler.observe(task_id, rewards, outcomes)
-                completed_groups += 1
-                mean_reward, deviation = group_stats["reward_mean"], group_stats["reward_std"]
-                denominator = max(deviation, std_floor) if scaling == "group" else 1.0
-                advantages = [(value - mean_reward) / denominator for value in rewards]
-                trajectories = []
-                for identity, items, official, score, advantage in zip(identities, calls, results, scored, advantages):
-                    item = {
-                        "task_id": task_id, "group_id": group_id, "rollout_id": identity,
-                        "policy_version": policy_version, "calls": items,
-                        "reward": score["total"], "reward_components": score["components"],
-                        "advantage": advantage, "official_success": official["success"],
-                        "selection_probability": selection["selection_probability"],
-                    }
-                    trajectories.append(item)
-                    write_json(run_dir / identity / "reward.json", {
-                        "official_reward": official["reward"], "group_reward_mode": reward_mode,
-                        "effective_reward_weights": reward_config, **score, "advantage": advantage,
-                    })
-                emit(metrics, "group_verified", batch=batch, group_id=group_id, **group_stats,
-                     rewards=rewards, advantages=advantages, reward_mode=reward_mode,
-                     selected_for_update=group_stats["informative"])
-                write_json(run_dir / "curriculum_state.json", sampler.state_dict())
-                if group_stats["informative"]:
-                    accepted.append(trajectories)
-                # The full group has finished; next draw uses a different task.
-                # Selection is bounded even if every candidate has zero variance.
+            collection = collect_batch(
+                cfg=cfg, batch=batch, policy_version=policy_version, sampler=sampler,
+                endpoint=endpoint, run_dir=run_dir, runtime_python=runtime_python,
+                data_root=data_root, submission=submission, uid_base=uid_base,
+                deadline=deadline, expired=expired, processes=processes,
+                process_lock=process_lock, cancel_run=cancel_run,
+            )
+            accepted, attempted = collection["accepted"], collection["attempted"]
+            completed_groups = collection["completed_groups"]
+            candidate_successes = collection["candidate_successes"]
+            candidate_trajectories = collection["candidate_trajectories"]
             if not accepted:
                 emit(metrics, "batch_no_learning_signal", batch=batch,
                      completed_groups=completed_groups, attempted_tasks=sorted(attempted),

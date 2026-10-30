@@ -32,7 +32,7 @@
 
 ## 执行边界与入口
 
-题面、`base_commit`和官方资产保持原样，参考补丁与验收资产仅供裁判侧；排除列表中的题不进入采样器。工具与验收使用独立CPU进程及低权限UID。当前GPU生成仍串行，连续批处理和跨工具KV复用尚未实现。
+题面、`base_commit`和官方资产保持原样，参考补丁与验收资产仅供裁判侧；排除列表中的题不进入采样器。工具与验收使用独立CPU进程及低权限UID。10月30日已将生成入口改为逐步连续批处理、同策略版本的有界前缀KV复用和跨题组有界预取；这是新代码状态，下面的`first-batch-008`仍是此前串行版本的实测记录。
 
 首批先取1个有效题组、每题仍采8条完整轨迹，最多尝试3题；同批最多更新2次，总进程上限2小时。正式配置仍为每批4组、最多32批。会话预算显式设为60分钟、100次工具调用、50回合，命令与验收超时各300秒；原版示例的1分钟/10次工具预算仅在运行配置中覆盖。
 
@@ -40,6 +40,12 @@
 
 主机最后确认在线时间为01:27:34，01:30之后SSH持续拒绝连接，关机状态尚待确认。14份主日志、运行配置及依赖记录已取回本地 `results/autodl/`（共133962字节）；最新主日志停在第12次调用生成128 tokens的进度，不能当作最终结束日志。未取回官方题目、原始轨迹token、补丁或验收资产。
 
-当前证据指向解码开销和GPU串行队列；CPU线程池已经会在轨迹完成时立即补位。下一次实验先对完整调用的部分解码步做CPU/CUDA profiler，再比较同一BF16基座的batch 1/2/4吞吐与概率；不能仅凭低GPU利用率认定是通信或行为logprob记录开销，也不靠缩短历史、思考或验收提速。
+当前证据指向解码开销和GPU串行队列；原CPU线程池已经会在轨迹完成时立即补位。新调度让活动序列共用decode forward，并在步间接纳新请求；题组之间也能有界重叠，完整组仍按选题顺序决定是否训练。前缀缓存只作为补充，不把它当成解决主要解码瓶颈的依据。
+
+实现沿用原生逐层`DynamicCache`，没有直接打开Transformers5.17的paged连续批处理：该版本[缓存分配源码](https://github.com/huggingface/transformers/blob/v5.17.0/src/transformers/generation/continuous_batching/cache.py)采用统一KV头形状，与Gemma4异构full/sliding层不符。当前保留跨卡分层，未实现张量并行；长prefill仍逐个处理。详细配置与限制见[生成调度说明](../training/README.md#生成调度与性能测量)。
+
+必要手动核对已用极小随机Gemma4在CPU完成：批内异长前缀、滑窗跨界及共享KV与独立完整前缀forward一致到浮点误差；实际连续采样19个token的behavior logprob最大绝对差约2.4e-6，最大活动batch为3，覆盖中途加入和退出。HTTP调度、取消与完整题组选入顺序也已核对，未新增测试文件。CPU数值记录在`results/local-batching/2026-10-30/`，不能用CPU吞吐声称31B加速。
+
+尚缺31B＋Unsloth双卡的真实运行证据。下一次实验应先在同一BF16基座、同一完整调用上比较batch 1/2/4的吞吐与每token概率，再单独采集CPU/CUDA profiler；采样profile窗口不混入常规吞吐。继续保留完整历史、思考和验收，不凭低GPU利用率归因PCIe或概率记录。原SSH入口在本次只读探测时关闭连接，未启动远程机器或GPU实验。
 
 参数见[首批配置](../configs/first_batch.toml)和[双A800配置](../configs/a800_2x80.toml)，部署见[训练说明](../training/README.md)，实现入口为[GRPO Trainer](../training/grpo_trainer.py)、[奖励](../training/rewards.py)和[动态采题](../training/curriculum.py)。

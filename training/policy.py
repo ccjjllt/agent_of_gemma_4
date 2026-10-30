@@ -134,6 +134,7 @@ class Policy:
         if len(gpu_indices) != expected_gpus:
             raise RuntimeError(f"Model uses GPUs {sorted(gpu_indices)}, expected {expected_gpus} partitions")
         self.input_device = self.model.get_input_embeddings().weight.device
+        self.text_config = self.model.config.get_text_config()
         self.softcap = float(text_config.get("final_logit_softcapping") or 0.0)
         self._mode = None
 
@@ -204,7 +205,82 @@ class Policy:
                     call["function"]["arguments"] = json.loads(arguments)
         return result
 
+    def prepare_generation(self, messages: list[dict], tools=None, max_tokens=16384, *, enable_thinking=True):
+        """Tokenize a complete request on CPU, without entering the model lock."""
+        prompt_ids = list(self.tokenizer.apply_chat_template(
+            self._messages_for_template(messages), tools=tools or None,
+            tokenize=True, return_dict=False, add_generation_prompt=True,
+            enable_thinking=bool(enable_thinking), truncation=False,
+        ))
+        if not prompt_ids or len(prompt_ids) >= self.max_context:
+            raise ContextLimitError(f"Complete prompt has {len(prompt_ids)} tokens; window is {self.max_context}")
+        requested = int(max_tokens)
+        if requested < 1:
+            raise ValueError("max_tokens must be positive")
+        return {"prompt_ids": prompt_ids, "tools": tools, "requested_max_tokens": requested,
+                "effective_max_tokens": min(requested, self.max_context - len(prompt_ids)),
+                "enable_thinking": bool(enable_thinking)}
+
+    def new_generation_cache(self):
+        from transformers import DynamicCache
+
+        return DynamicCache(config=self.text_config)
+
+    def forward_generation(self, input_ids, attention_mask, position_ids, cache):
+        """One text forward with per-row positions and native hybrid KV state.
+
+        Project only the last hidden position. This is the same text decoder,
+        active LoRA, head and softcap used by full-prefix learner scoring; it
+        avoids materializing [batch, prompt_length, vocabulary] prefill logits.
+        The generation worker owns inference mode/autocast and all GPU access.
+        """
+        self._for_inference()
+        base = self.model.get_base_model()
+        output = base.model.language_model(
+            input_ids=input_ids, attention_mask=attention_mask, position_ids=position_ids,
+            past_key_values=cache, use_cache=True, return_dict=True, output_hidden_states=False,
+        )
+        head = base.lm_head
+        logits = head(output.last_hidden_state[:, -1, :].to(head.weight.device, dtype=head.weight.dtype))
+        if self.softcap:
+            logits = self.softcap * self.torch.tanh(logits / self.softcap)
+        return logits, output.past_key_values
+
+    def finish_generation(self, prepared, completion_ids, behavior, **timing):
+        if not completion_ids or len(behavior) != len(completion_ids) or not all(math.isfinite(x) for x in behavior):
+            raise RuntimeError("Generation needs one finite behavior logprob per sampled token")
+        prompt_ids, tools = prepared["prompt_ids"], prepared["tools"]
+        parsed = self.tokenizer.parse_response(
+            completion_ids, schema=self.response_template, prefix=prompt_ids, tools=tools or None,
+        )
+        message = {"role": "assistant", "content": parsed.get("content") or None}
+        if parsed.get("thinking"):
+            message["reasoning_content"] = parsed["thinking"]
+        calls = []
+        for call in parsed.get("tool_calls", []) or []:
+            function = call["function"]
+            arguments = function.get("arguments", {})
+            calls.append({"id": "call_" + uuid.uuid4().hex[:24], "type": "function", "function": {
+                "name": function["name"],
+                "arguments": arguments if isinstance(arguments, str) else json.dumps(arguments, ensure_ascii=False),
+            }})
+        if calls:
+            message["tool_calls"] = calls
+        eos = self.generation_config.eos_token_id
+        eos = eos if isinstance(eos, list) else [eos]
+        finish = "tool_calls" if calls else "stop" if completion_ids[-1] in eos else "length"
+        return {"assistant_message": message, "prompt_ids": prompt_ids,
+                "completion_ids": completion_ids, "behavior_logprobs": behavior,
+                "finish_reason": finish,
+                "sampling": {"temperature": 1.0, "top_p": 1.0, "top_k": 0,
+                             "enable_thinking": prepared["enable_thinking"]},
+                "requested_max_tokens": prepared["requested_max_tokens"],
+                "effective_max_tokens": prepared["effective_max_tokens"],
+                "context_limited": prepared["effective_max_tokens"] < prepared["requested_max_tokens"],
+                **timing}
+
     def generate(self, messages: list[dict], tools=None, max_tokens=16384, *, enable_thinking=True) -> dict:
+        """Original single-request HF generate, retained for measured comparisons."""
         from transformers import LogitsProcessor, LogitsProcessorList, StoppingCriteria, StoppingCriteriaList
 
         torch = self.torch
