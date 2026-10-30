@@ -135,8 +135,9 @@ def collect_batch(*, cfg, batch, policy_version, sampler, endpoint, run_dir,
     Worker slots are filled as soon as a trajectory ends, including from other
     groups. Completed groups are scored and committed in their selection order,
     never their completion order. That prevents fast tasks from winning the
-    batch's learning slots. Already selected lookahead groups always finish;
-    surplus informative groups are recorded but not used for this update.
+    batch's learning slots. Every pending group reserves one remaining learning
+    slot; only completed low-signal groups release a slot for another candidate.
+    All started groups still finish their complete trajectories and acceptance.
     """
     generations = int(cfg["run"]["num_generations"])
     target_groups = int(cfg["run"]["groups_per_batch"])
@@ -152,6 +153,7 @@ def collect_batch(*, cfg, batch, policy_version, sampler, endpoint, run_dir,
     completed_groups = candidate_successes = candidate_trajectories = 0
     next_candidate = 0
     catalog_exhausted = False
+    sampler.set_policy_version(policy_version)
 
     emit(metrics, "batch_collection_started", batch=batch, policy_version=policy_version,
          target_groups=target_groups, group_size=generations, prefetch_groups=prefetch_groups,
@@ -161,7 +163,7 @@ def collect_batch(*, cfg, batch, policy_version, sampler, endpoint, run_dir,
 
     def select_groups():
         nonlocal next_candidate, catalog_exhausted
-        while (len(pending) < prefetch_groups and len(accepted) < target_groups
+        while (len(pending) < min(prefetch_groups, target_groups - len(accepted))
                and next_candidate < max_candidates and not catalog_exhausted):
             selection = sampler.choose(exclude_ids=attempted, used_repos=used_repos)
             if selection is None:
@@ -232,20 +234,28 @@ def collect_batch(*, cfg, batch, policy_version, sampler, endpoint, run_dir,
         )
         reward_config["dense_shaping_enabled"] = dense_available
         reward_mode = "full_composite" if dense_available else "terminal_efficiency_only_missing_dense_evidence"
+        # Compare recent reward statistics only when the effective formula and
+        # observable dense components agree. This contains no test identifiers.
+        reward_signature = json.dumps({
+            "reward_config": reward_config,
+            "repair_available": dense_available and dense_features[0].get("repair_fraction") is not None,
+            "regression_available": dense_available and dense_features[0].get("regression_fraction") is not None,
+        }, sort_keys=True, separators=(",", ":"))
         scored = [compute_reward(result, items, reward_config) for result, items in zip(results, calls)]
         rewards = [item["total"] for item in scored]
         outcomes = [bool(result["success"]) for result in results]
         candidate_successes += sum(outcomes)
         candidate_trajectories += len(outcomes)
-        group_stats = sampler.observe(task_id, rewards, outcomes)
+        group_stats = sampler.observe(task_id, rewards, outcomes, policy_version=policy_version,
+                                      reward_signature=reward_signature)
         completed_groups += 1
         mean_reward, deviation = group_stats["reward_mean"], group_stats["reward_std"]
         denominator = max(deviation, std_floor) if scaling == "group" else 1.0
         advantages = [(value - mean_reward) / denominator for value in rewards]
-        selected = bool(group_stats["informative"] and len(accepted) < target_groups)
-        exclusion = None if selected else (
-            "prefetch_after_target" if group_stats["informative"] else "low_reward_variance"
-        )
+        selected = bool(group_stats["informative"])
+        if selected and len(accepted) >= target_groups:
+            raise RuntimeError("Pending candidate groups exceeded the remaining learning slots")
+        exclusion = None if selected else "low_reward_variance"
         trajectories = []
         for identity, items, official, score, advantage in zip(identities, calls, results, scored, advantages):
             trajectories.append({
@@ -257,6 +267,7 @@ def collect_batch(*, cfg, batch, policy_version, sampler, endpoint, run_dir,
             })
             write_json(run_dir / identity / "reward.json", {
                 "official_reward": official["reward"], "group_reward_mode": reward_mode,
+                "reward_signature": reward_signature,
                 "effective_reward_weights": reward_config, **score, "advantage": advantage,
                 "selected_for_update": selected, "exclusion_reason": exclusion,
             })

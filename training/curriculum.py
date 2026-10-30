@@ -67,7 +67,7 @@ def load_tasks(path, include_ids=None, exclude_ids=None):
 
 
 class TaskSampler:
-    """Coverage first, then an explicit exploration/priority mixture.
+    """Mix coverage and feedback allocation without a full-catalog warmup.
 
     Only complete groups are observed. Infrastructure failures must be handled
     by the caller and must not be passed as zeros to observe(). The caller also
@@ -79,6 +79,7 @@ class TaskSampler:
         supplied = dict(config or {})
         self.config = {
             "uniform_mix": float(supplied.get("uniform_mix", 0.2)),
+            "coverage_mix": float(supplied.get("coverage_mix", 0.3)),
             "ema_decay": float(supplied.get("ema_decay", 0.8)),
             "min_group_std": float(supplied.get("min_group_std", 1e-6)),
             "variance_scale": float(supplied.get("variance_scale", 0.05)),
@@ -90,8 +91,10 @@ class TaskSampler:
         }
         if not all(math.isfinite(value) for value in self.config.values()):
             raise ValueError("Curriculum parameters must be finite")
-        if not 0 < self.config["uniform_mix"] <= 1:
-            raise ValueError("uniform_mix must be in (0, 1] to preserve exploration")
+        if not 0 < self.config["uniform_mix"] < 1:
+            raise ValueError("uniform_mix must be in (0, 1) to preserve exploration and feedback allocation")
+        if not 0 <= self.config["coverage_mix"] < 1 - self.config["uniform_mix"]:
+            raise ValueError("coverage_mix must be nonnegative and leave positive adaptive probability mass")
         if not 0 <= self.config["ema_decay"] < 1:
             raise ValueError("ema_decay must be in [0, 1)")
         if self.config["min_group_std"] < 0 or self.config["variance_scale"] <= 0:
@@ -111,17 +114,33 @@ class TaskSampler:
         self.seed = int(seed)
         self.rng = random.Random(self.seed)
         self.draws = 0
+        self.feedback_revision = 0
+        self.policy_version = 0
         self.stats = {identifier: {
             "groups": 0, "trajectories": 0, "successes": 0,
+            "success_rate_ema": 0.0,
             "reward_mean_ema": 0.0, "reward_variance_ema": 0.0,
+            "reward_signature": None, "reward_signature_groups": 0,
             "informative_groups": 0, "zero_variance_groups": 0,
+            "last_informative": None, "last_observed_policy_version": None,
             "last_selected_draw": None,
         } for identifier in self.tasks}
 
+    def set_policy_version(self, version):
+        """Advance after real optimizer updates, never after a zero-signal batch.
+
+        Old feedback remains an explicitly dated prior for a nearby new policy.
+        Only same-policy zero-signal suppression is lifted on an actual advance.
+        """
+        if type(version) is not int or version < self.policy_version:
+            raise ValueError("policy_version must be a nonnegative, nondecreasing integer")
+        self.policy_version = version
+
     def _priority(self, identifier, used_repos):
         item = self.stats[identifier]
-        # Beta(1,1) posterior keeps estimates usable after a single 0/1 group.
-        success_rate = (item["successes"] + 1.0) / (item["trajectories"] + 2.0)
+        # Use the same recency scale as reward variation. Lifetime success
+        # totals are audit data, not a stationary difficulty estimate.
+        success_rate = item["success_rate_ema"]
         medium_difficulty = 4.0 * success_rate * (1.0 - success_rate)
         variance = item["reward_variance_ema"]
         reward_signal = variance / (variance + self.config["variance_scale"])
@@ -134,42 +153,120 @@ class TaskSampler:
             priority *= self.config["repo_repeat_penalty"]
         return priority
 
+    def selection_distribution(self, exclude_ids=None, used_repos=None):
+        """Compute the actual marginal distribution without drawing or mutating.
+
+        Pool masses, not the relative counts of visited/unvisited tasks, control
+        feedback allocation. Uniform exploration is over ALL eligible tasks.
+        Empty pools transfer their non-uniform mass to the other available pool;
+        repository weighting never changes the uniform exploration floor.
+        """
+        excluded, repos = set(exclude_ids or []), set(used_repos or [])
+        eligible = [identifier for identifier in self.tasks if identifier not in excluded]
+        observed = [identifier for identifier in eligible if self.stats[identifier]["groups"] > 0]
+        unseen = [identifier for identifier in eligible if self.stats[identifier]["groups"] == 0]
+        suppressed = {identifier for identifier in observed
+                      if self.stats[identifier]["last_informative"] is False
+                      and self.stats[identifier]["last_observed_policy_version"] == self.policy_version}
+        adaptive_candidates = [identifier for identifier in observed if identifier not in suppressed]
+        uniform = self.config["uniform_mix"]
+        coverage = self.config["coverage_mix"]
+        adaptive = 1.0 - uniform - coverage
+        if not adaptive_candidates and unseen:
+            coverage += adaptive
+            adaptive = 0.0
+        elif adaptive_candidates and not unseen:
+            adaptive += coverage
+            coverage = 0.0
+        elif not adaptive_candidates and not unseen:
+            # No unvisited or currently useful observed candidate remains.
+            # Uniform rechecks preserve a chance to detect stochastic signal;
+            # they are not relabeled as adaptive exploitation.
+            uniform, coverage, adaptive = 1.0, 0.0, 0.0
+        if not eligible:
+            return {"candidates": [], "selection_phase": "exhausted", "eligible_count": 0,
+                    "candidate_count": 0, "observed_candidate_count": 0, "unseen_candidate_count": 0,
+                    "adaptive_candidate_count": 0, "suppressed_zero_signal_count": 0,
+                    "effective_pool_masses": {"uniform": 0.0, "coverage": 0.0, "adaptive": 0.0},
+                    "observed_probability_mass": 0.0, "unseen_probability_mass": 0.0,
+                    "feedback_revision": self.feedback_revision, "policy_version": self.policy_version}
+        priorities = {identifier: self._priority(identifier, repos) for identifier in observed}
+        # Unvisited tasks have no measured learning signal. Their coverage
+        # weights express only the existing within-batch repository diversity.
+        coverage_weights = {identifier: (self.config["repo_repeat_penalty"]
+                                        if self.tasks[identifier]["repo"] in repos else 1.0)
+                            for identifier in unseen}
+        total_priority = math.fsum(priorities[identifier] for identifier in adaptive_candidates)
+        total_coverage = math.fsum(coverage_weights.values())
+        rows = []
+        for identifier in eligible:
+            seen = identifier in priorities
+            components = {
+                "uniform": uniform / len(eligible),
+                "coverage": coverage * coverage_weights[identifier] / total_coverage if not seen else 0.0,
+                "adaptive": (adaptive * priorities[identifier] / total_priority
+                             if seen and identifier not in suppressed else 0.0),
+            }
+            last_version = self.stats[identifier]["last_observed_policy_version"]
+            feedback_status = (
+                "unseen" if not seen else "no_signal_current_policy" if identifier in suppressed
+                else "reprobe_after_policy_update" if last_version < self.policy_version
+                else "informative_current_policy"
+            )
+            rows.append({"id": identifier, "selected_pool": "observed" if seen else "unseen",
+                         "priority": priorities[identifier] if seen else coverage_weights[identifier],
+                         "adaptive_eligible": seen and identifier not in suppressed,
+                         "feedback_status": feedback_status, "last_observed_policy_version": last_version,
+                         "feedback_policy_age": self.policy_version - last_version if seen else None,
+                         "selection_probability": math.fsum(components.values()),
+                         "selection_probability_components": components})
+        phase = ("unseen_only" if not observed else
+                 "feedback_mixture" if adaptive_candidates and unseen else
+                 "observed_only" if adaptive_candidates else
+                 "coverage_with_uniform_recheck" if unseen else "uniform_recheck")
+        return {
+            "candidates": rows,
+            "selection_phase": phase,
+            "eligible_count": len(eligible), "candidate_count": len(eligible),
+            "observed_candidate_count": len(observed), "unseen_candidate_count": len(unseen),
+            "adaptive_candidate_count": len(adaptive_candidates), "suppressed_zero_signal_count": len(suppressed),
+            "effective_pool_masses": {"uniform": uniform, "coverage": coverage, "adaptive": adaptive},
+            "observed_probability_mass": math.fsum(row["selection_probability"] for row in rows if row["selected_pool"] == "observed"),
+            "unseen_probability_mass": math.fsum(row["selection_probability"] for row in rows if row["selected_pool"] == "unseen"),
+            "feedback_revision": self.feedback_revision, "policy_version": self.policy_version,
+        }
+
     def choose(self, exclude_ids=None, used_repos=None):
-        """Draw once, with exact probability after caller's batch exclusions.
+        """Draw once from the recorded mixture after caller's batch exclusions.
 
         Pass every task already attempted in this collection round in
         exclude_ids, including discarded zero-variance groups. This prevents
         retrying the same task until it happens to become informative.
         """
-        excluded, repos = set(exclude_ids or []), set(used_repos or [])
-        eligible = [identifier for identifier in self.tasks if identifier not in excluded]
-        if not eligible:
+        distribution = self.selection_distribution(exclude_ids, used_repos)
+        candidates = distribution.pop("candidates")
+        if not candidates:
             return None
-        unseen = [identifier for identifier in eligible if self.stats[identifier]["groups"] == 0]
-        phase = "coverage" if unseen else "adaptive"
-        candidates = unseen or eligible
-        priorities = [self._priority(identifier, repos) for identifier in candidates]
-        total = sum(priorities)
-        mix = self.config["uniform_mix"]
-        probabilities = [mix / len(candidates) + (1.0 - mix) * weight / total for weight in priorities]
+        probabilities = [row["selection_probability"] for row in candidates]
         index = self.rng.choices(range(len(candidates)), weights=probabilities, k=1)[0]
-        identifier = candidates[index]
+        selected = candidates[index]
+        identifier = selected["id"]
         self.draws += 1
         self.stats[identifier]["last_selected_draw"] = self.draws
         return {
-            **self.tasks[identifier],
-            "selection_probability": probabilities[index],
-            "selection_phase": phase,
-            "eligible_count": len(eligible),
-            "candidate_count": len(candidates),
-            "priority": priorities[index],
+            **self.tasks[identifier], **selected, **distribution,
             "draw": self.draws,
         }
 
-    def observe(self, task_id, rewards, resolved):
+    def observe(self, task_id, rewards, resolved, *, policy_version=None, reward_signature="default"):
         """Record a complete group's scalar rewards and official binary results."""
         if task_id not in self.tasks:
             raise ValueError("Cannot observe a task outside the declared training universe")
+        version = self.policy_version if policy_version is None else policy_version
+        if type(version) is not int or version != self.policy_version:
+            raise ValueError("Feedback must come from the current collection policy")
+        if not isinstance(reward_signature, str) or not reward_signature:
+            raise ValueError("A nonempty reward signature is required")
         values, outcomes = list(rewards), list(resolved)
         if len(values) < 2 or len(values) != len(outcomes):
             raise ValueError("Observe a complete group of at least two trajectories with matching outcomes")
@@ -184,26 +281,40 @@ class TaskSampler:
         informative = deviation > self.config["min_group_std"]
         item = self.stats[task_id]
         decay = self.config["ema_decay"] if item["groups"] else 0.0
-        item["reward_mean_ema"] = decay * item["reward_mean_ema"] + (1.0 - decay) * mean
-        item["reward_variance_ema"] = decay * item["reward_variance_ema"] + (1.0 - decay) * variance
+        success_rate = sum(outcomes) / len(outcomes)
+        signature_changed = item["reward_signature"] != reward_signature
+        reward_decay = 0.0 if signature_changed else decay
+        item["success_rate_ema"] = decay * item["success_rate_ema"] + (1.0 - decay) * success_rate
+        item["reward_mean_ema"] = reward_decay * item["reward_mean_ema"] + (1.0 - reward_decay) * mean
+        item["reward_variance_ema"] = reward_decay * item["reward_variance_ema"] + (1.0 - reward_decay) * variance
+        item["reward_signature_groups"] = 1 if signature_changed else item["reward_signature_groups"] + 1
+        item["reward_signature"] = reward_signature
+        item["last_informative"] = informative
+        item["last_observed_policy_version"] = version
         item["groups"] += 1
         item["trajectories"] += len(values)
         item["successes"] += sum(int(value) for value in outcomes)
         item["informative_groups"] += int(informative)
         item["zero_variance_groups"] += int(not informative)
+        self.feedback_revision += 1
         return {
             "task_id": task_id, "group_size": len(values),
             "reward_mean": mean, "reward_std": deviation,
-            "official_success_rate": sum(outcomes) / len(outcomes),
+            "official_success_rate": success_rate,
             "informative": informative,
             "cumulative_groups": item["groups"],
             "cumulative_success_rate": item["successes"] / item["trajectories"],
+            "success_rate_ema": item["success_rate_ema"],
+            "reward_signature": reward_signature, "reward_statistics_reset": signature_changed,
+            "policy_version": version,
+            "feedback_revision": self.feedback_revision,
         }
 
     def state_dict(self):
         return {
-            "distribution": "coverage_then_adaptive_mixture; not uniform-risk-unbiased",
+            "distribution": "uniform_plus_unseen_coverage_plus_signal_aware_observed_priority; not uniform-risk-unbiased",
             "seed": self.seed, "draws": self.draws,
+            "feedback_revision": self.feedback_revision, "policy_version": self.policy_version,
             "config": dict(self.config),
             "tasks": [dict(item) for item in self.tasks.values()],
             "statistics": {identifier: dict(item) for identifier, item in self.stats.items()},
