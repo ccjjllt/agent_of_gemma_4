@@ -168,6 +168,90 @@ class Policy:
     def trainable_parameters(self):
         return [p for p in self.model.parameters() if p.requires_grad]
 
+    def reference_matches_current(self) -> bool:
+        """Prove the current ordinary zero-LoRA has the disabled-adapter reference.
+
+        This is a structural equality check, not sampled numerical calibration:
+        the base is frozen, every active LoRA B is exactly zero, and stochastic
+        dropout and adapter variants are absent. Shared scores must still come
+        from the first differentiable full-prefix forward. Separate grad/no-grad
+        or autocast kernels need not return bit-identical floating-point values.
+        Unknown PEFT layouts conservatively return False and use real reference
+        scoring. No activation, prefix KV or gradient graph is saved here.
+        """
+        try:
+            from peft import PeftModel
+            from peft.tuners.lora.layer import Linear, LoraLayer
+
+            torch, model = self.torch, self.model
+            if not isinstance(model, PeftModel) or not callable(getattr(model, "disable_adapter", None)):
+                return False
+            configurations = model.peft_config
+            active = model.active_adapters
+            if (not isinstance(configurations, dict) or not configurations or
+                    not isinstance(active, (list, tuple)) or not active or
+                    len(set(active)) != len(active) or any(name not in configurations for name in active) or
+                    getattr(model, "modules_to_save", None)):
+                return False
+            for adapter in configurations.values():
+                if (getattr(adapter.peft_type, "value", adapter.peft_type) != "LORA" or
+                        adapter.bias != "none" or adapter.lora_bias or
+                        float(adapter.lora_dropout) != 0.0 or adapter.use_dora or adapter.use_rslora or
+                        adapter.modules_to_save or adapter.init_lora_weights is not True):
+                    return False
+                if any(getattr(adapter, name, None) for name in (
+                    "target_parameters", "trainable_token_indices", "alora_invocation_tokens",
+                    "use_qalora", "megatron_config", "loftq_config", "eva_config", "corda_config",
+                    "lora_ga_config", "velora_config", "monteclora_config", "layer_replication",
+                    "use_bdlora", "arrow_config", "kasa_config",
+                )):
+                    return False
+            base_config = model.get_base_model().config.get_text_config()
+            if float(getattr(base_config, "attention_dropout", 0.0)) != 0.0:
+                return False
+            layers = []
+            for module in model.modules():
+                if isinstance(module, torch.nn.modules.dropout._DropoutNd) and float(module.p) != 0.0:
+                    return False
+                if hasattr(module, "attention_dropout") and float(module.attention_dropout) != 0.0:
+                    return False
+                if isinstance(module, LoraLayer):
+                    layers.append(module)
+            targets = getattr(self, "targets", None)
+            if not isinstance(targets, (list, tuple)) or not targets or len(layers) != len(targets):
+                return False
+            allowed_parameters, checks = set(), {}
+            with torch.no_grad():
+                for layer in layers:
+                    if (type(layer) is not Linear or type(layer.get_base_layer()) is not torch.nn.Linear or
+                            layer.merged or layer.disable_adapters or layer.fan_in_fan_out or
+                            layer.lora_embedding_A or layer.lora_embedding_B):
+                        return False
+                    if set(layer.active_adapters) != set(active):
+                        return False
+                    for name in active:
+                        if (name not in layer.lora_A or name not in layer.lora_B or
+                                name in layer.lora_variant or layer.use_dora.get(name, False)):
+                            return False
+                        a, b = layer.lora_A[name], layer.lora_B[name]
+                        if (type(a) is not torch.nn.Linear or type(b) is not torch.nn.Linear or
+                                a.bias is not None or b.bias is not None or
+                                not math.isfinite(float(layer.scaling[name]))):
+                            return False
+                        if a.weight.device.type == "meta" or b.weight.device.type == "meta":
+                            return False
+                        allowed_parameters.update((id(a.weight), id(b.weight)))
+                        # Aggregate scalar checks per device, avoiding a host
+                        # synchronization for each of the 400 text projections.
+                        checks.setdefault(a.weight.device, []).append(torch.isfinite(a.weight).all())
+                        checks.setdefault(b.weight.device, []).append(torch.count_nonzero(b.weight) == 0)
+                if any(parameter.requires_grad and id(parameter) not in allowed_parameters
+                       for parameter in model.parameters()):
+                    return False
+                return all(bool(torch.stack(values).all()) for values in checks.values())
+        except (AttributeError, ImportError, KeyError, TypeError, ValueError, RuntimeError):
+            return False
+
     def _for_inference(self):
         if self._mode != "inference":
             self.FastModel.for_inference(self.model)

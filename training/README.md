@@ -6,7 +6,7 @@
 
 - 对应官方 QAT 未量化31B，BF16冻结基座；Unsloth单进程跨两张A800分层，LoRA r32/alpha64/dropout0。保留400个文本投影，暂排除10个共享K/V的full-attention k_proj。
 - 实例化固定TRL 1.15的 `GRPOTrainer` 子类，用其真实裁剪损失、KL和 `Trainer.train()` 优化器生命周期。为适配官方多轮工具环境，外部完成采样和验收，Trainer逐次模型调用重算完整前缀并累积梯度。
-- 每题8条完整轨迹，目标每批4个有效题组，同批最多更新2次。更新前固定优势、旧learner概率和关闭初始零LoRA所得reference概率；Adam状态及学习率调度跨批保留，不跨策略批次回放旧轨迹。
+- 每题8条完整轨迹，目标每批4个有效题组，同批最多更新2次。优势在采集后固定，old概率取自第一次完整梯度前向的数值副本；整批参数尚未更新，分母在首次optimizer.step前全部冻结。reference保持初始关闭LoRA的数学基座；Adam状态及学习率调度跨批保留，不跨策略批次回放旧轨迹。
 - 新旧概率比裁剪区间为0.8～1.28，reference KL系数0.01；采用固定32K常数归一。组内优势按标准差归一，分母至少0.05。行为概率与旧learner概率有差异时，用上限2的固定重要性权重修正；这是有截断的近似校正，不宣称无偏。
 - 每次模型调用总窗口32,768；只对实际生成token计损失。工具反馈保留为条件，不detach前缀KV，不缩短任务或验收。思考受原输出预算约束，无额外强制思考截断；采样为temperature1/top_p1/top_k0。
 - 默认复合奖励：`完整修复 + 0.3×修复率 − 0.5×回归率 − 0.02×成功轨迹token成本`。修复/回归统计来自同一次完整官方JUnit报告；成功奖励始终高于失败最高分，效率成本有上限并只在成功后计算。
@@ -15,6 +15,27 @@
 - 不足4个有效组时按实际组数更新，全部无信号则记录后进入下一批。记录实际选题概率和全部候选/入选组各自成功率；筛组与自适应采样会改变训练分布。
 
 工具和验收在独立CPU进程运行。GPU生成现改为逐步连续批处理：HTTP请求进入队列，单个生成线程每步让多条活动序列共享一次decode forward，新请求可在步间加入，已完成请求单独返回。默认最多4条；`device_map="balanced"`仍只是权重分层，不是张量并行。此改动已做极小真实Gemma4的CPU正确性核对，31B＋Unsloth的双卡兼容性和性能收益仍待实测。GRPO实现位于[grpo_trainer.py](grpo_trainer.py)，生成位于[generation.py](generation.py)，奖励位于[rewards.py](rewards.py)，采题位于[curriculum.py](curriculum.py)。
+
+## 轨迹复用中的前向合并
+
+首次梯度前向同时提供TRL损失的带梯度logprob和冻结old的CPU数值；不再单独计算old，也不直接把生成端behavior当成learner概率。后续reuse的梯度前向同时计算整批生成token加权的旧策略漂移。完整前缀始终参与反向，每个模型调用反向后释放自己的图，不保留跨调用图或detached前缀KV。
+
+reference一般仍需一次关闭adapter的完整评分，并在建立当前梯度图之前完成，避免影响checkpoint重算。固定reference的已测数值保存在进程内有界CPU LRU，以完整prompt和completion精确匹配，不使用任务ID或仅哈希判定命中；不同Trainer不共享缓存。默认最多128项、100万容量单位，prompt token、completion token和概率值都计入容量。`reference_cache_max_entries=0`可关闭。
+
+`share_zero_reference=true`只在保守结构核对通过时生效：基座冻结、普通未合并LoRA、活动B严格为零、dropout及其他adapter变体关闭。此时当前策略与reference在数学上相同，首次梯度前向的实测概率可同时冻结为reference。未知布局自动使用单独reference评分；不同grad/no-grad或autocast路径不承诺浮点逐位一致。
+
+两次更新都执行时，每个调用的完整前缀前向数如下；不包含反向中的checkpoint重算，也不是墙钟加速倍数：
+
+| 条件 | 原实现 | 当前实现 |
+| --- | --- | --- |
+| β>0，非零adapter，新的完整调用 | 5 | 3：reference＋两次梯度前向 |
+| β>0，reference精确缓存命中 | 5 | 2：两次梯度前向 |
+| β>0，零adapter等价核对通过 | 5 | 2：两次梯度前向 |
+| β=0，无reference项 | 4 | 2：两次梯度前向 |
+
+漂移超阈值时，在整批梯度累积完成后、optimizer.step之前清空全部梯度，停止剩余复用；Adam、学习率调度和步数不推进。这样可能做了最终丢弃的反向，不能保证拒绝场景更快。被拒绝attempt追加的TRL指标会回滚，单独记录`gradient_attempts`及`grpo_gradient_attempt_discarded`。`forward_invocations`记录真实评分/梯度调用数；`probability_reuse`记录old来源与实际reference复用。第一次完整累积结束后才原子发布全部冻结概率，文件明确标注来源，复用期间不刷新。
+
+2026-10-30使用真实TRL1.15、Transformers5.17、PEFT0.21.2、CPU Torch2.15和随机极小Gemma4手动对照旧实现：每批4个完整调用、两次更新，前向数从20降到12（新调用）或8（零adapter、缓存命中）。三批loss、LoRA参数、Adam张量及scheduler状态逐值一致，累计6次真实CPU optimizer更新，前缀位置仍有非零梯度。开启decoder与head的真实checkpoint后，实算reference分支也保持一致；首decoder层含反向重算的调用数为旧28、新20，未把重算计作省掉。低KL阈值、β=0、取消、中途失败及TrainerState重置前失败也已核对；数值证据见`results/local-grpo-reuse/2026-10-30/numerical_summary.json`。未新增测试文件；没有可用入口，本次未做GPU实验，31B BF16数值差异、显存和时间收益仍待实测。
 
 ## 生成调度与性能测量
 
