@@ -225,19 +225,41 @@ class SessionClock:
 
         if self._refresh_lock is None:
             self._refresh_lock = asyncio.Lock()
-        async with self._refresh_lock:
-            if self._client is None:
-                self._client = httpx.AsyncClient(timeout=1.0, trust_env=False)
-            requested = time.perf_counter()
-            try:
-                response = await self._client.get(f"{self.endpoint}/rollouts/{self.rollout_id}/timing",
-                                                  headers={"Authorization": "Bearer " + self.api_key})
-                response.raise_for_status()
-                self.observe(response.json(), requested, time.perf_counter())
-            except (httpx.HTTPError, ValueError, SessionTimingError) as error:
+        entered = time.perf_counter()
+        transient = (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.ConnectError,
+                     httpx.ReadError, httpx.RemoteProtocolError)
+        try:
+            # Bound the entire refresh, including lock contention and retries.
+            # The native session timeout remains armed throughout: until a
+            # valid receipt arrives, elapsed() charges all unconfirmed time.
+            async with asyncio.timeout(6.0):
+                async with self._refresh_lock:
+                    # The monitor and response-consumption path may refresh at
+                    # once. Reuse only evidence sampled after this call began.
+                    if self._snapshot is not None and self._snapshot >= entered:
+                        return
+                    if self._client is None:
+                        self._client = httpx.AsyncClient(timeout=2.0, trust_env=False)
+                    for attempt in range(3):
+                        requested = time.perf_counter()
+                        try:
+                            response = await self._client.get(f"{self.endpoint}/rollouts/{self.rollout_id}/timing",
+                                                              headers={"Authorization": "Bearer " + self.api_key})
+                            response.raise_for_status()
+                            self.observe(response.json(), requested, time.perf_counter())
+                            return
+                        except transient:
+                            self.poll_failures += 1
+                            if attempt == 2:
+                                raise
+                            await asyncio.sleep(0.05 * (attempt + 1))
+        except (httpx.HTTPError, ValueError, SessionTimingError, TimeoutError) as error:
+            if not isinstance(error, transient):
                 self.poll_failures += 1
-                self.error = f"Queue timing could not be confirmed ({type(error).__name__})"
-                raise SessionTimingError(self.error) from error
+            # Protocol/authentication failures are never retried, and a later
+            # successful refresh cannot erase a terminal accounting failure.
+            self.error = self.error or f"Queue timing could not be confirmed ({type(error).__name__})"
+            raise SessionTimingError(self.error) from error
 
     def timeout(self, seconds):
         return _SessionTimeout(self, seconds)

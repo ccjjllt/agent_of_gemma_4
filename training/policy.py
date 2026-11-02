@@ -25,13 +25,27 @@ class GenerationAborted(RuntimeError):
     """The enclosing run expired; this unfinished rollout has no task reward."""
 
 
+class GenerationParseError(ValueError):
+    """A completed sampled output could not be represented as an assistant reply.
+
+    The raw record remains private generation evidence, not a consumed action.
+    Keep the original exception so the HTTP path reports the same parser error.
+    """
+
+    def __init__(self, error, raw_result):
+        super().__init__(str(error))
+        self.original_error = error
+        self.raw_result = {**raw_result, "parse_error": {
+            "type": type(error).__name__, "message": str(error),
+        }}
+
+
 class Policy:
     def __init__(self, config: dict):
         # Import Unsloth before transformers/PEFT so its documented patches apply.
         from unsloth import FastModel
         import torch
         from transformers import AutoTokenizer, GenerationConfig
-        from transformers.utils.chat_parsing.response_templates import load_response_template
 
         self.torch = torch
         self.FastModel = FastModel
@@ -59,29 +73,16 @@ class Policy:
         if raw_config.get("quantization_config"):
             raise ValueError("Use the official QAT-unquantized BF16 checkpoint, not a packed/NF4 base")
         self.model_path = model_path
-        # Validate these small assets before loading the 31B weights. Some official
-        # checkpoint versions only contain response_schema, which Transformers
-        # 5.17 drops. An explicit official tokenizer-config sidecar can supply its
-        # newer response_template without replacing this checkpoint's tokenizer.
+        # Keep the checkpoint tokenizer/template unchanged. Response parsing
+        # follows the verified public CT wheelhouse's non-streaming protocol.
         self.tokenizer = AutoTokenizer.from_pretrained(
             str(model_path), local_files_only=True, trust_remote_code=False
         )
         if not self.tokenizer.chat_template:
             raise ValueError("The official chat_template must be present")
-        self.response_template = getattr(self.tokenizer, "response_template", None)
-        response_template_path = config.get("response_template_path")
-        if response_template_path:
-            response_metadata = json.loads(
-                Path(response_template_path).expanduser().resolve(strict=True).read_text()
-            )
-            self.response_template = response_metadata.get("response_template")
-        if not self.response_template:
-            raise ValueError(
-                "Transformers 5.17 requires response_template; legacy response_schema is unsupported. "
-                "Set response_template_path to an official tokenizer_config.json with the corresponding "
-                "Gemma 4 response_template, keeping the checkpoint tokenizer assets unchanged."
-            )
-        load_response_template(self.response_template)
+        self.response_parser = config.get("response_parser", "official_vllm_gemma4_0_19_1")
+        if self.response_parser != "official_vllm_gemma4_0_19_1":
+            raise ValueError("Unsupported response parser; use the pinned official Gemma4 protocol")
         self.generation_config = GenerationConfig.from_pretrained(
             str(model_path), local_files_only=True
         )
@@ -388,38 +389,51 @@ class Policy:
             logits = self.softcap * self.torch.tanh(logits / self.softcap)
         return logits, output.past_key_values
 
-    def finish_generation(self, prepared, completion_ids, behavior, **timing):
+    def finish_generation(self, prepared, completion_ids, behavior, *, include_decoded_details=False, **timing):
         if not completion_ids or len(behavior) != len(completion_ids) or not all(math.isfinite(x) for x in behavior):
             raise RuntimeError("Generation needs one finite behavior logprob per sampled token")
         prompt_ids, tools = prepared["prompt_ids"], prepared["tools"]
-        parsed = self.tokenizer.parse_response(
-            completion_ids, schema=self.response_template, prefix=prompt_ids, tools=tools or None,
-        )
-        message = {"role": "assistant", "content": parsed.get("content") or None}
-        if parsed.get("thinking"):
-            message["reasoning_content"] = parsed["thinking"]
-        calls = []
-        for call in parsed.get("tool_calls", []) or []:
-            function = call["function"]
-            arguments = function.get("arguments", {})
-            calls.append({"id": "call_" + uuid.uuid4().hex[:24], "type": "function", "function": {
-                "name": function["name"],
-                "arguments": arguments if isinstance(arguments, str) else json.dumps(arguments, ensure_ascii=False),
-            }})
-        if calls:
-            message["tool_calls"] = calls
         eos = self.generation_config.eos_token_id
         eos = eos if isinstance(eos, list) else [eos]
-        finish = "tool_calls" if calls else "stop" if completion_ids[-1] in eos else "length"
-        return {"assistant_message": message, "prompt_ids": prompt_ids,
-                "completion_ids": completion_ids, "behavior_logprobs": behavior,
-                "finish_reason": finish,
-                "sampling": {"temperature": 1.0, "top_p": 1.0, "top_k": 0,
-                             "enable_thinking": prepared["enable_thinking"]},
-                "requested_max_tokens": prepared["requested_max_tokens"],
-                "effective_max_tokens": prepared["effective_max_tokens"],
-                "context_limited": prepared["effective_max_tokens"] < prepared["requested_max_tokens"],
-                **timing}
+        # Freeze the actual complete sample before parsing can fail. A failed
+        # parse must not erase model work or turn it into a fabricated reply.
+        result = {"prompt_ids": list(prompt_ids), "completion_ids": list(completion_ids),
+                  "behavior_logprobs": list(behavior),
+                  "finish_reason": "stop" if completion_ids[-1] in eos else "length",
+                  "sampling": {"temperature": 1.0, "top_p": 1.0, "top_k": 0,
+                               "enable_thinking": prepared["enable_thinking"]},
+                  "requested_max_tokens": prepared["requested_max_tokens"],
+                  "effective_max_tokens": prepared["effective_max_tokens"],
+                  "context_limited": prepared["effective_max_tokens"] < prepared["requested_max_tokens"],
+                  **{key: prepared[key] for key in ("output_budget_source", "client_requested_max_tokens")
+                     if key in prepared},
+                  **timing}
+        try:
+            if include_decoded_details:
+                result["raw_text"] = self.tokenizer.decode(completion_ids, skip_special_tokens=False)
+            from .gemma4_response import parse_response
+            parsed = parse_response(self.tokenizer, completion_ids, prompt_ids=prompt_ids,
+                                    tools=tools, stop_token_ids=eos)
+            message = {"role": "assistant", "content": parsed.get("content") or None}
+            if parsed.get("thinking"):
+                message["reasoning_content"] = parsed["thinking"]
+            calls = []
+            for call in parsed.get("tool_calls", []) or []:
+                function = call["function"]
+                arguments = function.get("arguments", {})
+                calls.append({"id": "call_" + uuid.uuid4().hex[:24], "type": "function", "function": {
+                    "name": function["name"],
+                    "arguments": arguments if isinstance(arguments, str) else json.dumps(arguments, ensure_ascii=False),
+                }})
+            if calls:
+                message["tool_calls"] = calls
+                result["finish_reason"] = "tool_calls"
+        except (ValueError, KeyError, TypeError, AttributeError) as error:
+            raise GenerationParseError(error, result) from error
+        result["assistant_message"] = message
+        if include_decoded_details:
+            result["parsed_message"] = parsed
+        return result
 
     def generate(self, messages: list[dict], tools=None, max_tokens=16384, *, enable_thinking=True) -> dict:
         """Original single-request HF generate, retained for measured comparisons."""
@@ -531,45 +545,13 @@ class Policy:
         completion_ids = sequences[0, len(prompt_ids):].cpu().tolist()
         if len(behavior) != len(completion_ids) or not all(math.isfinite(x) for x in behavior):
             raise RuntimeError("Generation did not produce one finite behavior logprob per sampled token")
-        raw_text = self.tokenizer.decode(completion_ids, skip_special_tokens=False)
-        parsed = self.tokenizer.parse_response(
-            completion_ids, schema=self.response_template, prefix=prompt_ids, tools=tools or None
+        return self.finish_generation(
+            {"prompt_ids": prompt_ids, "tools": tools, "enable_thinking": bool(enable_thinking),
+             "requested_max_tokens": requested, "effective_max_tokens": limit},
+            completion_ids, behavior, include_decoded_details=True,
+            generation_elapsed_seconds=generation_elapsed,
+            first_scores_seconds=observer.first_scores_seconds,
         )
-        message = {"role": "assistant", "content": parsed.get("content") or None}
-        if parsed.get("thinking"):
-            message["reasoning_content"] = parsed["thinking"]
-        calls = []
-        for call in parsed.get("tool_calls", []) or []:
-            function = call["function"]
-            arguments = function.get("arguments", {})
-            calls.append({
-                "id": "call_" + uuid.uuid4().hex[:24],
-                "type": "function",
-                "function": {
-                    "name": function["name"],
-                    "arguments": arguments if isinstance(arguments, str) else json.dumps(arguments, ensure_ascii=False),
-                },
-            })
-        if calls:
-            message["tool_calls"] = calls
-        eos = gen.eos_token_id if isinstance(gen.eos_token_id, list) else [gen.eos_token_id]
-        ended = bool(completion_ids and completion_ids[-1] in eos)
-        finish = "tool_calls" if calls else ("stop" if ended else "length")
-        return {
-            "assistant_message": message,
-            "prompt_ids": prompt_ids,
-            "completion_ids": completion_ids,
-            "behavior_logprobs": behavior,
-            "finish_reason": finish,
-            "raw_text": raw_text,
-            "parsed_message": parsed,
-            "sampling": {"temperature": 1.0, "top_p": 1.0, "top_k": 0, "enable_thinking": bool(enable_thinking)},
-            "requested_max_tokens": requested,
-            "effective_max_tokens": limit,
-            "context_limited": limit < requested,
-            "generation_elapsed_seconds": generation_elapsed,
-            "first_scores_seconds": observer.first_scores_seconds,
-        }
 
     def per_token_logprobs(self, call: dict, *, compute_entropy: bool = False):
         """Return differentiable selected-token log probabilities for one call.

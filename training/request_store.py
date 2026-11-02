@@ -190,6 +190,8 @@ class RequestStore:
             return self.get(request_id)
 
     def generated(self, request_id, result):
+        if result.get("parse_error") is not None:
+            raise RequestConflict("A parse failure is not a deliverable assistant response")
         payload = json.dumps(result, ensure_ascii=False, allow_nan=False)
         with self._lock, self.db:
             row = self.get(request_id)
@@ -217,7 +219,8 @@ class RequestStore:
     def acknowledge(self, request_id, rollout_id, policy_version):
         with self._lock, self.db:
             row = self.get(request_id, rollout_id, policy_version)
-            if row["state"] not in {"generated", "delivered", "consumed"} or row["result"] is None:
+            if (row["state"] not in {"generated", "delivered", "consumed"} or row["result"] is None
+                    or row["result"].get("parse_error") is not None):
                 raise RequestConflict("Only a completed, uncancelled response can be acknowledged")
             changed = row["state"] != "consumed"
             if changed:
@@ -226,9 +229,31 @@ class RequestStore:
             self.db.execute("UPDATE requests SET ack_count=ack_count+1 WHERE request_id=?", (request_id,))
             return self.get(request_id), changed
 
-    def fail(self, request_id, reason):
+    def fail(self, request_id, reason, *, generation_result=None):
+        """Commit failed parsing evidence without making it deliverable.
+
+        Complete sampled tokens can arrive after cancellation or another
+        failure. Retain them once, while preserving that terminal state and
+        never replacing an already committed successful response.
+        """
         with self._lock, self.db:
             row = self.get(request_id)
+            if generation_result is not None:
+                if not isinstance(generation_result, dict) or not isinstance(generation_result.get("parse_error"), dict):
+                    raise ValueError("Failed generation evidence requires an explicit parse_error")
+                if row["state"] not in {"queued", "generating", "failed", "cancelled"}:
+                    raise RequestConflict("Failed generation cannot replace a deliverable response")
+                identity = {key: row[key] for key in ("request_id", "rollout_id", "policy_version", "call_index")}
+                if any(key in generation_result and generation_result[key] != value for key, value in identity.items()):
+                    raise RequestConflict("Failed generation belongs to another request identity")
+                result = {**generation_result, **identity}
+                payload = json.dumps(result, ensure_ascii=False, allow_nan=False)
+                if row["result"] is not None:
+                    if row["result"] != result:
+                        raise RequestConflict("A request result may only be committed once")
+                else:
+                    self.db.execute("UPDATE requests SET result_json=?,generated_at=? WHERE request_id=?",
+                                    (payload, time.time(), request_id))
             if row["state"] in {"queued", "generating"}:
                 self._transition(request_id, "failed", reason)
             return self.get(request_id)
@@ -274,10 +299,11 @@ class RequestStore:
     @staticmethod
     def call_record(row):
         result = row["result"]
-        if row["state"] != "consumed" or result is None:
+        if row["state"] != "consumed" or result is None or result.get("parse_error") is not None:
             raise RequestUnavailable("Only explicitly consumed results may enter training calls")
         record = {key: result[key] for key in ("prompt_ids", "completion_ids", "behavior_logprobs", "finish_reason")}
         for key in ("sampling", "requested_max_tokens", "effective_max_tokens", "context_limited",
+                    "output_budget_source", "client_requested_max_tokens",
                     "generation_elapsed_seconds", "first_scores_seconds", "first_token_seconds",
                     "reused_prefix_tokens", "profiled_tokens", "generation_backend", "timing_semantics"):
             if key in result:

@@ -20,11 +20,18 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from .policy import GenerationParseError
 from .request_store import RequestConflict, RequestStore, RequestUnavailable
 
 
 class RequestCancelled(RequestUnavailable):
     pass
+
+
+class _PolicyHTTPServer(ThreadingHTTPServer):
+    # Eight workers can open timing, generation and ACK connections together.
+    # The stdlib backlog of five can drop that burst before handlers run.
+    request_queue_size = 128
 
 
 class PolicyEndpoint:
@@ -44,6 +51,7 @@ class PolicyEndpoint:
         self._pending, self._barriers = deque(), deque()
         self._requests, self._record_locks = {}, {}
         self._cancel_pending = set()
+        self._prefix_release_pending = set()
         self._cancelled_keys = set()
         self._busy_rollouts = Counter()
         self._handler_count = 0
@@ -203,7 +211,7 @@ class PolicyEndpoint:
                         parent._release_handler(identity)
 
         try:
-            self.server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+            self.server = _PolicyHTTPServer(("127.0.0.1", port), Handler)
         except BaseException:
             self.store.close()
             raise
@@ -347,10 +355,19 @@ class PolicyEndpoint:
                                       "completion_tokens": len(result["completion_ids"]), "delivery_state": row["state"]}), flush=True)
                 elif action == "failed":
                     error = arguments[1]
-                    row = self.store.fail(item["request_id"], f"{type(error).__name__}: {error}")
+                    raw_result = error.raw_result if isinstance(error, GenerationParseError) else None
+                    reported_error = error.original_error if isinstance(error, GenerationParseError) else error
+                    row = self.store.fail(item["request_id"], f"{type(reported_error).__name__}: {reported_error}",
+                                          generation_result=raw_result)
                     with self.condition:
                         self.errors.setdefault(item["rollout_id"], []).append(row["error"])
-                    self._resolve(item["future"], error=error)
+                    self._resolve(item["future"], error=self._request_exception(row)
+                                  if row["state"] == "cancelled" else reported_error)
+                    if raw_result is not None:
+                        print(json.dumps({"event": "model_call_parse_failed", "request_id": row["request_id"],
+                                          "rollout_id": row["rollout_id"], "policy_version": row["policy_version"],
+                                          "call_index": row["call_index"], "completion_tokens": len(raw_result["completion_ids"]),
+                                          "delivery_state": row["state"], "error_type": type(reported_error).__name__}), flush=True)
                 else:
                     raise RuntimeError("Unknown persistence action")
             except BaseException as error:
@@ -429,6 +446,7 @@ class PolicyEndpoint:
             self._requests.clear()
             self._barriers.clear()
             self._cancel_pending.clear()
+            self._prefix_release_pending.clear()
             self._cancelled_keys.clear()
             self._busy_rollouts.clear()
             self._record_locks.clear()
@@ -567,16 +585,31 @@ class PolicyEndpoint:
             raise ValueError("Custom stop strings/logit_bias are not supported by this baseline")
         if request.get("tool_choice", "auto") not in (None, "auto"):
             raise ValueError("This baseline requires automatic tool choice")
-        maximum = request.get("max_completion_tokens", request.get("max_tokens"))
-        if maximum is None or int(maximum) <= 0:
-            raise ValueError("Official harness must supply a positive output-token budget")
+        budget_source = "max_completion_tokens"
+        maximum = request.get(budget_source)
+        if maximum is None:
+            budget_source = "max_tokens"
+            maximum = request.get(budget_source)
+        client_maximum = None if maximum is None else int(maximum)
+        if client_maximum is None:
+            # ADK's context-compaction summarizer omits both limits. Preserve
+            # its complete request and let tokenization bound generation by
+            # the model's remaining context, without inventing a client cap.
+            budget_source = "server_remaining_context"
+            maximum = self.policy.max_context
+        else:
+            maximum = client_maximum
+        if int(maximum) <= 0:
+            raise ValueError("Output-token budget must be positive")
         if request.get("thinking_token_budget", extra.get("thinking_token_budget")) is not None:
             raise ValueError("Remove thinking_token_budget in the explicit training agent configuration; "
                              "this baseline does not emulate the vLLM thinking-budget processor")
-        return self.policy.prepare_generation(
+        prepared = self.policy.prepare_generation(
             request["messages"], tools=request.get("tools"), max_tokens=int(maximum),
             enable_thinking=request.get("enable_thinking", extra.get("enable_thinking", True)),
         )
+        prepared.update(output_budget_source=budget_source, client_requested_max_tokens=client_maximum)
+        return prepared
 
     @staticmethod
     def _request_exception(row):
@@ -696,6 +729,7 @@ class PolicyEndpoint:
         identities = list(identities)
         with self.condition:
             self._cancelled_rollouts.update(identities)
+            self._prefix_release_pending.update(identities)
             self.active_ids.difference_update(identities)
             for identity in identities:
                 self._revoke_token_locked(identity)
@@ -822,11 +856,15 @@ class PolicyEndpoint:
                         raise self._fatal_error
                     cancelled = set(self._cancel_pending)
                     self._cancel_pending.clear()
+                    released_owners = set(self._prefix_release_pending)
+                    self._prefix_release_pending.clear()
                     barriers = list(self._barriers)
                     self._barriers.clear()
                 if cancelled:
                     removed = engine.cancel(cancelled)
                     inflight.difference_update(removed)
+                for owner in released_owners:
+                    engine.prefixes.drop_owner(owner)
                 for callback, future in barriers:
                     try:
                         self._resolve(future, result=callback())
@@ -853,13 +891,13 @@ class PolicyEndpoint:
                     if len(incoming) >= min(engine.capacity, persistence_capacity):
                         break
                     if engine.can_admit(item["prepared"], incoming=incoming):
-                        incoming.append({key: item[key] for key in ("request_id", "prepared", "queued_at")})
+                        incoming.append({key: item[key] for key in ("request_id", "prepared", "queued_at", "rollout_id")})
                         selected.append(item)
                 with self.condition:
                     # A cancellation can arrive while capacity is being checked.
                     selected = [item for item in selected if item.get("timing_phase") == "queued"
                                 and item["rollout_id"] not in self._cancelled_rollouts]
-                    incoming = [{key: item[key] for key in ("request_id", "prepared", "queued_at")} for item in selected]
+                    incoming = [{key: item[key] for key in ("request_id", "prepared", "queued_at", "rollout_id")} for item in selected]
                     selected_ids = {item["request_id"] for item in selected}
                     self._pending = deque(item for item in self._pending if item["request_id"] not in selected_ids)
                     inflight.update(selected_ids)

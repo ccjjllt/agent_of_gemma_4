@@ -1,8 +1,9 @@
 """CPU-only source binding for starting or resuming an unchanged training run.
 
-This reads the mounted public index, model files and participant code in place.
+This reads the public index, small model assets and participant code in place.
+Weight files are recorded by size/mtime only; they are never opened or hashed
+here. That metadata is a source record, not proof of weight-content integrity.
 It neither copies task assets nor imports Torch, Transformers or the runtime.
-Hashes prove equality with the run's first binding, not upstream authenticity.
 """
 from __future__ import annotations
 
@@ -58,6 +59,14 @@ def _fingerprint(path, *, name=None):
     return {"name": name or path.name, "size": before.st_size, "sha256": digest.hexdigest()}
 
 
+def _weight_fingerprint(path, *, name=None):
+    path = _public_path(path)
+    info = path.stat()
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError(f"Source binding requires a regular weight file: {path}")
+    return {"name": name or path.name, "size": info.st_size, "mtime_ns": info.st_mtime_ns}
+
+
 def _files(root, predicate, *, ignored=()):
     """Walk only the explicitly supplied model/code directory, never data_root."""
     result = []
@@ -75,9 +84,9 @@ def _files(root, predicate, *, ignored=()):
     return sorted(result, key=lambda path: path.relative_to(root).as_posix())
 
 
-def _inventory(root, predicate, *, ignored=()):
+def _inventory(root, predicate, *, ignored=(), fingerprint=_fingerprint):
     paths = _files(root, predicate, ignored=ignored)
-    records = [_fingerprint(path, name=path.relative_to(root).as_posix()) for path in paths]
+    records = [fingerprint(path, name=path.relative_to(root).as_posix()) for path in paths]
     if paths != _files(root, predicate, ignored=ignored):
         raise RuntimeError(f"Source file inventory changed during binding: {root}")
     return records
@@ -87,7 +96,7 @@ def _model_binding(root, policy):
     if not (root / "config.json").is_file():
         raise ValueError("The local model must contain config.json")
     is_weight = lambda path: path.suffix in {".safetensors", ".bin"}
-    weight_files = _inventory(root, is_weight)
+    weight_files = _inventory(root, is_weight, fingerprint=_weight_fingerprint)
     weights = {record["name"]: record for record in weight_files}
     if not weights or any(record["size"] <= 0 for record in weight_files):
         raise ValueError("The local model must contain nonempty actual weight files")
@@ -140,6 +149,7 @@ def _model_binding(root, policy):
         path = _public_path(policy["response_template_path"])
         response_template = {"path": str(path), **_fingerprint(path)}
     return {"root": str(root), "weights": weight_files, "indexes": indexes,
+            "weight_fingerprint_method": "size_mtime_ns", "weight_sha256_recomputed": False,
             "assets": assets, "response_template": response_template}
 
 
@@ -188,27 +198,6 @@ def _runtime_environment(python):
     return result
 
 
-def _runtime_timing_binding(python):
-    """Check the existing timing hooks before a costly GPU model load."""
-    script = (
-        "import contextlib,json,os,sys\n"
-        "os.environ.update(CUDA_VISIBLE_DEVICES='',LITELLM_LOCAL_MODEL_COST_MAP='True',"
-        "LITELLM_TELEMETRY='False',OTEL_SDK_DISABLED='true',HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1')\n"
-        f"sys.path.insert(0,{str(_TRAINING_ROOT)!r})\n"
-        "with contextlib.redirect_stdout(sys.stderr):\n"
-        " from session_clock import validate_official_timing_sources\n"
-        " evidence=validate_official_timing_sources()\n"
-        "print(json.dumps(evidence))\n"
-    )
-    completed = subprocess.run([str(python), "-I", "-c", script], check=True,
-                               capture_output=True, text=True, timeout=30)
-    result = json.loads(completed.stdout)
-    if (not isinstance(result, dict) or result.get("protocol") != "gemma.training_session_clock.v1"
-            or not result.get("source_sha256")):
-        raise ValueError("The official runtime did not confirm its session timing implementation")
-    return result
-
-
 def source_binding(cfg, *, data_root, model_path, submission, runtime_python, tasks):
     """Return JSON-safe inputs whose equality is required when resuming.
 
@@ -231,8 +220,6 @@ def source_binding(cfg, *, data_root, model_path, submission, runtime_python, ta
         raise ValueError("Submission must be the participant code directory, not a task asset directory")
     if not runtime_python.is_file():
         raise ValueError("The separately prepared official runtime interpreter is missing")
-    timing = (_runtime_timing_binding(runtime_python)
-              if config.get("runtime", {}).get("session_clock") in {"queue_excluded", "wall"} else None)
     configured_model = config.get("policy", {}).get("model_path")
     if configured_model and Path(configured_model).expanduser().resolve(strict=True) != model_path:
         raise ValueError("The effective policy model_path differs from the model being fingerprinted")
@@ -247,7 +234,6 @@ def source_binding(cfg, *, data_root, model_path, submission, runtime_python, ta
     public_tasks = data_root / "tasks.jsonl"
     binding = {
         "schema_version": 1, "config": config, "selected_tasks": selected,
-        "session_timing_source": timing,
         "public_tasks": {"path": str(public_tasks), **_fingerprint(public_tasks)},
         "model": _model_binding(model_path, config.get("policy", {})),
         "code": {

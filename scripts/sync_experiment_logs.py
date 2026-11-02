@@ -27,6 +27,7 @@ from pathlib import Path
 base = Path(sys.argv[1]).resolve(strict=True)
 runs = json.loads(sys.argv[2])
 run_pattern = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
+replay_pass_pattern = re.compile(r"(?:warmup-old-serial|old-serial|warmup-b1|(?:unprofiled|profiled)-b[1-9][0-9]*)")
 for run in runs:
     if not run_pattern.fullmatch(run) or run in (".", ".."):
         raise ValueError("Invalid run directory name")
@@ -64,6 +65,17 @@ for run in runs:
     for name in ("metrics.jsonl", "run_config.json", "curriculum_state.json", "generation_metrics.jsonl",
                  "reward_groups.jsonl", "reward_summary.json", "reward_update_recovery.jsonl"):
         copy(folder / name)
+    # profile_generation writes provenance and aggregate/per-call numbers to
+    # these exact files; its token IDs and per-token probabilities stay in memory.
+    for name in ("experiment.json", "summary.json", "failure.json", "interruption.json"):
+        copy(folder / name)
+    for replay_pass in sorted(folder.iterdir()):
+        if not replay_pass_pattern.fullmatch(replay_pass.name) or not replay_pass.is_dir():
+            continue
+        if replay_pass.is_symlink():
+            raise ValueError("Replay log export does not follow symlinks")
+        for name in ("summary.json", "progress.json"):
+            copy(replay_pass / name)
     # Only small recovery metadata. Optimizer state and the request database
     # contain complete generated token records and remain on the server.
     for name in ("checkpoint_latest.json", "collection_latest.json", "budget.json"):
@@ -102,6 +114,7 @@ for run in runs:
             row = {key: call.get(key) for key in (
                 "rollout_id", "call_index", "policy_version", "finish_reason", "request_id", "delivery_state", "consumed_at",
                 "requested_max_tokens", "effective_max_tokens", "context_limited",
+                "output_budget_source", "client_requested_max_tokens",
                 "generation_backend", "timing_semantics", "reused_prefix_tokens", "profiled_tokens",
             )}
             row.update(
@@ -132,7 +145,7 @@ for path in sorted((base / "install-records").glob("*.freeze.txt")):
     copy(path)
 print(json.dumps({"snapshot": {
     "remote_utc": datetime.now(timezone.utc).isoformat(), "remote_base": str(base),
-    "runs": runs, "exclusions": ["raw model calls", "worker logs", "task assets", "traces", "patches", "JUnit", "weights", "credentials"],
+    "runs": runs, "exclusions": ["raw model calls", "per-token probabilities", "worker logs", "task assets", "traces", "patches", "JUnit", "weights", "credentials"],
 }}), flush=True)
 '''
 

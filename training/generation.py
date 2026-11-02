@@ -16,6 +16,7 @@ import time
 import uuid
 
 from .kv_cache import PrefixCache, clone_cache, enable_capacity_cache, merge_caches, select_cache
+from .cache_budget import PrefixCacheBudget
 from .policy import GenerationAborted
 from .profiling import GenerationProfiler
 
@@ -25,6 +26,7 @@ class _Request:
     request_id: str
     prepared: dict
     queued_at: float
+    rollout_id: str | None = None
     started_at: float | None = None
     prefill_offset: int = 0
     prefill_cache: object = None
@@ -61,10 +63,16 @@ class GenerationEngine:
         self.version = int(self.config.get("policy_version", 0))
         if self.max_batch_size < 1 or self.max_batch_tokens < policy.max_context:
             raise ValueError("Need positive max_batch_size and max_batch_tokens >= a complete context")
-        self.prefixes = PrefixCache(
-            int(self.config.get("prefix_cache_entries", 8)),
-            int(self.config.get("prefix_cache_bytes", 2 * 1024**3)),
+        hard_cap = self.config.get("prefix_cache_bytes")
+        self.prefixes = PrefixCache(int(self.config.get("prefix_cache_entries", 8)), 0)
+        self.prefix_budget = PrefixCacheBudget(
+            self.torch, getattr(policy, "model", None), max_batch_size=self.max_batch_size,
+            max_context=policy.max_context, prefill_chunk_tokens=self.prefill_chunk_tokens,
+            safety_bytes=int(self.config.get("prefix_cache_safety_bytes", 2 * 1024**3)),
+            max_total_fraction=float(self.config.get("prefix_cache_memory_fraction", 0.15)),
+            hard_cap_bytes=hard_cap, cpu_fallback_bytes=0 if hard_cap is None else int(hard_cap),
         )
+        self.prefix_budget_accounting = {}
         self.run_dir = Path(run_dir)
         self.collection_id = f"policy-{self.version:04d}-{uuid.uuid4().hex[:12]}"
         self.profiler = GenerationProfiler(
@@ -107,6 +115,20 @@ class GenerationEngine:
         if self.policy.abort_generation.is_set():
             raise GenerationAborted("Run cancelled; unfinished requests have no task reward")
 
+    def _refresh_prefix_budget(self, *extra_caches):
+        caches = [self.cache, *(request.prefill_cache for request in self.prefilling), *extra_caches]
+        budget = self.prefix_budget.refresh(
+            active_caches=[cache for cache in caches if cache is not None],
+            prefix_bytes_by_device=self.prefixes.bytes_by_device,
+        )
+        self.prefixes.set_limits(budget["max_bytes"], budget["max_bytes_by_device"])
+        self.prefix_budget_accounting = budget["accounting"]
+
+    def _remember_prompt(self, request, cache, logits):
+        self._refresh_prefix_budget(cache)
+        self.prefixes.put(cache, request.prepared["prompt_ids"], self.version, logits,
+                          owner=request.rollout_id)
+
     def _autocast(self):
         if self.policy.input_device.type == "cuda":
             return self.torch.autocast(device_type="cuda", dtype=self.torch.bfloat16)
@@ -126,6 +148,7 @@ class GenerationEngine:
                 logits, cache = self.policy.forward_generation(ids, mask, positions, cache, project_logits=False)
         if project_logits and (logits.ndim != 2 or logits.shape[0] != ids.shape[0]):
             raise RuntimeError("Expected one vocabulary distribution per active row")
+        self.prefix_budget.observe(cache)
         return logits, cache
 
     def _start_request(self, request):
@@ -140,7 +163,8 @@ class GenerationEngine:
         self._start_request(request)
         if request.prefill_cache is None:
             with self.profiler.region("cache"):
-                entry = self.prefixes.get(ids, self.version)
+                self._refresh_prefix_budget()
+                entry = self.prefixes.get(ids, self.version, owner=request.rollout_id)
             offset = entry.cached_length if entry is not None else 0
             request.reused_tokens = request.prefill_offset = offset
             if entry is not None:
@@ -165,7 +189,7 @@ class GenerationEngine:
         request.prefill_cache, request.prefill_offset = cache, end
         if complete:
             with self.profiler.region("cache"):
-                self.prefixes.put(cache, ids, self.version, logits[0])
+                self._remember_prompt(request, cache, logits[0])
         return cache, logits, end - offset, complete
 
     def _sample(self, requests, logits, profiled):
@@ -196,9 +220,9 @@ class GenerationEngine:
 
     def _finish(self, request, cache):
         self._check_abort()
-        with self.profiler.region("cache"):
-            cached_ids = request.prepared["prompt_ids"] + request.completion[:-1]
-            self.prefixes.put(cache, cached_ids, self.version, request.next_logits)
+        # Keep the immutable prompt snapshot. Saving a second, nearly identical
+        # completion snapshot evicts other rollouts and often cannot be reused
+        # after the harness reformats the assistant/tool message boundary.
         with self.profiler.region("finalize"):
             behavior = self.torch.stack(request.logprobs).float().cpu().tolist()
             try:
@@ -213,8 +237,9 @@ class GenerationEngine:
                     timing_semantics="per-request wall time overlaps other requests; use generation_summary for throughput",
                 )
             except (ValueError, KeyError, TypeError) as error:
-                # A response parser failure belongs to this invocation. CUDA,
-                # cache-integrity and model-runtime errors still escape as fatal.
+                # Policy wraps parser failures with their complete raw sample;
+                # the endpoint persists it as failed/unconsumed evidence.
+                # CUDA/cache/runtime errors still escape as fatal.
                 return request.request_id, error
         self.completed += 1
         return request.request_id, result
@@ -312,6 +337,7 @@ class GenerationEngine:
         if not incoming and not self.active_count:
             return []
         started, before = time.perf_counter(), self.tokens
+        self._refresh_prefix_budget()
         for item in incoming:
             request = _Request(**item)
             key = tuple(request.prepared["prompt_ids"])
@@ -348,6 +374,7 @@ class GenerationEngine:
                     waiting = deque()
                     for follower in self.prefilling:
                         if follower.prefill_leader == request.request_id:
+                            self._remember_prompt(follower, cache, logits[0])
                             follower.prefill_offset = follower.reused_tokens = len(follower.prepared["prompt_ids"])
                             follower.prefill_leader = None
                             ready.append((follower, cache, logits))
@@ -440,7 +467,8 @@ class GenerationEngine:
                    "unprofiled_busy_seconds": self.unprofiled_seconds,
                    "unprofiled_tokens_per_busy_second": (unprofiled / self.unprofiled_seconds
                                                          if self.unprofiled_seconds else None),
-                   "prefix_cache": self.prefixes.stats()}
+                   "prefix_cache": self.prefixes.stats(),
+                   "prefix_cache_budget": self.prefix_budget_accounting}
         self.run_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         with (self.run_dir / "generation_metrics.jsonl").open("a", encoding="utf-8") as output:
             output.write(json.dumps(summary) + "\n")

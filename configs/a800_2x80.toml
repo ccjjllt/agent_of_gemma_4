@@ -4,8 +4,8 @@ model_name = "google/gemma-4-31B-it-qat-q4_0-unquantized"
 # Record the version actually obtained manually; this declaration is not a weight-integrity proof.
 model_revision = "1e4d8beecacb8b7590c1d8bedd7335f687bf311f"
 model_source_uri = "https://huggingface.co/google/gemma-4-31B-it-qat-q4_0-unquantized/tree/1e4d8beecacb8b7590c1d8bedd7335f687bf311f"
-# Parser metadata only; keep the checkpoint's original tokenizer and chat template.
-response_template_path = "/root/autodl-tmp/agent_of_gemma_4/official/gemma4-qat-hf-tokenizer-config.json"
+# Match the public official CT wheelhouse 31 parser; keep tokenizer/template unchanged.
+response_parser = "official_vllm_gemma4_0_19_1"
 max_context = 32768
 device_map = "balanced"
 lora_rank = 128
@@ -45,7 +45,12 @@ prefill_chunk_tokens = 512
 max_prefill_tokens_per_step = 1024
 kv_capacity_increment = 256
 prefix_cache_entries = 8
-prefix_cache_bytes = 2147483648
+# One prompt per rollout; shared prompts occupy one snapshot. Limit each GPU
+# after reserving active/rebuild KV, gradient/Adam headroom and workspace.
+prefix_cache_memory_fraction = 0.15
+prefix_cache_safety_bytes = 2147483648
+# Optional additional total-byte cap; 0 disables caching. Omit for auto sizing.
+# prefix_cache_bytes = 2147483648
 
 [generation.profiling]
 enabled = false
@@ -104,6 +109,9 @@ success_token_budget = 65536
 python = "/opt/gemma-runtime/bin/python"
 sandbox_baseline_python = "/opt/gemma-sandbox-baseline/bin/python"
 sandbox = "subprocess"
+# Keep rollout scratch on the data disk. Its parents need traverse permission;
+# official assets, credentials and judge results must remain private (0700).
+sandbox_root = "/root/autodl-tmp/gemma4/sandboxes"
 port = 0
 # Training-only clock: exclude confirmed GPU queue wait, record wall time too.
 session_clock = "queue_excluded"

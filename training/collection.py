@@ -38,6 +38,13 @@ def collect_batch(*, cfg, batch, policy_version, sampler, endpoint, run_dir,
     failure_limit = int(cfg["run"].get("max_failed_groups_per_session", 3))
     if retry_limit < 0 or failure_limit < 1:
         raise ValueError("Worker retries must be nonnegative and failure limit positive")
+    sandbox_root = cfg["runtime"].get("sandbox_root")
+    if sandbox_root is not None:
+        if not isinstance(sandbox_root, str) or not Path(sandbox_root).is_absolute():
+            raise ValueError("runtime.sandbox_root must be an absolute directory path")
+        normalized = Path(os.path.normpath(sandbox_root))
+        if normalized.parent == normalized:
+            raise ValueError("runtime.sandbox_root must not be the filesystem root")
     ledger = reward_ledger or RewardLedger(run_dir)
     session = uuid.uuid4().hex[:10]
     state = copy.deepcopy(recovery_state) if recovery_state is not None else {
@@ -214,6 +221,8 @@ def collect_batch(*, cfg, batch, policy_version, sampler, endpoint, run_dir,
                        "--queue-timing-poll-seconds", str(cfg["runtime"].get("queue_timing_poll_seconds", 0.2)),
                        "--evaluation-overrides-json", json.dumps(cfg["runtime"].get("evaluation", {})),
                        "--task-id", group["selection"]["id"]]
+            if sandbox_root is not None:
+                command.extend(["--sandbox-root", sandbox_root])
             future = pool.submit(worker_fn, command, folder, deadline, expired, processes, process_lock,
                                  attempt_cancelled=cancelled)
             running[future] = (group, slot, identity)

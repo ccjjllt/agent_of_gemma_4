@@ -33,10 +33,14 @@ def enable_capacity_cache(cache, increment, capacity_limit, counters=None):
         from transformers.cache_utils import DynamicLayer
 
         class CapacityDynamicLayer(DynamicLayer):
-            def set_storage(self, keys, values):
-                self.keys, self.values = keys, values
+            def set_storage(self, keys, values, length=None):
                 self._key_storage, self._value_storage = keys, values
-                self._length = keys.shape[-2] if keys.ndim == 4 else 0
+                self._length = (keys.shape[-2] if keys.ndim == 4 else 0) if length is None else int(length)
+                if length is not None and (keys.ndim != 4 or values.ndim != 4 or
+                                           not 0 <= self._length <= min(keys.shape[-2], values.shape[-2])):
+                    raise ValueError("Logical KV length must fit its backing storage")
+                self.keys = keys[..., :self._length, :] if keys.ndim == 4 else keys
+                self.values = values[..., :self._length, :] if values.ndim == 4 else values
 
             def update(self, key_states, value_states, *args, **kwargs):
                 if not self.is_initialized:
@@ -141,7 +145,7 @@ def _replace_layer(layer, keys, values, length):
     if result.is_sliding:
         result.cumulative_length = int(length)
     elif type(result).__name__ == "CapacityDynamicLayer":
-        result.set_storage(keys, values)
+        result.set_storage(keys, values, length=length)
     return result
 
 
@@ -163,6 +167,11 @@ def merge_caches(caches, lengths):
     Pass a matching left-padded attention mask and each row's true position_ids
     to the model. The common physical length drives causal/sliding mask offsets;
     the per-row position_ids preserve the token positions used by RoPE.
+
+    Full-capacity layers write directly into final buffers with at most one
+    capacity increment of headroom. Membership counters count K/V allocations,
+    allocated elements (including headroom), copied source elements and zeroed
+    padding separately; update-time growth/copy counters retain their meaning.
     """
     import torch
 
@@ -184,21 +193,52 @@ def merge_caches(caches, lengths):
                for layer in layers):
             raise ValueError("Cannot batch different attention layer types/windows")
         stored = _stored_length(template, physical_length)
+        capacity_layer = type(template).__name__ == "CapacityDynamicLayer"
+        if capacity_layer:
+            increment, limit = template.capacity_increment, template.capacity_limit
+            if any((layer.capacity_increment, layer.capacity_limit) != (increment, limit) for layer in layers):
+                raise ValueError("Cannot batch different KV capacity settings")
+            if stored > limit:
+                raise ValueError("Complete generation KV exceeds its declared context")
+            # Even an exactly aligned logical length has room for its next
+            # token, unless the declared context is already completely full.
+            capacity = min(limit, ((min(stored + 1, limit) + increment - 1) // increment) * increment)
         tensors = []
         for name in ("keys", "values"):
             reference = getattr(template, name)
+            if capacity_layer:
+                storage = reference.new_empty((len(layers), reference.shape[1], capacity, reference.shape[3]))
+                copied_elements = padding_elements = 0
             rows = []
-            for layer in layers:
+            for row, layer in enumerate(layers):
                 tensor = getattr(layer, name)
                 if (tensor.device != reference.device or tensor.dtype != reference.dtype or
                         tensor.shape[1] != reference.shape[1] or tensor.shape[3] != reference.shape[3]):
                     raise ValueError("Per-layer KV head shapes, dtype and devices must agree")
                 padding = stored - tensor.shape[-2]
+                if capacity_layer:
+                    destination = storage[row:row + 1, :, :stored, :]
+                    if padding:
+                        destination[..., :padding, :].zero_()
+                        padding_elements += destination[..., :padding, :].numel()
+                    destination[..., padding:, :].copy_(tensor)
+                    copied_elements += tensor.numel()
+                    continue
                 if padding:
                     zeros = tensor.new_zeros((1, tensor.shape[1], padding, tensor.shape[3]))
                     tensor = torch.cat((zeros, tensor), dim=-2)
                 rows.append(tensor)
-            tensors.append(torch.cat(rows, dim=0))
+            if capacity_layer:
+                tensors.append(storage)
+                counters = template.capacity_counters
+                if counters is not None:
+                    for key, value in (("membership_buffer_allocations", 1),
+                                       ("membership_allocated_elements", storage.numel()),
+                                       ("membership_copied_elements", copied_elements),
+                                       ("membership_padding_elements", padding_elements)):
+                        counters[key] = counters.get(key, 0) + value
+            else:
+                tensors.append(torch.cat(rows, dim=0))
         result.layers.append(_replace_layer(template, *tensors, physical_length))
     return result
 
@@ -239,6 +279,16 @@ def _cache_bytes(cache):
                for layer in _layers(cache) for tensor in (layer.keys, layer.values))
 
 
+def _prefix_bytes_by_device(cache, next_logits):
+    """Logical snapshot storage; cloning removes any backing-buffer headroom."""
+    sizes = {}
+    tensors = [tensor for layer in _layers(cache) for tensor in (layer.keys, layer.values)]
+    for tensor in [*tensors, next_logits]:
+        device = str(tensor.device)
+        sizes[device] = sizes.get(device, 0) + tensor.numel() * tensor.element_size()
+    return sizes
+
+
 @dataclass(frozen=True)
 class PrefixEntry:
     cache: Any
@@ -246,13 +296,29 @@ class PrefixEntry:
     next_logits: Any
 
 
+@dataclass
+class _StoredPrefix:
+    entry: PrefixEntry
+    bytes_by_device: dict
+    owners: set
+    anonymous: bool = False
+
+    @property
+    def size(self):
+        return sum(self.bytes_by_device.values())
+
+
 class PrefixCache:
-    """LRU snapshots shared across requests only within one policy version.
+    """LRU prompt snapshots shared only within one policy version.
 
     A hit reuses a complete stored prefix. It never rolls a sliding layer back
     to an earlier point, because those old KV states may already be discarded.
     Exact prompt hits use next_logits; extensions forward only their new suffix.
-    Caller access is serialized by the GPU scheduler.
+    Each rollout owns at most its latest cached prompt; identical prompts share
+    one stored snapshot. Calls without an owner retain the legacy key-based LRU.
+    Limits bound resident snapshots, not the independent clone returned by get;
+    the generation scheduler must reserve clone/active-KV space before calling.
+    Caller access is serialized by that scheduler.
     """
 
     def __init__(self, max_entries=8, max_bytes=2 * 1024**3):
@@ -260,21 +326,90 @@ class PrefixCache:
         if self.max_entries < 0 or self.max_bytes < 0:
             raise ValueError("Prefix cache limits must be nonnegative")
         self._entries = OrderedDict()
+        self._owners = {}
         self._version = None
+        self.device_limits = None
         self.used_bytes = 0
+        self.bytes_by_device = {}
         self.hits = self.misses = self.evictions = 0
+        self.replacements = self.rejections = self.budget_evictions = 0
 
     def clear(self):
         self._entries.clear()
+        self._owners.clear()
         self.used_bytes = 0
+        self.bytes_by_device.clear()
         self._version = None
+
+    def _remove(self, key, *, eviction=False, budget=False):
+        record = self._entries.pop(key)
+        self.used_bytes -= record.size
+        for device, size in record.bytes_by_device.items():
+            remaining = self.bytes_by_device[device] - size
+            if remaining:
+                self.bytes_by_device[device] = remaining
+            else:
+                del self.bytes_by_device[device]
+        for owner in record.owners:
+            if self._owners.get(owner) == key:
+                del self._owners[owner]
+        self.evictions += int(eviction)
+        self.budget_evictions += int(budget)
+
+    def _over_limit(self, additional=None, extra_entries=0):
+        additional = additional or {}
+        return (len(self._entries) + extra_entries > self.max_entries or
+                self.used_bytes + sum(additional.values()) > self.max_bytes or
+                any(self.bytes_by_device.get(device, 0) + additional.get(device, 0) > limit
+                    for device, limit in (self.device_limits or {}).items()))
+
+    def set_limits(self, max_bytes, device_limits=None):
+        """Apply current resident-memory allowances and trim immediately by LRU.
+
+        Device limits are optional caps on named devices; omitted devices have
+        only the global limit. Passing None removes previous per-device caps.
+        A zero global budget disables storage, including zero-sized snapshots.
+        """
+        max_bytes = int(max_bytes)
+        limits = None if device_limits is None else {str(k): int(v) for k, v in device_limits.items()}
+        if max_bytes < 0 or any(value < 0 for value in (limits or {}).values()):
+            raise ValueError("Prefix cache limits must be nonnegative")
+        self.max_bytes, self.device_limits = max_bytes, limits
+        while self._entries and (not self.max_bytes or self._over_limit()):
+            self._remove(next(iter(self._entries)), eviction=True, budget=True)
+
+    def drop_owner(self, owner):
+        """Release a completed rollout without deleting another owner's copy."""
+        if owner is None:
+            return False
+        key = self._owners.pop(owner, None)
+        if key is None:
+            return False
+        record = self._entries[key]
+        record.owners.remove(owner)
+        if not record.owners and not record.anonymous:
+            self._remove(key)
+        return True
+
+    def _bind_owner(self, key, owner):
+        if owner is None:
+            self._entries[key].anonymous = True
+            return
+        previous = self._owners.get(owner)
+        if previous == key:
+            return
+        if previous is not None:
+            self.replacements += 1
+            self.drop_owner(owner)
+        self._owners[owner] = key
+        self._entries[key].owners.add(owner)
 
     def _policy(self, version):
         if self._version != version:
             self.clear()
             self._version = version
 
-    def get(self, prompt_ids, version):
+    def get(self, prompt_ids, version, *, owner=None):
         self._policy(version)
         prompt = tuple(prompt_ids)
         matches = [key for key in self._entries if len(key) <= len(prompt) and prompt[:len(key)] == key]
@@ -282,38 +417,53 @@ class PrefixCache:
             self.misses += 1
             return None
         key = max(matches, key=len)
-        entry, _size = self._entries[key]
+        entry = self._entries[key].entry
         self._entries.move_to_end(key)
+        # A reused older prefix is only a starting state. Bind a new owner when
+        # its complete prompt is present; a later put replaces partial reuse.
+        if owner is not None and len(key) == len(prompt):
+            self._bind_owner(key, owner)
         self.hits += 1
         return PrefixEntry(clone_cache(entry.cache), entry.cached_length, entry.next_logits.detach().clone())
 
-    def put(self, cache, cached_ids, version, next_logits):
+    def put(self, cache, cached_ids, version, next_logits, *, owner=None):
+        """Store a complete prompt, releasing this owner's old prompt first."""
         self._policy(version)
         if not self.max_entries or not self.max_bytes:
+            self.rejections += 1
             return False
         key = tuple(cached_ids)
         _validate_unpadded(cache, len(key))
         if next_logits.ndim != 1:
             raise ValueError("next_logits must be one vocabulary row for this exact cached prefix")
-        size = _cache_bytes(cache) + next_logits.numel() * next_logits.element_size()
-        if size > self.max_bytes:
+        sizes = _prefix_bytes_by_device(cache, next_logits)
+        size = sum(sizes.values())
+        if (size > self.max_bytes or
+                any(sizes.get(device, 0) > limit for device, limit in (self.device_limits or {}).items())):
+            self.rejections += 1
             return False
-        previous = self._entries.pop(key, None)
-        if previous is not None:
-            self.used_bytes -= previous[1]
-            del previous
-        # Evict before cloning so replacement does not temporarily duplicate all
-        # existing resident cache entries on a memory-constrained GPU.
-        while self._entries and (len(self._entries) >= self.max_entries or self.used_bytes + size > self.max_bytes):
-            _key, (_entry, removed_size) = self._entries.popitem(last=False)
-            self.used_bytes -= removed_size
-            self.evictions += 1
-            del _entry
+        if key in self._entries:
+            self._bind_owner(key, owner)
+            self._entries.move_to_end(key)
+            return True
+        if owner is not None and owner in self._owners:
+            self.replacements += 1
+            self.drop_owner(owner)
+        # Release superseded ownership and evict before cloning, so the old
+        # owned snapshot cannot unnecessarily displace another rollout's prompt.
+        while self._entries and self._over_limit(sizes, extra_entries=1):
+            self._remove(next(iter(self._entries)), eviction=True, budget=True)
         entry = PrefixEntry(clone_cache(cache), len(key), next_logits.detach().clone())
-        self._entries[key] = (entry, size)
+        self._entries[key] = _StoredPrefix(entry, sizes, set(), anonymous=owner is None)
         self.used_bytes += size
+        for device, amount in sizes.items():
+            self.bytes_by_device[device] = self.bytes_by_device.get(device, 0) + amount
+        self._bind_owner(key, owner)
         return True
 
     def stats(self):
         return {"entries": len(self._entries), "bytes": self.used_bytes,
-                "hits": self.hits, "misses": self.misses, "evictions": self.evictions}
+                "hits": self.hits, "misses": self.misses, "evictions": self.evictions,
+                "replacements": self.replacements, "rejections": self.rejections,
+                "budget_evictions": self.budget_evictions,
+                "bytes_by_device": dict(self.bytes_by_device)}

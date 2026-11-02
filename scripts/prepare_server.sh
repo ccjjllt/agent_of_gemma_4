@@ -147,14 +147,15 @@ case "$phase" in
   data)
     environment="$base/envs/data"
     create_env "$environment" 3.12
+    # Kaggle 2.2.4 imports six directly; newer python-dateutil no longer brings it in.
     "$uv_bin" pip install --python "$environment/bin/python" \
-      'kaggle==2.2.4' 'huggingface_hub==0.36.2'
+      'kaggle==2.2.4' 'huggingface_hub==0.36.2' 'six==1.17.0'
     ;;
   learner)
     environment="$base/envs/learner"
     create_env "$environment" 3.12
     "$uv_bin" pip install --python "$environment/bin/python" \
-      --index-url https://download.pytorch.org/whl/cu128 \
+      --extra-index-url https://download.pytorch.org/whl/cu128 --index-strategy unsafe-best-match \
       'torch==2.9.1+cu128' 'torchvision==0.24.1+cu128' 'torchao==0.14.1+cu128'
     "$uv_bin" pip install --python "$environment/bin/python" \
       --extra-index-url https://download.pytorch.org/whl/cu128 --index-strategy unsafe-best-match \
