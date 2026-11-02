@@ -29,7 +29,7 @@ class GenerationProfiler:
     """
 
     PHASES = frozenset(("generation", "prefill", "decode", "prefill_decode"))
-    REGIONS = frozenset(("prefill", "decode", "sample_logprobs", "cache",
+    REGIONS = frozenset(("prefill", "decode", "sample_logprobs", "cache", "cache_membership",
                          "admission", "finalize", "transfer"))
 
     def __init__(self, torch, config: dict | None, output_dir: str | Path):

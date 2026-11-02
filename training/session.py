@@ -5,6 +5,7 @@ import copy
 import time
 
 from .recovery import CollectionInterrupted, file_digest
+from .evidence import make_batch_evidence, write_training_summary
 
 
 class TrainingSession:
@@ -32,6 +33,9 @@ class TrainingSession:
         checkpoint_id = self.store.save("checkpoint", {"run": state, "trainer": training})
         commit_seconds = time.perf_counter() - commit_started
         self.state, self.checkpoint_id = state, checkpoint_id
+        write_training_summary(self.run_dir, self.cfg, state.get("batch_evidence", {}), checkpoint_id=checkpoint_id,
+                               committed_batch_count=state["batch"],
+                               committed_optimizer_steps=training["completed_optimizer_steps"])
         self.emit("checkpoint_committed", checkpoint_id=checkpoint_id, phase=state["phase"],
                   batch=state["batch"], optimizer_steps=training["completed_optimizer_steps"],
                   state_export_seconds=export_seconds, durable_commit_seconds=commit_seconds,
@@ -70,6 +74,9 @@ class TrainingSession:
             if trainer.completed_optimizer_steps != expected_steps:
                 raise ValueError("Run policy and optimizer checkpoint counters disagree")
             self.ledger.restore_updates(self.state["ledger_updates"], self.checkpoint_id)
+            write_training_summary(self.run_dir, self.cfg, self.state.get("batch_evidence", {}),
+                                   checkpoint_id=self.checkpoint_id, committed_batch_count=self.state["batch"],
+                                   committed_optimizer_steps=trainer.completed_optimizer_steps)
             self.emit("run_resumed", checkpoint_id=self.checkpoint_id,
                       phase=self.state["phase"], batch=self.state["batch"],
                       optimizer_steps=trainer.completed_optimizer_steps)
@@ -84,7 +91,7 @@ class TrainingSession:
             self.policy.save_adapter(initial)
             self.save({"schema_version": 1, "phase": "collecting", "batch": 0,
                        "policy_version": 0, "sampler": self.sampler.state_dict(),
-                       "ledger_updates": {},
+                       "ledger_updates": {}, "batch_evidence": {},
                        "previous_adapter_hash": file_digest(initial / "adapter_model.safetensors")})
 
         while self.state["phase"] != "finished":
@@ -120,13 +127,16 @@ class TrainingSession:
                                  "completed_groups", "failed_groups", "candidate_successes",
                                  "candidate_trajectories", "failure_limit_reached")})
                 state["collection"].update(accepted_groups=len(collection["accepted"]),
-                                           attempted_tasks=sorted(collection["attempted"]))
+                                           attempted_tasks=sorted(collection["attempted"]),
+                                           elapsed_seconds=collection.get("elapsed_seconds"),
+                                           observed_elapsed_seconds=collection.get("observed_elapsed_seconds"))
                 # This baseline makes a failure before probability freezing
                 # recoverable without re-collecting any accepted trajectory.
                 self.save(state)
 
             trajectories, summary = self.state["trajectories"], self.state["collection"]
             previous_hash = self.state["previous_adapter_hash"]
+            stats, destination = None, None
             if trajectories:
                 self.emit("grpo_update_started", batch=batch, policy_version=self.state["policy_version"],
                           accepted_groups=summary["accepted_groups"], trajectories=len(trajectories),
@@ -151,6 +161,8 @@ class TrainingSession:
                           accepted_groups=summary["accepted_groups"], candidate_groups=summary["completed_groups"],
                           sampled_official_success_rate=summary["candidate_successes"] / summary["candidate_trajectories"],
                           selected_official_success_rate=sum(item["official_success"] for item in trajectories) / len(trajectories),
+                          official_score_scope="rollouts_collected_before_this_update",
+                          post_update_official_success_rate=None,
                           **self.reward_summary(trajectories), adapter_changed=current_hash != previous_hash,
                           adapter_sha256=current_hash, adapter_path=str(destination), grpo=stats,
                           peak_memory_gib=[self.torch.cuda.max_memory_allocated(i) / 2**30
@@ -161,9 +173,16 @@ class TrainingSession:
                 self.emit("batch_no_learning_signal", batch=batch, **summary)
             self.sampler.set_policy_version(policy_version)
             finished = batch + 1 >= int(self.cfg["run"]["max_batches"])
+            batch_evidence = copy.deepcopy(self.state.get("batch_evidence", {}))
+            batch_evidence[str(batch)] = make_batch_evidence(
+                batch=batch, policy_before=self.state["policy_version"], policy_after=policy_version,
+                collection=summary, trajectories=trajectories, stats=stats,
+                adapter_path=destination, adapter_sha256=current_hash,
+                adapter_changed=current_hash != previous_hash)
             self.save({"schema_version": 1, "phase": "finished" if finished else "collecting",
                        "batch": batch + 1, "policy_version": policy_version,
                        "sampler": self.sampler.state_dict(), "ledger_updates": copy.deepcopy(self.ledger.batch_updates),
+                       "batch_evidence": batch_evidence,
                        "previous_adapter_hash": current_hash})
             if summary["failure_limit_reached"] and not finished:
                 self.emit("run_stopped_after_worker_failures", next_batch=batch + 1,

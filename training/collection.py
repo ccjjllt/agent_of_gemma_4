@@ -58,6 +58,11 @@ def collect_batch(*, cfg, batch, policy_version, sampler, endpoint, run_dir,
         raise ValueError("Collection checkpoint belongs to a different batch or policy")
     if recovery_state is not None:
         sampler.load_state_dict(state["sampler"])
+    # Accumulate active wall time across recovery without charging downtime.
+    # Older snapshots have no timing evidence; retain that missingness.
+    state.setdefault("elapsed_seconds", 0.0)
+    state.setdefault("timing_from_start", recovery_state is None)
+    timing_checkpoint = time.monotonic()
     sampler.set_policy_version(policy_version)
     calls_by_identity = {}
     accepted = []
@@ -69,6 +74,10 @@ def collect_batch(*, cfg, batch, policy_version, sampler, endpoint, run_dir,
     endpoint.begin([], policy_version)
 
     def persist():
+        nonlocal timing_checkpoint
+        now = time.monotonic()
+        state["elapsed_seconds"] += now - timing_checkpoint
+        timing_checkpoint = now
         state["sampler"] = sampler.state_dict()
         if persist_callback:
             persist_callback(copy.deepcopy(state))
@@ -326,6 +335,8 @@ def collect_batch(*, cfg, batch, policy_version, sampler, endpoint, run_dir,
                 persist()
         return {"accepted": accepted, "attempted": set(state["attempted"]),
                 "completed_groups": state["completed_groups"], "failed_groups": state["failed_groups"],
+                "elapsed_seconds": state["elapsed_seconds"] if state["timing_from_start"] else None,
+                "observed_elapsed_seconds": state["elapsed_seconds"],
                 "candidate_successes": state["candidate_successes"],
                 "candidate_trajectories": state["candidate_trajectories"],
                 "failure_limit_reached": session_failed_groups >= failure_limit, "recovery_state": state}

@@ -288,7 +288,8 @@ def run_learner(launch, run_dir):
                                 process_lock=process_lock, cancel_run=cancel_run))
         trainer_config = {**cfg['grpo'], 'learning_rate': float(cfg['run']['learning_rate']),
                           'max_grad_norm': float(cfg['run']['max_grad_norm']),
-                          'total_optimizer_steps': int(cfg['run']['max_batches']) * int(cfg['grpo']['num_iterations']),
+                          'total_optimizer_steps': int(cfg['grpo'].get('scheduler_total_steps',
+                              int(cfg['run']['max_batches']) * int(cfg['grpo']['num_iterations']))),
                           'num_generations': int(cfg['run']['num_generations']),
                           'seed': int(cfg['policy'].get('seed', 3407))}
         trainer = make_grpo_trainer(policy, trainer_config, run_dir / 'trainer', log,
@@ -386,6 +387,9 @@ def main():
                                                      'max_candidate_groups_per_batch', 'max_cpu_workers')}
     prefetch = int(cfg['run'].get('prefetch_groups', 2))
     iterations = int(cfg['grpo']['num_iterations'])
+    scheduler_steps = cfg['grpo'].get('scheduler_total_steps', counts['max_batches'] * iterations)
+    if type(scheduler_steps) is not int or scheduler_steps < 1:
+        parser.error('grpo.scheduler_total_steps must be a positive integer')
     if (min(*counts.values(), prefetch, iterations) < 1 or counts['num_generations'] < 2
             or counts['max_candidate_groups_per_batch'] < counts['groups_per_batch']):
         parser.error('Require K>=2, positive batch/worker/prefetch/reuse counts, and enough candidate groups')

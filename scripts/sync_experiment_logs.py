@@ -63,8 +63,13 @@ for run in runs:
     if not folder.is_dir() or folder.is_symlink():
         raise ValueError("Requested run does not exist as a real directory: " + run)
     for name in ("metrics.jsonl", "run_config.json", "curriculum_state.json", "generation_metrics.jsonl",
-                 "reward_groups.jsonl", "reward_summary.json", "reward_update_recovery.jsonl"):
+                 "reward_groups.jsonl", "reward_summary.json", "reward_update_recovery.jsonl",
+                 "training_summary.json", "paired-summary.json", "manifest.json"):
         copy(folder / name)
+    # Paired evaluation exports only verdict aggregates, timings and identity;
+    # its raw model/tool calls remain in the separately specified scratch dir.
+    for pair in sorted(folder.glob("pair-[0-9][0-9][0-9][0-9].json")):
+        copy(pair)
     # profile_generation writes provenance and aggregate/per-call numbers to
     # these exact files; its token IDs and per-token probabilities stay in memory.
     for name in ("experiment.json", "summary.json", "failure.json", "interruption.json"):

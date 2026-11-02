@@ -16,12 +16,12 @@ from typing import Any
 _CAPACITY_LAYER = None
 
 
-def enable_capacity_cache(cache, increment, capacity_limit, counters=None):
+def enable_capacity_cache(cache, increment, capacity_limit, counters=None, *, sliding=True):
     """Grow full-attention KV storage in blocks, retaining native mask semantics.
 
-    Sliding layers retain the pinned Transformers implementation. Only this
-    generation owner mutates these caches; snapshots/membership helpers reset
-    backing storage when replacing tensors. No detached cache enters training.
+    Sliding storage can use a mirrored ring with native chronological views.
+    Only this generation owner mutates caches; snapshots/membership helpers
+    reset backing storage when replacing tensors. No cache enters training.
     """
     global _CAPACITY_LAYER
     increment, capacity_limit = int(increment), int(capacity_limit)
@@ -92,7 +92,10 @@ def enable_capacity_cache(cache, increment, capacity_limit, counters=None):
             if layer.is_initialized:
                 replacement.set_storage(layer.keys, layer.values)
             converted.append(replacement)
-        elif type(layer).__name__ in {"DynamicSlidingWindowLayer", "CapacityDynamicLayer"}:
+        elif type(layer).__name__ == "DynamicSlidingWindowLayer" and sliding:
+            from .sliding_cache import enable_sliding_storage
+            converted.append(enable_sliding_storage(layer, increment, capacity_limit, counters))
+        elif type(layer).__name__ in {"DynamicSlidingWindowLayer", "CapacityDynamicLayer", "RingSlidingWindowLayer"}:
             converted.append(layer)
         else:
             raise TypeError("Capacity caching supports only native Gemma dynamic/full-sliding layers")
@@ -109,7 +112,7 @@ def _layers(cache):
     if not layers:
         raise ValueError("Expected an initialized native DynamicCache")
     for layer in layers:
-        if type(layer).__name__ not in {"DynamicLayer", "DynamicSlidingWindowLayer", "CapacityDynamicLayer"}:
+        if type(layer).__name__ not in {"DynamicLayer", "DynamicSlidingWindowLayer", "CapacityDynamicLayer", "RingSlidingWindowLayer"}:
             raise TypeError(f"Unsupported batching cache layer: {type(layer).__name__}")
         if not layer.is_initialized or layer.keys is None or layer.values is None:
             raise ValueError("Every non-shared KV layer must have been initialized")
@@ -142,7 +145,9 @@ def _replace_layer(layer, keys, values, length):
     result.keys, result.values = keys, values
     result.dtype, result.device = keys.dtype, keys.device
     result.is_initialized = True
-    if result.is_sliding:
+    if type(result).__name__ == "RingSlidingWindowLayer":
+        result.set_storage(keys, values, length=length)
+    elif result.is_sliding:
         result.cumulative_length = int(length)
     elif type(result).__name__ == "CapacityDynamicLayer":
         result.set_storage(keys, values, length=length)
@@ -333,6 +338,7 @@ class PrefixCache:
         self.bytes_by_device = {}
         self.hits = self.misses = self.evictions = 0
         self.replacements = self.rejections = self.budget_evictions = 0
+        self.peak_entries = self.peak_bytes = 0
 
     def clear(self):
         self._entries.clear()
@@ -361,6 +367,18 @@ class PrefixCache:
         return (len(self._entries) + extra_entries > self.max_entries or
                 self.used_bytes + sum(additional.values()) > self.max_bytes or
                 any(self.bytes_by_device.get(device, 0) + additional.get(device, 0) > limit
+                    for device, limit in (self.device_limits or {}).items()))
+
+    def _fits_with_other_owners(self, owner, sizes):
+        """Would the candidate fit while retaining every other rollout's entry?"""
+        count, resident = 1, dict(sizes)
+        for record in self._entries.values():
+            if any(other != owner for other in record.owners):
+                count += 1
+                for device, size in record.bytes_by_device.items():
+                    resident[device] = resident.get(device, 0) + size
+        return (count <= self.max_entries and sum(resident.values()) <= self.max_bytes and
+                all(resident.get(device, 0) <= limit
                     for device, limit in (self.device_limits or {}).items()))
 
     def set_limits(self, max_bytes, device_limits=None):
@@ -418,13 +436,14 @@ class PrefixCache:
             return None
         key = max(matches, key=len)
         entry = self._entries[key].entry
+        result = PrefixEntry(clone_cache(entry.cache), entry.cached_length, entry.next_logits.detach().clone())
         self._entries.move_to_end(key)
         # A reused older prefix is only a starting state. Bind a new owner when
         # its complete prompt is present; a later put replaces partial reuse.
         if owner is not None and len(key) == len(prompt):
             self._bind_owner(key, owner)
         self.hits += 1
-        return PrefixEntry(clone_cache(entry.cache), entry.cached_length, entry.next_logits.detach().clone())
+        return result
 
     def put(self, cache, cached_ids, version, next_logits, *, owner=None):
         """Store a complete prompt, releasing this owner's old prompt first."""
@@ -446,16 +465,28 @@ class PrefixCache:
             self._bind_owner(key, owner)
             self._entries.move_to_end(key)
             return True
-        if owner is not None and owner in self._owners:
+        previous = self._owners.get(owner) if owner is not None else None
+        preserve_others = previous is not None and key[:len(previous)] == previous
+        # A longer snapshot is optional when the old complete prefix still
+        # works. Keep that prefix rather than sacrificing another rollout's
+        # coverage. First admissions and incompatible prompts use ordinary LRU.
+        if preserve_others and not self._fits_with_other_owners(owner, sizes):
+            self.rejections += 1
+            return False
+        if previous is not None:
             self.replacements += 1
             self.drop_owner(owner)
         # Release superseded ownership and evict before cloning, so the old
         # owned snapshot cannot unnecessarily displace another rollout's prompt.
         while self._entries and self._over_limit(sizes, extra_entries=1):
-            self._remove(next(iter(self._entries)), eviction=True, budget=True)
+            victim = (next(key for key, record in self._entries.items() if not record.owners)
+                      if preserve_others else next(iter(self._entries)))
+            self._remove(victim, eviction=True, budget=True)
         entry = PrefixEntry(clone_cache(cache), len(key), next_logits.detach().clone())
         self._entries[key] = _StoredPrefix(entry, sizes, set(), anonymous=owner is None)
         self.used_bytes += size
+        self.peak_entries = max(self.peak_entries, len(self._entries))
+        self.peak_bytes = max(self.peak_bytes, self.used_bytes)
         for device, amount in sizes.items():
             self.bytes_by_device[device] = self.bytes_by_device.get(device, 0) + amount
         self._bind_owner(key, owner)
@@ -466,4 +497,5 @@ class PrefixCache:
                 "hits": self.hits, "misses": self.misses, "evictions": self.evictions,
                 "replacements": self.replacements, "rejections": self.rejections,
                 "budget_evictions": self.budget_evictions,
+                "peak_entries": self.peak_entries, "peak_bytes": self.peak_bytes,
                 "bytes_by_device": dict(self.bytes_by_device)}

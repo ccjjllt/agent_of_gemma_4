@@ -92,9 +92,10 @@ class TaskSampler:
         }
         if not all(math.isfinite(value) for value in self.config.values()):
             raise ValueError("Curriculum parameters must be finite")
-        if not 0 < self.config["uniform_mix"] < 1:
-            raise ValueError("uniform_mix must be in (0, 1) to preserve exploration and feedback allocation")
-        if not 0 <= self.config["coverage_mix"] < 1 - self.config["uniform_mix"]:
+        pure_uniform = self.config["uniform_mix"] == 1.0 and self.config["coverage_mix"] == 0.0
+        if not 0 < self.config["uniform_mix"] <= 1:
+            raise ValueError("uniform_mix must be in (0, 1]; 1 is the uniform-sampling comparison")
+        if not pure_uniform and not 0 <= self.config["coverage_mix"] < 1 - self.config["uniform_mix"]:
             raise ValueError("coverage_mix must be nonnegative and leave positive adaptive probability mass")
         if not 0 <= self.config["ema_decay"] < 1:
             raise ValueError("ema_decay must be in [0, 1)")
@@ -228,7 +229,8 @@ class TaskSampler:
                          "feedback_policy_age": self.policy_version - last_version if seen else None,
                          "selection_probability": math.fsum(components.values()),
                          "selection_probability_components": components})
-        phase = ("unseen_only" if not observed else
+        phase = ("uniform_only" if self.config["uniform_mix"] == 1.0 else
+                 "unseen_only" if not observed else
                  "feedback_mixture" if adaptive_candidates and unseen else
                  "observed_only" if adaptive_candidates else
                  "coverage_with_uniform_recheck" if unseen else "uniform_recheck")

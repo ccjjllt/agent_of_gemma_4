@@ -17,6 +17,7 @@ import uuid
 
 from .kv_cache import PrefixCache, clone_cache, enable_capacity_cache, merge_caches, select_cache
 from .cache_budget import PrefixCacheBudget
+from .batch_cache import select_batch_rows
 from .policy import GenerationAborted
 from .profiling import GenerationProfiler
 
@@ -57,6 +58,7 @@ class GenerationEngine:
         self.prefill_chunk_tokens = int(self.config.get("prefill_chunk_tokens", 512))
         self.max_prefill_tokens_per_step = int(self.config.get("max_prefill_tokens_per_step", 1024))
         self.kv_capacity_increment = int(self.config.get("kv_capacity_increment", 256))
+        self.sliding_cache_enabled = bool(self.config.get("sliding_cache_enabled", True))
         if min(self.prefill_chunk_tokens, self.max_prefill_tokens_per_step) < 1 or self.kv_capacity_increment < 0:
             raise ValueError("Prefill token budgets must be positive and KV increment nonnegative")
         self.on_request_started = on_request_started
@@ -73,6 +75,7 @@ class GenerationEngine:
             hard_cap_bytes=hard_cap, cpu_fallback_bytes=0 if hard_cap is None else int(hard_cap),
         )
         self.prefix_budget_accounting = {}
+        self.prefix_cache_ooms = 0
         self.run_dir = Path(run_dir)
         self.collection_id = f"policy-{self.version:04d}-{uuid.uuid4().hex[:12]}"
         self.profiler = GenerationProfiler(
@@ -116,6 +119,13 @@ class GenerationEngine:
             raise GenerationAborted("Run cancelled; unfinished requests have no task reward")
 
     def _refresh_prefix_budget(self, *extra_caches):
+        if self.prefix_cache_ooms or not self.prefixes.max_entries:
+            self.prefixes.set_limits(0)
+            self.prefix_budget_accounting = {
+                "mode": "disabled_after_oom" if self.prefix_cache_ooms else "disabled",
+                "max_bytes": 0,
+            }
+            return
         caches = [self.cache, *(request.prefill_cache for request in self.prefilling), *extra_caches]
         budget = self.prefix_budget.refresh(
             active_caches=[cache for cache in caches if cache is not None],
@@ -124,10 +134,23 @@ class GenerationEngine:
         self.prefixes.set_limits(budget["max_bytes"], budget["max_bytes_by_device"])
         self.prefix_budget_accounting = budget["accounting"]
 
+    def _disable_prefix_cache_after_oom(self):
+        # Snapshots are optional; retain the active request and its full prompt.
+        # Allocator fragmentation/external allocations can defeat an estimate.
+        self.prefix_cache_ooms += 1
+        self.prefixes.clear()
+        self.prefixes.set_limits(0)
+        self.prefix_budget_accounting = {"mode": "disabled_after_oom", "max_bytes": 0}
+        if self.torch.cuda.is_available():
+            self.torch.cuda.empty_cache()
+
     def _remember_prompt(self, request, cache, logits):
         self._refresh_prefix_budget(cache)
-        self.prefixes.put(cache, request.prepared["prompt_ids"], self.version, logits,
-                          owner=request.rollout_id)
+        try:
+            self.prefixes.put(cache, request.prepared["prompt_ids"], self.version, logits,
+                              owner=request.rollout_id)
+        except self.torch.cuda.OutOfMemoryError:
+            self._disable_prefix_cache_after_oom()
 
     def _autocast(self):
         if self.policy.input_device.type == "cuda":
@@ -164,7 +187,12 @@ class GenerationEngine:
         if request.prefill_cache is None:
             with self.profiler.region("cache"):
                 self._refresh_prefix_budget()
-                entry = self.prefixes.get(ids, self.version, owner=request.rollout_id)
+                try:
+                    entry = self.prefixes.get(ids, self.version, owner=request.rollout_id)
+                except self.torch.cuda.OutOfMemoryError:
+                    self._disable_prefix_cache_after_oom()
+                    self.prefixes.misses += 1
+                    entry = None
             offset = entry.cached_length if entry is not None else 0
             request.reused_tokens = request.prefill_offset = offset
             if entry is not None:
@@ -174,7 +202,7 @@ class GenerationEngine:
             else:
                 request.prefill_cache = enable_capacity_cache(
                     self.policy.new_generation_cache(), self.kv_capacity_increment, self.policy.max_context,
-                    self.kv_capacity_counters)
+                    self.kv_capacity_counters, sliding=self.sliding_cache_enabled)
         offset = request.prefill_offset
         end = min(len(ids), offset + self.prefill_chunk_tokens, offset + token_limit)
         if end <= offset:
@@ -218,7 +246,7 @@ class GenerationEngine:
         return (request.completion[-1] in self.eos or
                 len(request.completion) == request.prepared["effective_max_tokens"])
 
-    def _finish(self, request, cache):
+    def _finish(self, request, cache=None):
         self._check_abort()
         # Keep the immutable prompt snapshot. Saving a second, nearly identical
         # completion snapshot evicts other rollouts and often cannot be reused
@@ -258,6 +286,26 @@ class GenerationEngine:
             pads = self.torch.tensor([width - n for n in lengths], device=device).unsqueeze(1)
             self.mask = (columns >= pads).long()
 
+    def _retain_rows(self, indices):
+        """Select surviving rows and remove their common left-padding by view."""
+        indices = list(indices)
+        if not indices:
+            self.active = []
+            self.cache = self.mask = None
+            return
+        with self.profiler.region("cache_membership"):
+            width = max(self.active[i].cached_length for i in indices)
+            trim = self.mask.shape[-1] - width
+            self.cache = select_batch_rows(self.cache, indices, physical_length=width,
+                                           counters=self.kv_capacity_counters)
+            mask = self.mask[:, trim:]
+            if indices == list(range(indices[0], indices[-1] + 1)):
+                self.mask = mask[indices[0]:indices[-1] + 1]
+            else:
+                index = self.torch.tensor(indices, device=mask.device, dtype=self.torch.long)
+                self.mask = mask.index_select(0, index)
+            self.active = [self.active[i] for i in indices]
+
     def cancel(self, request_ids):
         """Cancel queued-prefill or decoding rows at the owner's step boundary."""
         identities = set(request_ids)
@@ -265,16 +313,15 @@ class GenerationEngine:
         if not removed:
             return []
         with self.torch.inference_mode():
-            requests, caches = [], []
+            remaining_rows = []
             for row, item in enumerate(self.active):
                 if item.request_id in identities:
                     self.cancelled_requests += 1
                     self.cancelled_generated_tokens += len(item.completion)
                 else:
-                    requests.append(item)
-                    caches.append(select_cache(self.cache, row, item.cached_length, copy_tensors=False))
-            if len(requests) != len(self.active):
-                self._rebuild(requests, caches)
+                    remaining_rows.append(row)
+            if len(remaining_rows) != len(self.active):
+                self._retain_rows(remaining_rows)
             remaining = deque()
             for item in self.prefilling:
                 if item.request_id in identities:
@@ -308,16 +355,13 @@ class GenerationEngine:
         done = [self._done(item) for item in self.active]
         finished = []
         if any(done):
-            requests, caches = [], []
+            remaining_rows = []
             for row, (request, ended) in enumerate(zip(self.active, done)):
-                with self.profiler.region("cache"):
-                    cache = select_cache(self.cache, row, request.cached_length, copy_tensors=False)
                 if ended:
-                    finished.append(self._finish(request, cache))
+                    finished.append(self._finish(request))
                 else:
-                    requests.append(request)
-                    caches.append(cache)
-            self._rebuild(requests, caches)
+                    remaining_rows.append(row)
+            self._retain_rows(remaining_rows)
         return finished
 
     def step(self, incoming):
@@ -468,6 +512,7 @@ class GenerationEngine:
                    "unprofiled_tokens_per_busy_second": (unprofiled / self.unprofiled_seconds
                                                          if self.unprofiled_seconds else None),
                    "prefix_cache": self.prefixes.stats(),
+                   "prefix_cache_ooms": self.prefix_cache_ooms,
                    "prefix_cache_budget": self.prefix_budget_accounting}
         self.run_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         with (self.run_dir / "generation_metrics.jsonl").open("a", encoding="utf-8") as output:

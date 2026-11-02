@@ -132,12 +132,15 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
     fixed_length = int(cfg.get("max_completion_length", cfg.get("loss_normalizer", 32768)))
     total_optimizer_steps = int(cfg.get("total_optimizer_steps", repetitions))
     warmup_steps = int(cfg.get("warmup_steps", math.ceil(total_optimizer_steps * float(cfg.get("warmup_ratio", 0.0)))))
+    post_update_kl_max_calls = int(cfg.get("post_update_kl_max_calls", 4))
     if repetitions < 1 or generations < 2 or beta < 0 or fixed_length <= 0 or correction_cap < 1:
         raise ValueError("Invalid GRPO repetition/group/KL/normalizer/correction configuration")
     if cfg.get("loss_type", "dr_grpo") != "dr_grpo":
         raise ValueError("This multi-call adapter uses dr_grpo with one fixed trajectory normalizer")
     if total_optimizer_steps < 1 or warmup_steps < 0:
         raise ValueError("GRPO needs positive total optimizer steps and nonnegative warmup")
+    if post_update_kl_max_calls < 0:
+        raise ValueError("Post-update KL call limit must be nonnegative")
     for name, parameter in policy.model.named_parameters():
         if ".lora_B." in name and bool(torch.count_nonzero(parameter.detach())):
             raise ValueError("The fixed disabled-adapter reference requires a fresh zero-B LoRA at trainer creation")
@@ -160,13 +163,40 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
                 restore_rng_state(owner._pending_rng_state, torch)
                 owner._pending_rng_state = None
             owner._begin_reuse_step(owner._reuse_start + int(state.global_step))
+            owner._synchronize_timing()
+            owner._reuse_started_at = time.perf_counter()
+
+        def on_pre_optimizer_step(self, args, state, control, **kwargs):
+            owner._synchronize_timing()
+            rates = [float(group["lr"]) for group in owner.optimizer.param_groups]
+            owner._last_step_metrics.update(learning_rates_used=rates,
+                                            learning_rate_used=rates[0] if len(set(rates)) == 1 else None)
+            owner._optimizer_started_at = time.perf_counter()
+
+        def on_optimizer_step(self, args, state, control, **kwargs):
+            owner._synchronize_timing()
+            skipped = bool(owner.accelerator.optimizer_step_was_skipped)
+            owner._last_step_metrics.update(
+                optimizer_seconds=time.perf_counter() - owner._optimizer_started_at,
+                optimizer_step_skipped=skipped,
+                nonzero_lr_optimizer_step=not skipped and any(
+                    rate != 0.0 for rate in owner._last_step_metrics["learning_rates_used"]),
+            )
 
         def on_step_end(self, args, state, control, **kwargs):
             completed = owner._reuse_start + int(state.global_step)
+            owner._last_step_metrics.update(
+                step_wall_seconds=time.perf_counter() - owner._reuse_started_at,
+                step_timing_scope="step_begin_to_step_end; includes pre-step checkpoint; excludes post-step checkpoint",
+            )
             row = {"event": "grpo_optimizer_step", "optimizer_step": owner._offset + completed,
                    "reuse_index": completed, **owner._last_step_metrics}
             owner._step_history.append(row)
-            owner._attempt_history[-1]["status"] = "optimizer_applied"
+            owner._attempt_history[-1].update(owner._last_step_metrics)
+            owner._attempt_history[-1]["status"] = "optimizer_skipped" if row["optimizer_step_skipped"] else "optimizer_applied"
+            owner._optimizer_measurements["steps"] += 1
+            owner._optimizer_measurements["nonzero_lr_steps"] += int(row["nonzero_lr_optimizer_step"])
+            owner._optimizer_measurements["skipped_steps"] += int(row["optimizer_step_skipped"])
             owner.completed_optimizer_steps = owner._offset + completed
             owner._checkpoint_safe = True
             for trajectory in owner._cohort:
@@ -184,6 +214,10 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
             self._active_scores = None
             self._offset = 0
             self.completed_optimizer_steps = 0
+            self._optimizer_measurements = {"steps": 0, "nonzero_lr_steps": 0, "skipped_steps": 0}
+            self._update_wall_seconds = 0.0
+            self._update_timing_from_start = True
+            self._update_started_at = self._reuse_started_at = self._optimizer_started_at = None
             self._step_history = []
             self._last_step_metrics = {}
             self._reuse_reason = None
@@ -300,6 +334,108 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
                     # model's random stream relative to uninterrupted training.
                     restore_rng_state(rng, torch)
 
+        def _synchronize_timing(self):
+            if torch.cuda.is_available():
+                for device in range(torch.cuda.device_count()):
+                    torch.cuda.synchronize(device)
+
+        def _current_update_wall_seconds(self):
+            return self._update_wall_seconds + (
+                time.perf_counter() - self._update_started_at if self._update_started_at is not None else 0.0)
+
+        def _finish_update_timing(self):
+            self._update_wall_seconds = self._current_update_wall_seconds()
+            self._update_started_at = None
+
+        def _measure_post_update_kl(self):
+            """Bounded diagnostic on frozen behavior calls; never an update gate.
+
+            Frozen old probabilities describe the cohort before its first
+            optimizer step. They supply the before measurement without another
+            forward or a separate snapshot of the last reuse's gradients.
+            """
+            calls = [call for trajectory in self._cohort for call in trajectory["calls"]]
+            count = min(post_update_kl_max_calls, len(calls))
+            indices = ([len(calls) // 2] if count == 1 else
+                       [index * (len(calls) - 1) // (count - 1) for index in range(count)] if count else [])
+            result = {
+                "status": "pending", "scope": "cohort_before_first_optimizer_to_after_last_applied_optimizer",
+                "probe_scope": "deterministic_evenly_spaced_complete_calls; full_prompt; completion_tokens_only",
+                "distribution": "unweighted_K3_on_collected_behavior_samples; not_exact_KL_or_full_cohort_KL",
+                "aggregation": "completion_token_weighted_over_selected_calls",
+                "reference_K3_estimator": "mean(exp(reference-current)-(reference-current)-1)",
+                "old_policy_K3_estimator": "mean(exp(current-old)-(current-old)-1)",
+                "call_indices": indices, "calls_available": len(calls), "calls_selected": count,
+                "calls_scored": 0, "tokens_selected": sum(len(calls[index]["completion_ids"]) for index in indices),
+                "tokens_scored": 0, "cohort_start_optimizer_step": self._offset,
+                "final_optimizer_step": self._offset + len(self._step_history),
+                "last_applied_optimizer_step": next((row["optimizer_step"] for row in reversed(self._step_history)
+                                                      if row.get("optimizer_step_skipped") is False), None),
+                "reference_K3": {"before": None, "after": None, "delta": None},
+                "old_policy_K3": {"before": None, "after": None, "delta": None},
+            }
+            if not count or not self._step_history:
+                result.update(status="disabled" if not count else "no_optimizer_step", wall_seconds=0.0)
+                return result
+            if self.policy.abort_generation.is_set():
+                raise RuntimeError("Run cancelled before post-update KL diagnostic")
+            started = time.perf_counter()
+            rng = None
+            try:
+                self._synchronize_timing()
+                rng = capture_rng_state(torch)
+                old_after = reference_before = reference_after = 0.0
+                reference_available = all("reference_logprobs" in calls[index] for index in indices)
+                for index in indices:
+                    if self.policy.abort_generation.is_set():
+                        raise RuntimeError("Run cancelled during post-update KL diagnostic")
+                    call = calls[index]
+                    with self.accelerator.autocast(), self.compute_loss_context_manager(), torch.no_grad():
+                        scores = self.policy.score_call(call, reference=False)
+                    self._forward_invocations["post_update_probe"] = self._forward_invocations.get("post_update_probe", 0) + 1
+                    current = torch.tensor(scores, dtype=torch.float64)
+                    old = torch.tensor(call["old_learner_logprobs"], dtype=torch.float64)
+                    if current.shape != old.shape or not torch.isfinite(current).all():
+                        raise FloatingPointError("Post-update diagnostic returned invalid complete-call probabilities")
+
+                    def k3_sum(delta):
+                        values = torch.expm1(delta) - delta
+                        if not torch.isfinite(values).all():
+                            raise FloatingPointError("Post-update K3 diagnostic is nonfinite")
+                        return float(values.sum())
+
+                    old_after += k3_sum(current - old)
+                    if reference_available:
+                        reference = torch.tensor(call["reference_logprobs"], dtype=torch.float64)
+                        reference_before += k3_sum(reference - old)
+                        reference_after += k3_sum(reference - current)
+                    result["calls_scored"] += 1
+                    result["tokens_scored"] += current.numel()
+                self._synchronize_timing()
+                if self.policy.abort_generation.is_set():
+                    raise RuntimeError("Run cancelled during post-update KL diagnostic")
+                tokens = result["tokens_scored"]
+                result["old_policy_K3"] = {"before": 0.0, "after": old_after / tokens, "delta": old_after / tokens}
+                if reference_available:
+                    before, after = reference_before / tokens, reference_after / tokens
+                    result["reference_K3"] = {"before": before, "after": after, "delta": after - before}
+                result.update(status="measured", reference_status="measured" if reference_available else "reference_probabilities_not_recorded")
+            except Exception as error:
+                if self.policy.abort_generation.is_set():
+                    raise
+                # A diagnostic cannot discard an already completed optimizer
+                # step or prevent adapter export. Partial scores stay unknown.
+                result.update(status="unknown", error_type=type(error).__name__, error=str(error))
+                if isinstance(error, torch.cuda.OutOfMemoryError) and torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            finally:
+                if rng is not None:
+                    restore_rng_state(rng, torch)
+                result["wall_seconds"] = time.perf_counter() - started
+            if emit_callback:
+                emit_callback("grpo_post_update_kl", **result)
+            return result
+
         def export_training_state(self):
             """Export a consistent step boundary; the caller commits it atomically.
 
@@ -328,12 +464,15 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
                     "forward_invocations": dict(self._forward_invocations),
                     "probability_reuse": dict(self._probability_reuse),
                     "reuse_stop_reason": self._reuse_reason,
+                    "update_wall_seconds": self._current_update_wall_seconds(),
+                    "update_timing_from_start": self._update_timing_from_start,
                 }
             completed = self._offset + len(self._step_history) if active is not None else self.completed_optimizer_steps
             return {
                 "schema_version": 1, "checkpoint_phase": self._checkpoint_phase,
                 "trainer_config": copy.deepcopy(cfg),
                 "completed_optimizer_steps": completed,
+                "optimizer_measurements": dict(self._optimizer_measurements),
                 "adapter": self.policy.export_adapter_state(),
                 "optimizer_parameter_names": list(self._optimizer_parameter_names),
                 "optimizer": self._cpu_state(self.optimizer.state_dict()) if self.optimizer is not None else None,
@@ -355,6 +494,14 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
             completed = state.get("completed_optimizer_steps")
             if type(completed) is not int or completed < 0:
                 raise ValueError("Invalid checkpoint optimizer-step count")
+            # Older checkpoints did not record used LRs; keep that history
+            # explicitly unmeasured rather than assuming every step changed weights.
+            measurements = state.get("optimizer_measurements", {"steps": 0, "nonzero_lr_steps": 0, "skipped_steps": 0})
+            if (not isinstance(measurements, dict) or
+                    any(type(measurements.get(key)) is not int or measurements[key] < 0
+                        for key in ("steps", "nonzero_lr_steps", "skipped_steps")) or
+                    not measurements["nonzero_lr_steps"] + measurements["skipped_steps"] <= measurements["steps"] <= completed):
+                raise ValueError("Invalid optimizer measurement counts")
             if state.get("optimizer_parameter_names") != self._optimizer_parameter_names:
                 raise ValueError("Checkpoint optimizer parameter ordering differs")
             active = copy.deepcopy(state.get("active_batch"))
@@ -405,6 +552,8 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
             if state.get("scheduler") is not None:
                 self.lr_scheduler.load_state_dict(state["scheduler"])
             self.completed_optimizer_steps = completed
+            self._optimizer_measurements = dict(measurements)
+            self._update_started_at = self._reuse_started_at = self._optimizer_started_at = None
             self._checkpoint_phase = state.get("checkpoint_phase", "restored")
             self._reference_cache.clear()
             if active is not None:
@@ -425,6 +574,8 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
                 self._forward_invocations = active["forward_invocations"]
                 self._probability_reuse = active["probability_reuse"]
                 self._reuse_reason = active["reuse_stop_reason"]
+                self._update_wall_seconds = float(active.get("update_wall_seconds", 0.0))
+                self._update_timing_from_start = bool(active.get("update_timing_from_start", False))
                 self._restored_batch = True
                 self._pending_rng_state = copy.deepcopy(state["rng"])
             restore_rng_state(state["rng"], torch)
@@ -595,6 +746,8 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
         def training_step(self, model, inputs, num_items_in_batch=None):
             self._prepare_inputs(inputs)
             self.policy._for_training()
+            self._synchronize_timing()
+            gradient_started_at = time.perf_counter()
             self.current_gradient_accumulation_steps = 1
             local_step = self._reuse_index
             self._checkpoint_safe = False
@@ -667,13 +820,35 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
                             del logp, entropy, loss, loss_inputs
                 if self.policy.abort_generation.is_set():
                     raise RuntimeError("Run cancelled before applying accumulated GRPO gradients")
+                self._synchronize_timing()
+                gradient_seconds = time.perf_counter() - gradient_started_at
                 drift = kl_sum / tokens if local_step else None
+                self._last_step_metrics = {
+                    "loss": total_loss, "generated_tokens": tokens,
+                    "gradient_forwards": calls_forward, "backwards": calls_backward,
+                    "gradient_seconds": gradient_seconds,
+                    "gradient_timing_scope": "reference_scoring_and_gradient_accumulation; CUDA synchronized; excludes probability publication/checkpoints",
+                    "pre_step_checkpoint_seconds": 0.0,
+                    "approx_old_policy_kl": drift,
+                    "old_policy_kl_pre_update": drift,
+                    "reference_kl_pre_update": metric_sums["kl"] / tokens if "kl" in metric_sums else None,
+                    "kl_scope": "pre_optimizer_gradient_forward; token-weighted over collected behavior samples",
+                    "old_policy_kl_estimator": "mean(exp(current-old)-1-(current-old)); initial reuse not independently measured",
+                    "reference_kl_estimator": ("TRL k3 weighted by current/old" if cfg.get("use_bias_correction_kl", True)
+                                               else "TRL k3") if self.beta else None,
+                    "post_update_kl": None,
+                    "post_update_kl_status": "not_measured_no_post_step_forward",
+                    **{key: value / tokens for key, value in metric_sums.items()},
+                }
+                attempt.update(self._last_step_metrics)
                 if local_step:
                     attempt.update(approx_old_policy_kl=drift, ratio_max=ratio_max)
                     if emit_callback:
                         emit_callback("grpo_reuse_drift", reuse_index=local_step + 1,
                                       approx_old_policy_kl=drift, ratio_max=ratio_max,
-                                      source="gradient_forward", generated_tokens=tokens)
+                                      source="pre_optimizer_gradient_forward", generated_tokens=tokens,
+                                      gradient_seconds=gradient_seconds,
+                                      post_update_kl=None)
                     target = cfg.get("target_kl", 0.03)
                     if target is not None and float(target) > 0 and drift > float(target):
                         self._reuse_reason = "target_kl"
@@ -681,6 +856,7 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
                 elif calibrating:
                     # Every denominator is now frozen under the pre-update
                     # weights. Publish only a complete snapshot, before step().
+                    checkpoint_started_at = time.perf_counter()
                     self._publish_frozen_probabilities()
                     attempt.update(status="gradients_frozen", gradient_forwards=calls_forward,
                                    backwards=calls_backward)
@@ -689,12 +865,8 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
                         self._checkpoint("frozen_before_first_step")
                     finally:
                         self._checkpoint_safe = False
-                self._last_step_metrics = {
-                    "loss": total_loss, "generated_tokens": tokens,
-                    "gradient_forwards": calls_forward, "backwards": calls_backward,
-                    "approx_old_policy_kl": drift,
-                    **{key: value / tokens for key, value in metric_sums.items()},
-                }
+                    self._last_step_metrics["pre_step_checkpoint_seconds"] = time.perf_counter() - checkpoint_started_at
+                    attempt.update(self._last_step_metrics)
                 attempt["status"] = "gradients_ready"
                 self._step += 1
                 return torch.tensor(total_loss, device=self.accelerator.device)
@@ -712,6 +884,12 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
                 raise
             finally:
                 attempt.update(gradient_forwards=calls_forward, backwards=calls_backward)
+                if "gradient_seconds" not in attempt:
+                    attempt["gradient_seconds"] = time.perf_counter() - gradient_started_at
+                    attempt["gradient_timing_scope"] = "interrupted_gradient_attempt; host wall time without final CUDA synchronization"
+                if attempt["status"] == "discarded" and self._reuse_started_at is not None:
+                    attempt["step_wall_seconds"] = time.perf_counter() - self._reuse_started_at
+                    attempt["step_timing_scope"] = "step_begin_to_gradient_discard; no optimizer call"
                 self._active_call = self._active_scores = None
 
         def optimize_batch(self, trajectories):
@@ -722,6 +900,9 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
             self._step_history = []
             self._offset = self.completed_optimizer_steps
             self._optimizing = True
+            self._update_wall_seconds = 0.0
+            self._update_timing_from_start = True
+            self._update_started_at = time.perf_counter()
             try:
                 return self._optimize_batch(trajectories)
             except BaseException:
@@ -732,6 +913,7 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
                 # Trainer can fail before replacing the preceding TrainerState.
                 # Count only optimizer steps observed in THIS train() invocation.
                 self.completed_optimizer_steps = self._offset + len(self._step_history)
+                self._finish_update_timing()
                 self.policy._mode = None
                 self._active_call = self._active_scores = None
                 self._cohort = None
@@ -745,6 +927,7 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
                 raise RuntimeError("No safe restored cohort is pending")
             self._optimizing = True
             self._reuse_start = len(self._step_history)
+            self._update_started_at = time.perf_counter()
             try:
                 return self._run_active_batch()
             except BaseException:
@@ -753,6 +936,7 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
                 raise
             finally:
                 self.completed_optimizer_steps = self._offset + len(self._step_history)
+                self._finish_update_timing()
                 self.policy._mode = None
                 self._active_call = self._active_scores = None
                 self._cohort = None
@@ -817,12 +1001,30 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
                     self._checkpoint("cohort_stopped")
             self._checkpoint_safe = True
             self._checkpoint_phase = "cohort_finished"
+            post_update_kl = self._measure_post_update_kl()
+            measured_steps = [row for row in self._step_history if "nonzero_lr_optimizer_step" in row]
+            total_steps = self._offset + len(self._step_history)
             return {"optimizer_steps": len(self._step_history),
+                    "nonzero_lr_optimizer_steps": (sum(row["nonzero_lr_optimizer_step"] for row in measured_steps)
+                                                   if len(measured_steps) == len(self._step_history) else None),
+                    "optimizer_steps_with_lr_metrics": len(measured_steps),
+                    "total_nonzero_lr_optimizer_steps": (self._optimizer_measurements["nonzero_lr_steps"]
+                                                         if self._optimizer_measurements["steps"] == total_steps else None),
+                    "optimizer_measurements": dict(self._optimizer_measurements),
+                    "nonzero_lr_step_semantics": "optimizer not skipped and at least one used LR nonzero; not proof of adapter weight change",
+                    "update_wall_seconds": self._current_update_wall_seconds() if self._update_timing_from_start else None,
+                    "observed_update_wall_seconds": self._current_update_wall_seconds(),
+                    "update_timing_from_start": self._update_timing_from_start,
+                    "update_timing_scope": "cohort trainer invocation wall time including checkpoints; resumed work accumulates from durable snapshot time, excluding downtime and unrecorded work after that snapshot",
                     "optimizer_steps_this_invocation": len(self._step_history) - before,
                     "cohort_start_optimizer_step": self._offset,
-                    "total_optimizer_steps": self._offset + len(self._step_history),
+                    "total_optimizer_steps": total_steps,
                     "reuse_stop_reason": self._reuse_reason,
-                    "updates": list(self._step_history), "gradient_attempts": list(self._attempt_history),
+                    "updates": list(self._step_history), "steps": list(self._step_history),
+                    "gradient_attempts": list(self._attempt_history),
+                    "kl_scope": "step KL is pre_optimizer_gradient_forward; post_update_kl is a separate bounded final-cohort probe",
+                    "post_update_kl": post_update_kl,
+                    "post_update_kl_seconds": post_update_kl["wall_seconds"],
                     "forward_invocations": dict(self._forward_invocations),
                     "probability_reuse": dict(self._probability_reuse),
                     "reference_cache": self._reference_cache.stats(),
