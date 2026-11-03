@@ -285,6 +285,7 @@ def _run_arm(*, policy, endpoint, cfg, task, seed, arm, ordinal, scratch,
                        "--auth-token-file", str(credential), "--parent-pid", str(os.getpid()),
                        "--sandbox-baseline-python", runtime.get("sandbox_baseline_python", "/opt/gemma-sandbox-baseline/bin/python"),
                        "--session-clock", "wall", "--evaluation-overrides-json", json.dumps(runtime.get("evaluation", {})),
+                       "--event-summarizer", runtime.get("event_summarizer", "official"),
                        "--task-id", task["id"]]
             if runtime.get("sandbox_root"):
                 command.extend(["--sandbox-root", runtime["sandbox_root"]])
@@ -372,6 +373,9 @@ def main(argv=None):
     settings = {"policy": {key: cfg["policy"].get(key) for key in ("max_context", "response_parser")},
                 "sampling": cfg["sampling"], "generation": cfg["generation"],
                 "runtime": {key: cfg["runtime"].get(key) for key in ("sandbox", "evaluation", "session_clock")},
+                "event_summarizer": cfg["runtime"].get("event_summarizer", "official"),
+                "summarizer_source_sha256": file_digest(PROJECT / "training/tool_state_summary.py")
+                    if cfg["runtime"].get("event_summarizer", "official") == "tool_aware" else None,
                 "base_model": {key: model_identity[key] for key in ("declared_name", "declared_revision")},
                 "base_model_config_sha256": model_identity["config"]["sha256"],
                 "submission": _submission_identity(submission),

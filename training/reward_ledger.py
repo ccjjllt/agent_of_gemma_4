@@ -23,7 +23,7 @@ _COMPONENTS = ("resolved", "repair", "regression", "efficiency", "repetition")
 _FLAGS = (
     "legacy_group_fallback_triggered", "legacy_all_failure_zero",
     "new_signal_recovered_vs_legacy", "no_provable_signal_with_missing",
-    "complete_evidence_zero_signal",
+    "complete_evidence_zero_signal", "would_have_fallback",
 )
 _LABEL = re.compile(r"[A-Za-z0-9_.:-]{1,160}")
 _IDENTITY = re.compile(r"[A-Za-z0-9][A-Za-z0-9_./:-]{0,255}")
@@ -230,10 +230,12 @@ class RewardLedger:
         output = {key: diagnostics.get(key) if isinstance(diagnostics.get(key), bool) else None for key in _FLAGS}
         for key in ("learning_signal_rms", "strict_signal_rms", "common_signal_rms", "legacy_signal_rms",
                     "nonzero_advantages", "reward_std", "selection_to_commit_seconds", "group_size",
-                    "point_reward_count", "missing_reward_count", "provable_pair_count"):
+                    "point_reward_count", "missing_reward_count", "provable_pair_count",
+                    "normalizer", "std_upper_bound", "advantage_rms"):
             if key in diagnostics:
                 output[key] = _number(diagnostics[key], nonnegative=True)
         output["signal_source"] = _label(diagnostics.get("signal_source"))
+        output["missing_mode"] = _label(diagnostics.get("missing_mode"))
         output["common_components"] = [name for name in diagnostics.get("common_components", []) if name in _COMPONENTS]
         output["ablation"] = {}
         for name, value in (diagnostics.get("ablation") or {}).items():
@@ -248,9 +250,68 @@ class RewardLedger:
             }
         return output
 
+    @staticmethod
+    def _objective(value):
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise ValueError("Reward objective must be a scalar declaration")
+        return {"algorithm": _label(value.get("algorithm")),
+                "weights": {name: _number((value.get("weights") or {}).get(name), nonnegative=True)
+                            for name in _COMPONENTS},
+                "success_token_budget": _number(value.get("success_token_budget"), nonnegative=True),
+                "dense_shaping_enabled": (value.get("dense_shaping_enabled")
+                    if isinstance(value.get("dense_shaping_enabled"), bool) else None)}
+
+    @staticmethod
+    def _normalization(value):
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise ValueError("Reward normalization must be a scalar declaration")
+        signature = value.get("normalization_signature")
+        if signature is not None:
+            decoded = json.loads(signature)
+            allowed = {"algorithm", "scale_rewards", "advantage_std_floor", "min_group_std"}
+            if not isinstance(decoded, dict) or set(decoded) - allowed:
+                raise ValueError("Unexpected normalization signature fields")
+            decoded = {key: _label(item) if key in {"algorithm", "scale_rewards"}
+                       else _number(item, nonnegative=True) for key, item in decoded.items()}
+            signature = json.dumps(decoded, sort_keys=True, separators=(",", ":"))
+        return {"mode": _label(value.get("mode")), "algorithm": _label(value.get("algorithm")),
+                **{key: _number(value.get(key), nonnegative=True)
+                   for key in ("denominator", "std_upper_bound", "multiplier")},
+                "normalization_signature": signature}
+
+    @staticmethod
+    def _missingness(value):
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise ValueError("Reward missingness must be a scalar declaration")
+        patterns = {}
+        for pattern, count in (value.get("trajectory_patterns") or {}).items():
+            parts = [part.split(":", 1) for part in pattern.split("|")]
+            if (any(len(part) != 2 or part[0] not in _COMPONENTS or part[1] not in
+                    {"complete", "bounded_partial", "unavailable", "not_applicable", "disabled"}
+                    for part in parts) or len({part[0] for part in parts}) != len(parts)):
+                raise ValueError("Unexpected component missingness pattern")
+            patterns[pattern] = _integer(count)
+        reasons = {}
+        for reason, count in (value.get("reason_counts") or {}).items():
+            reason = _label(reason)
+            reasons[reason] = reasons.get(reason, 0) + _integer(count)
+        return {"trajectory_patterns": patterns,
+                "missing_component_counts": {name: _integer(count) for name, count in
+                    (value.get("missing_component_counts") or {}).items() if name in _COMPONENTS},
+                "reason_counts": reasons, "group_pattern": _label(value.get("group_pattern")),
+                **{key: _number(value.get(key), nonnegative=True)
+                   for key in ("uncertainty_width_mean", "uncertainty_width_max")}}
+
     def record_group(self, *, batch, group_id, task_id, policy_version, selection,
                      scored, advantages, group_stats, results, calls, selected_for_update,
-                     exclusion_reason, reward_mode, reward_signature, diagnostics=None):
+                     exclusion_reason, reward_mode, reward_signature, diagnostics=None,
+                     objective=None, normalization=None, missingness=None, learning_signal=None):
         batch, policy_version = _integer(batch), _integer(policy_version)
         group_id, task_id = _identity(group_id), _identity(task_id)
         if not isinstance(selected_for_update, bool):
@@ -260,6 +321,11 @@ class RewardLedger:
             raise ValueError("Reward ledger requires aligned complete-group records")
         if not isinstance(reward_signature, str) or not reward_signature:
             raise ValueError("A reward signature is required")
+        if learning_signal is not None and len(learning_signal) != n:
+            raise ValueError("Learning signals must align with complete-group trajectories")
+        objective = self._objective(objective)
+        normalization = self._normalization(normalization)
+        missingness = self._missingness(missingness)
         trajectories = []
         for index, (score, advantage, result, invocation) in enumerate(zip(scored, advantages, results, calls)):
             if (result.get("verdict_valid") is not True or result.get("verification_complete") is not True
@@ -275,6 +341,7 @@ class RewardLedger:
                 "index": index, "official_success": result["success"],
                 "total": _number(score.get("total")), "reward_bounds": _bounds(score.get("reward_bounds")),
                 "advantage": _number(advantage),
+                "learning_signal": _number(learning_signal[index]) if learning_signal is not None else None,
                 "components": {name: _number((score.get("components") or {}).get(name)) for name in _COMPONENTS},
                 "component_bounds": {name: _bounds((score.get("component_bounds") or {}).get(name)) for name in _COMPONENTS},
                 "component_evidence": {name: self._evidence((score.get("component_evidence") or {}).get(name) or {})
@@ -303,6 +370,7 @@ class RewardLedger:
             "reward_mode": _label(reward_mode),
             "reward_signature_sha256": hashlib.sha256(reward_signature.encode()).hexdigest(),
             "group_statistics": statistics_row, "diagnostics": self._diagnostics(diagnostics),
+            "objective": objective, "normalization": normalization, "missingness": missingness,
         }
         payload = json.dumps(row, ensure_ascii=False, allow_nan=False)
         if group_id in self._group_ids:
@@ -320,16 +388,32 @@ class RewardLedger:
         self._write_summary()
         return row
 
-    def mark_batch_update(self, batch, optimizer_steps, adapter_changed=None):
+    @staticmethod
+    def _nonzero_lr_steps(value, optimizer_steps):
+        if value is None:
+            return None
+        value = _integer(value)
+        if value > optimizer_steps:
+            raise ValueError("Nonzero-LR steps cannot exceed optimizer calls")
+        return value
+
+    def mark_batch_update(self, batch, optimizer_steps, adapter_changed=None, *,
+                          nonzero_lr_optimizer_steps=None):
         batch, optimizer_steps = _integer(batch), _integer(optimizer_steps)
+        nonzero_lr_optimizer_steps = self._nonzero_lr_steps(nonzero_lr_optimizer_steps, optimizer_steps)
         if adapter_changed is not None and not isinstance(adapter_changed, bool):
             raise ValueError("adapter_changed must be a boolean or unknown")
-        value = {"optimizer_steps": optimizer_steps, "adapter_changed": adapter_changed}
+        value = {"optimizer_steps": optimizer_steps, "adapter_changed": adapter_changed,
+                 "nonzero_lr_optimizer_steps": nonzero_lr_optimizer_steps}
         previous = self.batch_updates.get(str(batch))
-        if previous is not None and previous != value:
-            if (previous["optimizer_steps"] != optimizer_steps
-                    or previous.get("adapter_changed") is not None or adapter_changed is None):
+        if previous is not None:
+            if previous["optimizer_steps"] != optimizer_steps:
                 raise ValueError("An acknowledged batch update cannot be silently rewritten")
+            # Evidence can become known, but cannot be erased or changed by a
+            # later acknowledgment. Missing historical fields remain unknown.
+            for key in ("adapter_changed", "nonzero_lr_optimizer_steps"):
+                if previous.get(key) is not None and previous[key] != value[key]:
+                    raise ValueError("An acknowledged batch update cannot be silently rewritten")
         self.batch_updates[str(batch)] = value
         self._write_summary()
 
@@ -348,7 +432,9 @@ class RewardLedger:
             changed = value.get("adapter_changed")
             if changed is not None and not isinstance(changed, bool):
                 raise ValueError("Invalid saved update membership")
-            restored[str(batch_number)] = {"optimizer_steps": steps, "adapter_changed": changed}
+            nonzero = self._nonzero_lr_steps(value.get("nonzero_lr_optimizer_steps"), steps)
+            restored[str(batch_number)] = {"optimizer_steps": steps, "adapter_changed": changed,
+                                          "nonzero_lr_optimizer_steps": nonzero}
         if restored != self.batch_updates:
             with (self.run_dir / "reward_update_recovery.jsonl").open("a", encoding="utf-8") as output:
                 output.write(json.dumps({"checkpoint_id": checkpoint_id,
@@ -358,6 +444,163 @@ class RewardLedger:
             _sync_directory(self.run_dir)
         self.batch_updates = restored
         self._write_summary()
+
+    @staticmethod
+    def _moments(values):
+        """Compact counts and moments, without repeated histogram arrays."""
+        values = list(values)
+        observed = [float(value) for value in values if value is not None]
+        return {"observed": len(observed), "missing": len(values) - len(observed),
+                "mean": statistics.fmean(observed) if observed else None,
+                "min": min(observed) if observed else None,
+                "max": max(observed) if observed else None}
+
+    @staticmethod
+    def _mass(values):
+        values = list(values)
+        observed = [value for value in values if value is not None]
+        missing = len(values) - len(observed)
+        return {"total": math.fsum(observed) if not missing else None,
+                "observed_total": math.fsum(observed) if observed else None,
+                "observed": len(observed), "missing": missing}
+
+    @staticmethod
+    def _component_coverage(groups, name):
+        evidence = [row["component_evidence"].get(name, {})
+                    for group in groups for row in group["trajectories"]]
+        statuses = Counter(item.get("status") or "unreported" for item in evidence)
+        observed = [item.get("fraction") if item.get("status") == "complete" else None
+                    for item in evidence]
+        known_applicable = sum((item.get("counts") or {}).get("expected", 0) > 0
+                               or item.get("status") in {"complete", "bounded_partial"}
+                               for item in evidence)
+        return {"trajectories": len(evidence), "statuses": dict(statuses),
+                "measured_rates": RewardLedger._moments(observed),
+                "known_applicable_trajectories": known_applicable,
+                "not_applicable_trajectories": statuses["not_applicable"],
+                "disabled_trajectories": statuses["disabled"],
+                "interpretation": "Rates require complete applicable evidence; disabled and not-applicable reward zeros are not observed zero rates."}
+
+    def _weighting(self, groups):
+        """Realized scalar exposure, not gradients or inverse-propensity claims."""
+        rows = [row for group in groups for row in group["trajectories"]]
+        raw, normalized, raw_tokens, normalized_tokens = [], [], [], []
+        step_raw_tokens, step_normalized_tokens, step_groups = [], [], []
+        nonzero_raw_tokens, nonzero_normalized_tokens, nonzero_groups = [], [], []
+        for group in groups:
+            update = self.batch_updates.get(str(group["batch"]))
+            steps = (update.get("optimizer_steps") if update is not None else None) if group["selected_for_update"] else 0
+            nonzero = (update.get("nonzero_lr_optimizer_steps") if update is not None else None) if group["selected_for_update"] else 0
+            step_groups.append(steps)
+            nonzero_groups.append(nonzero)
+            for row in group["trajectories"]:
+                signal, advantage = row.get("learning_signal"), row.get("advantage")
+                token_count = row["cost"]["generated_tokens"]
+                a, b = abs(signal) if signal is not None else None, abs(advantage) if advantage is not None else None
+                raw.append(a)
+                normalized.append(b)
+                raw_tokens.append(a * token_count if a is not None else None)
+                normalized_tokens.append(b * token_count if b is not None else None)
+                step_raw_tokens.append(0.0 if steps == 0 else a * token_count * steps if a is not None and steps is not None else None)
+                step_normalized_tokens.append(0.0 if steps == 0 else b * token_count * steps if b is not None and steps is not None else None)
+                nonzero_raw_tokens.append(0.0 if nonzero == 0 else a * token_count * nonzero if a is not None and nonzero is not None else None)
+                nonzero_normalized_tokens.append(0.0 if nonzero == 0 else b * token_count * nonzero if b is not None and nonzero is not None else None)
+        return {
+            "groups": len(groups), "trajectories": len(rows),
+            "selection_probability": self._moments(group.get("selection", {}).get("selection_probability") for group in groups),
+            "normalization_denominator": self._moments((group.get("normalization") or {}).get("denominator") for group in groups),
+            "normalization_multiplier": self._moments((group.get("normalization") or {}).get("multiplier") for group in groups),
+            "raw_signal_rms": self._moments(group.get("diagnostics", {}).get("learning_signal_rms") for group in groups),
+            "normalized_advantage_rms": self._moments(group.get("diagnostics", {}).get("advantage_rms") for group in groups),
+            "raw_signal_l1": self._mass(raw), "normalized_advantage_l1": self._mass(normalized),
+            "raw_token_signal_l1": self._mass(raw_tokens),
+            "normalized_token_advantage_l1": self._mass(normalized_tokens),
+            "acknowledged_optimizer_group_exposures": self._mass(step_groups),
+            "optimizer_call_weighted_raw_token_signal_l1": self._mass(step_raw_tokens),
+            "optimizer_call_weighted_normalized_token_advantage_l1": self._mass(step_normalized_tokens),
+            "acknowledged_nonzero_lr_group_exposures": self._mass(nonzero_groups),
+            "nonzero_lr_step_weighted_raw_token_signal_l1": self._mass(nonzero_raw_tokens),
+            "nonzero_lr_step_weighted_normalized_token_advantage_l1": self._mass(nonzero_normalized_tokens),
+            "interpretation": "Absolute scalar/token exposure before PPO ratios, clipping, parameter Jacobians and trajectory/fixed-length loss denominators. Optimizer-call counts include zero-LR or skipped calls; nonzero-LR counts require a non-skipped call with a nonzero used LR. Neither proves parameter change, actual gradient magnitude, uniform-task correction, or repair gain; adapter_changed remains separate evidence.",
+        }
+
+    def _nonzero_lr_partitions(self, groups):
+        selected = [group for group in groups if group["selected_for_update"]]
+        partitions = {"confirmed_used_in_nonzero_lr_step": [],
+                      "selected_confirmed_no_nonzero_lr_step": [],
+                      "selected_effective_update_unknown": []}
+        for group in selected:
+            value = self.batch_updates.get(str(group["batch"]), {}).get("nonzero_lr_optimizer_steps")
+            key = ("selected_effective_update_unknown" if value is None else
+                   "confirmed_used_in_nonzero_lr_step" if value > 0 else
+                   "selected_confirmed_no_nonzero_lr_step")
+            partitions[key].append(group)
+        return partitions
+
+    def _compact_population(self, groups):
+        rows = [row for group in groups for row in group["trajectories"]]
+        return {"groups": len(groups), "trajectories": len(rows),
+                "official_successes": sum(row["official_success"] for row in rows),
+                "official_success_rate": sum(row["official_success"] for row in rows) / len(rows) if rows else None,
+                "component_coverage": {name: self._component_coverage(groups, name) for name in ("repair", "regression")},
+                "weighting": self._weighting(groups)}
+
+    def _compact_partitions(self, groups):
+        selected = [group for group in groups if group["selected_for_update"]]
+        used = [group for group in selected if self.batch_updates.get(str(group["batch"]), {}).get("optimizer_steps", 0) > 0]
+        unconfirmed = [group for group in selected if str(group["batch"]) not in self.batch_updates]
+        return {"all_candidates": self._compact_population(groups),
+                "selected": self._compact_population(selected),
+                "confirmed_used_in_optimizer_step": self._compact_population(used),
+                **{key: self._compact_population(items) for key, items in self._nonzero_lr_partitions(groups).items()},
+                "selected_update_unconfirmed_groups": len(unconfirmed)}
+
+    @staticmethod
+    def _pattern_identity(group):
+        missingness = group.get("missingness")
+        if missingness is None:
+            return "legacy_unreported", None
+        # Include the exact component status/count map, not only the coarse
+        # group class: repair-missing and regression-missing must stay separate.
+        pattern = {"group_pattern": missingness.get("group_pattern"),
+                   "trajectory_patterns": missingness.get("trajectory_patterns")}
+        encoded = json.dumps(pattern, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(encoded.encode()).hexdigest(), pattern
+
+    def _reward_evidence(self, groups):
+        patterns, objectives, normalizations = {}, {}, {}
+        for group in groups:
+            key, pattern = self._pattern_identity(group)
+            patterns.setdefault(key, {"pattern": pattern, "groups": []})["groups"].append(group)
+            objective = group.get("objective")
+            key = (hashlib.sha256(json.dumps(objective, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                   if objective is not None else "legacy_unreported")
+            entry = objectives.setdefault(key, {"objective": objective, "candidate_groups": 0, "selected_groups": 0})
+            entry["candidate_groups"] += 1
+            entry["selected_groups"] += int(group["selected_for_update"])
+            normalization = group.get("normalization") or {}
+            signature = normalization.get("normalization_signature")
+            key = hashlib.sha256(signature.encode()).hexdigest() if signature is not None else "legacy_unreported"
+            entry = normalizations.setdefault(key, {"normalization_signature": signature,
+                "mode": normalization.get("mode"), "algorithm": normalization.get("algorithm"),
+                "candidate_groups": 0, "selected_groups": 0})
+            entry["candidate_groups"] += 1
+            entry["selected_groups"] += int(group["selected_for_update"])
+        return {
+            **self._compact_partitions(groups),
+            "objectives": objectives, "normalizations": normalizations,
+            "by_missingness_pattern": {key: {"pattern": value["pattern"], **self._compact_partitions(value["groups"])}
+                                      for key, value in sorted(patterns.items())},
+            "by_task": {task_id: self._compact_partitions([group for group in groups if group["task_id"] == task_id])
+                        for task_id in sorted({group["task_id"] for group in groups})},
+            "interpretation": "Adaptive selection, signal filtering and group scaling jointly determine realized exposure. Reported probabilities are conditional draws; 1/q cannot undo acceptance filtering or recover a uniform-task objective. Missing historical declarations/signals remain unknown.",
+        }
+
+    def batch_evidence(self, batch):
+        """Compact committed group evidence for one recoverable batch summary."""
+        batch = _integer(batch)
+        return {"schema_version": 1, "batch": batch,
+                **self._reward_evidence([group for group in self.groups if group["batch"] == batch])}
 
     def _aggregate(self, groups):
         rows = [row for group in groups for row in group["trajectories"]]
@@ -410,6 +653,7 @@ class RewardLedger:
             "advantages": _distribution(row["advantage"] for row in rows),
             "learning_signal_rms": _distribution(group["group_statistics"].get("learning_signal_rms") for group in groups),
             "components": components, "diagnostic_rates": counters,
+            "component_rate_coverage": {name: self._component_coverage(groups, name) for name in ("repair", "regression")},
             "offline_weight_ablation": ablations, "cost": cost,
         }
 
@@ -422,6 +666,7 @@ class RewardLedger:
         unconfirmed = [group for group in selected if str(group["batch"]) not in self.batch_updates]
         return {"all_candidates": self._aggregate(groups), "selected": self._aggregate(selected),
                 "filtered": self._aggregate(filtered), "confirmed_used_in_optimizer_step": self._aggregate(applied),
+                **{key: self._aggregate(items) for key, items in self._nonzero_lr_partitions(groups).items()},
                 "selected_confirmed_no_update": self._aggregate(confirmed_no_update),
                 "selected_update_unconfirmed": self._aggregate(unconfirmed)}
 
@@ -438,13 +683,14 @@ class RewardLedger:
             "interpretation": {
                 "unknown_rewards": "Missing totals/components remain None and are excluded from observed-value statistics, not counted as zero.",
                 "costs": "Worker, verification and request seconds can overlap. They are not GPU wall time or billing; use generation_metrics for decoder throughput.",
-                "updates": "Selection is not completion. Confirmed update membership requires an acknowledged optimizer step; unconfirmed groups remain separate.",
+                "updates": "Selection is not completion. Optimizer-call membership is separate from non-skipped nonzero-LR membership. Zero-LR/skipped calls do not enter the latter; missing historical nonzero-LR counts remain unknown. A nonzero-LR call still does not prove changed parameters; adapter_changed records that separately.",
                 "sampling": "These are adaptively sampled training candidates, not an unbiased uniform-task evaluation.",
                 "ablation": "Weight ablations reuse the same observed evidence; sensitivity is not training effectiveness or repair gain.",
                 "missingness": "No provable signal with missing evidence does not establish that missingness caused zero signal.",
             },
             "batch_updates": dict(self.batch_updates),
             **self._partitions(self.groups), "by_reward_signature": by_signature,
+            "reward_evidence": self._reward_evidence(self.groups),
         }
         _atomic_json(self.summary_path, summary)
         return summary

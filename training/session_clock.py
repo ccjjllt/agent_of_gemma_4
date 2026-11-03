@@ -397,7 +397,7 @@ def timed_context_class(base, clock):
     return TrainingContext
 
 
-def bind_timed_runner(evaluator, context, clock):
+def bind_timed_runner(evaluator, context, clock, *, summarizer_factory=None):
     """Bind private clones to one evaluator; no imported module is patched."""
     original_method = evaluator._run_agent_sandbox.__func__
     runner = original_method.__globals__["run_agent_sandbox"]
@@ -449,8 +449,23 @@ def bind_timed_runner(evaluator, context, clock):
 
         walk(agent)
 
-    private_runner = _clone(runner, {"asyncio": AsyncioScope(), "AdkSandboxCodeExecutor": TrainingExecutor,
-                                     "_wrap_skill_toolset_tools": wrap_skills})
+    replacements = {"asyncio": AsyncioScope(), "AdkSandboxCodeExecutor": TrainingExecutor,
+                    "_wrap_skill_toolset_tools": wrap_skills}
+    if summarizer_factory is not None:
+        original_app = runner.__globals__["App"]
+
+        def app_with_summarizer(**kwargs):
+            app = original_app(**kwargs)
+            if app.events_compaction_config is None:
+                raise ValueError("A custom summarizer requires events compaction")
+            # The compiled root supplies the same model/adapter used by ADK's
+            # default summarizer. Copy config to keep this override local.
+            app.events_compaction_config = app.events_compaction_config.model_copy(
+                update={"summarizer": summarizer_factory(llm=app.root_agent.canonical_model)})
+            return app
+
+        replacements["App"] = app_with_summarizer
+    private_runner = _clone(runner, replacements)
     private_method = _clone(original_method, {"run_agent_sandbox": private_runner})
     evaluator._run_agent_sandbox = types.MethodType(private_method, evaluator)
 

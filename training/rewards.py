@@ -15,6 +15,10 @@ from typing import Callable
 import xml.etree.ElementTree as ET
 
 
+REWARD_OBJECTIVE_VERSION = "fixed_composite_intervals_v2"
+REWARD_NORMALIZATION_VERSION = "pairwise_reward_std_upper_v1"
+
+
 def junit_reward_features(
     xml_text: str,
     *,
@@ -280,23 +284,60 @@ def _select_signal(scored, threshold, omit=None):
     common_mean = statistics.fmean(common_rewards)
     common_signal = [value - common_mean for value in common_rewards]
     complete = all(item["lower"] == item["upper"] for item in bounds)
-    # Retain the old reliable terminal comparison when wide dense intervals
-    # obscure EVERY full-objective sign. This is an explicitly reduced objective.
-    fallback = not complete and _rms(strict) <= threshold and _rms(common_signal) > threshold
-    signal = common_signal if fallback else strict
-    mode = "exact_composite" if complete else "common_components_fallback" if fallback else "interval_centered_advantage"
-    return {"signal": signal, "advantage_bounds": intervals, "strict_signal": strict,
+    # This counterfactual describes the former fallback; it never supplies the
+    # optimized signal. Missing a regression component must not remove its cost.
+    would_have_fallback = not complete and _rms(strict) <= threshold and _rms(common_signal) > threshold
+    mode = "exact_composite" if complete else "interval_centered_advantage"
+    return {"signal": strict, "reward_bounds": bounds,
+            "advantage_bounds": intervals, "strict_signal": strict,
             "signal_mode": mode, "common_components": common, "common_signal": common_signal,
-            "common_rewards": common_rewards, "signal_rms": _rms(signal)}
+            "common_rewards": common_rewards, "signal_rms": _rms(strict),
+            "would_have_fallback": would_have_fallback}
+
+
+def _reward_std_upper_bound(bounds):
+    """Upper-bound the full reward's population std over its interval box.
+
+    Var(R) = sum_{i<j}(R_i-R_j)^2 / n^2. Maximize each pair separately
+    for a conservative bound. It equals std for point evidence and cannot
+    decrease when intervals widen. The box allows all unknown-value couplings;
+    shared missing-component names do not establish a shared cancelling value.
+    """
+    distances = [max(abs(left["lower"] - right["upper"]),
+                     abs(left["upper"] - right["lower"]))
+                 for i, left in enumerate(bounds) for right in bounds[i + 1:]]
+    return math.hypot(*distances) / len(bounds)
+
+
+def _missingness(scored, weights, dense_enabled):
+    active = [name for name, weight in weights.items()
+              if weight > 0 and (dense_enabled or name not in {"repair", "regression"})]
+    patterns, reasons = Counter(), Counter()
+    component_counts = {name: 0 for name in active}
+    for row in scored:
+        patterns["|".join(f"{name}:{row['component_evidence'][name]['status']}" for name in active)] += 1
+        for name in active:
+            if row["components"][name] is None:
+                component_counts[name] += 1
+                reasons[row["component_evidence"][name].get("reason") or "missing_component_evidence"] += 1
+    widths = [row["reward_bounds"]["upper"] - row["reward_bounds"]["lower"] for row in scored]
+    pattern = ("point_identified" if not any(component_counts.values()) else
+               "uniform_missing_pattern" if len(patterns) == 1 else "mixed_evidence_patterns")
+    return {"trajectory_patterns": dict(sorted(patterns.items())),
+            "missing_component_counts": component_counts, "reason_counts": dict(sorted(reasons.items())),
+            "group_pattern": pattern,
+            "uncertainty_width_mean": statistics.fmean(widths), "uncertainty_width_max": max(widths)}
 
 
 def score_group_rewards(results, calls, config, *, scale_rewards="group", advantage_std_floor=0.05,
                         min_group_std=1e-4):
     """Score a complete group, preserving evidence and the chosen loss target.
 
-    This does not claim an unbiased full-reward estimate under arbitrary missing
-    evidence. Widening an interval can erase a negative signal; missingness and
-    fallback rates must remain visible. There is no early trajectory stopping.
+    Every nonzero signal has a certified full-objective advantage sign. Wider
+    intervals can only weaken those signals; group scaling uses a nondecreasing
+    uncertainty-aware std bound, so missing evidence cannot amplify them either.
+    This is conservative partial identification, not an unbiased reward estimate.
+    Signals are not recentered after certification. There is no early stopping.
     """
     if len(results) < 2 or len(results) != len(calls):
         raise ValueError("A complete group needs matching results and calls for at least two trajectories")
@@ -306,7 +347,8 @@ def score_group_rewards(results, calls, config, *, scale_rewards="group", advant
     scored = [compute_reward(result, items, config) for result, items in zip(results, calls)]
     chosen = _select_signal(scored, min_group_std)
     signal = chosen["signal"]
-    denominator = max(chosen["signal_rms"], advantage_std_floor) if scale_rewards == "group" else 1.0
+    std_upper_bound = _reward_std_upper_bound(chosen["reward_bounds"])
+    denominator = max(std_upper_bound, advantage_std_floor) if scale_rewards == "group" else 1.0
     advantages = [value / denominator for value in signal]
     features = [row["features"] for row in scored]
     legacy_dense = (bool(config.get("dense_shaping_enabled", True))
@@ -314,6 +356,19 @@ def score_group_rewards(results, calls, config, *, scale_rewards="group", advant
                     and len({(item.get("repair_fraction") is None, item.get("regression_fraction") is None)
                              for item in features}) == 1)
     weights = _weights(config)
+    objective = {"algorithm": REWARD_OBJECTIVE_VERSION, "weights": weights,
+                 "success_token_budget": int(config.get("success_token_budget", 65536)),
+                 "dense_shaping_enabled": bool(config.get("dense_shaping_enabled", True))}
+    signature = json.dumps(objective, sort_keys=True, separators=(",", ":"))
+    normalization_identity = {"algorithm": REWARD_NORMALIZATION_VERSION,
+                              "scale_rewards": scale_rewards,
+                              "advantage_std_floor": advantage_std_floor,
+                              "min_group_std": min_group_std}
+    normalization = {"mode": scale_rewards, "algorithm": REWARD_NORMALIZATION_VERSION,
+                     "denominator": denominator, "std_upper_bound": std_upper_bound,
+                     "multiplier": 1.0 / denominator,
+                     "normalization_signature": json.dumps(normalization_identity, sort_keys=True, separators=(",", ":"))}
+    missingness = _missingness(scored, weights, objective["dense_shaping_enabled"])
     legacy_rewards = []
     for row in scored:
         parts = [row["components"][name] for name in ("resolved", "efficiency", "repetition")]
@@ -332,6 +387,10 @@ def score_group_rewards(results, calls, config, *, scale_rewards="group", advant
         "common_components": chosen["common_components"],
         "learning_signal_rms": chosen["signal_rms"], "strict_signal_rms": _rms(chosen["strict_signal"]),
         "common_signal_rms": _rms(chosen["common_signal"]),
+        "common_signal_usage": "counterfactual_only_never_optimized",
+        "would_have_fallback": chosen["would_have_fallback"],
+        "normalizer": denominator, "std_upper_bound": std_upper_bound,
+        "advantage_rms": _rms(advantages), "missing_mode": missingness["group_pattern"],
         "nonzero_advantages": sum(value != 0 for value in advantages),
         "legacy_group_fallback_triggered": bool(config.get("dense_shaping_enabled", True)) and not legacy_dense,
         "legacy_signal_rms": legacy_std,
@@ -349,15 +408,9 @@ def score_group_rewards(results, calls, config, *, scale_rewards="group", advant
             "would_update": alternative["signal_rms"] > min_group_std,
             "signal_source": alternative["signal_mode"],
         }
-    signature = json.dumps({"algorithm": "centered_reward_intervals_v1", "weights": _weights(config),
-                            "success_token_budget": int(config.get("success_token_budget", 65536)),
-                            "dense_shaping_enabled": bool(config.get("dense_shaping_enabled", True)),
-                            "signal_source": chosen["signal_mode"],
-                            "common_components": (chosen["common_components"]
-                                                  if chosen["signal_mode"] == "common_components_fallback" else None)},
-                           sort_keys=True, separators=(",", ":"))
     return {"scored": scored, "rewards": [row["total"] for row in scored],
             "learning_signal": signal, "advantages": advantages,
             "advantage_bounds": chosen["advantage_bounds"],
             "reward_mode": chosen["signal_mode"], "reward_signature": signature,
+            "objective": objective, "normalization": normalization, "missingness": missingness,
             "diagnostics": diagnostics}

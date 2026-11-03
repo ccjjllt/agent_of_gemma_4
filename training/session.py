@@ -46,11 +46,13 @@ class TrainingSession:
         """Called only by the trainer at a fully recoverable optimizer boundary."""
         state = copy.deepcopy(self.state)
         active = training["active_batch"]
-        if active is None or active["offset"] != state["policy_version"]:
+        if active is None or active["offset"] != state["optimizer_steps"]:
             raise ValueError("Optimizer checkpoint does not belong to the collected policy batch")
         state["phase"] = "updating"
         state["ledger_updates"][str(state["batch"])] = {
             "optimizer_steps": active["completed_reuses"], "adapter_changed": None,
+            "nonzero_lr_optimizer_steps": (sum(row["nonzero_lr_optimizer_step"] for row in active["step_history"])
+                if all(type(row.get("nonzero_lr_optimizer_step")) is bool for row in active["step_history"]) else None),
         }
         self.save(state, training)
 
@@ -60,7 +62,7 @@ class TrainingSession:
         if saved is not None:
             self.checkpoint_id, payload = saved
             self.state = payload["run"]
-            if (self.state.get("schema_version") != 1
+            if (self.state.get("schema_version") != 2
                     or self.state.get("phase") not in ("collecting", "update_pending", "updating", "finished")):
                 raise ValueError("Unsupported run recovery state")
             trainer.restore_training_state(payload["trainer"])
@@ -68,7 +70,7 @@ class TrainingSession:
             active = trainer.has_pending_batch
             if active != (self.state["phase"] == "updating"):
                 raise ValueError("Run phase and pending optimizer cohort disagree")
-            expected_steps = self.state["policy_version"]
+            expected_steps = self.state["optimizer_steps"]
             if active:
                 expected_steps += self.state["ledger_updates"][str(self.state["batch"])]["optimizer_steps"]
             if trainer.completed_optimizer_steps != expected_steps:
@@ -89,10 +91,12 @@ class TrainingSession:
                 raise ValueError("Existing reward evidence has no committed model baseline")
             initial = self.run_dir / "adapters" / "initial"
             self.policy.save_adapter(initial)
-            self.save({"schema_version": 1, "phase": "collecting", "batch": 0,
-                       "policy_version": 0, "sampler": self.sampler.state_dict(),
+            initial_hash = file_digest(initial / "adapter_model.safetensors")
+            self.save({"schema_version": 2, "phase": "collecting", "batch": 0,
+                       "policy_version": 0, "optimizer_steps": 0,
+                       "initial_adapter_hash": initial_hash, "sampler": self.sampler.state_dict(),
                        "ledger_updates": {}, "batch_evidence": {},
-                       "previous_adapter_hash": file_digest(initial / "adapter_model.safetensors")})
+                       "previous_adapter_hash": initial_hash})
 
         while self.state["phase"] != "finished":
             self.check_budget()
@@ -147,16 +151,23 @@ class TrainingSession:
                 stats = trainer.resume_batch() if trainer.has_pending_batch else trainer.optimize_batch(trajectories)
                 # Use the absolute count. A restored cohort's optimizer_steps
                 # includes updates that were already committed before the crash.
-                policy_version = int(stats["total_optimizer_steps"])
+                nonzero_steps = stats["nonzero_lr_optimizer_steps"]
+                if type(nonzero_steps) is not int or nonzero_steps < 0:
+                    raise ValueError("Current training requires measured nonzero-LR step counts")
+                # Policy revision follows non-skipped, nonzero-LR opportunities;
+                # raw optimizer calls remain separate for recovery/Adam counters.
+                policy_version = self.state["policy_version"] + nonzero_steps
                 updates = copy.deepcopy(self.state["ledger_updates"])
-                updates[str(batch)] = {"optimizer_steps": int(stats["optimizer_steps"]), "adapter_changed": None}
+                updates[str(batch)] = {"optimizer_steps": int(stats["optimizer_steps"]), "adapter_changed": None,
+                                       "nonzero_lr_optimizer_steps": nonzero_steps}
                 self.ledger.restore_updates(updates, self.checkpoint_id)
                 self.check_budget()
                 destination = self.run_dir / "adapters" / f"batch-{batch + 1:04d}"
                 self.policy.save_adapter(destination)
                 current_hash = file_digest(destination / "adapter_model.safetensors")
                 self.ledger.mark_batch_update(batch, int(stats["optimizer_steps"]),
-                                              adapter_changed=current_hash != previous_hash)
+                                              adapter_changed=current_hash != previous_hash,
+                                              nonzero_lr_optimizer_steps=nonzero_steps)
                 self.emit("batch_finished", batch=batch, policy_version=policy_version,
                           accepted_groups=summary["accepted_groups"], candidate_groups=summary["completed_groups"],
                           sampled_official_success_rate=summary["candidate_successes"] / summary["candidate_trajectories"],
@@ -168,7 +179,7 @@ class TrainingSession:
                           peak_memory_gib=[self.torch.cuda.max_memory_allocated(i) / 2**30
                                            for i in range(self.torch.cuda.device_count())])
             else:
-                self.ledger.mark_batch_update(batch, 0, adapter_changed=False)
+                self.ledger.mark_batch_update(batch, 0, adapter_changed=False, nonzero_lr_optimizer_steps=0)
                 policy_version, current_hash = self.state["policy_version"], previous_hash
                 self.emit("batch_no_learning_signal", batch=batch, **summary)
             self.sampler.set_policy_version(policy_version)
@@ -178,9 +189,13 @@ class TrainingSession:
                 batch=batch, policy_before=self.state["policy_version"], policy_after=policy_version,
                 collection=summary, trajectories=trajectories, stats=stats,
                 adapter_path=destination, adapter_sha256=current_hash,
-                adapter_changed=current_hash != previous_hash)
-            self.save({"schema_version": 1, "phase": "finished" if finished else "collecting",
+                adapter_changed=current_hash != previous_hash,
+                initial_adapter_sha256=self.state["initial_adapter_hash"],
+                reward_evidence=self.ledger.batch_evidence(batch))
+            self.save({"schema_version": 2, "phase": "finished" if finished else "collecting",
                        "batch": batch + 1, "policy_version": policy_version,
+                       "optimizer_steps": trainer.completed_optimizer_steps,
+                       "initial_adapter_hash": self.state["initial_adapter_hash"],
                        "sampler": self.sampler.state_dict(), "ledger_updates": copy.deepcopy(self.ledger.batch_updates),
                        "batch_evidence": batch_evidence,
                        "previous_adapter_hash": current_hash})

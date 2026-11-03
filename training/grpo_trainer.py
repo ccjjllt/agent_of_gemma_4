@@ -2,13 +2,14 @@
 
 The official environment owns rollout generation. A Trainer data-loader item is
 one frozen cohort, and each optimizer step accumulates its real model calls one
-at a time. TRL supplies its clipped GRPO/KL objective and Trainer.train owns the
-optimizer, gradient clipping, scheduler and callbacks. This avoids flattening a
+at a time. The token objective uses one explicit behavior correction measure;
+TRL Trainer.train owns the optimizer, gradient clipping, scheduler and callbacks. This avoids flattening a
 compacted multi-turn session into a token history the policy never actually saw.
 """
 from __future__ import annotations
 
 import copy
+from contextlib import ExitStack
 import importlib
 import importlib.metadata
 import importlib.util
@@ -23,6 +24,9 @@ import time
 import uuid
 
 from .probability_cache import ReferenceProbabilityCache
+from .probability_correction import CORRECTION_VERSION, corrected_token_terms, correction_metadata
+from .lr_schedule import resolve_schedule, make_scheduler
+from .prefix_tree import plan_call_groups
 
 
 class _ReuseStopped(Exception):
@@ -92,7 +96,7 @@ def _trl_implementation():
     Unsloth replaces exported GRPOTrainer methods with generated fused versions.
     Those assume one flattened prompt/completion. Loading the installed official
     module under a private name keeps its original class and our full-prefix
-    scoring hook, without copying a loss implementation into this repository.
+    training lifecycle. The corrected token objective is owned by this adapter.
     """
     if importlib.metadata.version("trl") != "1.15.0":
         raise RuntimeError("This adapter targets the installed TRL 1.15.0 API")
@@ -119,19 +123,42 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
     import torch
     from datasets import Dataset
     from torch.utils.data import DataLoader
-    from transformers import TrainerCallback, get_scheduler
+    from transformers import TrainerCallback
 
     implementation = _trl_implementation()
     GRPOTrainer = implementation.GRPOTrainer
     GRPOConfig = implementation.GRPOConfig
     cfg = dict(config)
+    if cfg.get("probability_correction_version", CORRECTION_VERSION) != CORRECTION_VERSION:
+        raise ValueError("Unsupported probability correction semantics")
+    cfg["probability_correction_version"] = CORRECTION_VERSION
+    prefix_mode = cfg.get("training_prefix_reuse", "tree")
+    if prefix_mode not in {"tree", "none"}:
+        raise ValueError("training_prefix_reuse must be tree or none")
+    if cfg.get("training_prefix_version", "exact_token_tree_v1") != "exact_token_tree_v1":
+        raise ValueError("Unsupported training prefix semantics")
+    cfg.update(training_prefix_reuse=prefix_mode, training_prefix_version="exact_token_tree_v1")
+    policy.training_tree_backend = prefix_mode == "tree"
+    if not cfg.get("use_bias_correction_kl", True):
+        raise ValueError("Corrected KL requires differentiable current/old weighting")
     repetitions = int(cfg.get("num_iterations", 2))
     generations = int(cfg.get("num_generations", 8))
     beta = float(cfg.get("beta", 0.01))
     correction_cap = float(cfg.get("importance_sampling_cap", cfg.get("behavior_correction_cap", 2.0)))
+    correction_enabled = bool(cfg.get("behavior_correction", True))
+    correction_description = correction_metadata(correction_cap, correction_enabled)
+    epsilon_low, epsilon_high = float(cfg.get("epsilon", 0.2)), float(cfg.get("epsilon_high", 0.28))
+    target_kl = cfg.get("target_kl", 0.03)
+    if (not math.isfinite(beta) or not 0 <= epsilon_low < 1 or not math.isfinite(epsilon_high)
+            or epsilon_high < 0 or (target_kl is not None and not math.isfinite(float(target_kl)))):
+        raise ValueError("Nonfinite or unsupported GRPO loss/stop parameters")
     fixed_length = int(cfg.get("max_completion_length", cfg.get("loss_normalizer", 32768)))
     total_optimizer_steps = int(cfg.get("total_optimizer_steps", repetitions))
-    warmup_steps = int(cfg.get("warmup_steps", math.ceil(total_optimizer_steps * float(cfg.get("warmup_ratio", 0.0)))))
+    schedule_contract = resolve_schedule(cfg, total_steps=total_optimizer_steps,
+                                         learning_rate=cfg.get("learning_rate", 5e-6))
+    warmup_steps = schedule_contract["warmup_steps"]
+    cfg.update(lr_schedule_version=schedule_contract["version"],
+               lr_scheduler_type=schedule_contract["type"], warmup_steps=warmup_steps)
     post_update_kl_max_calls = int(cfg.get("post_update_kl_max_calls", 4))
     if repetitions < 1 or generations < 2 or beta < 0 or fixed_length <= 0 or correction_cap < 1:
         raise ValueError("Invalid GRPO repetition/group/KL/normalizer/correction configuration")
@@ -170,7 +197,9 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
             owner._synchronize_timing()
             rates = [float(group["lr"]) for group in owner.optimizer.param_groups]
             owner._last_step_metrics.update(learning_rates_used=rates,
-                                            learning_rate_used=rates[0] if len(set(rates)) == 1 else None)
+                                            learning_rate_used=rates[0] if len(set(rates)) == 1 else None,
+                                            lr_schedule=schedule_contract,
+                                            scheduler_index_before=owner.lr_scheduler.state_dict()["last_epoch"])
             owner._optimizer_started_at = time.perf_counter()
 
         def on_optimizer_step(self, args, state, control, **kwargs):
@@ -181,6 +210,8 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
                 optimizer_step_skipped=skipped,
                 nonzero_lr_optimizer_step=not skipped and any(
                     rate != 0.0 for rate in owner._last_step_metrics["learning_rates_used"]),
+                zero_lr_optimizer_step=not skipped and all(
+                    rate == 0.0 for rate in owner._last_step_metrics["learning_rates_used"]),
             )
 
         def on_step_end(self, args, state, control, **kwargs):
@@ -188,12 +219,14 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
             owner._last_step_metrics.update(
                 step_wall_seconds=time.perf_counter() - owner._reuse_started_at,
                 step_timing_scope="step_begin_to_step_end; includes pre-step checkpoint; excludes post-step checkpoint",
+                scheduler_index_after=owner.lr_scheduler.state_dict()["last_epoch"],
             )
             row = {"event": "grpo_optimizer_step", "optimizer_step": owner._offset + completed,
                    "reuse_index": completed, **owner._last_step_metrics}
             owner._step_history.append(row)
             owner._attempt_history[-1].update(owner._last_step_metrics)
-            owner._attempt_history[-1]["status"] = "optimizer_skipped" if row["optimizer_step_skipped"] else "optimizer_applied"
+            owner._attempt_history[-1]["status"] = ("optimizer_skipped" if row["optimizer_step_skipped"] else
+                "optimizer_zero_lr" if row["zero_lr_optimizer_step"] else "optimizer_applied")
             owner._optimizer_measurements["steps"] += 1
             owner._optimizer_measurements["nonzero_lr_steps"] += int(row["nonzero_lr_optimizer_step"])
             owner._optimizer_measurements["skipped_steps"] += int(row["optimizer_step_skipped"])
@@ -210,6 +243,7 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
         def __init__(self):
             self.policy = policy
             self._cohort = None
+            self._training_groups = []
             self._active_call = None
             self._active_scores = None
             self._offset = 0
@@ -361,16 +395,21 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
             result = {
                 "status": "pending", "scope": "cohort_before_first_optimizer_to_after_last_applied_optimizer",
                 "probe_scope": "deterministic_evenly_spaced_complete_calls; full_prompt; completion_tokens_only",
-                "distribution": "unweighted_K3_on_collected_behavior_samples; not_exact_KL_or_full_cohort_KL",
+                "distribution": correction_description["base_measure"],
+                "correction_version": CORRECTION_VERSION,
+                "probability_correction": correction_description,
+                "limitation": "capped token correction on fixed behavior prefixes; not exact KL, full-cohort or trajectory KL",
                 "aggregation": "completion_token_weighted_over_selected_calls",
-                "reference_K3_estimator": "mean(exp(reference-current)-(reference-current)-1)",
-                "old_policy_K3_estimator": "mean(exp(current-old)-(current-old)-1)",
+                "reference_K3_estimator": correction_description["reference_kl"],
+                "old_policy_K3_estimator": correction_description["reuse_kl"],
                 "call_indices": indices, "calls_available": len(calls), "calls_selected": count,
                 "calls_scored": 0, "tokens_selected": sum(len(calls[index]["completion_ids"]) for index in indices),
                 "tokens_scored": 0, "cohort_start_optimizer_step": self._offset,
                 "final_optimizer_step": self._offset + len(self._step_history),
                 "last_applied_optimizer_step": next((row["optimizer_step"] for row in reversed(self._step_history)
                                                       if row.get("optimizer_step_skipped") is False), None),
+                "last_nonzero_lr_optimizer_step": next((row["optimizer_step"] for row in reversed(self._step_history)
+                                                      if row.get("nonzero_lr_optimizer_step") is True), None),
                 "reference_K3": {"before": None, "after": None, "delta": None},
                 "old_policy_K3": {"before": None, "after": None, "delta": None},
             }
@@ -384,7 +423,7 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
             try:
                 self._synchronize_timing()
                 rng = capture_rng_state(torch)
-                old_after = reference_before = reference_after = 0.0
+                old_after = reference_before = reference_after = weight_sum = weight_sq_sum = clipped_count = 0.0
                 reference_available = all("reference_logprobs" in calls[index] for index in indices)
                 for index in indices:
                     if self.policy.abort_generation.is_set():
@@ -398,23 +437,31 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
                     if current.shape != old.shape or not torch.isfinite(current).all():
                         raise FloatingPointError("Post-update diagnostic returned invalid complete-call probabilities")
 
-                    def k3_sum(delta):
-                        values = torch.expm1(delta) - delta
-                        if not torch.isfinite(values).all():
-                            raise FloatingPointError("Post-update K3 diagnostic is nonfinite")
-                        return float(values.sum())
-
-                    old_after += k3_sum(current - old)
+                    before_terms = self._call_terms(call, old, reference=reference_available)
+                    after_terms = self._call_terms(call, current, reference=reference_available)
+                    values = [after_terms["old_kl"].sum(), before_terms["weights"].sum(),
+                              before_terms["weights"].square().sum(), before_terms["correction_clipped"].sum()]
                     if reference_available:
-                        reference = torch.tensor(call["reference_logprobs"], dtype=torch.float64)
-                        reference_before += k3_sum(reference - old)
-                        reference_after += k3_sum(reference - current)
+                        values.extend([before_terms["reference_kl"].sum(), after_terms["reference_kl"].sum()])
+                    numbers = [float(value) for value in values]
+                    if not all(map(math.isfinite, numbers)):
+                        raise FloatingPointError("Corrected post-update diagnostic is nonfinite")
+                    old_after += numbers[0]
+                    weight_sum += numbers[1]
+                    weight_sq_sum += numbers[2]
+                    clipped_count += numbers[3]
+                    if reference_available:
+                        reference_before += numbers[4]
+                        reference_after += numbers[5]
                     result["calls_scored"] += 1
                     result["tokens_scored"] += current.numel()
                 self._synchronize_timing()
                 if self.policy.abort_generation.is_set():
                     raise RuntimeError("Run cancelled during post-update KL diagnostic")
                 tokens = result["tokens_scored"]
+                result["probability_correction"] = {**correction_description,
+                    "weight_mean": weight_sum / tokens, "clipped_token_fraction": clipped_count / tokens,
+                    "ess_fraction": weight_sum**2 / max(weight_sq_sum * tokens, 1e-30)}
                 result["old_policy_K3"] = {"before": 0.0, "after": old_after / tokens, "delta": old_after / tokens}
                 if reference_available:
                     before, after = reference_before / tokens, reference_after / tokens
@@ -440,8 +487,8 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
             """Export a consistent step boundary; the caller commits it atomically.
 
             The frozen-before-first-step boundary intentionally excludes live
-            gradients. Per-call RNGs let recovery reproduce that first gradient
-            with its already frozen old/reference probabilities.
+            gradients. Stable group plans and group-start RNGs reproduce the
+            shared graph with its already frozen old/reference probabilities.
             """
             if (not self._checkpoint_safe or self._active_call is not None
                     or self._active_scores is not None):
@@ -453,6 +500,7 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
             if self._cohort is not None:
                 active = {
                     "cohort": self._cohort, "offset": self._offset,
+                    "training_groups": copy.deepcopy(self._training_groups),
                     "completed_reuses": len(self._step_history),
                     "probabilities_frozen": self._probabilities_frozen,
                     "probability_file": self._probability_path.name,
@@ -471,6 +519,7 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
             return {
                 "schema_version": 1, "checkpoint_phase": self._checkpoint_phase,
                 "trainer_config": copy.deepcopy(cfg),
+                "lr_schedule": dict(schedule_contract),
                 "completed_optimizer_steps": completed,
                 "optimizer_measurements": dict(self._optimizer_measurements),
                 "adapter": self.policy.export_adapter_state(),
@@ -491,6 +540,8 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
                 raise RuntimeError("Restore requires a fresh, inactive trainer")
             if not isinstance(state, dict) or state.get("schema_version") != 1 or state.get("trainer_config") != cfg:
                 raise ValueError("Checkpoint trainer configuration differs from this run")
+            if state.get("lr_schedule") != schedule_contract:
+                raise ValueError("Checkpoint LR schedule semantics differ from this run")
             completed = state.get("completed_optimizer_steps")
             if type(completed) is not int or completed < 0:
                 raise ValueError("Invalid checkpoint optimizer-step count")
@@ -514,6 +565,16 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
                     raise ValueError("Checkpoint cohort/update counters disagree")
                 if not active.get("probabilities_frozen") or not active.get("cohort"):
                     raise ValueError("Active-cohort recovery requires fully frozen probabilities")
+                groups = active.get("training_groups")
+                count = sum(len(row["calls"]) for row in active["cohort"])
+                if (not isinstance(groups, list) or not groups or
+                        any(not isinstance(group, dict) or not group.get("call_indices") for group in groups)):
+                    raise ValueError("Active recovery requires the original training group plan")
+                indices = [index for group in groups for index in group["call_indices"]]
+                if any(type(index) is not int for index in indices) or sorted(indices) != list(range(count)):
+                    raise ValueError("Training groups must cover every original call exactly once")
+                if groups != self._plan_training_groups(active["cohort"]):
+                    raise ValueError("Saved training groups differ from the exact token/budget plan")
                 filename = active.get("probability_file")
                 if not isinstance(filename, str) or Path(filename).name != filename or not filename.endswith(".jsonl"):
                     raise ValueError("Invalid frozen-probability checkpoint filename")
@@ -558,6 +619,7 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
             self._reference_cache.clear()
             if active is not None:
                 self._cohort = active["cohort"]
+                self._training_groups = active["training_groups"]
                 self._offset, self._reuse_start = active["offset"], active["completed_reuses"]
                 self._reuse_index = self._reuse_start
                 self._probabilities_frozen = True
@@ -609,49 +671,34 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
 
         def create_scheduler(self, num_training_steps, optimizer=None):
             if self.lr_scheduler is None:
-                self.lr_scheduler = get_scheduler(
-                    self.args.lr_scheduler_type, optimizer=optimizer or self.optimizer,
-                    num_warmup_steps=self.args.warmup_steps,
-                    num_training_steps=total_optimizer_steps,
-                )
+                self.lr_scheduler = make_scheduler(optimizer or self.optimizer, schedule_contract)
             # Trainer otherwise recreates its scheduler on every train() call.
             self._created_lr_scheduler = False
             return self.lr_scheduler
 
-        def _get_per_token_logps_and_entropies(self, model, input_ids, attention_mask,
-                                               logits_to_keep, **kwargs):
-            if (self._active_call is None or self._active_scores is None
-                    or logits_to_keep != len(self._active_call["completion_ids"])):
-                raise RuntimeError("TRL loss requested an unexpected invocation")
-            self._score_hook_calls += 1
-            if self._score_hook_calls != 1:
-                raise RuntimeError("Expected TRL to consume this invocation's scores exactly once")
-            logp, entropy = self._active_scores
-            return logp.unsqueeze(0), entropy.unsqueeze(0), None
+        def _call_terms(self, call, current, advantage=0.0, *, reference=True):
+            return corrected_token_terms(
+                current, call["old_learner_logprobs"], call["behavior_logprobs"],
+                call.get("reference_logprobs") if reference else None,
+                advantage=advantage, cap=correction_cap, enabled=correction_enabled,
+                epsilon_low=epsilon_low, epsilon_high=epsilon_high,
+            )
 
-        def _loss_inputs(self, call, advantage):
-            device = self.policy.model.get_output_embeddings().weight.device
-            prompt = torch.tensor([call["prompt_ids"]], dtype=torch.long, device=device)
-            completion = torch.tensor([call["completion_ids"]], dtype=torch.long, device=device)
-            old = torch.tensor([call["old_learner_logprobs"]], dtype=torch.float32, device=device)
-            behavior = torch.tensor([call["behavior_logprobs"]], dtype=torch.float32, device=device)
-            correction = ((old - behavior).clamp(max=math.log(correction_cap))).exp()
-            if not cfg.get("behavior_correction", True):
-                correction = torch.ones_like(old)
-            # A positive fixed per-token correction commutes with PPO min/clip.
-            # This activates the same policy TIS correction as TRL's vLLM path
-            # without claiming that the actual generation backend is vLLM.
-            inputs = {
-                "prompt_ids": prompt, "prompt_mask": torch.ones_like(prompt),
-                "completion_ids": completion, "completion_mask": torch.ones_like(completion),
-                "advantages": correction * float(advantage),
-                "old_per_token_logps": old,
-                "sampling_per_token_logps": behavior,
-            }
-            if self.beta:
-                inputs["ref_per_token_logps"] = torch.tensor(
-                    [call["reference_logprobs"]], dtype=torch.float32, device=device)
-            return inputs
+        def _plan_training_groups(self, cohort):
+            groups = plan_call_groups(
+                [call for row in cohort for call in row["calls"]],
+                max_context=self.policy.max_context,
+                max_group_calls=int(cfg.get("training_prefix_max_calls", 4)) if prefix_mode == "tree" else 1,
+                max_tree_tokens=int(cfg.get("training_prefix_max_tokens", self.policy.max_context)),
+                max_mask_bytes=int(cfg.get("training_prefix_mask_bytes", 536870912)),
+                # Reserve float32 even for BF16 masks: native attention may
+                # promote query/mask arithmetic. This is a per-device bound.
+                mask_element_size=max(4, self.policy.model.get_input_embeddings().weight.element_size()),
+                min_shared_tokens=int(cfg.get("training_prefix_min_tokens", 256)),
+            )
+            if prefix_mode == "none":
+                groups.sort(key=lambda group: group["call_indices"][0])
+            return groups
 
         def _begin_reuse_step(self, local_step):
             if self.policy.abort_generation.is_set():
@@ -678,7 +725,7 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
 
         def _freeze_from_gradient(self, call, logp):
             # Only numerical denominators detach. The same live logp tensor is
-            # passed to TRL as the numerator and backpropagates through all tokens.
+            # used as the numerator and backpropagates through the full prefix.
             call["old_learner_logprobs"] = logp.detach().float().cpu().tolist()
             call["old_probability_source"] = "first_gradient_forward"
             self._probability_reuse["old_from_first_gradient"] += 1
@@ -690,13 +737,15 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
 
         def _publish_frozen_probabilities(self):
             count = 0
-            delta_sum = delta_abs_max = weight_sum = weight_sq_sum = 0.0
+            delta_sum = delta_abs_max = weight_sum = weight_sq_sum = clipped_count = 0.0
             for trajectory in self._cohort:
                 for call in trajectory["calls"]:
                     old = torch.tensor(call["old_learner_logprobs"], dtype=torch.float64)
                     behavior = torch.tensor(call["behavior_logprobs"], dtype=torch.float64)
                     delta = old - behavior
-                    weights = delta.clamp(max=math.log(correction_cap)).exp()
+                    terms = self._call_terms(call, old, reference=False)
+                    weights = terms["weights"]
+                    clipped_count += float(terms["correction_clipped"].sum())
                     count += delta.numel()
                     delta_sum += float(delta.sum())
                     delta_abs_max = max(delta_abs_max, float(delta.abs().max()))
@@ -728,6 +777,9 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
                 "old_vs_behavior_logprob_mean": delta_sum / count,
                 "old_vs_behavior_logprob_abs_max": delta_abs_max,
                 "behavior_correction_ess_fraction": weight_sum**2 / max(weight_sq_sum * count, 1e-30),
+                "probability_correction": {**correction_description,
+                    "weight_mean": weight_sum / count, "clipped_token_fraction": clipped_count / count,
+                    "ess_fraction": weight_sum**2 / max(weight_sq_sum * count, 1e-30)},
                 "generated_tokens": count, "frozen_probabilities_path": str(path),
                 "old_probability_source": "first_gradient_forward",
                 "reference_matches_learner": self._reference_matches_learner,
@@ -753,113 +805,176 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
             self._checkpoint_safe = False
             calibrating = local_step == 0 and not self._probabilities_frozen
             lengths = {key: len(value) for key, value in self._metrics["train"].items()}
-            total_loss = kl_sum = ratio_max = 0.0
+            total_loss = kl_sum = reference_sum = weight_sum = weight_sq_sum = clipped_count = 0.0
+            log_ratio_max = -math.inf
             tokens = calls_forward = calls_backward = 0
-            metric_sums = {}
+            model_forwards = backward_groups = processed_input_tokens = independent_input_tokens = 0
+            cohort_tokens = sum(len(call["completion_ids"]) for row in self._cohort for call in row["calls"])
+            metric_sums = {"entropy": 0.0, "clip_ratio/region_mean": 0.0,
+                           "clip_ratio/low_mean": 0.0, "clip_ratio/high_mean": 0.0}
             attempt = {"reuse_index": local_step + 1, "status": "accumulating",
+                       "correction_version": CORRECTION_VERSION,
+                       "probability_correction": correction_description,
+                       "cohort_completion_tokens": cohort_tokens,
                        "gradient_forwards": 0, "backwards": 0}
             self._attempt_history.append(attempt)
             try:
-                for trajectory in self._cohort:
-                    for call in trajectory["calls"]:
-                        if self.policy.abort_generation.is_set():
-                            raise RuntimeError("Run cancelled during GRPO gradient accumulation")
-                        logp = entropy = loss = loss_inputs = None
-                        try:
-                            # The full-prefix scorer calls the decoder directly,
-                            # bypassing Accelerate's outer model.forward AMP
-                            # wrapper. Trainer's context is a no-op in the
-                            # pinned Transformers release; explicitly apply the
-                            # same compute precision to reference and learner.
+                flat = [(trajectory, call) for trajectory in self._cohort for call in trajectory["calls"]]
+                for group in self._training_groups:
+                    members = [flat[index] for index in group["call_indices"]]
+                    group_calls = [call for _, call in members]
+                    if self.policy.abort_generation.is_set():
+                        raise RuntimeError("Run cancelled during GRPO gradient accumulation")
+                    scores = group_loss = logp = entropy = loss = terms = None
+                    try:
+                        with ExitStack() as lifetime:
                             with self.accelerator.autocast(), self.compute_loss_context_manager():
                                 if calibrating:
-                                    self._reference_for_call(call)
-                                    call["_first_gradient_rng"] = capture_rng_state(torch)
+                                    # Reference must finish before any live shared
+                                    # learner graph, including checkpoint replay.
+                                    for call in group_calls:
+                                        self._reference_for_call(call)
+                                    group_rng = capture_rng_state(torch)
+                                    for call in group_calls:
+                                        call["_first_gradient_rng"] = group_rng
                                 elif local_step == 0:
-                                    # Replay a frozen-before-step checkpoint
-                                    # without regenerating its old/reference.
-                                    restore_rng_state(call["_first_gradient_rng"], torch)
+                                    restore_rng_state(group_calls[0]["_first_gradient_rng"], torch)
                                 self._forward_invocations["gradient"] += 1
-                                calls_forward += 1
-                                logp, entropy = self.policy.per_token_logprobs(call, compute_entropy=True)
-                                if calibrating:
-                                    self._freeze_from_gradient(call, logp)
-                                elif local_step > 0:
-                                    # This complete-prefix gradient forward is
-                                    # also the reuse diagnostic; no separate pass.
-                                    delta = logp.detach().double().cpu() - torch.tensor(
-                                        call["old_learner_logprobs"], dtype=torch.float64)
-                                    values = torch.expm1(delta) - delta
-                                    if not torch.isfinite(values).all():
-                                        self._reuse_reason = "nonfinite_old_policy_drift"
+                                model_forwards += 1
+                                calls_forward += len(group_calls)
+                                processed_input_tokens += group["unique_tokens"]
+                                independent_input_tokens += group["input_tokens"]
+                                if prefix_mode == "tree":
+                                    scores = lifetime.enter_context(self.policy.per_token_logprobs_group(
+                                        group_calls, compute_entropy=True))
+                                else:
+                                    scores = [self.policy.per_token_logprobs(group_calls[0], compute_entropy=True)]
+                                if len(scores) != len(group_calls):
+                                    raise RuntimeError("Shared scorer must preserve every original call")
+                                losses = []
+                                for (trajectory, call), (logp, entropy) in zip(members, scores):
+                                    if self.policy.abort_generation.is_set():
+                                        raise RuntimeError("Run cancelled while scoring a training tree")
+                                    if calibrating:
+                                        self._freeze_from_gradient(call, logp)
+                                    self._active_call, self._active_scores = call, (logp, entropy)
+                                    terms = self._call_terms(call, logp, trajectory["advantage"])
+                                    reference = terms["reference_kl"]
+                                    per_token_loss = terms["policy_loss"]
+                                    if self.beta:
+                                        per_token_loss = per_token_loss + self.beta * reference
+                                    # One fixed Dr.GRPO denominator per trajectory,
+                                    # summed across its original calls. No padding-mask
+                                    # hack, duplicated correction, or extra model pass.
+                                    loss = per_token_loss.sum() / (fixed_length * len(self._cohort))
+                                    values = torch.stack([
+                                        terms["old_kl"].sum(),
+                                        reference.sum() if reference is not None else logp.new_zeros(()),
+                                        terms["weights"].sum(), terms["weights"].square().sum(),
+                                        terms["correction_clipped"].sum(), terms["log_ratio"].max(),
+                                        entropy.detach().double().sum(), terms["clipped"].sum(),
+                                        (terms["ratio_lower"] & terms["clipped"]).sum(),
+                                        (terms["ratio_upper"] & terms["clipped"]).sum(),
+                                    ]).detach().cpu().tolist()
+                                    if not all(map(math.isfinite, values)):
+                                        if local_step:
+                                            self._reuse_reason = "nonfinite_corrected_probability_terms"
+                                            raise _ReuseStopped(self._reuse_reason)
+                                        raise FloatingPointError("Nonfinite corrected GRPO probabilities")
+                                    n = len(call["completion_ids"])
+                                    tokens += n
+                                    kl_sum += values[0]
+                                    reference_sum += values[1]
+                                    weight_sum += values[2]
+                                    weight_sq_sum += values[3]
+                                    clipped_count += values[4]
+                                    log_ratio_max = max(log_ratio_max, values[5])
+                                    for key, value in zip(metric_sums, values[6:]):
+                                        metric_sums[key] += value
+                                    # Each weighted K3 is nonnegative. This lower
+                                    # bound uses the FINAL cohort denominator, so an
+                                    # early stop cannot be caused by a biased partial
+                                    # average. Discard all accumulated gradients.
+                                    lower_bound = kl_sum / cohort_tokens
+                                    attempt.update(diagnostic_tokens_scored=tokens,
+                                                   old_policy_kl_lower_bound=lower_bound,
+                                                   old_policy_kl_estimator=correction_description["reuse_kl"])
+                                    if local_step and target_kl is not None and float(target_kl) > 0 and lower_bound > float(target_kl):
+                                        self._reuse_reason = "target_kl"
+                                        if tokens == cohort_tokens:
+                                            attempt["old_policy_kl_pre_update"] = lower_bound
+                                        if emit_callback:
+                                            emit_callback("grpo_reuse_drift", reuse_index=local_step + 1,
+                                                          correction_version=CORRECTION_VERSION,
+                                                          old_policy_kl_lower_bound=lower_bound,
+                                                          diagnostic_tokens_scored=tokens,
+                                                          cohort_completion_tokens=cohort_tokens,
+                                                          stopped_early=tokens < cohort_tokens)
                                         raise _ReuseStopped(self._reuse_reason)
-                                    kl_sum += float(values.sum())
-                                    ratio_max = max(ratio_max, float(delta.exp().max()))
-                                self._active_call = call
-                                self._active_scores = (logp, entropy)
-                                self._score_hook_calls = 0
-                                loss_inputs = self._loss_inputs(call, trajectory["advantage"])
-                                # Real TRL clipped/KL objective, consuming the
-                                # live scores already computed above exactly once.
-                                loss = super()._compute_loss(model, loss_inputs) / len(self._cohort)
-                                if self._score_hook_calls != 1:
-                                    raise RuntimeError("TRL did not consume the current full-prefix scores")
-                            if not torch.isfinite(loss):
-                                raise FloatingPointError("Non-finite GRPO objective")
-                            self.accelerator.backward(loss)
-                            calls_backward += 1
-                            total_loss += float(loss.detach().cpu())
-                            n = len(call["completion_ids"])
-                            tokens += n
-                            for key in ("kl", "entropy", "clip_ratio/region_mean", "clip_ratio/low_mean", "clip_ratio/high_mean"):
-                                values = self._metrics["train"].get(key)
-                                if values:
-                                    metric_sums[key] = metric_sums.get(key, 0.0) + float(values[-1]) * n
-                        finally:
-                            self._active_call = self._active_scores = None
-                            del logp, entropy, loss, loss_inputs
+                                    losses.append(loss)
+                                group_loss = torch.stack(losses).sum()
+                            if not torch.isfinite(group_loss):
+                                raise FloatingPointError("Non-finite grouped GRPO objective")
+                            # The native/checkpoint context must outlive backward.
+                            # A shared hidden state gets the SUM of all original
+                            # loss occurrences, including different advantages.
+                            self.accelerator.backward(group_loss)
+                            backward_groups += 1
+                            calls_backward += len(group_calls)
+                            total_loss += float(group_loss.detach().cpu())
+                    finally:
+                        self._active_call = self._active_scores = None
+                        # No shared graph/cache crosses a group or optimizer step.
+                        scores = group_loss = logp = entropy = loss = terms = None
+                        losses = reference = per_token_loss = values = None
                 if self.policy.abort_generation.is_set():
                     raise RuntimeError("Run cancelled before applying accumulated GRPO gradients")
                 self._synchronize_timing()
                 gradient_seconds = time.perf_counter() - gradient_started_at
-                drift = kl_sum / tokens if local_step else None
+                drift = kl_sum / tokens
+                probability_correction = {**correction_description,
+                    "weight_mean": weight_sum / tokens, "clipped_token_fraction": clipped_count / tokens,
+                    "ess_fraction": weight_sum**2 / max(weight_sq_sum * tokens, 1e-30)}
                 self._last_step_metrics = {
                     "loss": total_loss, "generated_tokens": tokens,
-                    "gradient_forwards": calls_forward, "backwards": calls_backward,
+                    "gradient_forwards": model_forwards, "backwards": backward_groups,
+                    "logical_calls_forward": calls_forward, "logical_calls_backward": calls_backward,
+                    "training_input_positions": processed_input_tokens,
+                    "independent_input_positions": independent_input_tokens,
+                    "shared_input_positions_saved": independent_input_tokens - processed_input_tokens,
+                    "prefix_reuse_mode": prefix_mode,
+                    "prefix_reuse_scope": "One graph per bounded group; token-position counts exclude checkpoint recomputation and are not GPU speedups",
                     "gradient_seconds": gradient_seconds,
                     "gradient_timing_scope": "reference_scoring_and_gradient_accumulation; CUDA synchronized; excludes probability publication/checkpoints",
                     "pre_step_checkpoint_seconds": 0.0,
-                    "approx_old_policy_kl": drift,
-                    "old_policy_kl_pre_update": drift,
-                    "reference_kl_pre_update": metric_sums["kl"] / tokens if "kl" in metric_sums else None,
-                    "kl_scope": "pre_optimizer_gradient_forward; token-weighted over collected behavior samples",
-                    "old_policy_kl_estimator": "mean(exp(current-old)-1-(current-old)); initial reuse not independently measured",
-                    "reference_kl_estimator": ("TRL k3 weighted by current/old" if cfg.get("use_bias_correction_kl", True)
-                                               else "TRL k3") if self.beta else None,
-                    "post_update_kl": None,
-                    "post_update_kl_status": "not_measured_no_post_step_forward",
+                    "correction_version": CORRECTION_VERSION,
+                    "probability_correction": probability_correction,
+                    "approx_old_policy_kl": drift, "old_policy_kl_pre_update": drift,
+                    "reference_kl_pre_update": reference_sum / tokens if self.beta else None,
+                    "kl_scope": "pre_optimizer; mean weighted token terms on collected behavior prefixes; not full-trajectory KL",
+                    "old_policy_kl_estimator": correction_description["reuse_kl"],
+                    "reference_kl_estimator": correction_description["reference_kl"] if self.beta else None,
+                    "clip_statistics_scope": "unweighted behavior token counts; not importance-weighted fractions",
+                    "log_ratio_max": log_ratio_max,
+                    "post_update_kl": None, "post_update_kl_status": "not_measured_no_post_step_forward",
                     **{key: value / tokens for key, value in metric_sums.items()},
                 }
+                # TRL still logs the externally accumulated step; it no longer
+                # recomputes a second loss with a different correction measure.
+                for key in metric_sums:
+                    self._metrics["train"][key].append(self._last_step_metrics[key])
+                if self.beta:
+                    self._metrics["train"]["kl"].append(reference_sum / tokens)
                 attempt.update(self._last_step_metrics)
-                if local_step:
-                    attempt.update(approx_old_policy_kl=drift, ratio_max=ratio_max)
-                    if emit_callback:
-                        emit_callback("grpo_reuse_drift", reuse_index=local_step + 1,
-                                      approx_old_policy_kl=drift, ratio_max=ratio_max,
-                                      source="pre_optimizer_gradient_forward", generated_tokens=tokens,
-                                      gradient_seconds=gradient_seconds,
-                                      post_update_kl=None)
-                    target = cfg.get("target_kl", 0.03)
-                    if target is not None and float(target) > 0 and drift > float(target):
-                        self._reuse_reason = "target_kl"
-                        raise _ReuseStopped(self._reuse_reason)
-                elif calibrating:
-                    # Every denominator is now frozen under the pre-update
-                    # weights. Publish only a complete snapshot, before step().
+                if local_step and emit_callback:
+                    emit_callback("grpo_reuse_drift", reuse_index=local_step + 1,
+                                  approx_old_policy_kl=drift, log_ratio_max=log_ratio_max,
+                                  correction_version=CORRECTION_VERSION,
+                                  source="pre_optimizer_gradient_forward", generated_tokens=tokens)
+                if calibrating:
                     checkpoint_started_at = time.perf_counter()
                     self._publish_frozen_probabilities()
-                    attempt.update(status="gradients_frozen", gradient_forwards=calls_forward,
-                                   backwards=calls_backward)
+                    attempt.update(status="gradients_frozen")
                     self._checkpoint_safe = True
                     try:
                         self._checkpoint("frozen_before_first_step")
@@ -871,19 +986,22 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
                 self._step += 1
                 return torch.tensor(total_loss, device=self.accelerator.device)
             except BaseException as exc:
-                # All calls belong to one optimizer step. Reject the entire
-                # accumulated gradient, including earlier calls in this attempt.
                 model.zero_grad(set_to_none=True)
                 self._restore_attempt_metrics(lengths)
                 attempt.update(status="discarded", reason=f"{type(exc).__name__}: {exc}")
                 if emit_callback:
                     emit_callback("grpo_gradient_attempt_discarded", reuse_index=local_step + 1,
                                   reason=self._reuse_reason or type(exc).__name__,
-                                  gradient_forwards=calls_forward, backwards=calls_backward,
+                                  gradient_forwards=model_forwards, backwards=backward_groups,
+                                  logical_calls_forward=calls_forward, logical_calls_backward=calls_backward,
                                   generated_tokens=tokens)
                 raise
             finally:
-                attempt.update(gradient_forwards=calls_forward, backwards=calls_backward)
+                attempt.update(gradient_forwards=model_forwards, backwards=backward_groups,
+                               logical_calls_forward=calls_forward, logical_calls_backward=calls_backward,
+                               training_input_positions=processed_input_tokens,
+                               independent_input_positions=independent_input_tokens,
+                               shared_input_positions_saved=independent_input_tokens - processed_input_tokens)
                 if "gradient_seconds" not in attempt:
                     attempt["gradient_seconds"] = time.perf_counter() - gradient_started_at
                     attempt["gradient_timing_scope"] = "interrupted_gradient_attempt; host wall time without final CUDA synchronization"
@@ -982,6 +1100,16 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
                         call.pop(key, None)
             self._probability_path = (Path(output_dir) / "frozen_probabilities" /
                                       f"optimizer-{self._offset:08d}-{uuid.uuid4().hex}.jsonl")
+            self._training_groups = self._plan_training_groups(self._cohort)
+            if emit_callback:
+                emit_callback("training_prefix_plan", mode=prefix_mode,
+                    logical_calls=sum(len(group["call_indices"]) for group in self._training_groups),
+                    model_forward_groups=len(self._training_groups),
+                    independent_input_positions=sum(group["input_tokens"] for group in self._training_groups),
+                    planned_input_positions=sum(group["unique_tokens"] for group in self._training_groups),
+                    planned_shared_positions=sum(group["saved_tokens"] for group in self._training_groups),
+                    max_tree_mask_bytes=max(group["mask_bytes"] for group in self._training_groups),
+                    scope="exact collected token identities; not a measured runtime speedup")
             return self._run_active_batch()
 
         def _run_active_batch(self):
@@ -1005,6 +1133,11 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
             measured_steps = [row for row in self._step_history if "nonzero_lr_optimizer_step" in row]
             total_steps = self._offset + len(self._step_history)
             return {"optimizer_steps": len(self._step_history),
+                    "lr_schedule": dict(schedule_contract),
+                    "zero_lr_optimizer_steps": (sum(row["zero_lr_optimizer_step"] for row in self._step_history)
+                        if all(type(row.get("zero_lr_optimizer_step")) is bool for row in self._step_history) else None),
+                    "skipped_optimizer_steps": (sum(row["optimizer_step_skipped"] for row in self._step_history)
+                        if all(type(row.get("optimizer_step_skipped")) is bool for row in self._step_history) else None),
                     "nonzero_lr_optimizer_steps": (sum(row["nonzero_lr_optimizer_step"] for row in measured_steps)
                                                    if len(measured_steps) == len(self._step_history) else None),
                     "optimizer_steps_with_lr_metrics": len(measured_steps),
@@ -1028,7 +1161,13 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
                     "forward_invocations": dict(self._forward_invocations),
                     "probability_reuse": dict(self._probability_reuse),
                     "reference_cache": self._reference_cache.stats(),
+                    "training_prefix_reuse": {
+                        "mode": prefix_mode, "version": "exact_token_tree_v1",
+                        "groups": copy.deepcopy(self._training_groups),
+                        "scope": "Exact observed token identities; theoretical position/mask counts, not measured GPU speedup",
+                    },
                     "checkpoint_recomputation_included_in_forward_counts": False,
+                    "probability_correction": correction_description,
                     **self._preupdate_diagnostics}
 
     owner = OfficialTaskGRPOTrainer()

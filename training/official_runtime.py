@@ -847,7 +847,14 @@ async def _run_task(args: argparse.Namespace, api_key: str) -> dict[str, Any]:
         budget=config.budget,
         harness=config.harness,
     )
-    bind_timed_runner(evaluator, context, session_clock)
+    summarizer_factory = None
+    if args.event_summarizer == "tool_aware":
+        if __package__:
+            from .tool_state_summary import ToolStateSummarizer
+        else:
+            from tool_state_summary import ToolStateSummarizer
+        summarizer_factory = ToolStateSummarizer
+    bind_timed_runner(evaluator, context, session_clock, summarizer_factory=summarizer_factory)
     delivery = install_delivery_tracking(args.endpoint, args.rollout_id, workspace / "model_delivery.jsonl",
                                          session_clock=session_clock, api_key=api_key)
     captured, restore_verification = _capture_final_verification(task, manager)
@@ -942,7 +949,15 @@ async def _run_task(args: argparse.Namespace, api_key: str) -> dict[str, Any]:
                 if args.session_clock == "queue_excluded" else "official wall-clock session budget"
             ),
             "evaluation_overrides": args.evaluation_overrides,
-            "context_management": CONTEXT_SETTINGS,
+            "context_management": {
+                **CONTEXT_SETTINGS,
+                "event_summarizer": args.event_summarizer,
+                "summarizer_source_sha256": _sha256(Path(__file__).with_name("tool_state_summary.py"))
+                    if args.event_summarizer == "tool_aware" else None,
+                "competition_host_patched": False,
+                "comparability": "local tool-aware host override; not deployed in competition"
+                    if args.event_summarizer == "tool_aware" else "official default text-only summarizer",
+            },
             "sampling": {"temperature": 1.0, "top_p": 1.0, "top_k": 0, "enable_thinking": True},
             "submission_source": str(source_submission),
             "submission_runtime": str(submission),
@@ -991,6 +1006,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="Explicit participant evaluation-budget overrides; leaves official files unchanged.")
     parser.add_argument("--session-clock", choices=("queue_excluded", "wall"), default="queue_excluded",
                         help="Training time excludes confirmed idle GPU queue; wall preserves the official clock.")
+    parser.add_argument("--event-summarizer", choices=("official", "tool_aware"), default="official",
+                        help="tool_aware fixes local compaction inputs; it does not modify the competition host.")
     parser.add_argument("--queue-timing-poll-seconds", type=float, default=0.2,
                         help="Live queue-receipt polling interval, between 0.02 and 1 second.")
     parser.add_argument("--sandbox-root", type=Path, default=Path("/tmp/gemma-agent-sandboxes"))

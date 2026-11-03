@@ -122,6 +122,10 @@ def collect_batch(*, cfg, batch, policy_version, sampler, endpoint, run_dir,
                                  "reward_components": reward["components"], "learning_signal": signal,
                                  "advantage": advantage, "advantage_bounds": bounds,
                                  "reward_mode": scored["reward_mode"], "official_success": result["success"],
+                                 "reward_signature": scored["reward_signature"],
+                                 "reward_objective": scored["objective"],
+                                 "reward_normalization": scored["normalization"],
+                                 "group_missingness": scored["missingness"],
                                  "selection_probability": group["selection"]["selection_probability"]})
         return results, calls, scored, trajectories
 
@@ -141,6 +145,8 @@ def collect_batch(*, cfg, batch, policy_version, sampler, endpoint, run_dir,
                 "group_reward_mode": scored["reward_mode"], "reward_signature": scored["reward_signature"],
                 "effective_reward_weights": dict(cfg["rewards"]), "learning_signal": trajectory["learning_signal"],
                 "advantage": trajectory["advantage"], "advantage_bounds": trajectory["advantage_bounds"],
+                "objective": scored["objective"], "normalization": scored["normalization"],
+                "group_missingness": scored["missingness"],
                 "group_diagnostics": scored["diagnostics"], "selected_for_update": selected,
                 "exclusion_reason": exclusion})
         ledger.record_group(batch=batch, group_id=group["id"], task_id=group["selection"]["id"],
@@ -148,7 +154,9 @@ def collect_batch(*, cfg, batch, policy_version, sampler, endpoint, run_dir,
                             advantages=scored["advantages"], group_stats=statistics, results=results, calls=calls,
                             selected_for_update=selected, exclusion_reason=exclusion,
                             reward_mode=scored["reward_mode"], reward_signature=scored["reward_signature"],
-                            diagnostics=scored["diagnostics"])
+                            diagnostics=scored["diagnostics"], objective=scored["objective"],
+                            normalization=scored["normalization"], missingness=scored["missingness"],
+                            learning_signal=scored["learning_signal"])
         group["status"] = "committed"
         group["selected"] = selected
         state["completed_groups"] += 1
@@ -161,6 +169,8 @@ def collect_batch(*, cfg, batch, policy_version, sampler, endpoint, run_dir,
                 rewards=scored["rewards"], advantages=scored["advantages"],
                 learning_signal=scored["learning_signal"], advantage_bounds=scored["advantage_bounds"],
                 reward_mode=scored["reward_mode"], reward_diagnostics=scored["diagnostics"],
+                reward_objective=scored["objective"], reward_normalization=scored["normalization"],
+                reward_missingness=scored["missingness"],
                 selected_for_update=selected, exclusion_reason=exclusion)
         atomic_json(run_dir / "curriculum_state.json", sampler.state_dict())
         endpoint.release_rollouts([slot["identity"] for slot in group["slots"]])
@@ -227,6 +237,7 @@ def collect_batch(*, cfg, batch, policy_version, sampler, endpoint, run_dir,
                        "--parent-pid", str(os.getpid()),
                        "--sandbox-baseline-python", cfg["runtime"].get("sandbox_baseline_python", "/opt/gemma-sandbox-baseline/bin/python"),
                        "--session-clock", cfg["runtime"].get("session_clock", "queue_excluded"),
+                       "--event-summarizer", cfg["runtime"].get("event_summarizer", "official"),
                        "--queue-timing-poll-seconds", str(cfg["runtime"].get("queue_timing_poll_seconds", 0.2)),
                        "--evaluation-overrides-json", json.dumps(cfg["runtime"].get("evaluation", {})),
                        "--task-id", group["selection"]["id"]]

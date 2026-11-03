@@ -20,6 +20,7 @@ import tempfile
 import tomllib
 
 from .rewards import _weights
+from .lr_schedule import SCHEDULE_VERSION, lr_multiplier, resolve_schedule
 
 
 _REWARD_WEIGHTS = {"resolved_weight", "repair_weight", "regression_weight",
@@ -91,7 +92,24 @@ def _explicit_scheduler(recipe):
         effective = (_positive_integer(result["run"]["max_batches"])
                      * _positive_integer(grpo["num_iterations"]))
     grpo["scheduler_total_steps"] = _positive_integer(effective)
+    contract = resolve_schedule(grpo, total_steps=grpo["scheduler_total_steps"],
+                                learning_rate=result["run"]["learning_rate"])
+    grpo.update(warmup_steps=contract["warmup_steps"], lr_schedule_version=contract["version"],
+                lr_scheduler_type=contract["type"])
     return result
+
+
+def _schedule_preview(recipe):
+    grpo = recipe["grpo"]
+    contract = resolve_schedule(grpo, total_steps=grpo["scheduler_total_steps"],
+                                learning_rate=recipe["run"]["learning_rate"])
+    calls = _positive_integer(recipe["run"]["max_batches"]) * _positive_integer(grpo["num_iterations"])
+    return {
+        "contract": contract, "maximum_planned_optimizer_attempts": calls,
+        "first_scheduled_update_lrs": [contract["base_lr"] * lr_multiplier(
+            index, contract["total_steps"], contract["warmup_steps"]) for index in range(min(calls, 8))],
+        "scope": "Preview assumes every planned cohort exists and each optimizer attempt is applied; skipped attempts do not advance this LR index. No updates are executed.",
+    }
 
 
 def make_candidate(parent, factor, value):
@@ -123,8 +141,23 @@ def make_candidate(parent, factor, value):
         if _positive_integer(value) != 1 or parent["grpo"]["num_iterations"] != 2:
             raise ValueError("The reuse intervention changes num_iterations from 2 to 1")
         candidate["grpo"]["num_iterations"] = 1
+    elif factor == "scale_rewards":
+        if value not in ("group", "none"):
+            raise ValueError("The scale_rewards intervention is --value group or --value none")
+        if parent["grpo"].get("scale_rewards") not in ("group", "none"):
+            raise ValueError("The baseline must explicitly declare grpo.scale_rewards as group or none")
+        # Raw reward signals still determine selection and sampler feedback.
+        # This intervention changes only the advantages used by the learner.
+        candidate["grpo"]["scale_rewards"] = value
+    elif factor == "prefix_reuse":
+        if (value != "none" or parent["grpo"].get("training_prefix_reuse") != "tree"
+                or int(parent["grpo"].get("training_prefix_max_calls", 1)) <= 1):
+            raise ValueError("prefix_reuse=none requires a native tree baseline with multiple calls per group")
+        # Keep the same native attention/checkpoint backend. Disabling tree
+        # grouping alone isolates sharing from the Unsloth/native kernel choice.
+        candidate["grpo"]["training_prefix_max_calls"] = 1
     else:
-        raise ValueError("Choose rank, reward.<one weight>, sampling, or reuse")
+        raise ValueError("Choose rank, reward.<one weight>, sampling, reuse, scale_rewards, or prefix_reuse")
     _weights(candidate["rewards"])
     if not _differences(parent, candidate):
         raise ValueError("The candidate must change the declared factor")
@@ -176,6 +209,9 @@ def prepare_experiment(baseline, output_dir, factor, value):
     parent = _explicit_scheduler(source)
     parent_text = _render_toml(parent)
     candidate = make_candidate(parent, factor, value)
+    schedules = {"baseline": _schedule_preview(parent), "candidate": _schedule_preview(candidate)}
+    if schedules["baseline"]["contract"] != schedules["candidate"]["contract"]:
+        raise ValueError("Comparison arms must share the same effective LR schedule")
     candidate_text = _render_toml(candidate)
     if tomllib.loads(candidate_text) != candidate:
         raise ValueError("Candidate serialization changed recipe semantics")
@@ -184,7 +220,12 @@ def prepare_experiment(baseline, output_dir, factor, value):
               "baseline_source": str(baseline.resolve()),
               "equivalent_explicitization": _differences(source, parent),
               "parent_recipe_sha256": _digest(parent), "candidate_recipe_sha256": _digest(candidate),
+              "lr_schedules": schedules,
               "interpretation": "One candidate only; preparing a recipe does not run an experiment or establish a benefit."}
+    if factor == "reuse":
+        record["reuse_interpretation"] = (
+            "Both arms start at the same LR and share the applied-step schedule, without dummy updates or changing warmup. "
+            "Reuse 1 and 2 allow different update counts and computation; this is not an equal-update or equal-compute comparison.")
     output_dir.mkdir(parents=True, exist_ok=False)
     (output_dir / "parent.toml").write_text(parent_text, encoding="utf-8")
     (output_dir / "candidate.toml").write_text(candidate_text, encoding="utf-8")
@@ -226,11 +267,16 @@ def _training_record(summary_path, run_config_path, planned):
     run = _read_json(config_path)
     recipe = None
     binding = None
+    schedule = None
     if run is not None:
         raw_recipe = run.get("recipe")
         if not isinstance(raw_recipe, dict):
             raise ValueError("Actual run_config.json must contain its recipe")
         recipe = _explicit_scheduler(raw_recipe)
+        # Planning may resolve the current default, but old run files without
+        # a version do not prove that this positive-first-update schedule ran.
+        if raw_recipe["grpo"].get("lr_schedule_version") == SCHEDULE_VERSION:
+            schedule = _schedule_preview(recipe)["contract"]
         _match_planned(recipe, planned)
         if summary is not None and summary.get("config_sha256") not in (None, _digest(raw_recipe)):
             raise ValueError("Training evidence does not belong to the supplied run recipe")
@@ -243,6 +289,7 @@ def _training_record(summary_path, run_config_path, planned):
               "run_config_sha256": _file_digest(config_path) if run is not None else None,
               "history_coverage": summary.get("history_coverage") if summary is not None else None,
               "source_binding_available": binding is not None,
+              "lr_schedule": schedule,
               "training_population": ({
                   "tasks_sha256": _digest(run["training_tasks"]) if "training_tasks" in run else None,
                   "public_tasks_sha256": run.get("public_tasks_sha256"),
@@ -251,9 +298,13 @@ def _training_record(summary_path, run_config_path, planned):
               "collection": summary.get("collection") if summary is not None else None,
               "updates": ({key: summary.get("updates", {}).get(key) for key in
                            ("optimizer_steps", "checkpoint_optimizer_steps", "optimizer_steps_outside_reported_batches",
-                            "nonzero_lr_optimizer_steps", "update_wall_seconds",
-                            "time_coverage", "seconds_per_optimizer_step")} if summary is not None else None),
+                            "nonzero_lr_optimizer_steps", "zero_lr_optimizer_steps", "skipped_optimizer_steps",
+                            "update_wall_seconds", "time_coverage", "seconds_per_optimizer_step",
+                            "seconds_per_nonzero_lr_step")} if summary is not None else None),
               "kl": summary.get("kl") if summary is not None else None,
+              "rewards": copy.deepcopy(summary.get("rewards")) if summary is not None else None,
+              "training_prefix_reuse": copy.deepcopy(summary.get("updates", {}).get("training_prefix_reuse"))
+                  if summary is not None else None,
               "rollout_pre_update": summary.get("rollout_pre_update") if summary is not None else None,
               "post_update_evaluation": None}
     return report, recipe, summary, binding
@@ -301,7 +352,97 @@ def _nested(value, *keys):
     return value
 
 
-def _evaluation_delta(base, candidate, comparable):
+def _adapter_update_qualification(summary, evaluation):
+    """Bind effective updates to the evaluated artifact, never later batches."""
+    result = {"status": "unknown", "reason": "Bound evaluation and per-batch update evidence are required",
+              "adapter_sha256": _nested(evaluation, "summary", "adapter_sha256"), "batch": None,
+              "cumulative_nonzero_lr_optimizer_steps": None, "update_evidence_complete": False,
+              "changed_from_initial": None, "initial_sha256": None}
+    if summary is None or evaluation.get("status") != "bound":
+        return result
+    rows = summary.get("batches")
+    coverage = summary.get("history_coverage") or {}
+    if not isinstance(rows, list) or not rows or any(
+            not isinstance(row, dict) or type(row.get("batch")) is not int or row["batch"] < 0 for row in rows):
+        result["reason"] = "Per-batch training history is missing or invalid"
+        return result
+    rows = sorted(rows, key=lambda row: row["batch"])
+    ids = [row["batch"] for row in rows]
+    if (ids != list(range(len(rows))) or coverage.get("reported_batch_ids") != ids
+            or coverage.get("reported_batches") != len(rows) or coverage.get("completed_batches") != len(rows)
+            or coverage.get("unreported_completed_batches") != 0):
+        result["reason"] = "Completed-batch history is not fully reported and contiguous from initialization"
+        return result
+    matches = [row for row in rows if row.get("adapter", {}).get("path")
+               and row["adapter"].get("sha256") == result["adapter_sha256"]]
+    if not matches:
+        result["reason"] = "Evaluated adapter has no corresponding exported batch"
+        return result
+    # An identical artifact exported again cannot borrow the later batch's
+    # update count. Hash-only evaluation identity binds conservatively to its
+    # earliest export; the actual parameter artifact is the same.
+    selected = matches[0]
+    result["batch"] = selected["batch"]
+    prefix = rows[:selected["batch"] + 1]
+    counts = [row.get("updates", {}).get("nonzero_lr_optimizer_steps") for row in prefix]
+    if any(type(count) is not int or count < 0 for count in counts):
+        result["reason"] = "Effective update counts before this adapter are unknown"
+        return result
+    if any(type(row.get("updates", {}).get("optimizer_steps")) is int
+           and count > row["updates"]["optimizer_steps"] for row, count in zip(prefix, counts)):
+        result["reason"] = "Effective update counts exceed recorded optimizer attempts"
+        return result
+    result.update(cumulative_nonzero_lr_optimizer_steps=sum(counts), update_evidence_complete=True)
+    adapter = dict(selected["adapter"])
+    for item in summary.get("adapters", []):
+        if item.get("batch") == selected["batch"] and item.get("sha256") == result["adapter_sha256"]:
+            for key in ("initial_sha256", "changed_from_initial"):
+                if adapter.get(key) is None:
+                    adapter[key] = item.get(key)
+    initial = adapter.get("initial_sha256")
+    changed = adapter.get("changed_from_initial")
+    if isinstance(initial, str) and initial:
+        hash_changed = result["adapter_sha256"] != initial
+        if isinstance(changed, bool) and changed != hash_changed:
+            result["reason"] = "Adapter change flag contradicts its recorded initial artifact hash"
+            return result
+        changed = hash_changed
+        result["initial_sha256"] = initial
+    result["changed_from_initial"] = changed if isinstance(changed, bool) else None
+    if sum(counts) == 0:
+        result.update(status="invalid", reason="This adapter has no non-skipped nonzero-LR optimizer update; later updates cannot qualify it")
+    elif changed is False:
+        result.update(status="invalid", reason="The evaluated adapter is unchanged from the initial export")
+    elif changed is not True:
+        result["reason"] = "Independent adapter change from initialization is not recorded"
+    else:
+        result.update(status="qualified", reason=None)
+    return result
+
+
+def _reuse_gain_qualification(base, candidate, base_summary, candidate_summary, evaluations):
+    arms = {"baseline": _adapter_update_qualification(base_summary, evaluations["baseline"]),
+            "candidate": _adapter_update_qualification(candidate_summary, evaluations["candidate"])}
+    schedules = [item.get("lr_schedule") for item in (base, candidate)]
+    schedule_status, schedule_reason = "confirmed", None
+    if any(item is None for item in schedules):
+        schedule_status, schedule_reason = "unknown", "Actual run recipes do not both record the LR schedule version"
+    elif schedules[0] != schedules[1]:
+        schedule_status, schedule_reason = "invalid", "Actual runs have different effective LR schedules"
+    elif schedules[0]["first_update_lr"] <= 0:
+        schedule_status, schedule_reason = "invalid", "The common schedule does not start with a positive update LR"
+    statuses = [arm["status"] for arm in arms.values()]
+    status = ("invalid" if schedule_status == "invalid" or "invalid" in statuses else
+              "qualified" if schedule_status == "confirmed" and all(value == "qualified" for value in statuses)
+              else "unknown")
+    reasons = ([schedule_reason] if schedule_reason else []) + [
+        f"{name}: {arm['reason']}" for name, arm in arms.items() if arm["reason"]]
+    return {"status": status, "reason": "; ".join(reasons) if reasons else None,
+            "lr_schedule_status": schedule_status, **arms,
+            "scope": "Eligibility to compare trained-adapter outcomes only; positive LR and changed exported weights do not establish learning benefit."}
+
+
+def _evaluation_delta(base, candidate, comparable, qualification=None):
     result = {"status": "unknown", "reason": "Comparable complete paired evaluations are not available",
               "resolution_rate": None, "paired_resolution_gain": None,
               "repair_fraction": None, "regression_fraction": None, "costs": {}}
@@ -329,6 +470,10 @@ def _evaluation_delta(base, candidate, comparable):
         x, y = costs_a.get(key), costs_b.get(key)
         result["costs"][key] = (_delta(_nested(x, "mean"), _nested(y, "mean"))
                                 if _nested(x, "coverage") == _nested(y, "coverage") == 1 else None)
+    if qualification is not None and qualification["status"] != "qualified":
+        result.update(status=qualification["status"], reason=qualification["reason"],
+                      resolution_rate=None, paired_resolution_gain=None,
+                      repair_fraction=None, regression_fraction=None)
     return result
 
 
@@ -360,6 +505,8 @@ def compare_experiment(experiment, *, baseline_summary=None, candidate_summary=N
     for name, training in (("baseline", base), ("candidate", candidate)):
         if evaluations[name]["status"] == "bound":
             training["post_update_evaluation"] = evaluations[name]["summary"]
+    qualification = (_reuse_gain_qualification(base, candidate, base_raw, candidate_raw, evaluations)
+                     if record["factor"] == "reuse" else None)
     deltas = {
         "training_scope": "Observed reported completed batches only; not complete-run training cost or gain",
         "complete_completed_batch_history": _all_zero(
@@ -369,17 +516,19 @@ def compare_experiment(experiment, *, baseline_summary=None, candidate_summary=N
     }
     for section, names in (("collection", ("effective_advantage_groups", "effective_advantage_group_fraction",
                                            "effective_advantage_yield", "elapsed_seconds", "effective_groups_per_collection_hour")),
-                           ("updates", ("optimizer_steps", "nonzero_lr_optimizer_steps", "update_wall_seconds",
-                                        "seconds_per_optimizer_step"))):
+                           ("updates", ("optimizer_steps", "nonzero_lr_optimizer_steps", "zero_lr_optimizer_steps",
+                                        "skipped_optimizer_steps", "update_wall_seconds",
+                                        "seconds_per_optimizer_step", "seconds_per_nonzero_lr_step"))):
         deltas[section] = {name: _delta(_nested(base, section, name), _nested(candidate, section, name))
                           if comparable else None for name in names}
-    deltas["evaluation"] = _evaluation_delta(evaluations["baseline"], evaluations["candidate"], comparable)
+    deltas["evaluation"] = _evaluation_delta(evaluations["baseline"], evaluations["candidate"], comparable, qualification)
     return {"schema_version": 1, "record_type": "single_factor_comparison",
             "factor": record["factor"], "value": record["value"], "changes": record["changes"],
             "comparability": {"status": "confirmed" if comparable else "unknown",
                               "recipe_status": "single_factor" if recipes_available else "unknown",
                               "source_binding_difference_fields": differences, "reason": reason},
             "baseline": base, "candidate": candidate, "paired_evaluations": evaluations,
+            "training_gain_qualification": qualification,
             "candidate_minus_baseline": deltas, "recommendation": None,
             "interpretation": {
                 "training": "Collection rewards precede updates; they are not post-update adapter gains.",
@@ -387,6 +536,12 @@ def compare_experiment(experiment, *, baseline_summary=None, candidate_summary=N
                 "evaluation": "Official acceptance in the recorded backend, not necessarily official competition CT; retain population and claim.",
                 "missing": "Null means unknown, not zero. No automatic winner is selected.",
                 "comparison": "Single-factor recipe consistency does not by itself establish a causal or statistically reliable gain.",
+                **({"reuse": "Both arms share the initial LR and applied-step LR sequence, without dummy updates or changing warmup. Reuse 1 and 2 permit different update counts and computation, so this is not an equal-update or equal-compute comparison. Trained-adapter outcome deltas require effective updates and independent weight-change evidence for each evaluated artifact; raw evaluations and descriptive costs remain available."}
+                   if record["factor"] == "reuse" else {}),
+                **({"scale_rewards": "Only grpo.scale_rewards changes. Acceptance and sampler feedback use unscaled raw signals with unchanged settings. Different updates can change later trajectories and adaptive task selection, so this between-run comparison is not a fixed-cohort causal comparison."}
+                   if record["factor"] == "scale_rewards" else {}),
+                **({"prefix_reuse": "Only maximum calls per training tree changes to one; native attention/checkpoint backend stays fixed. Token/attention position savings are not measured GPU speedups. Separate full-run training can change later rollouts; same frozen-call replay is needed for an exact numerical comparison."}
+                   if record["factor"] == "prefix_reuse" else {}),
             }}
 
 
@@ -396,8 +551,8 @@ def main(argv=None):
     prepare = commands.add_parser("prepare", help="Save one candidate recipe and its semantic change")
     prepare.add_argument("--baseline", type=Path, required=True)
     prepare.add_argument("--output-dir", type=Path, required=True)
-    prepare.add_argument("--factor", required=True, help="rank, reward.<one weight>, sampling, or reuse")
-    prepare.add_argument("--value", required=True, help="Positive rank, nonnegative reward weight, uniform, or 1")
+    prepare.add_argument("--factor", required=True, help="rank, reward.<one weight>, sampling, reuse, scale_rewards, or prefix_reuse")
+    prepare.add_argument("--value", required=True, help="Positive rank, nonnegative reward weight, uniform, 1, or group/none")
     compare = commands.add_parser("compare", help="Compare actual summaries without launching an experiment")
     compare.add_argument("--experiment", type=Path, required=True)
     for name in ("baseline-summary", "candidate-summary", "baseline-run-config", "candidate-run-config",

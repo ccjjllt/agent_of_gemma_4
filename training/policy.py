@@ -8,6 +8,7 @@ adapter in grpo_trainer.py. Every model call retains its actual full prefix.
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
 import json
 import math
 import re
@@ -54,6 +55,7 @@ class Policy:
         self.max_context = int(config.get("max_context", 32768))
         self.chunk_size = int(config.get("logprob_chunk_size", 128))
         self.gradient_checkpointing = config.get("gradient_checkpointing", "unsloth")
+        self.training_tree_backend = False
         if self.max_context <= 1 or self.max_context > 32768 or self.chunk_size < 1:
             raise ValueError("max_context must be 2..32768 and logprob_chunk_size positive")
         if not torch.cuda.is_available():
@@ -559,8 +561,6 @@ class Policy:
         Recompute the exact full prefix, including tool observations. The large
         vocabulary projection is checkpointed in chunks; no prefix KV is detached.
         """
-        from torch.utils.checkpoint import checkpoint
-
         torch = self.torch
         prompt_ids = call["prompt_ids"]
         completion_ids = call["completion_ids"]
@@ -576,7 +576,14 @@ class Policy:
             return_dict=True, output_hidden_states=False,
         )
         hidden = outputs.last_hidden_state[:, len(prompt_ids) - 1:, :].squeeze(0)
-        head = base.lm_head
+        return self._score_hidden(hidden, completion_ids, compute_entropy=compute_entropy)
+
+    def _score_hidden(self, hidden, completion_ids, *, compute_entropy=False):
+        """Project every original target occurrence, even for shared tree rows."""
+        from torch.utils.checkpoint import checkpoint
+
+        torch = self.torch
+        head = self.model.get_base_model().lm_head
         head_device = head.weight.device
         targets = torch.tensor(completion_ids, device=head_device, dtype=torch.long)
 
@@ -611,6 +618,56 @@ class Policy:
             raise FloatingPointError("Learner produced a non-finite selected-token logprob")
         return logprobs, torch.cat(entropy_pieces) if compute_entropy else None
 
+    @contextmanager
+    def per_token_logprobs_group(self, calls, *, compute_entropy=False):
+        """Yield exact per-call scores with shared differentiable prefix states.
+
+        The caller must finish the group's backward inside this context. Native
+        forwards and non-reentrant layer checkpointing remain bound throughout
+        recomputation, then the inference/training methods are restored.
+        A singleton uses ordinary causal/sliding masks, without a dense tree.
+        """
+        from .prefix_tree import build_tree, make_tree_masks
+        from .tree_backend import native_tree_forward
+
+        calls = list(calls)
+        if not calls:
+            raise ValueError("A scoring group must contain at least one complete call")
+        for call in calls:
+            if not call.get("prompt_ids") or not call.get("completion_ids"):
+                raise ValueError("Call must contain its complete prompt and generated IDs")
+            if len(call["prompt_ids"]) + len(call["completion_ids"]) > self.max_context:
+                raise ContextLimitError("Stored call exceeds the declared context; no truncation is permitted")
+        self._for_training()
+        torch = self.torch
+        decoder = self.model.get_base_model().model.language_model
+        if len(calls) == 1:
+            call = calls[0]
+            ids = torch.tensor([call["prompt_ids"] + call["completion_ids"][:-1]],
+                               device=self.input_device, dtype=torch.long)
+            positions = torch.arange(ids.shape[1], device=self.input_device).unsqueeze(0)
+            masks = torch.ones_like(ids)
+            score_indices = [list(range(len(call["prompt_ids"]) - 1, ids.shape[1]))]
+        else:
+            tree = build_tree(calls)
+            ids = torch.tensor([tree["input_ids"]], device=self.input_device, dtype=torch.long)
+            positions = torch.tensor([tree["depths"]], device=self.input_device, dtype=torch.long)
+            masks = make_tree_masks(tree, sliding_window=decoder.config.sliding_window,
+                                    device=self.input_device, dtype=torch.float32)
+            score_indices = tree["score_indices"]
+        if (len(score_indices) != len(calls)
+                or any(len(indices) != len(call["completion_ids"]) for call, indices in zip(calls, score_indices))):
+            raise ValueError("Prefix tree must retain every original completion-token loss occurrence")
+        with native_tree_forward(decoder, gradient_checkpointing=bool(self.gradient_checkpointing)):
+            outputs = decoder(input_ids=ids, attention_mask=masks, position_ids=positions,
+                              use_cache=False, return_dict=True, output_hidden_states=False)
+            hidden = outputs.last_hidden_state.squeeze(0)
+            scores = []
+            for call, indices in zip(calls, score_indices):
+                selected = hidden.index_select(0, torch.tensor(indices, device=hidden.device, dtype=torch.long))
+                scores.append(self._score_hidden(selected, call["completion_ids"], compute_entropy=compute_entropy))
+            yield scores
+
     def score_call(self, call: dict, *, reference: bool = False) -> list[float]:
         """Freeze old-policy/reference probabilities before any cohort update.
 
@@ -623,6 +680,9 @@ class Policy:
         self._for_training()
         context = self.model.disable_adapter() if reference else nullcontext()
         with context, self.torch.no_grad():
+            if self.training_tree_backend:
+                with self.per_token_logprobs_group([call]) as scores:
+                    return scores[0][0].detach().cpu().tolist()
             logprobs, _ = self.per_token_logprobs(call)
             return logprobs.detach().cpu().tolist()
 
