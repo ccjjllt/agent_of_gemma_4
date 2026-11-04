@@ -16,6 +16,71 @@ import sys
 from types import MethodType
 
 
+def segmented_tree_attention(query, key, value, layout, *, scaling=None):
+    """Exact tree attention using bounded query blocks and ancestor-path keys.
+
+    Gathered KV, position vectors and rectangular masks are created INSIDE
+    non-reentrant checkpoints. Backward retains references to the original
+    Q/K/V, never one long gathered prefix or mask per query block. Even root
+    chains are chunked: Gemma4's 512-wide heads may select SDPA's math backend.
+    """
+    import torch
+    from torch.utils.checkpoint import checkpoint
+    from .prefix_tree import TreeAttentionMask
+
+    if not isinstance(layout, TreeAttentionMask):
+        raise TypeError("Expected a compact tree attention layout")
+    n = layout.token_count
+    if (query.ndim != 4 or key.ndim != 4 or value.ndim != 4
+            or query.shape[-2] != n or key.shape[-2] != n or value.shape[-2] != n
+            or query.shape[0] != key.shape[0] or key.shape[:2] != value.shape[:2]
+            or query.shape[1] % key.shape[1] or query.shape[-1] != key.shape[-1]):
+        raise ValueError("Tree attention requires aligned [batch, heads, nodes, width] Q/K/V")
+    native_sdpa = torch._C._nn.scaled_dot_product_attention
+    outputs = []
+    for segment in layout.segments:
+        prefix = len(segment.ancestors)
+        for offset in range(0, segment.stop - segment.start, layout.query_chunk_size):
+            stop = min(segment.stop - segment.start, offset + layout.query_chunk_size)
+            q_start, q_stop = prefix + offset, prefix + stop
+            key_start = max(0, q_start - layout.sliding_window + 1) if layout.sliding_window else 0
+
+            # Bind all loop values: replay may happen after these loops finish.
+            def attend(q, k, v, *, segment=segment, offset=offset, stop=stop,
+                       prefix=prefix, q_start=q_start, q_stop=q_stop, key_start=key_start):
+                def path_values(tensor):
+                    pieces = []
+                    if key_start < prefix:
+                        indices = torch.tensor(segment.ancestors[key_start:prefix],
+                                               device=tensor.device, dtype=torch.long)
+                        pieces.append(tensor.index_select(-2, indices))
+                    local_start = segment.start + max(0, key_start - prefix)
+                    pieces.append(tensor[..., local_start:segment.start + stop, :])
+                    return pieces[0] if len(pieces) == 1 else torch.cat(pieces, dim=-2)
+
+                q_chunk = q[..., segment.start + offset:segment.start + stop, :]
+                k_path, v_path = path_values(k), path_values(v)
+                causal = q_start == key_start and (
+                    layout.sliding_window is None or q_stop - key_start <= layout.sliding_window)
+                mask = None
+                if not causal:
+                    queries = torch.arange(q_start, q_stop, device=q.device)[:, None]
+                    keys = torch.arange(key_start, q_stop, device=q.device)[None, :]
+                    mask = keys <= queries
+                    if layout.sliding_window is not None:
+                        mask.logical_and_(keys > queries - layout.sliding_window)
+                return native_sdpa(q_chunk, k_path, v_path, attn_mask=mask,
+                                   dropout_p=0.0, is_causal=causal, scale=scaling,
+                                   enable_gqa=q.shape[1] != k.shape[1])
+
+            if torch.is_grad_enabled() and any(tensor.requires_grad for tensor in (query, key, value)):
+                output = checkpoint(attend, query, key, value, use_reentrant=False, preserve_rng_state=False)
+            else:
+                output = attend(query, key, value)
+            outputs.append(output)
+    return torch.cat(outputs, dim=-2).transpose(1, 2).contiguous()
+
+
 def _load_source(name, relative_path):
     if name in sys.modules:
         return sys.modules[name]
@@ -52,9 +117,12 @@ class _DeviceMasks:
 
     def place(self, mask, device):
         import torch
+        from .prefix_tree import TreeAttentionMask
 
         if mask is None:
             return None
+        if isinstance(mask, TreeAttentionMask):
+            return mask  # Immutable CPU topology; query-block tensors are ephemeral.
         if not isinstance(mask, torch.Tensor) or mask.ndim != 4 or mask.requires_grad:
             raise ValueError("Native tree attention requires a non-differentiable 4D tensor mask")
         alias = self.origins.get(id(mask))
@@ -129,6 +197,13 @@ def _native_gemma4():
     native.create_sliding_window_causal_mask = masks.create_sliding_window_causal_mask
 
     def attention(module, query, key, value, attention_mask, **kwargs):
+        from .prefix_tree import TreeAttentionMask
+
+        if isinstance(attention_mask, TreeAttentionMask):
+            if float(kwargs.get("dropout", 0.0)) != 0.0:
+                raise ValueError("Shared tree attention requires zero dropout")
+            return segmented_tree_attention(query, key, value, attention_mask,
+                                            scaling=kwargs.get("scaling")), None
         if attention_mask is not None:
             # Also handles modules with no Accelerate hook, without creating a
             # second dtype/device copy during each checkpoint replay.

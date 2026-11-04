@@ -585,29 +585,84 @@ def _evaluation_settings(submission: Path, overrides: dict[str, Any] | None = No
     return settings
 
 
-def _capture_final_verification(task: Any, manager: Any = None) -> tuple[dict[str, Any], Any]:
+class _PatchDeliveryClock:
+    """Raw wall time for the official task's pre-verification delivery phase.
+
+    The boundary includes Container A setup, the agent loop, patch extraction
+    and Container A cleanup. It excludes worker initialization and all work in
+    Container B. This clock is independent of the queue-excluded agent budget.
+    """
+
+    def __init__(self):
+        self._started = None
+        self._stopped = False
+        self._seconds = None
+        self._unavailable_reason = "verification_entry_not_observed"
+
+    def start(self):
+        if self._started is not None:
+            raise RuntimeError("Patch delivery timing can start only once")
+        self._started = time.monotonic()
+
+    def stop(self):
+        if self._stopped:
+            return
+        self._stopped = True
+        if self._started is None:
+            self._unavailable_reason = "evaluation_start_not_observed"
+            return
+        elapsed = time.monotonic() - self._started
+        if not math.isfinite(elapsed) or elapsed < 0:
+            self._unavailable_reason = "invalid_delivery_clock_interval"
+            return
+        self._seconds = elapsed
+        self._unavailable_reason = None
+
+    def summary(self):
+        return {
+            "version": "patch_delivery_wall_v1", "complete": self._seconds is not None,
+            "wall_seconds": self._seconds,
+            "scope": "evaluate_task_start_to_verify_task_entry",
+            "includes": ["setup", "prefill", "generation", "tools", "patch_extraction",
+                         "queue_wait", "agent_sandbox_cleanup"],
+            "excludes": ["judge_setup", "verification", "empty_patch_control", "worker_initialization"],
+            "unavailable_reason": self._unavailable_reason,
+        }
+
+
+def _capture_final_verification(task: Any, manager: Any = None, *, delivery_clock=None) -> tuple[dict[str, Any], Any]:
     """Read the final judge JUnit before its sandbox is destroyed.
 
     The official verifier itself retains only a binary verdict and reads XML
     only on exit code zero. We observe its completed pytest invocation, then
     read the same final report for dense reward statistics on successes and
-    failures. This never reruns tests or exposes test identifiers to the model.
+    failures. Abnormal collection/JUnit failures get one empty-patch control in
+    a fresh judge sandbox, solely to distinguish model code from a broken
+    environment. No control evidence contributes to the candidate's reward.
     """
     import swegemma.harness.verification as verification
+    import swegemma.evaluate as evaluation
     try:
         from .rewards import junit_reward_features
+        from .verification_outcome import failure_control_reason, healthy_control, junit_execution_evidence
     except ImportError:
         from rewards import junit_reward_features
+        from verification_outcome import failure_control_reason, healthy_control, junit_execution_evidence
 
     original = verification.sandbox_exec
     original_apply = verification.apply_patch_in_container
+    original_verify = evaluation.verify_task
 
     def restricted_apply(docker: Any, sandbox_id: str, *args: Any, **kwargs: Any) -> Any:
         if manager is not None and docker is manager:
             # The verifier reruns pip/editable setup after applying model code.
             # Lower privileges before the first patch, not merely before pytest.
             manager.restrict_judge(sandbox_id)
-        return original_apply(docker, sandbox_id, *args, **kwargs)
+        output = original_apply(docker, sandbox_id, *args, **kwargs)
+        active_capture.setdefault("patch_applications", []).append({
+            "exit_code": output[0], "diagnostic": (output[2] or "") + "\n" + (output[1] or ""),
+        })
+        return output
 
     def missing_features(reason):
         # Expected requirement counts are judge metadata even when the XML
@@ -631,6 +686,7 @@ def _capture_final_verification(task: Any, manager: Any = None) -> tuple[dict[st
                     "unavailable_reason": reason}
 
     captured: dict[str, Any] = {"reward_features": missing_features("no_completed_pytest_capture")}
+    active_capture = captured
 
     async def observed(docker: Any, sandbox_id: str, command: str, *args: Any, **kwargs: Any) -> Any:
         parts = shlex.split(command) if isinstance(command, str) else []
@@ -641,28 +697,66 @@ def _capture_final_verification(task: Any, manager: Any = None) -> tuple[dict[st
         started = time.monotonic()
         output = await original(docker, sandbox_id, command, *args, **kwargs)
         if is_pytest and len(reports) == 1 and re.fullmatch(r"/tmp/_swegemma_junit_[a-f0-9]+\.xml", reports[0]):
-            captured.update({"pytest_exit_code": output.exit_code,
-                             "verification_duration_seconds": time.monotonic() - started})
+            active_capture.update({"pytest_exit_code": output.exit_code,
+                                   "verification_duration_seconds": time.monotonic() - started})
             try:
                 report = await original(docker, sandbox_id, f"cat {shlex.quote(reports[0])}", timeout=30)
                 xml_text = report.stdout if report.exit_code == 0 else ""
+                active_capture["pytest_execution"] = junit_execution_evidence(xml_text)
                 fallback = ()
                 if not task.FAIL_TO_PASS and not task.PASS_TO_PASS:
                     fallback = tuple(verification._extract_test_functions_from_patch(task.test_patch))
-                captured["reward_features"] = junit_reward_features(
+                active_capture["reward_features"] = junit_reward_features(
                     xml_text, fail_to_pass=task.FAIL_TO_PASS, pass_to_pass=task.PASS_TO_PASS,
                     fallback_requirements=fallback, node_matcher=verification._node_matches_requirement,
                 )
             except Exception as error:
-                captured["reward_features"] = missing_features(f"junit_capture_{type(error).__name__}")
+                active_capture["reward_features"] = missing_features(f"junit_capture_{type(error).__name__}")
         return output
+
+    async def attributed_verify(*args: Any, **kwargs: Any) -> Any:
+        nonlocal active_capture
+        if delivery_clock is not None:
+            # evaluate_task has finished Container A and extracted the patch;
+            # original_verify has not yet created or prepared the judge sandbox.
+            delivery_clock.stop()
+        result = await original_verify(*args, **kwargs)
+        reason = failure_control_reason(result, captured)
+        if reason is not None:
+            # Same original task, snapshot and setup; only the model patch is
+            # removed. verify_task creates and destroys its own fresh sandbox.
+            # Never overwrite the candidate trace or its official verdict.
+            control_capture: dict[str, Any] = {}
+            active_capture = control_capture
+            started = time.monotonic()
+            control = {"reason": reason, "healthy": False}
+            try:
+                baseline = await original_verify(*args, **{
+                    **kwargs, "agent_patch": "", "agent_error": None,
+                    "trace": None, "start_time": time.perf_counter(),
+                })
+                control.update({
+                    "healthy": healthy_control(baseline, control_capture),
+                    "test_exit_code": baseline.test_exit_code,
+                    "junit_sha256": control_capture.get("reward_features", {}).get("junit_sha256"),
+                })
+            except Exception as error:
+                # A failed diagnostic cannot turn an unknown failure into zero.
+                control["error_type"] = type(error).__name__
+            finally:
+                active_capture = captured
+                control["duration_seconds"] = time.monotonic() - started
+                captured["failure_control"] = control
+        return result
 
     verification.sandbox_exec = observed
     verification.apply_patch_in_container = restricted_apply
+    evaluation.verify_task = attributed_verify
 
     def restore() -> None:
         verification.sandbox_exec = original
         verification.apply_patch_in_container = original_apply
+        evaluation.verify_task = original_verify
 
     return captured, restore
 
@@ -857,10 +951,12 @@ async def _run_task(args: argparse.Namespace, api_key: str) -> dict[str, Any]:
     bind_timed_runner(evaluator, context, session_clock, summarizer_factory=summarizer_factory)
     delivery = install_delivery_tracking(args.endpoint, args.rollout_id, workspace / "model_delivery.jsonl",
                                          session_clock=session_clock, api_key=api_key)
-    captured, restore_verification = _capture_final_verification(task, manager)
+    delivery_clock = _PatchDeliveryClock()
+    captured, restore_verification = _capture_final_verification(task, manager, delivery_clock=delivery_clock)
     delivery_error = None
     timing_error = None
     try:
+        delivery_clock.start()
         result = await evaluator.evaluate_task(task, task_index=position + 1, total_tasks=1, context=context)
         try:
             delivery.assert_delivery_complete()
@@ -888,14 +984,11 @@ async def _run_task(args: argparse.Namespace, api_key: str) -> dict[str, Any]:
         if restore_dependencies:
             restore_dependencies()
 
-    error = result.error or None
-    # A completed pytest verdict is meaningful even if the agent exhausted its
-    # own official budget. Infrastructure failures must never become reward 0.
-    agent_error = error if error and error.startswith(("Agent ", "Failed to apply agent patch:")) else None
-    verification_ran = result.test_output.startswith("STDOUT:\n")
-    verdict_valid = (verification_ran and result.test_exit_code in (0, 1)
-                     and (not error or agent_error is not None) and delivery_error is None and timing_error is None)
-    infrastructure_error = None if verdict_valid else (timing_error or delivery_error or error or f"No complete official verification verdict (exit={result.test_exit_code}).")
+    if __package__:
+        from .verification_outcome import classify_verification
+    else:
+        from verification_outcome import classify_verification
+    verdict = classify_verification(result, captured, delivery_error=delivery_error, timing_error=timing_error)
     safe_id = task.instance_id.replace("/", "__")
     patch_path = config.results_dir / "patches" / f"{safe_id}.patch"
     reward_features = dict(captured.get("reward_features") or {
@@ -906,29 +999,21 @@ async def _run_task(args: argparse.Namespace, api_key: str) -> dict[str, Any]:
     reward_features.update({
         "patch_nonempty": bool(result.agent_patch.strip()),
         "patch_sha256": hashlib.sha256(result.agent_patch.encode()).hexdigest(),
-        "verification_duration_seconds": captured.get("verification_duration_seconds"),
+        "verification_duration_seconds": (
+            (captured.get("verification_duration_seconds") or 0.0)
+            + captured["failure_control"]["duration_seconds"]
+            if captured.get("failure_control") else captured.get("verification_duration_seconds")
+        ),
     })
     return {
         "task_id": task.instance_id,
         "rollout_id": args.rollout_id,
-        "success": bool(result.resolved) if verdict_valid else None,
-        "reward": float(bool(result.resolved)) if verdict_valid else None,
-        "verification_complete": verification_ran,
-        "verdict_valid": verdict_valid,
-        "verdict_kind": "tests_completed" if verdict_valid else (
-            "unconfirmed_session_timing" if timing_error else
-            "unconfirmed_model_consumption" if delivery_error else "unclassified_verification_failure"
-        ),
-        "failure_stage": None if verdict_valid else (
-            "session_timing" if timing_error else "model_delivery" if delivery_error else
-            "patch_application" if error and error.startswith("Failed to apply agent patch:")
-            else "pytest" if captured.get("pytest_exit_code") is not None
-            else "setup_or_agent"
-        ),
-        "infrastructure_error": infrastructure_error,
-        "agent_error": agent_error,
+        **verdict,
+        "failure_attribution": {"version": "judge_failure_attribution_v1",
+                                "empty_patch_control": captured.get("failure_control")},
         "model_delivery": delivery.summary(),
         "session_timing": session_clock.summary(),
+        "delivery_timing": delivery_clock.summary(),
         "reward_features": reward_features,
         "test_exit_code": result.test_exit_code,
         "duration_seconds": time.monotonic() - started,
@@ -1041,6 +1126,7 @@ def main(argv: list[str] | None = None) -> int:
             "verdict_valid": False,
             "infrastructure_error": f"{type(error).__name__}: {error}",
             "agent_error": None,
+            "delivery_timing": _PatchDeliveryClock().summary(),
         }
     _write_json(args.result_file.resolve(), result)
     print(json.dumps({key: result.get(key) for key in ("task_id", "rollout_id", "reward", "verdict_valid", "infrastructure_error")}, ensure_ascii=False), flush=True)

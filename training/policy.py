@@ -619,13 +619,13 @@ class Policy:
         return logprobs, torch.cat(entropy_pieces) if compute_entropy else None
 
     @contextmanager
-    def per_token_logprobs_group(self, calls, *, compute_entropy=False):
+    def per_token_logprobs_group(self, calls, *, compute_entropy=False, attention_query_chunk_size=256):
         """Yield exact per-call scores with shared differentiable prefix states.
 
         The caller must finish the group's backward inside this context. Native
         forwards and non-reentrant layer checkpointing remain bound throughout
         recomputation, then the inference/training methods are restored.
-        A singleton uses ordinary causal/sliding masks, without a dense tree.
+        A singleton uses the original independent backend, with no native rebinding.
         """
         from .prefix_tree import build_tree, make_tree_masks
         from .tree_backend import native_tree_forward
@@ -633,6 +633,9 @@ class Policy:
         calls = list(calls)
         if not calls:
             raise ValueError("A scoring group must contain at least one complete call")
+        if len(calls) == 1:
+            yield [self.per_token_logprobs(calls[0], compute_entropy=compute_entropy)]
+            return
         for call in calls:
             if not call.get("prompt_ids") or not call.get("completion_ids"):
                 raise ValueError("Call must contain its complete prompt and generated IDs")
@@ -641,20 +644,12 @@ class Policy:
         self._for_training()
         torch = self.torch
         decoder = self.model.get_base_model().model.language_model
-        if len(calls) == 1:
-            call = calls[0]
-            ids = torch.tensor([call["prompt_ids"] + call["completion_ids"][:-1]],
-                               device=self.input_device, dtype=torch.long)
-            positions = torch.arange(ids.shape[1], device=self.input_device).unsqueeze(0)
-            masks = torch.ones_like(ids)
-            score_indices = [list(range(len(call["prompt_ids"]) - 1, ids.shape[1]))]
-        else:
-            tree = build_tree(calls)
-            ids = torch.tensor([tree["input_ids"]], device=self.input_device, dtype=torch.long)
-            positions = torch.tensor([tree["depths"]], device=self.input_device, dtype=torch.long)
-            masks = make_tree_masks(tree, sliding_window=decoder.config.sliding_window,
-                                    device=self.input_device, dtype=torch.float32)
-            score_indices = tree["score_indices"]
+        tree = build_tree(calls)
+        ids = torch.tensor([tree["input_ids"]], device=self.input_device, dtype=torch.long)
+        positions = torch.tensor([tree["depths"]], device=self.input_device, dtype=torch.long)
+        masks = make_tree_masks(tree, sliding_window=decoder.config.sliding_window,
+                                query_chunk_size=attention_query_chunk_size)
+        score_indices = tree["score_indices"]
         if (len(score_indices) != len(calls)
                 or any(len(indices) != len(call["completion_ids"]) for call, indices in zip(calls, score_indices))):
             raise ValueError("Prefix tree must retain every original completion-token loss occurrence")

@@ -1,4 +1,4 @@
-"""Metadata-only scheduling for complete groups of official public tasks.
+"""Metadata-only scheduling with separate capability and task-health feedback.
 
 Adaptive selection and zero-variance filtering deliberately change the training
 distribution. The returned probability is conditional on the current eligible
@@ -14,6 +14,7 @@ from pathlib import Path
 import random
 import re
 import statistics
+import time
 
 
 _FORBIDDEN = re.compile(r"(^|[/_.-])(heldout|holdout|reserved|secret|hidden)($|[/_.-])", re.I)
@@ -70,8 +71,8 @@ def load_tasks(path, include_ids=None, exclude_ids=None):
 class TaskSampler:
     """Mix coverage and feedback allocation without a full-catalog warmup.
 
-    Only complete groups are observed. Infrastructure failures must be handled
-    by the caller and must not be passed as zeros to observe(). The caller also
+    Only fully verified trajectories are observed. Infrastructure failures go
+    to record_health(), never into observe() as zero rewards. The caller also
     caps replacement groups per collection round; this class never resamples a
     failed or zero-variance group in an internal loop.
     """
@@ -89,6 +90,8 @@ class TaskSampler:
             "novelty_weight": float(supplied.get("novelty_weight", 0.2)),
             "priority_floor": float(supplied.get("priority_floor", 0.05)),
             "repo_repeat_penalty": float(supplied.get("repo_repeat_penalty", 0.5)),
+            "health_backoff_seconds": float(supplied.get("health_backoff_seconds", 60.0)),
+            "health_backoff_max_seconds": float(supplied.get("health_backoff_max_seconds", 1800.0)),
         }
         if not all(math.isfinite(value) for value in self.config.values()):
             raise ValueError("Curriculum parameters must be finite")
@@ -105,6 +108,8 @@ class TaskSampler:
             raise ValueError("Priority component weights must be nonnegative")
         if self.config["priority_floor"] <= 0 or not 0 < self.config["repo_repeat_penalty"] <= 1:
             raise ValueError("Require a positive priority floor and repo_repeat_penalty in (0, 1]")
+        if not 0 < self.config["health_backoff_seconds"] <= self.config["health_backoff_max_seconds"]:
+            raise ValueError("Health backoff must be positive and no greater than its maximum")
         self.tasks = {}
         for task in tasks:
             item = {key: task[key] for key in ("id", "repo", "base_commit")}
@@ -130,6 +135,74 @@ class TaskSampler:
             "last_informative": None, "last_observed_policy_version": None,
             "last_selected_draw": None,
         } for identifier in self.tasks}
+        self.health = {identifier: self._initial_health() for identifier in self.tasks}
+        self.health_records = {}
+
+    @staticmethod
+    def _initial_health(*, history_complete=True, ever_selected=False):
+        # Counters describe the recorded history, not inferred pre-migration
+        # health. Capability statistics remain in self.stats independently.
+        return {"history_complete": history_complete, "ever_selected": ever_selected,
+                "selection_attempts": 0, "healthy_groups": 0, "failed_groups": 0,
+                "completed_slots": 0, "exhausted_slots": 0,
+                "consecutive_failures": 0, "retry_after_unix": 0.0,
+                "last_outcome": None, "last_group_id": None}
+
+    def record_health(self, task_id, *, group_id, completed_slots, exhausted_slots):
+        """Record one group's runtime outcome exactly once, without reward data.
+
+        A partially usable group with an exhausted infrastructure slot backs
+        off immediately. If collection resumes, its failure record may acquire
+        more terminal slots without counting another failure or extending the
+        cooldown. Budget cancellation alone must not call this method.
+        """
+        if task_id not in self.tasks:
+            raise ValueError("Cannot record health outside the declared training universe")
+        if not isinstance(group_id, str) or not group_id:
+            raise ValueError("Health feedback requires a stable nonempty group id")
+        if (any(type(value) is not int or value < 0 for value in (completed_slots, exhausted_slots))
+                or completed_slots + exhausted_slots == 0):
+            raise ValueError("Health feedback requires nonnegative counts and at least one terminal slot")
+        identity = {"task_id": task_id, "completed_slots": completed_slots, "exhausted_slots": exhausted_slots}
+        previous = self.health_records.get(group_id)
+        if previous is not None:
+            if all(previous[key] == value for key, value in identity.items()):
+                return dict(previous)
+            if (previous["task_id"] != task_id or not previous["exhausted_slots"]
+                    or completed_slots < previous["completed_slots"]
+                    or exhausted_slots < previous["exhausted_slots"]):
+                raise ValueError("Health feedback changed for an already recorded group")
+            item = self.health[task_id]
+            item["completed_slots"] += completed_slots - previous["completed_slots"]
+            item["exhausted_slots"] += exhausted_slots - previous["exhausted_slots"]
+            previous.update(identity)
+            # In particular, retain recorded_at, streak and retry_after, even
+            # when this older group's additional slots arrive after newer work.
+            return dict(previous)
+        item = self.health[task_id]
+        item["ever_selected"] = True
+        item["completed_slots"] += completed_slots
+        item["exhausted_slots"] += exhausted_slots
+        now = time.time()
+        if exhausted_slots:
+            item["failed_groups"] += 1
+            item["consecutive_failures"] += 1
+            base, maximum = self.config["health_backoff_seconds"], self.config["health_backoff_max_seconds"]
+            exponent = min(item["consecutive_failures"] - 1, max(0, math.ceil(math.log2(maximum / base))))
+            delay = min(maximum, base * 2 ** exponent)
+            item["retry_after_unix"] = now + delay
+            item["last_outcome"] = "infrastructure_failure"
+        else:
+            item["healthy_groups"] += 1
+            item["consecutive_failures"] = 0
+            item["retry_after_unix"] = 0.0
+            item["last_outcome"] = "healthy"
+        item["last_group_id"] = group_id
+        record = {**identity, "group_id": group_id, "recorded_at_unix": now,
+                  "outcome": item["last_outcome"], "consecutive_failures": item["consecutive_failures"],
+                  "retry_after_unix": item["retry_after_unix"]}
+        self.health_records[group_id] = record
+        return dict(record)
 
     def set_policy_version(self, version):
         """Advance after real optimizer updates, never after a zero-signal batch.
@@ -165,13 +238,23 @@ class TaskSampler:
 
         Pool masses, not the relative counts of visited/unvisited tasks, control
         feedback allocation. Uniform exploration is over ALL eligible tasks.
+        Coverage is for never-scheduled tasks. Previously scheduled tasks with
+        no capability feedback get uniform rechecks after their health cooldown.
         Empty pools transfer their non-uniform mass to the other available pool;
-        repository weighting never changes the uniform exploration floor.
+        repository weighting never changes the eligible uniform floor.
         """
         excluded, repos = set(exclude_ids or []), set(used_repos or [])
-        eligible = [identifier for identifier in self.tasks if identifier not in excluded]
+        now = time.time()
+        available = [identifier for identifier in self.tasks if identifier not in excluded]
+        cooling = [identifier for identifier in available if self.health[identifier]["retry_after_unix"] > now]
+        eligible = [identifier for identifier in available if identifier not in cooling]
+        health_status = {
+            "cooldown_blocked": bool(cooling and not eligible), "cooldown_count": len(cooling),
+            "next_retry_unix": min((self.health[identifier]["retry_after_unix"] for identifier in cooling), default=None),
+        }
         observed = [identifier for identifier in eligible if self.stats[identifier]["groups"] > 0]
-        unseen = [identifier for identifier in eligible if self.stats[identifier]["groups"] == 0]
+        unseen = [identifier for identifier in eligible if self.stats[identifier]["groups"] == 0
+                  and not self.health[identifier]["ever_selected"]]
         suppressed = {identifier for identifier in observed
                       if self.stats[identifier]["last_informative"] is False
                       and self.stats[identifier]["last_observed_policy_version"] == self.policy_version}
@@ -191,12 +274,13 @@ class TaskSampler:
             # they are not relabeled as adaptive exploitation.
             uniform, coverage, adaptive = 1.0, 0.0, 0.0
         if not eligible:
-            return {"candidates": [], "selection_phase": "exhausted", "eligible_count": 0,
+            return {"candidates": [], "selection_phase": "health_cooldown" if cooling else "exhausted", "eligible_count": 0,
                     "candidate_count": 0, "observed_candidate_count": 0, "unseen_candidate_count": 0,
                     "adaptive_candidate_count": 0, "suppressed_zero_signal_count": 0,
                     "effective_pool_masses": {"uniform": 0.0, "coverage": 0.0, "adaptive": 0.0},
                     "observed_probability_mass": 0.0, "unseen_probability_mass": 0.0,
-                    "feedback_revision": self.feedback_revision, "policy_version": self.policy_version}
+                    "health_reprobe_probability_mass": 0.0,
+                    "feedback_revision": self.feedback_revision, "policy_version": self.policy_version, **health_status}
         priorities = {identifier: self._priority(identifier, repos) for identifier in observed}
         # Unvisited tasks have no measured learning signal. Their coverage
         # weights express only the existing within-batch repository diversity.
@@ -210,27 +294,28 @@ class TaskSampler:
             seen = identifier in priorities
             components = {
                 "uniform": uniform / len(eligible),
-                "coverage": coverage * coverage_weights[identifier] / total_coverage if not seen else 0.0,
+                "coverage": coverage * coverage_weights[identifier] / total_coverage if identifier in coverage_weights else 0.0,
                 "adaptive": (adaptive * priorities[identifier] / total_priority
                              if seen and identifier not in suppressed else 0.0),
             }
             last_version = self.stats[identifier]["last_observed_policy_version"]
             feedback_status = (
-                "unseen" if not seen else (
+                ("unseen" if identifier in coverage_weights else "awaiting_capability_feedback") if not seen else (
                     "uncertain_reward_current_policy" if self.stats[identifier]["last_signal_status"] == "no_provable_signal_with_missing"
                     else "no_signal_current_policy") if identifier in suppressed
                 else "reprobe_after_policy_update" if last_version < self.policy_version
                 else "informative_current_policy"
             )
-            rows.append({"id": identifier, "selected_pool": "observed" if seen else "unseen",
-                         "priority": priorities[identifier] if seen else coverage_weights[identifier],
+            rows.append({"id": identifier, "selected_pool": "observed" if seen else (
+                             "unseen" if identifier in coverage_weights else "health_reprobe"),
+                         "priority": priorities[identifier] if seen else coverage_weights.get(identifier, 0.0),
                          "adaptive_eligible": seen and identifier not in suppressed,
                          "feedback_status": feedback_status, "last_observed_policy_version": last_version,
                          "feedback_policy_age": self.policy_version - last_version if seen else None,
                          "selection_probability": math.fsum(components.values()),
                          "selection_probability_components": components})
         phase = ("uniform_only" if self.config["uniform_mix"] == 1.0 else
-                 "unseen_only" if not observed else
+                 "unseen_only" if len(unseen) == len(eligible) else
                  "feedback_mixture" if adaptive_candidates and unseen else
                  "observed_only" if adaptive_candidates else
                  "coverage_with_uniform_recheck" if unseen else "uniform_recheck")
@@ -243,7 +328,9 @@ class TaskSampler:
             "effective_pool_masses": {"uniform": uniform, "coverage": coverage, "adaptive": adaptive},
             "observed_probability_mass": math.fsum(row["selection_probability"] for row in rows if row["selected_pool"] == "observed"),
             "unseen_probability_mass": math.fsum(row["selection_probability"] for row in rows if row["selected_pool"] == "unseen"),
+            "health_reprobe_probability_mass": math.fsum(row["selection_probability"] for row in rows if row["selected_pool"] == "health_reprobe"),
             "feedback_revision": self.feedback_revision, "policy_version": self.policy_version,
+            **health_status,
         }
 
     def choose(self, exclude_ids=None, used_repos=None):
@@ -263,6 +350,8 @@ class TaskSampler:
         identifier = selected["id"]
         self.draws += 1
         self.stats[identifier]["last_selected_draw"] = self.draws
+        self.health[identifier]["ever_selected"] = True
+        self.health[identifier]["selection_attempts"] += 1
         return {
             **self.tasks[identifier], **selected, **distribution,
             "draw": self.draws,
@@ -270,7 +359,7 @@ class TaskSampler:
 
     def observe(self, task_id, rewards, resolved, *, policy_version=None, reward_signature="default",
                 learning_signal=None):
-        """Record a complete group's scalar rewards and official binary results."""
+        """Record verified trajectories' rewards, never missing slots as zeros."""
         if task_id not in self.tasks:
             raise ValueError("Cannot observe a task outside the declared training universe")
         version = self.policy_version if policy_version is None else policy_version
@@ -280,7 +369,7 @@ class TaskSampler:
             raise ValueError("A nonempty reward signature is required")
         values, outcomes = list(rewards), list(resolved)
         if len(values) < 2 or len(values) != len(outcomes):
-            raise ValueError("Observe a complete group of at least two trajectories with matching outcomes")
+            raise ValueError("Observe at least two verified trajectories with matching outcomes")
         if any(value is not None and not math.isfinite(float(value)) for value in values):
             raise ValueError("Non-finite rewards are not valid observations")
         if any(value not in (False, True, 0, 1) or value is None for value in outcomes):
@@ -298,7 +387,7 @@ class TaskSampler:
             signal = list(learning_signal)
             if (len(signal) != len(values) or
                     any(value is None or not math.isfinite(float(value)) for value in signal)):
-                raise ValueError("Learning signal must be finite and cover the complete group")
+                raise ValueError("Learning signal must be finite and cover all observed trajectories")
             signal = [float(value) for value in signal]
         second_moment = statistics.fmean(value * value for value in signal)
         if not math.isfinite(second_moment):
@@ -350,18 +439,32 @@ class TaskSampler:
 
     def state_dict(self):
         return {
-            "distribution": "uniform_plus_unseen_coverage_plus_signal_aware_observed_priority; not uniform-risk-unbiased",
+            "distribution": "health_filtered_uniform_plus_never_selected_coverage_plus_signal_aware_priority; not uniform-risk-unbiased",
             "seed": self.seed, "draws": self.draws,
             "feedback_revision": self.feedback_revision, "policy_version": self.policy_version,
             "config": dict(self.config),
             "tasks": [dict(item) for item in self.tasks.values()],
             "statistics": {identifier: dict(item) for identifier, item in self.stats.items()},
+            "health_schema_version": 1,
+            "health": copy.deepcopy(self.health),
+            "health_records": copy.deepcopy(self.health_records),
             "rng_state": self.rng.getstate(),
         }
 
     def load_state_dict(self, state):
         """Restore only an identical public task universe and sampling recipe."""
-        if state.get("config") != self.config or state.get("tasks") != list(self.tasks.values()):
+        saved_config = dict(state.get("config") or {})
+        legacy_health = "health_schema_version" not in state
+        if legacy_health:
+            if "health" in state or "health_records" in state:
+                raise ValueError("Sampler health state has no supported schema version")
+            # An older recipe had no cooldown policy. Upgrade only to the
+            # documented defaults, not silently to a different supplied policy.
+            saved_config.setdefault("health_backoff_seconds", 60.0)
+            saved_config.setdefault("health_backoff_max_seconds", 1800.0)
+        elif type(state["health_schema_version"]) is not int or state["health_schema_version"] != 1:
+            raise ValueError("Unsupported sampler health schema")
+        if saved_config != self.config or state.get("tasks") != list(self.tasks.values()):
             raise ValueError("Sampler checkpoint belongs to a different task universe or recipe")
         if set(state.get("statistics", {})) != set(self.tasks):
             raise ValueError("Sampler checkpoint is missing task statistics")
@@ -373,6 +476,63 @@ class TaskSampler:
         for identifier, item in state["statistics"].items():
             if set(item) != set(self.stats[identifier]):
                 raise ValueError("Sampler checkpoint schema differs from this implementation")
+        if legacy_health:
+            health = {identifier: self._initial_health(history_complete=False, ever_selected=(
+                item["last_selected_draw"] is not None or item["groups"] > 0))
+                for identifier, item in state["statistics"].items()}
+            health_records = {}
+        else:
+            health = copy.deepcopy(state.get("health"))
+            health_records = copy.deepcopy(state.get("health_records"))
+            if not isinstance(health, dict) or set(health) != set(self.tasks) or not isinstance(health_records, dict):
+                raise ValueError("Sampler checkpoint is missing task health records")
+            integer_fields = ("selection_attempts", "healthy_groups", "failed_groups", "completed_slots",
+                              "exhausted_slots", "consecutive_failures")
+            record_fields = {"task_id", "group_id", "completed_slots", "exhausted_slots", "recorded_at_unix",
+                             "outcome", "consecutive_failures", "retry_after_unix"}
+
+            def nonnegative_time(value):
+                return type(value) in (float, int) and math.isfinite(value) and value >= 0
+
+            for group_id, record in health_records.items():
+                if (not isinstance(group_id, str) or not group_id or not isinstance(record, dict)
+                        or set(record) != record_fields or record["group_id"] != group_id
+                        or record["task_id"] not in self.tasks
+                        or any(type(record[key]) is not int or record[key] < 0
+                               for key in ("completed_slots", "exhausted_slots", "consecutive_failures"))
+                        or not record["completed_slots"] + record["exhausted_slots"]
+                        or not all(nonnegative_time(record[key]) for key in ("recorded_at_unix", "retry_after_unix"))):
+                    raise ValueError("Invalid sampler group health record")
+                failed = bool(record["exhausted_slots"])
+                if (record["outcome"] != ("infrastructure_failure" if failed else "healthy")
+                        or bool(record["consecutive_failures"]) != failed
+                        or (failed and record["retry_after_unix"] <= record["recorded_at_unix"])
+                        or (not failed and record["retry_after_unix"] != 0)):
+                    raise ValueError("Sampler group health outcome contradicts its counts")
+            for identifier, item in health.items():
+                if (not isinstance(item, dict) or set(item) != set(self._initial_health())
+                        or any(type(item[key]) is not int or item[key] < 0 for key in integer_fields)
+                        or type(item["history_complete"]) is not bool or type(item["ever_selected"]) is not bool
+                        or not nonnegative_time(item["retry_after_unix"])):
+                    raise ValueError("Invalid sampler task health snapshot")
+                records = [row for row in health_records.values() if row["task_id"] == identifier]
+                expected = {"healthy_groups": sum(not row["exhausted_slots"] for row in records),
+                            "failed_groups": sum(bool(row["exhausted_slots"]) for row in records),
+                            "completed_slots": sum(row["completed_slots"] for row in records),
+                            "exhausted_slots": sum(row["exhausted_slots"] for row in records)}
+                if any(item[key] != value for key, value in expected.items()):
+                    raise ValueError("Sampler task health counters differ from group evidence")
+                last = health_records.get(item["last_group_id"])
+                if records:
+                    if (last is None or last["task_id"] != identifier or not item["ever_selected"]
+                            or any(item[key] != last[key] for key in ("consecutive_failures", "retry_after_unix"))
+                            or item["last_outcome"] != last["outcome"]):
+                        raise ValueError("Sampler task health tail differs from group evidence")
+                elif (item["last_group_id"] is not None or item["last_outcome"] is not None
+                      or item["consecutive_failures"] or item["retry_after_unix"]):
+                    raise ValueError("Sampler task health has no supporting group evidence")
+                if item["selection_attempts"] and not item["ever_selected"]:
+                    raise ValueError("Scheduled task cannot be unseen in health state")
 
         def tuples(value):
             return tuple(tuples(item) for item in value) if isinstance(value, (tuple, list)) else value
@@ -382,6 +542,7 @@ class TaskSampler:
         # Validate the serializable snapshot before replacing live state.
         json.dumps(state, allow_nan=False)
         self.stats = copy.deepcopy(state["statistics"])
+        self.health, self.health_records = health, health_records
         self.rng = restored_rng
         self.draws = state["draws"]
         self.feedback_revision = state["feedback_revision"]

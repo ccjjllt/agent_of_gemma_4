@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import copy
+import math
 import time
 
 from .recovery import CollectionInterrupted, file_digest
 from .evidence import make_batch_evidence, write_training_summary
+from .rewards import reward_objective
 
 
 class TrainingSession:
@@ -20,6 +22,11 @@ class TrainingSession:
         self.state = None
         self.checkpoint_id = None
         self.trainer = None
+        reserve = cfg["run"].get("update_reserve_seconds", 900.0)
+        if isinstance(reserve, bool) or not isinstance(reserve, (int, float)) or not math.isfinite(reserve) or reserve <= 0:
+            raise ValueError("run.update_reserve_seconds must be a positive finite number")
+        self.update_reserve_seconds = float(reserve)
+        self.reward_objective = reward_objective(cfg["rewards"])
 
     def check_budget(self):
         if self.expired.is_set() or time.monotonic() >= self.deadline:
@@ -62,6 +69,8 @@ class TrainingSession:
         if saved is not None:
             self.checkpoint_id, payload = saved
             self.state = payload["run"]
+            if self.state.get("reward_objective") != self.reward_objective:
+                raise ValueError("Saved reward objective differs; use a new run for wall-clock rewards")
             if (self.state.get("schema_version") != 2
                     or self.state.get("phase") not in ("collecting", "update_pending", "updating", "finished")):
                 raise ValueError("Unsupported run recovery state")
@@ -93,6 +102,7 @@ class TrainingSession:
             self.policy.save_adapter(initial)
             initial_hash = file_digest(initial / "adapter_model.safetensors")
             self.save({"schema_version": 2, "phase": "collecting", "batch": 0,
+                       "reward_objective": self.reward_objective,
                        "policy_version": 0, "optimizer_steps": 0,
                        "initial_adapter_hash": initial_hash, "sampler": self.sampler.state_dict(),
                        "ledger_updates": {}, "batch_evidence": {},
@@ -122,7 +132,19 @@ class TrainingSession:
                     cfg=self.cfg, batch=batch, policy_version=self.state["policy_version"],
                     sampler=self.sampler, endpoint=self.endpoint, run_dir=self.run_dir,
                     reward_ledger=self.ledger, recovery_state=collection_state,
-                    persist_callback=persist_collection, **self.collect_kwargs)
+                    persist_callback=persist_collection,
+                    **{**self.collect_kwargs, "update_reserve_seconds": self.update_reserve_seconds})
+                if (collection.get("budget_handoff") or collection.get("cooldown_blocked")) and not collection["accepted"]:
+                    # The small collection checkpoint retains unfinished groups
+                    # under this exact policy. Do not consume an empty batch or
+                    # replace its baseline checkpoint before an authorized resume.
+                    self.emit("run_stopped_for_task_cooldown" if collection.get("cooldown_blocked") else
+                              "run_stopped_for_update_reserve", batch=batch, phase="collecting",
+                              accepted_groups=0, deferred_groups=collection.get("deferred_groups", 0),
+                              next_retry_unix=collection.get("next_retry_unix"),
+                              update_reserve_seconds=collection.get("update_reserve_seconds", self.update_reserve_seconds),
+                              checkpoint_id=self.checkpoint_id, resume_required=True)
+                    return 75
                 state = copy.deepcopy(self.state)
                 state.update(phase="update_pending", sampler=self.sampler.state_dict(),
                              ledger_updates=copy.deepcopy(self.ledger.batch_updates),
@@ -133,7 +155,12 @@ class TrainingSession:
                 state["collection"].update(accepted_groups=len(collection["accepted"]),
                                            attempted_tasks=sorted(collection["attempted"]),
                                            elapsed_seconds=collection.get("elapsed_seconds"),
-                                           observed_elapsed_seconds=collection.get("observed_elapsed_seconds"))
+                                           observed_elapsed_seconds=collection.get("observed_elapsed_seconds"),
+                                           budget_handoff=bool(collection.get("budget_handoff", False)),
+                                           deferred_groups=collection.get("deferred_groups", 0),
+                                           update_reserve_seconds=collection.get("update_reserve_seconds", self.update_reserve_seconds))
+                state["collection"].update({key: collection.get(key) for key in (
+                    "partial_groups", "infrastructure_failed_groups", "cooldown_blocked", "next_retry_unix")})
                 # This baseline makes a failure before probability freezing
                 # recoverable without re-collecting any accepted trajectory.
                 self.save(state)
@@ -193,12 +220,22 @@ class TrainingSession:
                 initial_adapter_sha256=self.state["initial_adapter_hash"],
                 reward_evidence=self.ledger.batch_evidence(batch))
             self.save({"schema_version": 2, "phase": "finished" if finished else "collecting",
+                       "reward_objective": self.reward_objective,
                        "batch": batch + 1, "policy_version": policy_version,
                        "optimizer_steps": trainer.completed_optimizer_steps,
                        "initial_adapter_hash": self.state["initial_adapter_hash"],
                        "sampler": self.sampler.state_dict(), "ledger_updates": copy.deepcopy(self.ledger.batch_updates),
                        "batch_evidence": batch_evidence,
                        "previous_adapter_hash": current_hash})
+            if (summary.get("budget_handoff") or summary.get("cooldown_blocked")) and not finished:
+                self.emit("run_stopped_for_task_cooldown" if summary.get("cooldown_blocked") else
+                          "run_stopped_for_update_reserve", next_batch=batch + 1, phase="collecting",
+                          accepted_groups=summary["accepted_groups"],
+                          next_retry_unix=summary.get("next_retry_unix"),
+                          deferred_groups=summary.get("deferred_groups", 0),
+                          update_reserve_seconds=summary.get("update_reserve_seconds", self.update_reserve_seconds),
+                          checkpoint_id=self.checkpoint_id, resume_required=True)
+                return 75
             if summary["failure_limit_reached"] and not finished:
                 self.emit("run_stopped_after_worker_failures", next_batch=batch + 1,
                           checkpoint_id=self.checkpoint_id, resume_required=True)

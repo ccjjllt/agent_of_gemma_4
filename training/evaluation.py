@@ -59,6 +59,16 @@ def _mean(values, denominator):
             "coverage": len(values) / denominator if denominator else None}
 
 
+def _delivery_wall_seconds(result):
+    timing = result.get("delivery_timing")
+    if (not isinstance(timing, dict) or timing.get("version") != "patch_delivery_wall_v1"
+            or timing.get("scope") != "evaluate_task_start_to_verify_task_entry"
+            or timing.get("complete") is not True):
+        return None
+    value = timing.get("wall_seconds")
+    return float(value) if _finite(value) and value >= 0 else None
+
+
 def lightweight_result(result, calls=(), *, elapsed_seconds=None):
     """Keep judge aggregates and source fingerprints, never task/answer content."""
     valid = (result.get("verdict_valid") is True
@@ -85,11 +95,16 @@ def lightweight_result(result, calls=(), *, elapsed_seconds=None):
     return {
         "valid": bool(valid), "success": result["success"] if valid else None,
         "verification_complete": result.get("verification_complete") is True,
+        "pytest_ran": result.get("pytest_ran"),
+        "verdict_kind": result.get("verdict_kind"),
+        "failure_stage": result.get("failure_stage"),
+        "failure_attribution": result.get("failure_attribution"),
         "test_exit_code": result.get("test_exit_code"),
         "agent_error": result.get("agent_error"),
         "infrastructure_error": result.get("infrastructure_error"),
         **components,
         "costs": {
+            "delivery_wall_seconds": _delivery_wall_seconds(result),
             "wall_seconds": timing.get("wall_seconds"),
             "charged_seconds": timing.get("charged_seconds"),
             "worker_seconds": result.get("duration_seconds", elapsed_seconds),
@@ -106,6 +121,10 @@ def lightweight_result(result, calls=(), *, elapsed_seconds=None):
                      "effective_evaluation": provenance.get("evaluation"),
                      "context_management": provenance.get("context_management"),
                      "sampling": provenance.get("sampling"),
+                     "delivery_timing": {
+                         key: (result.get("delivery_timing") or {}).get(key)
+                         for key in ("version", "scope", "complete", "unavailable_reason")
+                     } if isinstance(result.get("delivery_timing"), dict) else None,
                      "session_clock": provenance.get("session_clock")},
     }
 
@@ -142,10 +161,10 @@ def summarize_pairs(rows, *, planned_pairs=None, population="in_sample"):
                for component in ("repair", "regression")},
             "cost_population": "all recorded arms, including incomplete or infrastructure-failed attempts",
             "costs": {cost: _mean([arm.get("costs", {}).get(cost) for arm in attempted], planned)
-                      for cost in ("wall_seconds", "charged_seconds", "worker_seconds", "verification_seconds",
+                      for cost in ("delivery_wall_seconds", "wall_seconds", "charged_seconds", "worker_seconds", "verification_seconds",
                                    "generated_tokens", "model_calls", "tool_calls")},
             "valid_costs": {cost: _mean([arm.get("costs", {}).get(cost) for arm in observed], planned)
-                            for cost in ("wall_seconds", "charged_seconds", "worker_seconds", "verification_seconds",
+                            for cost in ("delivery_wall_seconds", "wall_seconds", "charged_seconds", "worker_seconds", "verification_seconds",
                                          "generated_tokens", "model_calls", "tool_calls")},
         }
     complete = [row for row in rows if valid(row.get("base")) and valid(row.get("adapter"))
@@ -178,6 +197,7 @@ def summarize_pairs(rows, *, planned_pairs=None, population="in_sample"):
                 "repair_delta": delta("repair", "fraction"),
                 "regression_delta": delta("regression", "fraction"),
                 "wall_seconds_delta": delta("costs", "wall_seconds"),
+                "delivery_wall_seconds_delta": delta("costs", "delivery_wall_seconds"),
                 "generated_tokens_delta": delta("costs", "generated_tokens"),
             }}
 

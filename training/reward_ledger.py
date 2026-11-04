@@ -1,8 +1,10 @@
-"""Measured complete-group reward distributions and collection-cost accounting.
+"""Measured valid-trajectory groups and collection-cost accounting.
 
 The ledger exports only scalar evidence and identifiers. Raw prompts, token IDs,
 test names, XML, patches and model traces are never copied into these files.
 Unknown rewards remain unknown; selection is distinct from an observed update.
+The legacy ``complete_group`` record name means every included trajectory has a
+complete official verdict; its size may be below the planned sampling count.
 """
 from __future__ import annotations
 
@@ -46,6 +48,15 @@ def _optional_cost(value):
     return None
 
 
+def _delivery_wall_seconds(result):
+    timing = result.get("delivery_timing")
+    if (not isinstance(timing, dict) or timing.get("version") != "patch_delivery_wall_v1"
+            or timing.get("scope") != "evaluate_task_start_to_verify_task_entry"
+            or timing.get("complete") is not True):
+        return None
+    return _optional_cost(timing.get("wall_seconds"))
+
+
 def _label(value):
     if value is None:
         return None
@@ -62,6 +73,30 @@ def _integer(value):
     if type(value) is not int or value < 0:
         raise ValueError("Batch, policy and optimizer counters must be nonnegative integers")
     return value
+
+
+def _collection_evidence(value, valid_count):
+    if not isinstance(value, dict) or set(value) != {
+        "planned_trajectories", "valid_trajectories", "exhausted_trajectories",
+    }:
+        raise ValueError("Collection evidence must declare planned, valid and exhausted trajectory counts")
+    counts = {key: _integer(item) for key, item in value.items()}
+    if (counts["valid_trajectories"] != valid_count or valid_count < 2
+            or counts["planned_trajectories"] != valid_count + counts["exhausted_trajectories"]):
+        raise ValueError("Collection evidence does not match the observed trajectory group")
+    return counts
+
+
+def _collection_population(groups):
+    observed = [group["collection_evidence"] for group in groups if "collection_evidence" in group]
+    return {
+        "reported_groups": len(observed), "unknown_groups": len(groups) - len(observed),
+        "partial_groups": sum(item["exhausted_trajectories"] > 0 for item in observed),
+        "full_groups": sum(item["exhausted_trajectories"] == 0 for item in observed),
+        **{key: sum(item[key] for item in observed) for key in (
+            "planned_trajectories", "valid_trajectories", "exhausted_trajectories")},
+        "scope": "Counts cover only groups with recorded collection evidence; historical missing declarations are unknown. Exhausted trajectories supply no rewards or capability outcomes.",
+    }
 
 
 def _bounds(value):
@@ -132,11 +167,12 @@ def _atomic_bytes(path, payload):
 
 
 class RewardLedger:
-    """One ledger per run, containing only complete, valid candidate groups.
+    """One ledger per run, containing only groups of complete, valid trajectories.
 
     Group records are append-only. A reconstructed instance reloads their scalar
     records and previously acknowledged batch updates from the atomic summary.
-    Interrupted/infrastructure-failed groups are outside this ledger's cost scope.
+    Exhausted slots may be omitted from a group; their costs and outcomes remain
+    outside this ledger's reward population, with counts recorded separately.
     """
 
     def __init__(self, run_dir, *, recover_incomplete_tail=False):
@@ -167,6 +203,8 @@ class RewardLedger:
                     raise ValueError("Unsupported reward-journal record")
                 if row["group_id"] in self._group_ids:
                     raise ValueError("Reward journal contains a duplicate group")
+                if "collection_evidence" in row:
+                    _collection_evidence(row["collection_evidence"], len(row["trajectories"]))
                 self._group_ids.add(row["group_id"])
                 self.groups.append(row)
             if tail and not recover_incomplete_tail:
@@ -196,6 +234,7 @@ class RewardLedger:
         for key in ("selection_probability", "eligible_count", "candidate_count", "draw", "feedback_revision",
                     "observed_candidate_count", "unseen_candidate_count", "adaptive_candidate_count",
                     "suppressed_zero_signal_count", "observed_probability_mass", "unseen_probability_mass",
+                    "health_reprobe_probability_mass", "cooldown_count", "next_retry_unix",
                     "policy_version", "last_observed_policy_version", "feedback_policy_age"):
             if key in selection:
                 output[key] = _number(selection[key], nonnegative=True)
@@ -211,7 +250,7 @@ class RewardLedger:
     @staticmethod
     def _evidence(evidence):
         output = {"status": _label(evidence.get("status")), "reason": _label(evidence.get("reason"))}
-        for key in ("fraction", "lower", "upper", "expected", "passed", "nonpassed", "missing", "observed", "weight"):
+        for key in ("fraction", "seconds", "lower", "upper", "expected", "passed", "nonpassed", "missing", "observed", "weight"):
             if key in evidence:
                 output[key] = _number(evidence[key])
         for key in ("applicable", "coverage_complete", "available"):
@@ -256,12 +295,23 @@ class RewardLedger:
             return None
         if not isinstance(value, dict):
             raise ValueError("Reward objective must be a scalar declaration")
-        return {"algorithm": _label(value.get("algorithm")),
-                "weights": {name: _number((value.get("weights") or {}).get(name), nonnegative=True)
-                            for name in _COMPONENTS},
-                "success_token_budget": _number(value.get("success_token_budget"), nonnegative=True),
-                "dense_shaping_enabled": (value.get("dense_shaping_enabled")
-                    if isinstance(value.get("dense_shaping_enabled"), bool) else None)}
+        result = {"algorithm": _label(value.get("algorithm")),
+                  "weights": {name: _number((value.get("weights") or {}).get(name), nonnegative=True)
+                              for name in _COMPONENTS},
+                  "dense_shaping_enabled": (value.get("dense_shaping_enabled")
+                      if isinstance(value.get("dense_shaping_enabled"), bool) else None)}
+        if "walltime_scale_seconds" in value or "efficiency" in value:
+            result["walltime_scale_seconds"] = _number(value.get("walltime_scale_seconds"), nonnegative=True)
+            efficiency = value.get("efficiency")
+            if not isinstance(efficiency, dict):
+                raise ValueError("Wallclock reward objective requires an efficiency contract")
+            result["efficiency"] = {key: _label(efficiency.get(key))
+                                    for key in ("version", "transform", "population", "scope")}
+        else:
+            # Preserve the historical target rather than relabeling old token
+            # penalties as delivery time or changing a replayed journal row.
+            result["success_token_budget"] = _number(value.get("success_token_budget"), nonnegative=True)
+        return result
 
     @staticmethod
     def _normalization(value):
@@ -311,7 +361,8 @@ class RewardLedger:
     def record_group(self, *, batch, group_id, task_id, policy_version, selection,
                      scored, advantages, group_stats, results, calls, selected_for_update,
                      exclusion_reason, reward_mode, reward_signature, diagnostics=None,
-                     objective=None, normalization=None, missingness=None, learning_signal=None):
+                     objective=None, normalization=None, missingness=None, learning_signal=None,
+                     collection_evidence=None):
         batch, policy_version = _integer(batch), _integer(policy_version)
         group_id, task_id = _identity(group_id), _identity(task_id)
         if not isinstance(selected_for_update, bool):
@@ -323,6 +374,8 @@ class RewardLedger:
             raise ValueError("A reward signature is required")
         if learning_signal is not None and len(learning_signal) != n:
             raise ValueError("Learning signals must align with complete-group trajectories")
+        if collection_evidence is not None:
+            collection_evidence = _collection_evidence(collection_evidence, n)
         objective = self._objective(objective)
         normalization = self._normalization(normalization)
         missingness = self._missingness(missingness)
@@ -353,6 +406,8 @@ class RewardLedger:
                          "generation_request_seconds": _cost_sum(generation_times),
                          "queue_request_seconds": _cost_sum(queue_times)},
             })
+            if "delivery_timing" in result or (objective or {}).get("algorithm") == "wallclock_composite_intervals_v3":
+                trajectories[-1]["cost"]["delivery_wall_seconds"] = _delivery_wall_seconds(result)
         statistics_row = {}
         for key in ("reward_mean", "reward_std", "learning_signal_rms", "learning_signal_second_moment", "official_success_rate",
                     "feedback_revision", "cumulative_groups", "cumulative_success_rate", "success_rate_ema"):
@@ -372,6 +427,8 @@ class RewardLedger:
             "group_statistics": statistics_row, "diagnostics": self._diagnostics(diagnostics),
             "objective": objective, "normalization": normalization, "missingness": missingness,
         }
+        if collection_evidence is not None:
+            row["collection_evidence"] = collection_evidence
         payload = json.dumps(row, ensure_ascii=False, allow_nan=False)
         if group_id in self._group_ids:
             existing = next(item for item in self.groups if item["group_id"] == group_id)
@@ -540,6 +597,8 @@ class RewardLedger:
     def _compact_population(self, groups):
         rows = [row for group in groups for row in group["trajectories"]]
         return {"groups": len(groups), "trajectories": len(rows),
+                "collection_evidence": _collection_population(groups),
+                "delivery_wall_seconds": _cost_sum(row["cost"].get("delivery_wall_seconds") for row in rows),
                 "official_successes": sum(row["official_success"] for row in rows),
                 "official_success_rate": sum(row["official_success"] for row in rows) / len(rows) if rows else None,
                 "component_coverage": {name: self._component_coverage(groups, name) for name in ("repair", "regression")},
@@ -634,8 +693,8 @@ class RewardLedger:
         upper = [row["reward_bounds"]["upper"] if row["reward_bounds"] is not None else None for row in rows]
         cost = {"generated_tokens": sum(row["cost"]["generated_tokens"] for row in rows),
                 "model_calls": sum(row["cost"]["model_calls"] for row in rows)}
-        for name in ("worker_seconds", "verification_worker_seconds"):
-            cost[name] = _cost_sum(row["cost"][name] for row in rows)
+        for name in ("worker_seconds", "verification_worker_seconds", "delivery_wall_seconds"):
+            cost[name] = _cost_sum(row["cost"].get(name) for row in rows)
         for name in ("generation_request_seconds", "queue_request_seconds"):
             observed = sum(row["cost"][name]["observed"] for row in rows)
             cost[name] = {"observed_sum": (math.fsum(row["cost"][name]["observed_sum"] or 0.0 for row in rows)
@@ -644,6 +703,7 @@ class RewardLedger:
                           "missing_calls": sum(row["cost"][name]["missing"] for row in rows)}
         return {
             "groups": len(groups), "trajectories": len(rows),
+            "collection_evidence": _collection_population(groups),
             "official_successes": sum(row["official_success"] for row in rows),
             "official_success_rate": sum(row["official_success"] for row in rows) / len(rows) if rows else None,
             "point_rewards": _distribution(row["total"] for row in rows),
@@ -679,12 +739,13 @@ class RewardLedger:
                                        **self._partitions(groups)}
         summary = {
             "schema_version": 1,
-            "scope": "Complete valid candidate groups only, including filtered groups; interrupted/infrastructure-failed groups are not included.",
+            "scope": "Groups of complete valid trajectories, including filtered groups and valid subsets after exhausted infrastructure retries. Exhausted/interrupted slots are not reward observations.",
             "interpretation": {
                 "unknown_rewards": "Missing totals/components remain None and are excluded from observed-value statistics, not counted as zero.",
-                "costs": "Worker, verification and request seconds can overlap. They are not GPU wall time or billing; use generation_metrics for decoder throughput.",
+                "costs": "Delivery wall seconds cover official task setup through patch delivery, including model queue wait, and exclude judge setup/verification. Missing delivery timing is unknown. Worker, verification and request seconds can overlap; their sums are not GPU wall time or billing.",
                 "updates": "Selection is not completion. Optimizer-call membership is separate from non-skipped nonzero-LR membership. Zero-LR/skipped calls do not enter the latter; missing historical nonzero-LR counts remain unknown. A nonzero-LR call still does not prove changed parameters; adapter_changed records that separately.",
                 "sampling": "These are adaptively sampled training candidates, not an unbiased uniform-task evaluation.",
+                "partial_groups": "All valid trajectories in a finalized group are retained, regardless of reward. Infrastructure attrition can still change the observed population; collection evidence records planned versus valid size and does not establish unbiased sampling.",
                 "ablation": "Weight ablations reuse the same observed evidence; sensitivity is not training effectiveness or repair gain.",
                 "missingness": "No provable signal with missing evidence does not establish that missingness caused zero signal.",
             },

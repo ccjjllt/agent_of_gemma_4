@@ -26,7 +26,7 @@ import uuid
 from .probability_cache import ReferenceProbabilityCache
 from .probability_correction import CORRECTION_VERSION, corrected_token_terms, correction_metadata
 from .lr_schedule import resolve_schedule, make_scheduler
-from .prefix_tree import plan_call_groups
+from .prefix_tree import ATTENTION_LAYOUT_VERSION, plan_call_groups
 
 
 class _ReuseStopped(Exception):
@@ -138,6 +138,9 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
     if cfg.get("training_prefix_version", "exact_token_tree_v1") != "exact_token_tree_v1":
         raise ValueError("Unsupported training prefix semantics")
     cfg.update(training_prefix_reuse=prefix_mode, training_prefix_version="exact_token_tree_v1")
+    if cfg.get("training_attention_layout_version", ATTENTION_LAYOUT_VERSION) != ATTENTION_LAYOUT_VERSION:
+        raise ValueError("Unsupported tree attention layout")
+    cfg["training_attention_layout_version"] = ATTENTION_LAYOUT_VERSION
     policy.training_tree_backend = prefix_mode == "tree"
     if not cfg.get("use_bias_correction_kl", True):
         raise ValueError("Corrected KL requires differentiable current/old weighting")
@@ -691,10 +694,11 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
                 max_group_calls=int(cfg.get("training_prefix_max_calls", 4)) if prefix_mode == "tree" else 1,
                 max_tree_tokens=int(cfg.get("training_prefix_max_tokens", self.policy.max_context)),
                 max_mask_bytes=int(cfg.get("training_prefix_mask_bytes", 536870912)),
-                # Reserve float32 even for BF16 masks: native attention may
-                # promote query/mask arithmetic. This is a per-device bound.
+                # Conservative transient mask/index budget, not QKV/score or
+                # total activation memory. Every attention query is chunked.
                 mask_element_size=max(4, self.policy.model.get_input_embeddings().weight.element_size()),
                 min_shared_tokens=int(cfg.get("training_prefix_min_tokens", 256)),
+                attention_query_chunk_size=int(cfg.get("training_prefix_query_chunk_size", 256)),
             )
             if prefix_mode == "none":
                 groups.sort(key=lambda group: group["call_indices"][0])
@@ -846,7 +850,8 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
                                 independent_input_tokens += group["input_tokens"]
                                 if prefix_mode == "tree":
                                     scores = lifetime.enter_context(self.policy.per_token_logprobs_group(
-                                        group_calls, compute_entropy=True))
+                                        group_calls, compute_entropy=True,
+                                        attention_query_chunk_size=group.get("attention_query_chunk_size", 256)))
                                 else:
                                     scores = [self.policy.per_token_logprobs(group_calls[0], compute_entropy=True)]
                                 if len(scores) != len(group_calls):
@@ -1103,6 +1108,7 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
             self._training_groups = self._plan_training_groups(self._cohort)
             if emit_callback:
                 emit_callback("training_prefix_plan", mode=prefix_mode,
+                    attention_layout_version=ATTENTION_LAYOUT_VERSION,
                     logical_calls=sum(len(group["call_indices"]) for group in self._training_groups),
                     model_forward_groups=len(self._training_groups),
                     independent_input_positions=sum(group["input_tokens"] for group in self._training_groups),
@@ -1163,6 +1169,7 @@ def make_grpo_trainer(policy, config: dict, output_dir: str | Path, emit_callbac
                     "reference_cache": self._reference_cache.stats(),
                     "training_prefix_reuse": {
                         "mode": prefix_mode, "version": "exact_token_tree_v1",
+                        "attention_layout_version": ATTENTION_LAYOUT_VERSION,
                         "groups": copy.deepcopy(self._training_groups),
                         "scope": "Exact observed token identities; theoretical position/mask counts, not measured GPU speedup",
                     },

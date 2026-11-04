@@ -23,6 +23,7 @@ import tomllib
 from .endpoint import PolicyEndpoint
 from .curriculum import TaskSampler, load_tasks
 from .reward_ledger import RewardLedger
+from .rewards import reward_objective
 from .recovery import (CheckpointStore, CollectionInterrupted, RunBudget, WorkerAttemptError,
                        atomic_json, bind_parent_lifetime, file_digest, run_lock, value_digest)
 
@@ -404,6 +405,10 @@ def main():
         parser.error('session_clock must be queue_excluded/wall; require 0.02<=poll seconds<=1')
     if int(cfg['run']['max_worker_retries']) < 0 or int(cfg['run']['max_failed_groups_per_session']) < 1:
         parser.error('Worker retries must be nonnegative; the failed-group limit must be positive')
+    reserve = cfg['run'].get('update_reserve_seconds', 900.0)
+    if isinstance(reserve, bool) or not isinstance(reserve, (int, float)) or not math.isfinite(reserve) or reserve <= 0:
+        parser.error('run.update_reserve_seconds must be a positive finite number')
+    reward_objective(cfg['rewards'])
     if cfg['sampling'] != {'temperature': 1.0, 'top_p': 1.0, 'top_k': 0}:
         parser.error('The current actor uses full categorical sampling')
     walltime, std_floor = float(cfg['run']['walltime_seconds']), float(cfg['grpo']['advantage_std_floor'])

@@ -19,7 +19,7 @@ import re
 import tempfile
 import tomllib
 
-from .rewards import _weights
+from .rewards import reward_objective
 from .lr_schedule import SCHEDULE_VERSION, lr_multiplier, resolve_schedule
 
 
@@ -153,12 +153,12 @@ def make_candidate(parent, factor, value):
         if (value != "none" or parent["grpo"].get("training_prefix_reuse") != "tree"
                 or int(parent["grpo"].get("training_prefix_max_calls", 1)) <= 1):
             raise ValueError("prefix_reuse=none requires a native tree baseline with multiple calls per group")
-        # Keep the same native attention/checkpoint backend. Disabling tree
-        # grouping alone isolates sharing from the Unsloth/native kernel choice.
+        # Independent groups use the original backend. This compares the two
+        # execution paths, not sharing in isolation from kernel selection.
         candidate["grpo"]["training_prefix_max_calls"] = 1
     else:
         raise ValueError("Choose rank, reward.<one weight>, sampling, reuse, scale_rewards, or prefix_reuse")
-    _weights(candidate["rewards"])
+    reward_objective(candidate["rewards"])
     if not _differences(parent, candidate):
         raise ValueError("The candidate must change the declared factor")
     return candidate

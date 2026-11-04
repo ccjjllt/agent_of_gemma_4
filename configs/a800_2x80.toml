@@ -27,6 +27,9 @@ max_grad_norm = 1.0
 # Initial run allowance, including model loading; --resume does not renew it.
 # Only --additional-walltime-seconds explicitly extends an existing allowance.
 walltime_seconds = 7200
+# End collection early enough for worker drain, checkpoints, GRPO and adapter
+# export. This is an initial allowance, not a measured upper bound on 31B work.
+update_reserve_seconds = 900
 # Keep CPU setup/tools/verification overlapped with four GPU generation slots.
 max_cpu_workers = 8
 prefetch_groups = 2
@@ -103,11 +106,17 @@ training_prefix_reuse = "tree"
 training_prefix_version = "exact_token_tree_v1"
 training_prefix_max_calls = 4
 training_prefix_max_tokens = 32768
-# Two final additive masks per group/device; not the full activation-memory budget.
+# Transient rectangular mask/index workspace per device; not QKV, scores or
+# total activation memory. Chunk gathers and masks are recomputed in backward.
 training_prefix_mask_bytes = 536870912
+training_prefix_query_chunk_size = 256
 training_prefix_min_tokens = 256
 
 [curriculum]
+# Failed infrastructure is separate from model ability; retry unhealthy tasks
+# only after exponential wall-clock backoff, including across resume.
+health_backoff_seconds = 60
+health_backoff_max_seconds = 1800
 # Probability mass: all-task uniform 20%, unseen coverage 30%, observed priority 50%.
 uniform_mix = 0.2
 coverage_mix = 0.3
@@ -121,12 +130,15 @@ priority_floor = 0.05
 repo_repeat_penalty = 0.5
 
 [rewards]
+objective_version = "wallclock_composite_intervals_v3"
 resolved_weight = 1.0
 repair_weight = 0.3
 regression_weight = 0.5
 efficiency_weight = 0.02
 repetition_weight = 0.0
-success_token_budget = 65536
+# Linear cost for every valid trajectory, including failed repairs. No cap.
+# Measured setup-to-patch-delivery wall time includes queue wait, excludes judge.
+walltime_scale_seconds = 3600
 
 [runtime]
 python = "/opt/gemma-runtime/bin/python"

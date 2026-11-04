@@ -42,6 +42,13 @@ def make_batch_evidence(*, batch, policy_before, policy_after, collection, traje
             "effective_advantage_yield": _ratio(accepted, attempted),
             "elapsed_seconds": collection.get("elapsed_seconds"),
             "observed_elapsed_seconds": collection.get("observed_elapsed_seconds"),
+            "budget_handoff": collection.get("budget_handoff", False),
+            "deferred_groups": collection.get("deferred_groups", 0),
+            "update_reserve_seconds": collection.get("update_reserve_seconds"),
+            "partial_groups": collection.get("partial_groups"),
+            "infrastructure_failed_groups": collection.get("infrastructure_failed_groups"),
+            "cooldown_blocked": collection.get("cooldown_blocked"),
+            "next_retry_unix": collection.get("next_retry_unix"),
         },
         "updates": {
             "optimizer_steps": int((stats or {}).get("optimizer_steps", 0)),

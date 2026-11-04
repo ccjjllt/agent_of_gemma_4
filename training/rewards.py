@@ -15,8 +15,10 @@ from typing import Callable
 import xml.etree.ElementTree as ET
 
 
-REWARD_OBJECTIVE_VERSION = "fixed_composite_intervals_v2"
+REWARD_OBJECTIVE_VERSION = "wallclock_composite_intervals_v3"
 REWARD_NORMALIZATION_VERSION = "pairwise_reward_std_upper_v1"
+DELIVERY_TIMING_VERSION = "patch_delivery_wall_v1"
+DELIVERY_TIMING_SCOPE = "evaluate_task_start_to_verify_task_entry"
 
 
 def junit_reward_features(
@@ -144,9 +146,44 @@ def _weights(config):
                "repetition": float(config.get("repetition_weight", 0.0))}
     if any(not math.isfinite(value) or value < 0 for value in weights.values()):
         raise ValueError("Reward weights must be finite and nonnegative")
-    if weights["resolved"] - sum(weights[key] for key in ("regression", "efficiency", "repetition")) <= weights["repair"]:
-        raise ValueError("resolved_weight must dominate shaping and preserve success ordering")
+    if weights["resolved"] - sum(weights[key] for key in ("regression", "repetition")) <= weights["repair"]:
+        raise ValueError("resolved_weight must dominate non-time shaping at equal delivery cost")
     return weights
+
+
+def reward_objective(config):
+    """The versioned repair/time tradeoff; elapsed time has no saturation cap."""
+    if "success_token_budget" in config:
+        raise ValueError("success_token_budget belongs to the retired reward; use a new walltime_scale_seconds recipe")
+    if config.get("objective_version", REWARD_OBJECTIVE_VERSION) != REWARD_OBJECTIVE_VERSION:
+        raise ValueError("Reward objective differs from the wall-clock contract")
+    scale = config.get("walltime_scale_seconds", 3600.0)
+    if type(scale) not in (int, float) or not math.isfinite(scale) or scale <= 0:
+        raise ValueError("walltime_scale_seconds must be positive and finite")
+    return {"algorithm": REWARD_OBJECTIVE_VERSION, "weights": _weights(config),
+            "walltime_scale_seconds": float(scale),
+            "efficiency": {"version": DELIVERY_TIMING_VERSION, "transform": "linear",
+                           "population": "all_valid_trajectories", "scope": DELIVERY_TIMING_SCOPE},
+            "dense_shaping_enabled": bool(config.get("dense_shaping_enabled", True))}
+
+
+def delivery_cost_evidence(result):
+    """Use measured delivery time, or a witnessed worker-duration upper bound."""
+    timing = result.get("delivery_timing") or {}
+    if not isinstance(timing, dict):
+        timing = {}
+    seconds = timing.get("wall_seconds")
+    valid = lambda value: type(value) in (int, float) and math.isfinite(value) and value >= 0
+    if (timing.get("version") == DELIVERY_TIMING_VERSION and timing.get("scope") == DELIVERY_TIMING_SCOPE
+            and timing.get("complete") is True and valid(seconds)):
+        return {"status": "complete", "reason": None, "seconds": float(seconds),
+                "lower": float(seconds), "upper": float(seconds)}
+    upper = result.get("duration_seconds")
+    if valid(upper):
+        return {"status": "bounded_partial", "reason": "delivery_clock_missing_worker_upper_bound",
+                "seconds": None, "lower": 0.0, "upper": float(upper)}
+    return {"status": "unavailable", "reason": "unbounded_delivery_cost",
+            "seconds": None, "lower": 0.0, "upper": None}
 
 
 def _rate_evidence(features, name):
@@ -200,10 +237,8 @@ def compute_reward(result: dict, calls: list[dict], config: dict) -> dict:
     success = result.get("success")
     if not isinstance(success, bool):
         raise ValueError("Official success must be an explicit boolean")
-    weights = _weights(config)
-    budget = int(config.get("success_token_budget", 65536))
-    if budget < 1:
-        raise ValueError("success_token_budget must be positive")
+    objective = reward_objective(config)
+    weights = objective["weights"]
     if not calls or any(not call.get("completion_ids") for call in calls):
         raise ValueError("Reward needs recorded, nonempty model calls")
     generated_tokens = sum(len(call["completion_ids"]) for call in calls)
@@ -215,11 +250,24 @@ def compute_reward(result: dict, calls: list[dict], config: dict) -> dict:
     dense_enabled = bool(config.get("dense_shaping_enabled", True))
     components = {
         "resolved": weights["resolved"] * int(success),
-        "efficiency": -weights["efficiency"] * min(generated_tokens / budget, 1.0) if success else 0.0,
         "repetition": -weights["repetition"] * duplicate_fraction if success else 0.0,
     }
     bounds = {name: {"lower": value, "upper": value} for name, value in components.items()}
     evidence = {name: {"status": "complete", "reason": None} for name in components}
+    time_evidence = delivery_cost_evidence(result)
+    evidence["efficiency"] = time_evidence
+    coefficient = weights["efficiency"] / objective["walltime_scale_seconds"]
+    if coefficient == 0:
+        components["efficiency"] = 0.0
+        bounds["efficiency"] = {"lower": 0.0, "upper": 0.0}
+        evidence["efficiency"] = {**time_evidence, "status": "disabled", "reason": "configured_component_disabled"}
+    elif time_evidence["upper"] is None:
+        components["efficiency"] = None
+        bounds["efficiency"] = None
+    else:
+        lower, upper = -coefficient * time_evidence["upper"], -coefficient * time_evidence["lower"]
+        components["efficiency"] = lower if time_evidence["status"] == "complete" else None
+        bounds["efficiency"] = {"lower": lower, "upper": upper}
     for name in ("repair", "regression"):
         item = _rate_evidence(features, name)
         if name == "regression" and success and item["lower"] > 0:
@@ -235,17 +283,19 @@ def compute_reward(result: dict, calls: list[dict], config: dict) -> dict:
         lower, upper = min(endpoints), max(endpoints)
         bounds[name] = {"lower": lower, "upper": upper}
         components[name] = lower if lower == upper else None
-    lower = math.fsum(item["lower"] for item in bounds.values())
-    upper = math.fsum(item["upper"] for item in bounds.values())
+    reward_bounds = ({key: math.fsum(item[key] for item in bounds.values()) for key in ("lower", "upper")}
+                     if all(item is not None for item in bounds.values()) else None)
     complete = all(value is not None for value in components.values())
     features.update({
         "resolved": success, "generated_tokens": generated_tokens, "model_calls": len(calls),
-        "duplicate_completion_fraction": duplicate_fraction, "success_token_budget": budget,
+        "duplicate_completion_fraction": duplicate_fraction,
+        "delivery_wall_seconds": time_evidence["seconds"],
+        "walltime_scale_seconds": objective["walltime_scale_seconds"],
         "dense_shaping_enabled": dense_enabled, "reward_complete": complete,
         "missing_components": [name for name, value in components.items() if value is None],
     })
     return {"total": math.fsum(components.values()) if complete else None,
-            "reward_bounds": {"lower": lower, "upper": upper}, "components": components,
+            "reward_bounds": reward_bounds, "components": components,
             "component_bounds": bounds, "component_evidence": evidence, "features": features}
 
 
@@ -276,18 +326,20 @@ def _centered_bounds(bounds):
 
 def _select_signal(scored, threshold, omit=None):
     names = [name for name in scored[0]["components"] if name != omit]
-    bounds = [{"lower": math.fsum(row["component_bounds"][name]["lower"] for name in names),
-               "upper": math.fsum(row["component_bounds"][name]["upper"] for name in names)} for row in scored]
-    intervals, strict = _centered_bounds(bounds)
+    bounds = [({key: math.fsum(row["component_bounds"][name][key] for name in names)
+                for key in ("lower", "upper")}
+               if all(row["component_bounds"][name] is not None for name in names) else None) for row in scored]
+    unbounded = any(item is None for item in bounds)
+    intervals, strict = ([None] * len(scored), [0.0] * len(scored)) if unbounded else _centered_bounds(bounds)
     common = [name for name in names if all(row["components"][name] is not None for row in scored)]
     common_rewards = [math.fsum(row["components"][name] for name in common) for row in scored]
     common_mean = statistics.fmean(common_rewards)
     common_signal = [value - common_mean for value in common_rewards]
-    complete = all(item["lower"] == item["upper"] for item in bounds)
+    complete = not unbounded and all(item["lower"] == item["upper"] for item in bounds)
     # This counterfactual describes the former fallback; it never supplies the
     # optimized signal. Missing a regression component must not remove its cost.
     would_have_fallback = not complete and _rms(strict) <= threshold and _rms(common_signal) > threshold
-    mode = "exact_composite" if complete else "interval_centered_advantage"
+    mode = "unbounded_reward_evidence" if unbounded else "exact_composite" if complete else "interval_centered_advantage"
     return {"signal": strict, "reward_bounds": bounds,
             "advantage_bounds": intervals, "strict_signal": strict,
             "signal_mode": mode, "common_components": common, "common_signal": common_signal,
@@ -303,6 +355,8 @@ def _reward_std_upper_bound(bounds):
     decrease when intervals widen. The box allows all unknown-value couplings;
     shared missing-component names do not establish a shared cancelling value.
     """
+    if any(item is None for item in bounds):
+        return None
     distances = [max(abs(left["lower"] - right["upper"]),
                      abs(left["upper"] - right["lower"]))
                  for i, left in enumerate(bounds) for right in bounds[i + 1:]]
@@ -320,13 +374,15 @@ def _missingness(scored, weights, dense_enabled):
             if row["components"][name] is None:
                 component_counts[name] += 1
                 reasons[row["component_evidence"][name].get("reason") or "missing_component_evidence"] += 1
-    widths = [row["reward_bounds"]["upper"] - row["reward_bounds"]["lower"] for row in scored]
+    widths = [row["reward_bounds"]["upper"] - row["reward_bounds"]["lower"] for row in scored
+              if row["reward_bounds"] is not None]
     pattern = ("point_identified" if not any(component_counts.values()) else
                "uniform_missing_pattern" if len(patterns) == 1 else "mixed_evidence_patterns")
     return {"trajectory_patterns": dict(sorted(patterns.items())),
             "missing_component_counts": component_counts, "reason_counts": dict(sorted(reasons.items())),
             "group_pattern": pattern,
-            "uncertainty_width_mean": statistics.fmean(widths), "uncertainty_width_max": max(widths)}
+            "uncertainty_width_mean": statistics.fmean(widths) if len(widths) == len(scored) else None,
+            "uncertainty_width_max": max(widths) if len(widths) == len(scored) else None}
 
 
 def score_group_rewards(results, calls, config, *, scale_rewards="group", advantage_std_floor=0.05,
@@ -348,17 +404,16 @@ def score_group_rewards(results, calls, config, *, scale_rewards="group", advant
     chosen = _select_signal(scored, min_group_std)
     signal = chosen["signal"]
     std_upper_bound = _reward_std_upper_bound(chosen["reward_bounds"])
-    denominator = max(std_upper_bound, advantage_std_floor) if scale_rewards == "group" else 1.0
-    advantages = [value / denominator for value in signal]
+    denominator = (max(std_upper_bound, advantage_std_floor) if scale_rewards == "group" else 1.0
+                   ) if std_upper_bound is not None else None
+    advantages = [value / denominator for value in signal] if denominator is not None else [0.0] * len(signal)
     features = [row["features"] for row in scored]
     legacy_dense = (bool(config.get("dense_shaping_enabled", True))
                     and all(item.get("junit_available") and item.get("dense_coverage_complete") for item in features)
                     and len({(item.get("repair_fraction") is None, item.get("regression_fraction") is None)
                              for item in features}) == 1)
     weights = _weights(config)
-    objective = {"algorithm": REWARD_OBJECTIVE_VERSION, "weights": weights,
-                 "success_token_budget": int(config.get("success_token_budget", 65536)),
-                 "dense_shaping_enabled": bool(config.get("dense_shaping_enabled", True))}
+    objective = reward_objective(config)
     signature = json.dumps(objective, sort_keys=True, separators=(",", ":"))
     normalization_identity = {"algorithm": REWARD_NORMALIZATION_VERSION,
                               "scale_rewards": scale_rewards,
@@ -366,12 +421,16 @@ def score_group_rewards(results, calls, config, *, scale_rewards="group", advant
                               "min_group_std": min_group_std}
     normalization = {"mode": scale_rewards, "algorithm": REWARD_NORMALIZATION_VERSION,
                      "denominator": denominator, "std_upper_bound": std_upper_bound,
-                     "multiplier": 1.0 / denominator,
+                     "multiplier": 1.0 / denominator if denominator is not None else None,
                      "normalization_signature": json.dumps(normalization_identity, sort_keys=True, separators=(",", ":"))}
     missingness = _missingness(scored, weights, objective["dense_shaping_enabled"])
     legacy_rewards = []
     for row in scored:
-        parts = [row["components"][name] for name in ("resolved", "efficiency", "repetition")]
+        # Reconstruct the retired success-only capped-token cost independently;
+        # missing/new timing must neither enter nor crash this counterfactual.
+        legacy_efficiency = (-weights["efficiency"] * min(row["features"]["generated_tokens"] / 65536, 1.0)
+                             if row["features"]["resolved"] else 0.0)
+        parts = [row["components"][name] for name in ("resolved", "repetition")] + [legacy_efficiency]
         if legacy_dense:
             for name, sign in (("repair", 1), ("regression", -1)):
                 observed = row["features"].get(name + "_fraction")
