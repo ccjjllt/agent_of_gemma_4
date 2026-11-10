@@ -719,6 +719,18 @@ def _capture_final_verification(task: Any, manager: Any = None, *, delivery_cloc
                     xml_text, fail_to_pass=task.FAIL_TO_PASS, pass_to_pass=task.PASS_TO_PASS,
                     fallback_requirements=fallback, node_matcher=verification._node_matches_requirement,
                 )
+                try:
+                    if __package__:
+                        from .reward.junit_bridge import build_node_report
+                    else:
+                        from reward.junit_bridge import build_node_report
+                    matcher = getattr(verification, "_node_matches_requirement", None)
+                    active_capture["node_report"] = build_node_report(
+                        tuple(task.FAIL_TO_PASS or ()), tuple(task.PASS_TO_PASS or ()),
+                        xml_text, matcher,
+                    )
+                except Exception:
+                    pass
             except Exception as error:
                 active_capture["reward_features"] = missing_features(f"junit_capture_{type(error).__name__}")
         return output
@@ -749,6 +761,8 @@ def _capture_final_verification(task: Any, manager: Any = None, *, delivery_cloc
                     "test_exit_code": baseline.test_exit_code,
                     "junit_sha256": control_capture.get("reward_features", {}).get("junit_sha256"),
                 })
+                if isinstance(control_capture.get("node_report"), dict):
+                    control["baseline_node_report"] = control_capture["node_report"]
             except Exception as error:
                 # A failed diagnostic cannot turn an unknown failure into zero.
                 control["error_type"] = type(error).__name__
@@ -1014,10 +1028,50 @@ async def _run_task(args: argparse.Namespace, api_key: str) -> dict[str, Any]:
             if captured.get("failure_control") else captured.get("verification_duration_seconds")
         ),
     })
+    spo_bundle: dict[str, Any] = {}
+    try:
+        if __package__:
+            from .reward.junit_bridge import sha256_text, task_key_for
+        else:
+            from reward.junit_bridge import sha256_text, task_key_for
+        fingerprint = json.dumps({
+            "packages": {name: importlib.metadata.version(name) for name in ("swegemma", "adk-eval-core", "adk-submission", "google-adk", "litellm")},
+            "evaluation": settings,
+            "sandbox": args.sandbox,
+        }, sort_keys=True, default=str)
+        spo_bundle["task_key"] = task_key_for(
+            task.instance_id, getattr(task, "repo", ""), getattr(task, "base_commit", "") or getattr(task, "baseCommit", ""),
+            getattr(task, "test_patch", "") or "", fingerprint,
+        )
+        candidate_report = dict(captured.get("node_report") or {})
+        candidate_report.update({
+            "verification_complete": verdict.get("verification_complete"),
+            "verdict_valid": verdict.get("verdict_valid"),
+            "infrastructure_error": verdict.get("infrastructure_error"),
+            "junit_available": reward_features.get("junit_available", candidate_report.get("junit_available")),
+        })
+        if candidate_report.get("expected_universes"):
+            spo_bundle["candidate_report"] = candidate_report
+        control = captured.get("failure_control") or {}
+        baseline_nodes = control.get("baseline_node_report")
+        if isinstance(baseline_nodes, dict) and baseline_nodes.get("expected_universes"):
+            baseline_report = dict(baseline_nodes)
+            baseline_report.update({
+                "verification_complete": True,
+                "verdict_valid": True,
+                "junit_available": True,
+            })
+            spo_bundle["baseline_report"] = baseline_report
+        tool_calls = getattr(result, "tool_calls", 0)
+        if type(tool_calls) is int and tool_calls >= 0:
+            spo_bundle["resource_metrics"] = {"tool_calls": tool_calls}
+    except Exception:
+        spo_bundle = {}
     return {
         "task_id": task.instance_id,
         "rollout_id": args.rollout_id,
         **verdict,
+        **spo_bundle,
         "failure_attribution": {"version": "judge_failure_attribution_v1",
                                 "empty_patch_control": captured.get("failure_control")},
         "model_delivery": delivery.summary(),

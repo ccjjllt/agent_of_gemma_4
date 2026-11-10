@@ -783,6 +783,33 @@ class PolicyEndpoint:
                     self.calls[identity] = records
         return records
 
+    def recover_full_rollout_calls(self, identity, version):
+        """Return full consumed responses for a trajectory-scoped TITO bridge.
+
+        Only explicitly consumed rows are returned. This preserves the complete
+        sampled response without changing the legacy consumed-call snapshot.
+        """
+        with self.condition:
+            record_lock = self._record_locks.get(identity, threading.Lock())
+        with record_lock:
+            rows = self.store.rollout_rows(identity, version)
+        calls = []
+        for row in rows:
+            if row["state"] != "consumed" or not row["result"]:
+                continue
+            result = dict(row["result"])
+            result.setdefault("request_id", row["request_id"])
+            result.setdefault("call_index", row["call_index"])
+            calls.append({
+                "request_id": row["request_id"],
+                "call_index": row["call_index"],
+                "result": result,
+                "metadata": dict(row["metadata"]),
+                "consumed_at": row.get("consumed_at"),
+            })
+        calls.sort(key=lambda item: item["call_index"])
+        return calls
+
     def acknowledge(self, request_id, identity):
         with self.condition:
             record_lock = self._record_locks.get(identity)

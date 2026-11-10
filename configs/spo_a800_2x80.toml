@@ -1,0 +1,84 @@
+# Single-stream SPO baseline. GPU capacity and CT effects are not yet measured.
+algorithm = "single_stream_spo"
+
+[policy]
+model_name = "google/gemma-4-31B-it-qat-q4_0-unquantized"
+model_revision = "1e4d8beecacb8b7590c1d8bedd7335f687bf311f"
+model_source_uri = "https://huggingface.co/google/gemma-4-31B-it-qat-q4_0-unquantized/tree/1e4d8beecacb8b7590c1d8bedd7335f687bf311f"
+response_parser = "official_vllm_gemma4_0_19_1"
+lora_rank = 128
+lora_alpha = 256
+lora_dropout = 0.0
+adapter_export_dtype = "bfloat16"
+max_context = 32768
+device_map = "balanced"
+logprob_chunk_size = 64
+seed = 3407
+
+[run]
+max_batches = 32
+walltime_seconds = 7200
+update_reserve_seconds = 900
+max_cpu_workers = 8
+max_worker_retries = 1
+
+[inference]
+engine = "sglang"
+tensor_parallel_size = 2
+colocated = true
+enable_prefix_cache = true
+return_token_ids = true
+return_logprobs = true
+
+[spo]
+target_action_tokens = 32768
+max_policy_lag = 2
+ppo_epochs = 1
+clip_epsilon = 0.2
+clip_epsilon_high = 0.28
+advantage_epsilon = 0.000001
+value_prior = 0.5
+success_prior = 0.5
+prior_strength = 1.0
+kl_half_life = 0.05
+sampling_epsilon = 0.05
+
+[optimizer]
+type = "fused_adamw"
+learning_rate = 0.000005
+max_grad_norm = 1.0
+gradient_checkpointing = true
+
+[rewards]
+objective_version = "official_differential_spo_v1"
+success_efficiency_weight = 0.05
+
+[adapter]
+double_buffer = true
+allow_resident_pair = false
+
+[data]
+task_ids = []
+exclude_task_ids = []
+
+[runtime]
+python = "/opt/gemma-runtime/bin/python"
+sandbox_baseline_python = "/opt/gemma-sandbox-baseline/bin/python"
+sandbox = "subprocess"
+sandbox_root = "/root/autodl-tmp/gemma4/sandboxes"
+port = 0
+session_clock = "queue_excluded"
+event_summarizer = "official"
+queue_timing_poll_seconds = 0.2
+
+[runtime.evaluation]
+timeout_seconds = 300
+verification_timeout_seconds = 300
+max_tool_calls = 28
+max_time_minutes = 8.0
+max_turns = 50
+
+[sampling]
+temperature = 1.0
+top_p = 1.0
+top_k = 0
