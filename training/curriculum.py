@@ -146,9 +146,11 @@ class TaskSampler:
                 "selection_attempts": 0, "healthy_groups": 0, "failed_groups": 0,
                 "completed_slots": 0, "exhausted_slots": 0,
                 "consecutive_failures": 0, "retry_after_unix": 0.0,
+                "judge_blocked": False,
                 "last_outcome": None, "last_group_id": None}
 
-    def record_health(self, task_id, *, group_id, completed_slots, exhausted_slots):
+    def record_health(self, task_id, *, group_id, completed_slots, exhausted_slots,
+                      judge_collection_blocked=False):
         """Record one group's runtime outcome exactly once, without reward data.
 
         A partially usable group with an exhausted infrastructure slot backs
@@ -163,7 +165,13 @@ class TaskSampler:
         if (any(type(value) is not int or value < 0 for value in (completed_slots, exhausted_slots))
                 or completed_slots + exhausted_slots == 0):
             raise ValueError("Health feedback requires nonnegative counts and at least one terminal slot")
-        identity = {"task_id": task_id, "completed_slots": completed_slots, "exhausted_slots": exhausted_slots}
+        if type(judge_collection_blocked) is not bool:
+            raise ValueError("judge_collection_blocked must be an explicit boolean")
+        if judge_collection_blocked and not exhausted_slots:
+            raise ValueError("A judge collection block requires exhausted slots")
+        identity = {"task_id": task_id, "completed_slots": completed_slots,
+                    "exhausted_slots": exhausted_slots,
+                    "judge_collection_blocked": judge_collection_blocked}
         previous = self.health_records.get(group_id)
         if previous is not None:
             if all(previous[key] == value for key, value in identity.items()):
@@ -176,6 +184,10 @@ class TaskSampler:
             item["completed_slots"] += completed_slots - previous["completed_slots"]
             item["exhausted_slots"] += exhausted_slots - previous["exhausted_slots"]
             previous.update(identity)
+            # A budget handoff can record a judge block before later verified
+            # slots show the judge did collect pytest. The task flag must follow
+            # the records, including when this group's flag is cleared.
+            self._sync_judge_block(task_id)
             # In particular, retain recorded_at, streak and retry_after, even
             # when this older group's additional slots arrive after newer work.
             return dict(previous)
@@ -202,7 +214,16 @@ class TaskSampler:
                   "outcome": item["last_outcome"], "consecutive_failures": item["consecutive_failures"],
                   "retry_after_unix": item["retry_after_unix"]}
         self.health_records[group_id] = record
+        # Any still-exhausted group whose empty-patch control cannot collect
+        # pytest keeps the task out. A revised record that clears the flag
+        # lifts the block when no other group still carries it.
+        self._sync_judge_block(task_id)
         return dict(record)
+
+    def _sync_judge_block(self, task_id):
+        self.health[task_id]["judge_blocked"] = any(
+            row["judge_collection_blocked"] for row in self.health_records.values()
+            if row["task_id"] == task_id)
 
     def set_policy_version(self, version):
         """Advance after real optimizer updates, never after a zero-signal batch.
@@ -246,10 +267,15 @@ class TaskSampler:
         excluded, repos = set(exclude_ids or []), set(used_repos or [])
         now = time.time()
         available = [identifier for identifier in self.tasks if identifier not in excluded]
-        cooling = [identifier for identifier in available if self.health[identifier]["retry_after_unix"] > now]
-        eligible = [identifier for identifier in available if identifier not in cooling]
+        judge_blocked = [identifier for identifier in available if self.health[identifier]["judge_blocked"]]
+        cooling = [identifier for identifier in available
+                   if identifier not in judge_blocked and self.health[identifier]["retry_after_unix"] > now]
+        eligible = [identifier for identifier in available
+                    if identifier not in cooling and identifier not in judge_blocked]
         health_status = {
-            "cooldown_blocked": bool(cooling and not eligible), "cooldown_count": len(cooling),
+            "cooldown_blocked": bool((cooling or judge_blocked) and not eligible),
+            "cooldown_count": len(cooling),
+            "judge_blocked_count": len(judge_blocked),
             "next_retry_unix": min((self.health[identifier]["retry_after_unix"] for identifier in cooling), default=None),
         }
         observed = [identifier for identifier in eligible if self.stats[identifier]["groups"] > 0]
@@ -445,7 +471,7 @@ class TaskSampler:
             "config": dict(self.config),
             "tasks": [dict(item) for item in self.tasks.values()],
             "statistics": {identifier: dict(item) for identifier, item in self.stats.items()},
-            "health_schema_version": 1,
+            "health_schema_version": 2,
             "health": copy.deepcopy(self.health),
             "health_records": copy.deepcopy(self.health_records),
             "rng_state": self.rng.getstate(),
@@ -462,8 +488,11 @@ class TaskSampler:
             # documented defaults, not silently to a different supplied policy.
             saved_config.setdefault("health_backoff_seconds", 60.0)
             saved_config.setdefault("health_backoff_max_seconds", 1800.0)
-        elif type(state["health_schema_version"]) is not int or state["health_schema_version"] != 1:
-            raise ValueError("Unsupported sampler health schema")
+        elif type(state["health_schema_version"]) is not int or state["health_schema_version"] != 2:
+            raise ValueError(
+                "Sampler health schema cannot resume onto this recipe; start a new run. "
+                "Saved collection state from before judge-blocked tasks is not reusable."
+            )
         if saved_config != self.config or state.get("tasks") != list(self.tasks.values()):
             raise ValueError("Sampler checkpoint belongs to a different task universe or recipe")
         if set(state.get("statistics", {})) != set(self.tasks):
@@ -489,7 +518,8 @@ class TaskSampler:
             integer_fields = ("selection_attempts", "healthy_groups", "failed_groups", "completed_slots",
                               "exhausted_slots", "consecutive_failures")
             record_fields = {"task_id", "group_id", "completed_slots", "exhausted_slots", "recorded_at_unix",
-                             "outcome", "consecutive_failures", "retry_after_unix"}
+                             "outcome", "consecutive_failures", "retry_after_unix",
+                             "judge_collection_blocked"}
 
             def nonnegative_time(value):
                 return type(value) in (float, int) and math.isfinite(value) and value >= 0
@@ -504,6 +534,9 @@ class TaskSampler:
                         or not all(nonnegative_time(record[key]) for key in ("recorded_at_unix", "retry_after_unix"))):
                     raise ValueError("Invalid sampler group health record")
                 failed = bool(record["exhausted_slots"])
+                if (type(record["judge_collection_blocked"]) is not bool
+                        or (record["judge_collection_blocked"] and not failed)):
+                    raise ValueError("Judge collection block requires an exhausted group")
                 if (record["outcome"] != ("infrastructure_failure" if failed else "healthy")
                         or bool(record["consecutive_failures"]) != failed
                         or (failed and record["retry_after_unix"] <= record["recorded_at_unix"])
@@ -513,8 +546,12 @@ class TaskSampler:
                 if (not isinstance(item, dict) or set(item) != set(self._initial_health())
                         or any(type(item[key]) is not int or item[key] < 0 for key in integer_fields)
                         or type(item["history_complete"]) is not bool or type(item["ever_selected"]) is not bool
+                        or type(item["judge_blocked"]) is not bool
                         or not nonnegative_time(item["retry_after_unix"])):
                     raise ValueError("Invalid sampler task health snapshot")
+                if item["judge_blocked"] != any(row["judge_collection_blocked"] for row in
+                                                [row for row in health_records.values() if row["task_id"] == identifier]):
+                    raise ValueError("Sampler judge block differs from group evidence")
                 records = [row for row in health_records.values() if row["task_id"] == identifier]
                 expected = {"healthy_groups": sum(not row["exhausted_slots"] for row in records),
                             "failed_groups": sum(bool(row["exhausted_slots"]) for row in records),

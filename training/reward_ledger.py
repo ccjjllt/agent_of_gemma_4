@@ -26,6 +26,7 @@ _FLAGS = (
     "legacy_group_fallback_triggered", "legacy_all_failure_zero",
     "new_signal_recovered_vs_legacy", "no_provable_signal_with_missing",
     "complete_evidence_zero_signal", "would_have_fallback",
+    "blocked_time_only_failures",
 )
 _LABEL = re.compile(r"[A-Za-z0-9_.:-]{1,160}")
 _IDENTITY = re.compile(r"[A-Za-z0-9][A-Za-z0-9_./:-]{0,255}")
@@ -305,8 +306,10 @@ class RewardLedger:
             efficiency = value.get("efficiency")
             if not isinstance(efficiency, dict):
                 raise ValueError("Wallclock reward objective requires an efficiency contract")
-            result["efficiency"] = {key: _label(efficiency.get(key))
-                                    for key in ("version", "transform", "population", "scope")}
+            copied = ["version", "transform", "population", "scope"]
+            if "queue_wait" in efficiency:
+                copied.append("queue_wait")
+            result["efficiency"] = {key: _label(efficiency.get(key)) for key in copied}
         else:
             # Preserve the historical target rather than relabeling old token
             # penalties as delivery time or changing a replayed journal row.

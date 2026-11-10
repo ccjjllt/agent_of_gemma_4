@@ -163,21 +163,45 @@ def reward_objective(config):
     return {"algorithm": REWARD_OBJECTIVE_VERSION, "weights": _weights(config),
             "walltime_scale_seconds": float(scale),
             "efficiency": {"version": DELIVERY_TIMING_VERSION, "transform": "linear",
-                           "population": "all_valid_trajectories", "scope": DELIVERY_TIMING_SCOPE},
+                           "population": "all_valid_trajectories", "scope": DELIVERY_TIMING_SCOPE,
+                           "queue_wait": "excluded_confirmed"},
             "dense_shaping_enabled": bool(config.get("dense_shaping_enabled", True))}
 
 
+def _nonnegative_seconds(value):
+    return type(value) in (int, float) and math.isfinite(value) and value >= 0
+
+
 def delivery_cost_evidence(result):
-    """Use measured delivery time, or a witnessed worker-duration upper bound."""
+    """Use measured delivery time, or a witnessed worker-duration upper bound.
+
+    Confirmed GPU queue wait stays on the timing record and is subtracted from
+    the number the efficiency term reads. Missing queue evidence is not guessed.
+    """
     timing = result.get("delivery_timing") or {}
     if not isinstance(timing, dict):
         timing = {}
     seconds = timing.get("wall_seconds")
-    valid = lambda value: type(value) in (int, float) and math.isfinite(value) and value >= 0
+    valid = _nonnegative_seconds
     if (timing.get("version") == DELIVERY_TIMING_VERSION and timing.get("scope") == DELIVERY_TIMING_SCOPE
             and timing.get("complete") is True and valid(seconds)):
-        return {"status": "complete", "reason": None, "seconds": float(seconds),
-                "lower": float(seconds), "upper": float(seconds)}
+        queue = timing.get("queue_wait_seconds")
+        if queue is None:
+            active, queue_seconds = float(seconds), None
+        elif not valid(queue):
+            return {"status": "unavailable", "reason": "invalid_confirmed_queue_wait",
+                    "seconds": None, "lower": 0.0, "upper": None,
+                    "wall_seconds": float(seconds), "queue_wait_seconds": None}
+        else:
+            active, queue_seconds = float(seconds) - float(queue), float(queue)
+            if active < -1e-9:
+                return {"status": "unavailable", "reason": "queue_wait_exceeds_delivery_wall",
+                        "seconds": None, "lower": 0.0, "upper": None,
+                        "wall_seconds": float(seconds), "queue_wait_seconds": queue_seconds}
+            active = max(0.0, active)
+        return {"status": "complete", "reason": None, "seconds": active,
+                "lower": active, "upper": active,
+                "wall_seconds": float(seconds), "queue_wait_seconds": queue_seconds}
     upper = result.get("duration_seconds")
     if valid(upper):
         return {"status": "bounded_partial", "reason": "delivery_clock_missing_worker_upper_bound",
@@ -289,7 +313,8 @@ def compute_reward(result: dict, calls: list[dict], config: dict) -> dict:
     features.update({
         "resolved": success, "generated_tokens": generated_tokens, "model_calls": len(calls),
         "duplicate_completion_fraction": duplicate_fraction,
-        "delivery_wall_seconds": time_evidence["seconds"],
+        "delivery_wall_seconds": time_evidence.get("wall_seconds", time_evidence["seconds"]),
+        "confirmed_queue_wait_seconds": time_evidence.get("queue_wait_seconds"),
         "walltime_scale_seconds": objective["walltime_scale_seconds"],
         "dense_shaping_enabled": dense_enabled, "reward_complete": complete,
         "missing_components": [name for name, value in components.items() if value is None],
@@ -402,7 +427,18 @@ def score_group_rewards(results, calls, config, *, scale_rewards="group", advant
         raise ValueError("Invalid group reward normalization")
     scored = [compute_reward(result, items, config) for result, items in zip(results, calls)]
     chosen = _select_signal(scored, min_group_std)
-    signal = chosen["signal"]
+    outcomes = [result["success"] for result in results]
+    # Eight failures that differ only by delivery time must not move the policy.
+    # A repair or regression contrast among failures still can. Success versus
+    # failure remains a learning signal because that contrast is not time.
+    capability = _select_signal(scored, min_group_std, omit="efficiency")
+    time_only_failures = not any(outcomes) and capability["signal_rms"] <= min_group_std
+    if time_only_failures:
+        signal = [0.0] * len(scored)
+        chosen = {**chosen, "signal": signal, "strict_signal": signal, "signal_rms": 0.0,
+                  "advantage_bounds": [{"lower": 0.0, "upper": 0.0} for _ in signal]}
+    else:
+        signal = chosen["signal"]
     std_upper_bound = _reward_std_upper_bound(chosen["reward_bounds"])
     denominator = (max(std_upper_bound, advantage_std_floor) if scale_rewards == "group" else 1.0
                    ) if std_upper_bound is not None else None
@@ -439,7 +475,6 @@ def score_group_rewards(results, calls, config, *, scale_rewards="group", advant
         legacy_rewards.append(math.fsum(parts))
     legacy_std = statistics.pstdev(legacy_rewards)
     missing = sum(row["total"] is None for row in scored)
-    outcomes = [result["success"] for result in results]
     diagnostics = {
         "group_size": len(scored), "point_reward_count": len(scored) - missing,
         "missing_reward_count": missing, "signal_source": chosen["signal_mode"],
@@ -457,6 +492,7 @@ def score_group_rewards(results, calls, config, *, scale_rewards="group", advant
         "new_signal_recovered_vs_legacy": chosen["signal_rms"] > min_group_std and legacy_std <= min_group_std,
         "no_provable_signal_with_missing": bool(missing and chosen["signal_rms"] <= min_group_std),
         "complete_evidence_zero_signal": not missing and chosen["signal_rms"] <= min_group_std,
+        "blocked_time_only_failures": time_only_failures,
         "ablation": {},
     }
     for name in ("repair", "regression", "efficiency"):

@@ -327,7 +327,19 @@ class DeliveryTracker:
             finally:
                 try:
                     if not invocation.completed:
-                        await tracker._cancel_unconsumed(invocation)
+                        # ADK keeps the last parsed response and closes this
+                        # generator without a further __anext__, so the
+                        # post-loop ACK never runs. The caller already has the
+                        # final yield.
+                        if (invocation.final_yielded and invocation.request_id
+                                and not invocation.acknowledged):
+                            try:
+                                await tracker._acknowledge(invocation)
+                                invocation.completed = True
+                            except Exception:
+                                pass
+                        if not invocation.completed:
+                            await tracker._cancel_unconsumed(invocation)
                     for stream_to_close in (source, invocation.stream, invocation.raw_stream):
                         if stream_to_close is not None:
                             try:

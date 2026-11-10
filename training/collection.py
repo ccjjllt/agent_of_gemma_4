@@ -130,17 +130,40 @@ def collect_batch(*, cfg, batch, policy_version, sampler, endpoint, run_dir,
     def terminal_group(group):
         return all(slot["status"] in ("complete", "exhausted") for slot in group["slots"])
 
+    def judge_collection_blocked(group):
+        """True when an exhausted slot shows the empty-patch judge cannot collect pytest."""
+        if any(slot["status"] == "complete" for slot in group["slots"]):
+            return False
+        for slot in group["slots"]:
+            if slot["status"] != "exhausted" or not slot.get("identity"):
+                continue
+            path = run_dir / slot["identity"] / "result.json"
+            if not path.is_file():
+                continue
+            try:
+                document = json.loads(path.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            control = (document.get("failure_attribution") or {}).get("empty_patch_control") or {}
+            if (isinstance(control, dict) and control.get("reason") == "pytest_collection_failure"
+                    and control.get("healthy") is False):
+                return True
+        return False
+
     def record_health(group):
         exhausted = sum(slot["status"] == "exhausted" for slot in group["slots"])
         if not terminal_group(group) and not exhausted:
             return  # Budget cancellation alone says nothing about task health.
         previous = group.get("health") or {}
+        blocked = judge_collection_blocked(group)
         if (group.get("health_recorded") and previous.get("completed_slots") == len(valid_slots(group))
-                and previous.get("exhausted_slots") == exhausted):
+                and previous.get("exhausted_slots") == exhausted
+                and previous.get("judge_collection_blocked") is blocked):
             return
         group["health"] = sampler.record_health(
             group["selection"]["id"], group_id=group["id"],
-            completed_slots=len(valid_slots(group)), exhausted_slots=exhausted)
+            completed_slots=len(valid_slots(group)), exhausted_slots=exhausted,
+            judge_collection_blocked=blocked)
         group["health_recorded"] = True
         atomic_json(run_dir / "curriculum_state.json", sampler.state_dict())
         emit_fn(metrics, "task_health_observed", batch=batch, group_id=group["id"],

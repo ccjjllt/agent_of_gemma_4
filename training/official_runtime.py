@@ -618,14 +618,23 @@ class _PatchDeliveryClock:
         self._seconds = elapsed
         self._unavailable_reason = None
 
-    def summary(self):
+    def summary(self, queue_wait_seconds=None):
+        queue = None
+        if queue_wait_seconds is not None:
+            if (isinstance(queue_wait_seconds, bool) or not isinstance(queue_wait_seconds, (int, float))
+                    or not math.isfinite(queue_wait_seconds) or queue_wait_seconds < 0):
+                queue = None
+            else:
+                queue = float(queue_wait_seconds)
         return {
             "version": "patch_delivery_wall_v1", "complete": self._seconds is not None,
             "wall_seconds": self._seconds,
+            "queue_wait_seconds": queue,
             "scope": "evaluate_task_start_to_verify_task_entry",
             "includes": ["setup", "prefill", "generation", "tools", "patch_extraction",
-                         "queue_wait", "agent_sandbox_cleanup"],
-            "excludes": ["judge_setup", "verification", "empty_patch_control", "worker_initialization"],
+                         "agent_sandbox_cleanup"],
+            "excludes": ["judge_setup", "verification", "empty_patch_control",
+                         "worker_initialization", "queue_wait"],
             "unavailable_reason": self._unavailable_reason,
         }
 
@@ -1013,7 +1022,7 @@ async def _run_task(args: argparse.Namespace, api_key: str) -> dict[str, Any]:
                                 "empty_patch_control": captured.get("failure_control")},
         "model_delivery": delivery.summary(),
         "session_timing": session_clock.summary(),
-        "delivery_timing": delivery_clock.summary(),
+        "delivery_timing": delivery_clock.summary(queue_wait_seconds=session_clock.queue_credit()),
         "reward_features": reward_features,
         "test_exit_code": result.test_exit_code,
         "duration_seconds": time.monotonic() - started,
