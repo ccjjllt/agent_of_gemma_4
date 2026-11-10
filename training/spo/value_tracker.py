@@ -331,7 +331,8 @@ class ValueTracker:
              task_key_id(trajectory.task_key)),
         )
         self.ledger._put_trajectory(conn, replace(
-            trajectory, raw_advantage=raw_advantage, status="REWARDED"
+            trajectory, raw_advantage=raw_advantage,
+            status="REWARDED" if trajectory.status == "VERIFYING" else trajectory.status,
         ))
         conn.execute("DELETE FROM value_pending WHERE trajectory_id=?",
                      (trajectory.trajectory_id,))
@@ -373,6 +374,126 @@ class ValueTracker:
             "ORDER BY stream_sequence", (key, floor_seq)).fetchall()
         for row in leftovers:
             self._apply_pending_row(conn, row, late=True)
+
+    def purge_orphan_markers(self) -> int:
+        """Delete dispatch markers for assignments that never sealed.
+
+        At startup no worker is alive, so a marker without a trajectory row
+        is a dead assignment, not a slow one. Markers attached to sealed
+        rows stay under the sealed-row rule and need no cleanup here.
+        """
+        with self.ledger.transaction() as conn:
+            orphans = conn.execute(
+                "SELECT trajectory_id,task_key FROM dispatch_markers "
+                "WHERE trajectory_id NOT IN (SELECT trajectory_id FROM trajectories)"
+            ).fetchall()
+            for row in orphans:
+                conn.execute("DELETE FROM dispatch_markers WHERE trajectory_id=?",
+                             (row["trajectory_id"],))
+                self.ledger._event(conn, "dispatch_marker_purged",
+                                   row["trajectory_id"], {"task_key": row["task_key"]})
+            return len(orphans)
+
+    @staticmethod
+    def _baseline_from_provenance(trajectory: Trajectory) -> FrozenBaseline | None:
+        """Rebuild a dispatch-frozen baseline from sealed trajectory evidence."""
+        try:
+            provenance = trajectory.provenance
+            if not isinstance(provenance, dict):
+                return None
+            return FrozenBaseline(
+                task_key=trajectory.task_key,
+                V=float(provenance["frozen_V"]),
+                success_p=float(provenance.get("frozen_success_p", 0.5)),
+                effective_count=float(provenance.get("frozen_effective_count", 1.0)),
+                kl_cursor=int(provenance.get("frozen_kl_cursor", 0)),
+                policy_version=trajectory.behavior_adapter.version,
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def recover_incomplete(self) -> dict[str, int]:
+        """Startup scan for crash-window trajectories (idempotent).
+
+        - Sealed but rewardless (crashed between record_trajectory and
+          record_reward): EXCLUDED with an explicit reason; no reward is
+          fabricated, and the terminal status unblocks later sequences.
+        - Eligible reward but neither observation nor pending: re-observe
+          from stored evidence, rebuilding the frozen baseline from sealed
+          provenance (legacy immediate path when provenance lacks it).
+        - Markers pinning terminally-unobservable sealed rows: cleared.
+        Returns stage counts.
+        """
+        summary = {"excluded_no_reward": 0, "reobserved": 0, "markers_cleared": 0}
+        with self.ledger.transaction() as conn:
+            rows = conn.execute(
+                "SELECT t.trajectory_id FROM trajectories t LEFT JOIN rewards r "
+                "ON r.trajectory_id=t.trajectory_id WHERE r.trajectory_id IS NULL "
+                "AND t.status IN ('VERIFYING','REWARDED')").fetchall()
+            rewardless = [row["trajectory_id"] for row in rows]
+        for trajectory_id in rewardless:
+            with self.ledger.transaction() as conn:
+                if conn.execute("SELECT 1 FROM rewards WHERE trajectory_id=?",
+                                (trajectory_id,)).fetchone() is not None:
+                    continue
+                trajectory = self.ledger._get_trajectory(conn, trajectory_id)
+                if trajectory.status not in ("VERIFYING", "REWARDED"):
+                    continue
+                self.ledger._put_trajectory(conn, replace(trajectory, status="EXCLUDED"))
+                conn.execute("DELETE FROM dispatch_markers WHERE trajectory_id=?",
+                             (trajectory_id,))
+                self.ledger._event(conn, "trajectory_excluded", trajectory_id,
+                                   {"reason": "crash_before_reward"})
+                summary["excluded_no_reward"] += 1
+        with self.ledger.transaction() as conn:
+            rows = conn.execute(
+                "SELECT t.trajectory_id FROM trajectories t "
+                "JOIN rewards r ON r.trajectory_id=t.trajectory_id "
+                "LEFT JOIN value_observations v ON v.trajectory_id=t.trajectory_id "
+                "LEFT JOIN value_pending p ON p.trajectory_id=t.trajectory_id "
+                "WHERE v.trajectory_id IS NULL AND p.trajectory_id IS NULL").fetchall()
+            unobserved = [row["trajectory_id"] for row in rows]
+        pending_recovery: list[tuple[str, RewardRecord, FrozenBaseline | None]] = []
+        for trajectory_id in unobserved:
+            with self.ledger.transaction() as conn:
+                payload = conn.execute(
+                    "SELECT payload FROM rewards WHERE trajectory_id=?",
+                    (trajectory_id,)).fetchone()
+                if payload is None:
+                    continue
+                reward = RewardRecord.from_dict(json.loads(payload[0]))
+                trajectory = self.ledger._get_trajectory(conn, trajectory_id)
+                if reward.eligible and trajectory.status not in ("VERIFYING", "REWARDED"):
+                    raise RuntimeError(
+                        f"trajectory {trajectory_id} is {trajectory.status} with no value "
+                        "observation; refusing to guess its history")
+                if not reward.eligible:
+                    if trajectory.status not in self.TERMINAL_UNOBSERVABLE_STATUSES:
+                        self.ledger._put_trajectory(
+                            conn, replace(trajectory, status="EXCLUDED"))
+                    conn.execute("DELETE FROM dispatch_markers WHERE trajectory_id=?",
+                                 (trajectory_id,))
+                    self.ledger._event(conn, "trajectory_excluded", trajectory_id,
+                                       {"reason": "ineligible_reward_recovery"})
+                    summary["markers_cleared"] += 1
+                    continue
+                pending_recovery.append(
+                    (trajectory_id, reward, self._baseline_from_provenance(trajectory)))
+        for trajectory_id, reward, baseline in pending_recovery:
+            self.observe(self.ledger.get_trajectory(trajectory_id), reward,
+                         baseline=baseline)
+            summary["reobserved"] += 1
+        with self.ledger.transaction() as conn:
+            rows = conn.execute(
+                "SELECT m.trajectory_id FROM dispatch_markers m "
+                "JOIN trajectories t ON t.trajectory_id=m.trajectory_id "
+                "LEFT JOIN rewards r ON r.trajectory_id=m.trajectory_id "
+                "WHERE t.status IN ('EXCLUDED','STALE_EXCLUDED')").fetchall()
+            for row in rows:
+                conn.execute("DELETE FROM dispatch_markers WHERE trajectory_id=?",
+                             (row["trajectory_id"],))
+                summary["markers_cleared"] += 1
+        return summary
 
     def observe(self, trajectory: Trajectory,
                 reward: RewardRecord,
@@ -480,7 +601,9 @@ class ValueTracker:
             raw_advantage = float(reward.total_reward) - dispatch_v
             if stored_trajectory.raw_advantage is None:
                 self.ledger._put_trajectory(conn, replace(
-                    stored_trajectory, raw_advantage=raw_advantage, status="REWARDED"
+                    stored_trajectory, raw_advantage=raw_advantage,
+                    status="REWARDED" if stored_trajectory.status == "VERIFYING"
+                    else stored_trajectory.status,
                 ))
             self._drain_task(conn, trajectory.task_key)
             applied = conn.execute(

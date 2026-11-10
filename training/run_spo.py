@@ -196,16 +196,31 @@ def run_spo(args: argparse.Namespace) -> int:
     budget_path = run_dir / "budget.json"
 
     def read_budget() -> dict[str, float]:
+        default = {"allowance_seconds": walltime, "consumed_seconds": 0.0}
         try:
-            document = json.loads(budget_path.read_text())
+            raw = budget_path.read_text()
+        except FileNotFoundError as exc:
+            if args.resume:
+                raise RuntimeError(
+                    "resume requires the persisted budget record; refusing to "
+                    "re-grant a fresh allowance") from exc
+            return default
+        except OSError as exc:
+            raise RuntimeError(f"budget record unreadable, refusing to run blind: {exc}") from exc
+        try:
+            document = json.loads(raw)
             allowance = float(document["allowance_seconds"])
             consumed = float(document.get("consumed_seconds", 0.0))
             if (not math.isfinite(allowance) or allowance < 0
                     or not math.isfinite(consumed) or consumed < 0):
                 raise ValueError("invalid budget record")
             return {"allowance_seconds": allowance, "consumed_seconds": consumed}
-        except (OSError, ValueError, KeyError, TypeError):
-            return {"allowance_seconds": walltime, "consumed_seconds": 0.0}
+        except (ValueError, KeyError, TypeError) as exc:
+            if args.resume:
+                raise RuntimeError(
+                    "budget record is corrupt; refusing to reset consumed GPU "
+                    "time (restore budget.json manually)") from exc
+            return default
 
     def persist_budget(consumed: float) -> None:
         record = {"allowance_seconds": allowance, "consumed_seconds": max(0.0, float(consumed)),
@@ -216,8 +231,8 @@ def run_spo(args: argparse.Namespace) -> int:
         os.replace(temporary, budget_path)
 
     # Resume never renews the allowance: only explicit additional seconds
-    # extend the persisted remainder. A missing/corrupt record restarts the
-    # configured walltime rather than inventing consumed time.
+    # extend the persisted remainder. On resume a missing/corrupt record is a
+    # hard stop, never a fresh grant (see read_budget).
     saved_budget = read_budget() if args.resume else {
         "allowance_seconds": walltime, "consumed_seconds": 0.0}
     allowance = saved_budget["allowance_seconds"] + float(args.additional_walltime_seconds or 0)
@@ -243,6 +258,12 @@ def run_spo(args: argparse.Namespace) -> int:
         prior_strength=float(cfg["spo"].get("prior_strength", 1.0)),
         kl_half_life=float(cfg["spo"].get("kl_half_life", 0.05)))
     sampler = SPOSampler(tracker, epsilon=float(cfg["spo"].get("sampling_epsilon", 0.05)))
+    # Startup recovery first: drop dead-process dispatch markers and fold
+    # crash-window trajectories before any new dispatch observes them.
+    purged_markers = tracker.purge_orphan_markers()
+    recovered = tracker.recover_incomplete()
+    _emit(metrics_path, "spo_startup_recovery",
+          orphan_markers_purged=purged_markers, **recovered)
     requests = RequestManager(run_dir / "requests")
     uid_allocator = UidAllocator(int(args.agent_uid_base or 61000), 1000000)
     attempt_seq = AttemptSequence(run_dir / "attempt_counter.json")
@@ -424,6 +445,21 @@ def run_spo(args: argparse.Namespace) -> int:
                             assignment.task_key, resolved=reward.resolved,
                             infrastructure_error=None if reward.eligible else reward.exclusion_reason)
                     except (KeyError, ValueError, TypeError):
+                        pass
+                    # A trajectory that will never observe (worker failed, or
+                    # an ineligible reward) must not keep blocking later
+                    # dispatch sequences of the same task. Applied observations
+                    # already deleted their marker; only terminal cases remain.
+                    try:
+                        terminal = error is not None
+                        if not terminal:
+                            try:
+                                terminal = not ledger.get_reward(trajectory_id).eligible
+                            except (KeyError, ValueError, TypeError):
+                                terminal = True
+                        if terminal:
+                            tracker.unmark_dispatch(trajectory_id)
+                    except (ValueError, TypeError, RuntimeError, OSError):
                         pass
             finally:
                 with lock:
