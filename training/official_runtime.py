@@ -29,7 +29,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import urlsplit
 
 
@@ -823,8 +823,57 @@ def _training_submission(source: Path, destination: Path) -> Path:
     return destination
 
 
+def _empty_patch_probe_result(task: Any, args: argparse.Namespace, result: Any,
+                              captured: Mapping[str, Any], settings: Mapping[str, Any]) -> dict[str, Any]:
+    """Package the pristine-snapshot verification as a judge-side baseline.
+
+    The agent loop is skipped by harness contract (skip_agent_patch), so the
+    captured node report describes the empty patch. Only complete, valid
+    reports with declared expected universes are usable baselines.
+    """
+    if __package__:
+        from .reward.junit_bridge import task_key_for
+    else:
+        from reward.junit_bridge import task_key_for
+    started = time.monotonic()
+    fingerprint = json.dumps({
+        "packages": {name: importlib.metadata.version(name) for name in ("swegemma", "adk-eval-core", "adk-submission", "google-adk", "litellm")},
+        "evaluation": dict(settings),
+        "sandbox": args.sandbox,
+    }, sort_keys=True, default=str)
+    node_report = dict(captured.get("node_report") or {})
+    junit_available = bool((captured.get("reward_features") or {}).get("junit_available"))
+    node_report.update({
+        "verification_complete": True,
+        "verdict_valid": True,
+        "junit_available": junit_available,
+    })
+    task_key = task_key_for(
+        task.instance_id, getattr(task, "repo", ""), getattr(task, "base_commit", "") or getattr(task, "baseCommit", ""),
+        getattr(task, "test_patch", "") or "", fingerprint)
+    reward_features = dict(captured.get("reward_features") or {"junit_available": junit_available})
+    report: dict[str, Any] = {
+        "task_id": task.instance_id,
+        "rollout_id": args.rollout_id,
+        "probe": "empty_patch_baseline",
+        "task_key": task_key,
+        "reward_features": reward_features,
+        "test_exit_code": getattr(result, "test_exit_code", None),
+        "duration_seconds": time.monotonic() - started,
+    }
+    if isinstance(node_report.get("expected_universes"), dict) and node_report["expected_universes"]:
+        report["baseline_report"] = node_report
+    else:
+        report["infrastructure_error"] = "empty_patch_probe_missing_node_report"
+    return report
+
+
 async def run_task(args: argparse.Namespace) -> dict[str, Any]:
-    api_key = _read_auth_token(args.auth_token_file, args.rollout_id)
+    if bool(getattr(args, "empty_patch_probe", False)) and args.auth_token_file is None:
+        # No model calls happen in probe mode; the endpoint credential is unused.
+        api_key = ""
+    else:
+        api_key = _read_auth_token(args.auth_token_file, args.rollout_id)
     try:
         return await _run_task(args, api_key)
     finally:
@@ -835,6 +884,7 @@ async def run_task(args: argparse.Namespace) -> dict[str, Any]:
 
 async def _run_task(args: argparse.Namespace, api_key: str) -> dict[str, Any]:
     started = time.monotonic()
+    probe = bool(getattr(args, "empty_patch_probe", False))
     data_root = _public_path(args.data_root)
     tasks_path = _public_path(data_root / "tasks.jsonl")
     source_submission = args.submission_dir.resolve(strict=True)
@@ -917,6 +967,7 @@ async def _run_task(args: argparse.Namespace, api_key: str) -> dict[str, Any]:
         context_cache_config=ContextCacheConfig(min_tokens=2048, ttl_seconds=1800, cache_intervals=10),
         events_compaction_config=EventsCompactionConfig(**CONTEXT_SETTINGS),
         display_mode="quiet",
+        skip_agent_patch=probe,
         **settings,
     )
 
@@ -972,8 +1023,11 @@ async def _run_task(args: argparse.Namespace, api_key: str) -> dict[str, Any]:
             from tool_state_summary import ToolStateSummarizer
         summarizer_factory = ToolStateSummarizer
     bind_timed_runner(evaluator, context, session_clock, summarizer_factory=summarizer_factory)
-    delivery = install_delivery_tracking(args.endpoint, args.rollout_id, workspace / "model_delivery.jsonl",
-                                         session_clock=session_clock, api_key=api_key)
+    # Probe mode verifies the pristine snapshot: no model calls, no delivery
+    # or timing assertions. The node report is still captured for the baseline.
+    delivery = None if probe else install_delivery_tracking(
+        args.endpoint, args.rollout_id, workspace / "model_delivery.jsonl",
+        session_clock=session_clock, api_key=api_key)
     delivery_clock = _PatchDeliveryClock()
     captured, restore_verification = _capture_final_verification(task, manager, delivery_clock=delivery_clock)
     delivery_error = None
@@ -981,23 +1035,28 @@ async def _run_task(args: argparse.Namespace, api_key: str) -> dict[str, Any]:
     try:
         delivery_clock.start()
         result = await evaluator.evaluate_task(task, task_index=position + 1, total_tasks=1, context=context)
-        try:
-            delivery.assert_delivery_complete()
-        except ConsumptionConfirmationError as error:
-            # ADK may catch a model exception and still run official tests. Keep
-            # that judge result intact, but never train an unconfirmed trajectory.
-            delivery_error = str(error)
-        try:
-            # Obtain the final server evidence after the normal agent-loop
-            # cancellation and complete official acceptance have both finished.
-            await session_clock.refresh()
-            session_clock.assert_valid()
-        except SessionTimingError as error:
-            if args.session_clock == "queue_excluded":
-                timing_error = str(error)
+        if probe:
+            delivery_error = None
+            timing_error = None
+        else:
+            try:
+                delivery.assert_delivery_complete()
+            except ConsumptionConfirmationError as error:
+                # ADK may catch a model exception and still run official tests. Keep
+                # that judge result intact, but never train an unconfirmed trajectory.
+                delivery_error = str(error)
+            try:
+                # Obtain the final server evidence after the normal agent-loop
+                # cancellation and complete official acceptance have both finished.
+                await session_clock.refresh()
+                session_clock.assert_valid()
+            except SessionTimingError as error:
+                if args.session_clock == "queue_excluded":
+                    timing_error = str(error)
         append_task_result(result, config.results_dir, [result])
     finally:
-        delivery.restore()
+        if delivery is not None:
+            delivery.restore()
         await session_clock.close()
         restore_verification()
         cleanup = getattr(evaluator.docker, "cleanup_all", None)
@@ -1006,6 +1065,9 @@ async def _run_task(args: argparse.Namespace, api_key: str) -> dict[str, Any]:
         restore_dependencies = getattr(evaluator.docker, "restore_dependency_setup", None)
         if restore_dependencies:
             restore_dependencies()
+
+    if probe:
+        return _empty_patch_probe_result(task, args, result, captured, settings)
 
     if __package__:
         from .verification_outcome import classify_verification
@@ -1140,9 +1202,14 @@ def main(argv: list[str] | None = None) -> int:
     selector.add_argument("--task-id")
     selector.add_argument("--task-index", type=int, help="Zero-based index in the official public training file.")
     parser.add_argument("--submission-dir", type=Path, required=True)
-    parser.add_argument("--endpoint", required=True, help="Existing OpenAI-compatible API base, including /v1.")
+    parser.add_argument("--endpoint", required=False, default="",
+                        help="Existing OpenAI-compatible API base, including /v1. Unused by --empty-patch-probe.")
     parser.add_argument("--rollout-id", required=True)
-    parser.add_argument("--auth-token-file", type=Path, required=True)
+    parser.add_argument("--auth-token-file", type=Path, required=False, default=None,
+                        help="Private 0600 credential file. Required unless --empty-patch-probe.")
+    parser.add_argument("--empty-patch-probe", action="store_true",
+                        help="Skip the agent loop and verify the pristine snapshot with an empty patch. "
+                             "Produces a judge-side baseline report; no model calls, no delivery or timing asserts.")
     parser.add_argument("--parent-pid", type=int, help="Terminate with the trusted collector process on Linux.")
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--result-file", type=Path, required=True)
@@ -1162,6 +1229,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.sandbox == "subprocess" and args.judge_uid is None:
         parser.error("subprocess execution requires --judge-uid distinct from --agent-uid")
+    if not args.empty_patch_probe and (not args.endpoint or args.auth_token_file is None):
+        parser.error("training rollouts require --endpoint and --auth-token-file")
     if args.task_index is not None and args.task_index < 0:
         parser.error("task-index must be nonnegative")
     if not math.isfinite(args.queue_timing_poll_seconds) or not 0.02 <= args.queue_timing_poll_seconds <= 1.0:

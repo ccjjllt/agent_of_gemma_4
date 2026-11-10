@@ -463,6 +463,29 @@ class TrajectoryLedger:
                 selected, update_id=update_id, policy_before=policy_before,
                 max_policy_lag=max_policy_lag, epsilon=advantage_epsilon,
             )
+            # A batch whose centered advantages are all exactly zero carries no
+            # policy signal (a lone trajectory is its own mean). Never spend an
+            # optimizer step, an LR-schedule advance and a version bump on it:
+            # first extend the FIFO prefix with further buffered trajectories
+            # from other tasks, else consume the selection as an explicit NOOP
+            # terminal state so the pipeline keeps moving.
+            while all(value == 0.0 for value in batch.frozen_advantages.values()) \
+                    and len(selected) < len(candidates):
+                selected.append(candidates[len(selected)])
+                batch = freeze_advantages(
+                    selected, update_id=update_id, policy_before=policy_before,
+                    max_policy_lag=max_policy_lag, epsilon=advantage_epsilon,
+                )
+            if all(value == 0.0 for value in batch.frozen_advantages.values()):
+                for trajectory in selected:
+                    conn.execute(
+                        "UPDATE buffer_entries SET state='NOOP_CONSUMED',transitioned_at=? "
+                        "WHERE trajectory_id=?", (time.time(), trajectory.trajectory_id)
+                    )
+                    self._put_trajectory(conn, replace(trajectory, status="NOOP_CONSUMED"))
+                    self._event(conn, "buffer_noop", trajectory.trajectory_id,
+                                {"reason": "zero_frozen_advantage"})
+                return None
             now = time.time()
             conn.execute(
                 "INSERT INTO updates(update_id,phase,policy_before_version,"

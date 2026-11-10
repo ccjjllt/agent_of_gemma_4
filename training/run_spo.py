@@ -2,11 +2,11 @@
 
 Wiring (one process, colocated 2xA800):
   TaskCatalog -> SPOSampler -> RolloutScheduler -> ExecutionManager
-  (OfficialWorker + PolicyEndpoint/GPU + RequestManager) -> RolloutEngine
+  (OfficialWorker + SGLang gateway endpoint + RequestManager) -> RolloutEngine
   -> RewardEngine -> ValueTracker -> TrajectoryBuffer -> ledger.reserve_update
   -> GpuLease.training + SPOTrainer.optimize_batch -> AdapterExporter
   -> AdapterManager/DoubleBuffer publish -> ledger.commit_update
-  -> serving adapter resume.
+  -> barrier publish + endpoint version advance (SGLang serving resume).
 
 Usage (server, authorized session only):
   python -m training.run_spo --config configs/spo_a800_2x80.toml \
@@ -27,11 +27,14 @@ import argparse
 import concurrent.futures
 import hashlib
 import json
+import math
+import os
 import sys
 import threading
 import time
 import tomllib
 from pathlib import Path
+from typing import Any, Mapping
 
 
 REQUIRED_SECTIONS = ("policy", "run", "inference", "spo", "optimizer", "rewards", "adapter")
@@ -148,7 +151,9 @@ def run_spo(args: argparse.Namespace) -> int:
     from .adapter.manager import AdapterManager
     from .data.curriculum import TaskCatalog
     from .endpoint import PolicyEndpoint
-    from .environment.execution_manager import ExecutionManager
+    from .environment.execution_manager import AttemptSequence, ExecutionManager
+    from .environment.sandbox import UidAllocator
+    from .reward.baseline_probe import EmptyPatchProbeRunner
     from .environment.worker import OfficialWorker, OfficialWorkerConfig
     from .environment.workspace_cache import WorkspaceCache
     from .policy import Policy
@@ -183,6 +188,35 @@ def run_spo(args: argparse.Namespace) -> int:
     max_workers = int(run.get("max_cpu_workers", 8))
     run_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = run_dir / "metrics.jsonl"
+    budget_path = run_dir / "budget.json"
+
+    def read_budget() -> dict[str, float]:
+        try:
+            document = json.loads(budget_path.read_text())
+            allowance = float(document["allowance_seconds"])
+            consumed = float(document.get("consumed_seconds", 0.0))
+            if (not math.isfinite(allowance) or allowance < 0
+                    or not math.isfinite(consumed) or consumed < 0):
+                raise ValueError("invalid budget record")
+            return {"allowance_seconds": allowance, "consumed_seconds": consumed}
+        except (OSError, ValueError, KeyError, TypeError):
+            return {"allowance_seconds": walltime, "consumed_seconds": 0.0}
+
+    def persist_budget(consumed: float) -> None:
+        record = {"allowance_seconds": allowance, "consumed_seconds": max(0.0, float(consumed)),
+                  "remaining_seconds": max(0.0, allowance - float(consumed)),
+                  "updated_unix": time.time()}
+        temporary = budget_path.with_name(budget_path.name + f".tmp-{os.getpid()}")
+        temporary.write_text(json.dumps(record) + "\n")
+        os.replace(temporary, budget_path)
+
+    # Resume never renews the allowance: only explicit additional seconds
+    # extend the persisted remainder. A missing/corrupt record restarts the
+    # configured walltime rather than inventing consumed time.
+    saved_budget = read_budget() if args.resume else {
+        "allowance_seconds": walltime, "consumed_seconds": 0.0}
+    allowance = saved_budget["allowance_seconds"] + float(args.additional_walltime_seconds or 0)
+    consumed = saved_budget["consumed_seconds"]
     identity = validate_model_dir(model_path, cfg["policy"])
     with open(run_dir / "model_identity.json", "w", encoding="utf-8") as handle:
         json.dump(identity, handle, ensure_ascii=False, indent=2, sort_keys=True)
@@ -205,7 +239,21 @@ def run_spo(args: argparse.Namespace) -> int:
         kl_half_life=float(cfg["spo"].get("kl_half_life", 0.05)))
     sampler = SPOSampler(tracker, epsilon=float(cfg["spo"].get("sampling_epsilon", 0.05)))
     requests = RequestManager(run_dir / "requests")
-    baselines = EmptyPatchBaselineStore(run_dir / "baselines")
+    uid_allocator = UidAllocator(int(args.agent_uid_base or 61000), 1000000)
+    attempt_seq = AttemptSequence(run_dir / "attempt_counter.json")
+    baselines = EmptyPatchBaselineStore(
+        run_dir / "baselines",
+        runner=EmptyPatchProbeRunner(
+            data_root=data_root,
+            submission_dir=args.submission_dir or (data_root / "sample_submission"),
+            runtime_python=cfg["runtime"].get("python", "/opt/gemma-runtime/bin/python"),
+            sandbox_root=cfg["runtime"].get("sandbox_root", "/root/autodl-tmp/gemma4/sandboxes"),
+            baseline_python=cfg["runtime"].get("sandbox_baseline_python", "/opt/gemma-sandbox-baseline/bin/python"),
+            uid_allocator=uid_allocator,
+            attempt_seq=attempt_seq.take,
+            workspace_root=run_dir / "probe_workspaces",
+            evaluation_overrides=dict(cfg["runtime"].get("evaluation", {}) or {}),
+            emit=lambda n, **f: _emit(metrics_path, n, **f)))
     reward_engine = RewardEngine(baselines)
     trajectory_buffer = TrajectoryBuffer(
         ledger, target_action_tokens=int(cfg["spo"]["target_action_tokens"]),
@@ -232,15 +280,50 @@ def run_spo(args: argparse.Namespace) -> int:
     handshake = {**handshake, "deployment_probe": deployment}
     lease = GpuLease(backend)
     adapters = AdapterManager(run_dir / "adapters")
-    double_buffer = DoubleBuffer(adapters, backend, gpu_lease=lease, allow_resident_pair=False)
 
     policy_cfg = dict(cfg["policy"])
     policy_cfg["model_path"] = str(model_path)
+    # The 31B learner must not occupy GPU at startup: SGLang holds the colocated
+    # GPUs until the first training lease. Tokenizer-only serving works unloaded.
+    policy_cfg["defer_learner_load"] = True
     policy_cfg.setdefault("gradient_checkpointing", True)
     policy_cfg.setdefault("expected_gpu_count", 2)
     policy = Policy(policy_cfg)
-    endpoint = PolicyEndpoint(policy, run_dir / "endpoint", int(cfg["runtime"].get("port", 0)), {})
+    exporter = AdapterExporter()
+    if adapters.active is None:
+        # Genesis export needs the learner weights: load them inside the first
+        # training lease (SGLang memory is released), then unload before the
+        # inference engine resumes below.
+        with lease.training():
+            policy.ensure_loaded()
+            try:
+                genesis_dir = run_dir / "adapters" / "staging-genesis"
+                manifest = exporter.export(policy, genesis_dir, version=0, parent_version=None, optimizer_step=0)
+                adapters.publish(manifest, genesis_dir, activate=True)
+            finally:
+                policy.release_memory()
+        _emit(metrics_path, "adapter_genesis", version=0)
+    else:
+        _emit(metrics_path, "adapter_resumed", version=adapters.active.version)
+    double_buffer = DoubleBuffer(adapters, backend, gpu_lease=lease, allow_resident_pair=False)
+    # The inference server starts empty: make the single valid rollout version
+    # resident before the scheduler or any trajectory can observe it.
+    genesis_rollout = double_buffer.rollout
+    if genesis_rollout is None:
+        raise RuntimeError("no rollout adapter is available after genesis/resume")
+    with lease.inference():
+        backend.load_adapter(genesis_rollout, adapters.path(genesis_rollout))
+    _emit(metrics_path, "adapter_rollout_loaded", version=genesis_rollout.version,
+          sha256=genesis_rollout.adapter_sha256)
+    endpoint = PolicyEndpoint(
+        policy, run_dir / "endpoint", int(cfg["runtime"].get("port", 0)),
+        {"sglang_max_inflight": int(cfg["inference"].get("max_inflight", 16)),
+         "max_batch_size": int(cfg["inference"].get("max_inflight", 16))},
+        serving_backend=double_buffer)
     endpoint.start()
+    # Open the continuous SPO collection on genesis version 0. Later publishes
+    # advance it via advance_version(); it is never closed and re-begun.
+    endpoint.begin([], 0)
     try:
         worker_cfg = OfficialWorkerConfig(
             data_root=data_root,
@@ -251,39 +334,56 @@ def run_spo(args: argparse.Namespace) -> int:
             agent_uid_base=int(args.agent_uid_base or 61000),
             runtime_python=Path(cfg["runtime"].get("python", "/opt/gemma-runtime/bin/python")),
             session_clock=cfg["runtime"].get("session_clock", "queue_excluded"),
-            event_summarizer=cfg["runtime"].get("event_summarizer", "official"))
+            event_summarizer=cfg["runtime"].get("event_summarizer", "official"),
+            evaluation_overrides=dict(cfg["runtime"].get("evaluation", {}) or {}))
         worker = OfficialWorker(worker_cfg, WorkspaceCache(
-            run_dir / "workspaces", data_root=data_root))
+            run_dir / "workspaces", data_root=data_root),
+            uid_allocator=uid_allocator)
         exec_manager = ExecutionManager(
             worker, endpoint, requests, max_workers=max_workers,
-            max_attempts=int(run.get("max_worker_retries", 1)) + 1, emit=lambda n, **f: _emit(metrics_path, n, **f))
+            max_attempts=int(run.get("max_worker_retries", 1)) + 1, emit=lambda n, **f: _emit(metrics_path, n, **f),
+            # A single task must not outlive the remaining run allowance.
+            task_timeout_seconds=min(3600.0, max(60.0, allowance - consumed)),
+            # Globally unique, persisted attempt numbers: retries and probes
+            # never reuse another trajectory's UID pair or request namespace.
+            attempt_seq=attempt_seq.take)
         scheduler = RolloutScheduler(
-            catalog.sampler_tasks(), sampler, double_buffer.rollout,
+            catalog.sampler_tasks(), sampler,
+            lambda: double_buffer.rollout,
             seed=int(policy_cfg.get("seed", 3407)), health=catalog.healthy)
         barrier = VersionBarrier(
             scheduler, exec_manager, double_buffer,
             drain_timeout_seconds=float(run.get("barrier_drain_timeout_seconds", 600)),
             emit=lambda n, **f: _emit(metrics_path, n, **f))
-        exporter = AdapterExporter()
+        trainer_state = run_dir / "spo_trainer_state.pt"
+
+        def persist_trainer_state(state: Mapping[str, Any]) -> None:
+            """Atomically persist the trainer boundary reached inside optimize.
+
+            The checkpoint callback fires at learning_started/optimizer_step/
+            optimized boundaries while the training lease is held and the
+            learner is resident; the file is the resume point for an
+            interrupted update. Tensors are already CPU-side.
+            """
+            import torch as _torch
+            temporary = trainer_state.with_name(
+                trainer_state.name + f".tmp-{os.getpid()}")
+            _torch.save(dict(state), temporary)
+            os.replace(temporary, trainer_state)
+
         trainer = make_spo_trainer(policy, ledger, {
             "spo": cfg["spo"],
             "optimizer": {**cfg["optimizer"], "total_optimizer_steps": max(1, max_batches)},
-        })
-        trainer_state = run_dir / "spo_trainer_state.pt"
-        if args.resume and trainer_state.is_file():
-            import torch as _torch
-            trainer.restore_training_state(_torch.load(trainer_state, map_location="cpu", weights_only=False))
-        if adapters.active is None:
-            genesis_dir = run_dir / "adapters" / "staging-genesis"
-            manifest = exporter.export(policy, genesis_dir, version=0, parent_version=None, optimizer_step=0)
-            adapters.publish(manifest, genesis_dir, activate=True)
-            _emit(metrics_path, "adapter_genesis", version=0)
-        else:
-            _emit(metrics_path, "adapter_resumed", version=adapters.active.version)
+        }, checkpoint_callback=persist_trainer_state)
+        # Resume is handled below by resume_pending_updates() under a training
+        # lease (the learner must be resident to restore into). Never restore
+        # here: the model is deliberately unloaded at startup.
 
         start = time.monotonic()
-        deadline = start + walltime
-        stop_submit = start + walltime - reserve
+        remaining = max(0.0, allowance - consumed)
+        deadline = start + remaining
+        stop_submit = start + max(0.0, remaining - reserve)
+        persist_budget(consumed)
         batches = 0
         in_flight: dict[str, tuple[object, object]] = {}
         lock = threading.RLock()
@@ -315,37 +415,126 @@ def run_spo(args: argparse.Namespace) -> int:
                 with lock:
                     in_flight.pop(trajectory_id, None)
 
+        def finalize_update(update_id: str, batch: object, stats: Mapping[str, Any],
+                            behavior_before: BehaviorAdapter) -> int:
+            """Export, persist, commit and serve an OPTIMIZED batch.
+
+            Caller holds the training lease with a resident learner. Order:
+            adapter export, trainer-state save, ledger commit, adapter
+            registry, serving pointer. Memory is released by the caller.
+            """
+            base = double_buffer.rollout
+            if base is None:
+                raise RuntimeError("no rollout adapter is available for update export")
+            version = base.version + 1
+            candidate_dir = run_dir / "adapters" / f"staging-v{version}"
+            manifest = exporter.export(
+                policy, candidate_dir, version=version,
+                parent_version=base.version,
+                optimizer_step=trainer.completed_optimizer_steps)
+            import torch as _torch
+            _torch.save(trainer.export_training_state(), trainer_state)
+            behavior_after = BehaviorAdapter(version=manifest.version, sha256=manifest.adapter_sha256)
+            commit_optimized_update(trainer, behavior_after,
+                                    version_chain=(behavior_before, behavior_after))
+            adapters.publish(manifest, candidate_dir)
+            double_buffer.begin_training(manifest)
+            barrier.publish_or_raise()
+            endpoint.advance_version(manifest.version)
+            _emit(metrics_path, "spo_update", update_id=update_id, version=version,
+                  action_tokens=batch.total_action_tokens, published=True,
+                  kl_value=stats.get("kl_value"), token_count=stats.get("token_count"))
+            return version
+
         def do_update(update_id: str) -> bool:
-            rollout = double_buffer.rollout
-            batch = trajectory_buffer.reserve(update_id, policy_before=rollout)
+            manifest = double_buffer.rollout
+            if manifest is None:
+                raise RuntimeError("no rollout adapter is available for update reservation")
+            behavior_before = BehaviorAdapter(
+                version=manifest.version, sha256=manifest.adapter_sha256)
+            batch = trajectory_buffer.reserve(update_id, policy_before=behavior_before)
             if batch is None:
                 return False
             with barrier.update_window():
                 concurrent.futures.wait([f for f, _ in in_flight.values()])
                 with lease.training():
-                    stats = trainer.optimize_batch(batch)
-                version = rollout.version + 1
-                candidate_dir = run_dir / "adapters" / f"staging-v{version}"
-                manifest = exporter.export(
-                    policy, candidate_dir, version=version,
-                    parent_version=rollout.version,
-                    optimizer_step=trainer.completed_optimizer_steps)
-                adapters.publish(manifest, candidate_dir)
-                double_buffer.begin_training(manifest)
-                import torch as _torch
-                _torch.save(trainer.export_training_state(), trainer_state)
-                behavior_before = BehaviorAdapter(
-                    version=rollout.version, sha256=rollout.adapter_sha256)
-                behavior_after = BehaviorAdapter(version=manifest.version, sha256=manifest.adapter_sha256)
-                commit_optimized_update(trainer, behavior_after,
-                                        version_chain=(behavior_before, behavior_after))
-                barrier.publish_or_raise()
-                _emit(metrics_path, "spo_update", update_id=update_id, version=version,
-                      action_tokens=batch.total_action_tokens, published=True,
-                      kl_value=stats.get("kl_value"), token_count=stats.get("token_count"))
+                    policy.ensure_loaded()
+                    try:
+                        stats = trainer.optimize_batch(batch)
+                        finalize_update(update_id, batch, stats, behavior_before)
+                    finally:
+                        policy.release_memory()
                 return True
 
         update_index = len(ledger.list_updates()) if args.resume else 0
+        if args.resume:
+            _emit(metrics_path, "spo_budget_resumed", allowance_seconds=allowance,
+                  consumed_seconds=consumed)
+        else:
+            persist_budget(consumed)
+
+        def resume_pending_updates() -> int:
+            """Finish ledger-uncompleted updates oldest-first; never skip ahead.
+
+            RESERVED batches optimize fresh through the normal finalize path.
+            A single LEARNING/OPTIMIZED batch restores its exact checkpoint
+            (update identity is verified) and resumes before any new reserve.
+            """
+            pending = list(ledger.list_updates(("RESERVED", "LEARNING", "OPTIMIZED")))
+            if not pending:
+                return 0
+            import torch as _torch
+            finished = 0
+            for record in pending:
+                update_id = record.update_id
+                if record.phase == "RESERVED":
+                    behavior_before = record.policy_before
+                    batch = ledger.get_update(update_id)
+                    if batch.phase != "RESERVED":
+                        raise RuntimeError(f"reserved update {update_id} changed phase during resume")
+                    with barrier.update_window():
+                        concurrent.futures.wait([f for f, _ in in_flight.values()])
+                        with lease.training():
+                            policy.ensure_loaded()
+                            try:
+                                stats = trainer.optimize_batch(batch)
+                                finalize_update(update_id, batch, stats, behavior_before)
+                            finally:
+                                policy.release_memory()
+                    finished += 1
+                    continue
+                if not trainer_state.is_file():
+                    raise RuntimeError(
+                        f"interrupted update {update_id} has no trainer checkpoint; refusing to skip it")
+                state = _torch.load(trainer_state, map_location="cpu", weights_only=False)
+                active_id = (state.get("active_batch") or {}).get("update_id")
+                if active_id != update_id:
+                    raise RuntimeError(
+                        f"trainer checkpoint belongs to {active_id}, not pending {update_id}")
+                with barrier.update_window():
+                    concurrent.futures.wait([f for f, _ in in_flight.values()])
+                    with lease.training():
+                        policy.ensure_loaded()
+                        try:
+                            trainer.restore_training_state(state)
+                            stats = trainer.resume_batch()
+                            batch = ledger.get_update(update_id)
+                            finalize_update(update_id, batch, stats, batch.policy_before)
+                        finally:
+                            policy.release_memory()
+                finished += 1
+            return finished
+
+        if args.resume:
+            resumed = resume_pending_updates()
+            if resumed:
+                _emit(metrics_path, "spo_resume_completed", finished_updates=resumed)
+            update_index = max(
+                [0] + [int(str(record.update_id).rsplit("-", 1)[-1])
+                       for record in ledger.list_updates()
+                       if str(record.update_id).rsplit("-", 1)[-1].isdigit()]) + 1
+        else:
+            update_index = 0
         _emit(metrics_path, "spo_run_started", config=cfg.get("algorithm"),
               tasks=len(catalog), resume=bool(args.resume),
               inference={"engine": engine_name, "base_url": backend_url},
@@ -387,10 +576,11 @@ def run_spo(args: argparse.Namespace) -> int:
                     lambda fut, tid=assignment.trajectory_id, asg=assignment: (
                         settle_done(fut, tid, asg), scheduler.complete(asg)))
             if not in_flight:
-                time.sleep(1.0)
+                time.sleep(min(1.0, max(0.05, deadline - time.monotonic())))
                 continue
             concurrent.futures.wait([f for f, _ in in_flight.values()],
-                                    timeout=5.0, return_when=concurrent.futures.FIRST_COMPLETED)
+                                    timeout=min(5.0, max(0.05, deadline - time.monotonic())),
+                                    return_when=concurrent.futures.FIRST_COMPLETED)
             rollout_now = double_buffer.rollout
             if rollout_now is not None and batches < max_batches:
                 try:
@@ -401,7 +591,9 @@ def run_spo(args: argparse.Namespace) -> int:
                     _emit(metrics_path, "spo_update_failed", error=str(error))
         with exec_manager.paused():
             if in_flight:
-                concurrent.futures.wait([f for f, _ in in_flight.values()])
+                concurrent.futures.wait(
+                    [f for f, _ in in_flight.values()],
+                    timeout=max(0.05, deadline - time.monotonic()))
             final_done = False
             if batches < max_batches and time.monotonic() < deadline:
                 try:
@@ -411,10 +603,19 @@ def run_spo(args: argparse.Namespace) -> int:
                         final_done = True
                 except (ValueError, RuntimeError) as error:
                     _emit(metrics_path, "spo_update_failed", error=str(error))
+            persist_budget(consumed + (time.monotonic() - start))
             _emit(metrics_path, "spo_run_stopped", batches=batches, final_update=final_done,
                   buffer=ledger.buffer_state())
         return 0 if batches >= max_batches else 75
     finally:
+        try:
+            exec_manager.shutdown(cancel_pending=True)
+        except (RuntimeError, OSError, ValueError):
+            pass
+        try:
+            persist_budget(consumed + (time.monotonic() - start))
+        except (RuntimeError, OSError, ValueError):
+            pass
         try:
             endpoint.close()
         except (RuntimeError, OSError, ValueError):

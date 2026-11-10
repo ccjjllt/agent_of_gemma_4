@@ -75,6 +75,7 @@ class Policy:
         if raw_config.get("quantization_config"):
             raise ValueError("Use the official QAT-unquantized BF16 checkpoint, not a packed/NF4 base")
         self.model_path = model_path
+        self.raw_text_config = dict(text_config)
         # Keep the checkpoint tokenizer/template unchanged. Response parsing
         # follows the verified public CT wheelhouse's non-streaming protocol.
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -88,6 +89,67 @@ class Policy:
         self.generation_config = GenerationConfig.from_pretrained(
             str(model_path), local_files_only=True
         )
+        # The 31B weights load only inside a training lease. Serving
+        # (tokenize/parse) and config validation work without the model.
+        self._model = None
+        self.processor = None
+        self.targets = None
+        self.input_device = None
+        self.text_config = None
+        self.softcap = float(text_config.get("final_logit_softcapping") or 0.0)
+        self._mode = None
+        self._model_loaded = False
+        if not config.get("defer_learner_load"):
+            self.ensure_loaded()
+
+    @property
+    def model(self):
+        if self._model is None:
+            raise RuntimeError(
+                "Learner model is not resident; call ensure_loaded() inside a "
+                "training lease after the inference engine has released GPU memory")
+        return self._model
+
+    @model.setter
+    def model(self, value):
+        self._model = value
+
+    def ensure_loaded(self):
+        """Load the 31B learner under a held training lease (idempotent)."""
+        if self._model_loaded and self._model is not None:
+            return self
+        self._load_learner()
+        return self
+
+    def release_memory(self):
+        """Drop learner weights after export; the inference engine may resume.
+
+        Must run inside the training lease after the optimizer state and the
+        exported adapter are persisted, and before the lease exit restores the
+        inference engine. Safe to call when already released.
+        """
+        if self._model is None and not self._model_loaded:
+            return self
+        self._model = None
+        self.processor = None
+        self._model_loaded = False
+        self._mode = None
+        import gc
+        gc.collect()
+        try:
+            if self.torch.cuda.is_available():
+                self.torch.cuda.empty_cache()
+        except RuntimeError:
+            pass
+        return self
+
+    def _load_learner(self):
+        if self._model is not None:
+            raise RuntimeError("Learner model is already resident")
+        config = self.config
+        text_config = self.raw_text_config
+        model_path = self.model_path
+        expected_gpus = int(config.get("expected_gpu_count", 2))
         kwargs = {}
         if config.get("max_memory_gib"):
             kwargs["max_memory"] = {
@@ -140,6 +202,7 @@ class Policy:
         self.text_config = self.model.config.get_text_config()
         self.softcap = float(text_config.get("final_logit_softcapping") or 0.0)
         self._mode = None
+        self._model_loaded = True
 
     @staticmethod
     def _lora_targets(model, text_config: dict) -> list[str]:
@@ -363,6 +426,8 @@ class Policy:
                 "enable_thinking": bool(enable_thinking)}
 
     def new_generation_cache(self):
+        if self._model is None:
+            raise RuntimeError("Learner model is not resident; local KV caches need a training lease")
         from transformers import DynamicCache
 
         return DynamicCache(config=self.text_config)

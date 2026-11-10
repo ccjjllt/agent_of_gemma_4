@@ -26,6 +26,7 @@ from .loss import spo_ppo_loss
 
 TRAINER_STATE_VERSION = 1
 SPO_KL_ESTIMATOR = "spo_behavior_old_to_new_action_token_k3_v1"
+SPO_INTERVAL_KL_ESTIMATOR = "spo_pre_to_post_action_token_k3_v1"
 _PHASE_ORDER = {"RESERVED": 0, "LEARNING": 1, "OPTIMIZED": 2, "CONSUMED": 3}
 
 
@@ -427,6 +428,32 @@ class SPOTrainer:
         }
         self._install_active(active, trajectories)
         self._batch = batch
+        # Freeze the pre-update policy's scores before any optimizer step. The
+        # registered drift is K3(pre || post) over exactly this update's
+        # version interval; behavior→current stays a separate, explicitly
+        # labeled off-policy diagnostic and must never stand in for it.
+        self._active["pre_update_logprobs"] = self._capture_pre_update_logprobs()
+
+    def _capture_pre_update_logprobs(self) -> dict[str, list[float]]:
+        """Score the KL probe calls with the unstepped policy (training lease)."""
+        torch = self._require_torch()
+        if self._active is None or self._flat is None:
+            raise RuntimeError("no active SPO batch to score")
+        captured: dict[str, list[float]] = {}
+        for index in self._active["kl_call_indices"]:
+            _, call = self._flat[index]
+            with torch.no_grad():
+                scores = self.policy.score_call(self._call_payload(call), reference=False)
+            values = (scores.detach().to(device="cpu", dtype=torch.float64).tolist()
+                      if isinstance(scores, torch.Tensor)
+                      else [float(value) for value in scores])
+            if len(values) != len(call.behavior_logprobs) \
+                    or not all(math.isfinite(value) for value in values):
+                raise RuntimeError("pre-update scoring must return one finite logprob per behavior token")
+            captured[str(index)] = values
+        if not captured:
+            raise RuntimeError("pre-update KL capture selected no calls")
+        return captured
 
     def _adopt_batch(self, batch: UpdateBatch) -> None:
         self._batch = batch
@@ -624,14 +651,20 @@ class SPOTrainer:
                 and type(stats.get("token_count")) is int and stats["token_count"] > 0)
 
     def _measure_post_update_kl(self) -> dict[str, Any]:
-        """K3(old behavior || optimized) on retained behavior action tokens only.
+        """Separate the registered interval drift from the behavior diagnostic.
 
-        This is a bounded sampled-token diagnostic, not exact full-vocabulary
-        KL, full-batch KL, or a measurement on freshly generated new-policy text.
+        The registered ``kl_value`` is K3(pre-update || post-update) over this
+        update's exact version interval, using the frozen pre-step scores. The
+        behavior→current K3 stays as an explicitly labeled off-policy
+        diagnostic: with policy lag the behavior policy may be older than
+        pre-update, so it must never stand in for the registered interval.
+        Both are bounded sampled-token approximations, not full-vocabulary KL.
         """
         torch = self._require_torch()
         rng = capture_rng_state(torch)
+        pre_captured = (self._active or {}).get("pre_update_logprobs") or {}
         total = 0.0
+        interval_total = 0.0
         token_count = 0
         indices = list(self._active["kl_call_indices"])
         behavior_versions = set()
@@ -647,8 +680,13 @@ class SPOTrainer:
                 else:
                     current = torch.tensor(scores, dtype=torch.float64)
                 old = torch.tensor(call.behavior_logprobs, dtype=torch.float64)
+                pre_values = pre_captured.get(str(index))
+                if pre_values is None or len(pre_values) != len(call.behavior_logprobs):
+                    raise RuntimeError(
+                        "pre-update KL capture is missing for a probe call; refusing to mislabel drift")
+                pre = torch.tensor(pre_values, dtype=torch.float64)
                 mask = torch.tensor(call.action_mask, dtype=torch.bool)
-                if current.ndim != 1 or current.shape != old.shape \
+                if current.ndim != 1 or current.shape != old.shape or current.shape != pre.shape \
                         or not bool(torch.isfinite(current).all().item()):
                     raise FloatingPointError("invalid post-update Policy logprobs")
                 # Tokens were sampled from old.  With delta=log(new/old),
@@ -659,24 +697,40 @@ class SPOTrainer:
                     raise FloatingPointError("non-finite old-to-new K3 terms")
                 values = terms.tolist()
                 total = math.fsum((total, math.fsum(values)))
+                # Interval drift uses the frozen pre-step scores, so the
+                # registered quantity matches [policy_before, policy_after].
+                interval_delta = (current - pre)[mask]
+                interval_terms = torch.expm1(interval_delta) - interval_delta
+                if not bool(torch.isfinite(interval_terms).all().item()):
+                    raise FloatingPointError("non-finite pre-to-post K3 terms")
+                interval_values = interval_terms.tolist()
+                interval_total = math.fsum((interval_total, math.fsum(interval_values)))
                 token_count += len(values)
                 behavior_versions.add(call.behavior_adapter.version)
             if token_count <= 0:
                 raise ValueError("KL probe selected no behavior action tokens")
             value = max(0.0, total / token_count)
-            if not math.isfinite(value):
-                raise FloatingPointError("non-finite old-to-new K3 value")
+            interval_value = max(0.0, interval_total / token_count)
+            if not math.isfinite(value) or not math.isfinite(interval_value):
+                raise FloatingPointError("non-finite K3 value")
             return {
-                "kl_value": value,
+                "kl_value": interval_value,
                 "token_count": token_count,
-                "estimator": SPO_KL_ESTIMATOR,
-                "formula": "mean(expm1(logp_new-logp_behavior) - (logp_new-logp_behavior))",
-                "direction": "old rollout behavior to optimized policy",
+                "estimator": SPO_INTERVAL_KL_ESTIMATOR,
+                "formula": "mean(expm1(logp_post-logp_pre) - (logp_post-logp_pre))",
+                "direction": "pre-update policy to post-update policy over this update interval",
                 "call_indices": indices,
                 "calls_scored": len(indices),
                 "behavior_versions": sorted(behavior_versions),
                 "aggregation": "uniform over selected action-mask=1 behavior token occurrences",
                 "scope": "bounded retained behavior-token subset; not exact full-vocabulary KL",
+                "behavior_diagnostic": {
+                    "kl_value": value,
+                    "estimator": SPO_KL_ESTIMATOR,
+                    "formula": "mean(expm1(logp_new-logp_behavior) - (logp_new-logp_behavior))",
+                    "direction": "old rollout behavior to optimized policy (off-policy when lagged)",
+                    "behavior_versions": sorted(behavior_versions),
+                },
             }
         finally:
             restore_rng_state(rng, torch)

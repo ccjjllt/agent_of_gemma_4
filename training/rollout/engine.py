@@ -100,6 +100,10 @@ class RolloutEngine:
             ):
                 if key in outcome and key not in verification:
                     verification[key] = outcome[key]
+                # The official runtime merges its spo_bundle into the verdict
+                # itself; reports are also promoted from the result mapping.
+                if key not in verification and key in raw:
+                    verification[key] = raw[key]
             return raw, verification
         raw_value = _field(outcome, "result")
         raw = dict(raw_value) if isinstance(raw_value, Mapping) else _mapping(outcome)

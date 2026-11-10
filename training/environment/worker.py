@@ -31,7 +31,10 @@ class OfficialWorkerConfig:
     sandbox_root: Path
     baseline_python: Path
     agent_uid_base: int
-    max_attempts: int = 1024
+    # Size of the UID pair pool, not a retry limit. Attempt numbers come from a
+    # persisted global sequence and grow without bound; keep the pool far above
+    # any realistic run length (range check: base + 2*pool must fit int32).
+    max_attempts: int = 1000000
     runtime_python: Path = Path("/opt/gemma-runtime/bin/python")
     session_clock: str = "queue_excluded"
     event_summarizer: str = "official"
@@ -72,25 +75,35 @@ class AttemptContext:
     agent_uid: int
     judge_uid: int
     paths: AttemptPaths
+    endpoint_rollout_id: str
 
 
 class OfficialWorker:
-    def __init__(self, config: OfficialWorkerConfig, cache: WorkspaceCache):
+    def __init__(self, config: OfficialWorkerConfig, cache: WorkspaceCache,
+                 *, uid_allocator: Any | None = None):
         self.config = config.validated()
         self.cache = cache
         self.sandbox = SandboxConfig(
             config.sandbox_root, config.baseline_python, config.agent_uid_base, config.max_attempts
         )
-        self.uids = UidAllocator(config.agent_uid_base, config.max_attempts)
+        # Runs share one allocator across workers and baseline probes so UID
+        # pairs stay unique; ad-hoc use falls back to a private allocator.
+        self.uids = uid_allocator if uid_allocator is not None else UidAllocator(
+            config.agent_uid_base, config.max_attempts)
 
-    def prepare_attempt(self, assignment: Any, attempt_index: int) -> AttemptContext:
+    def prepare_attempt(self, assignment: Any, attempt_index: int,
+                          *, endpoint_rollout_id: str | None = None) -> AttemptContext:
         trajectory_id = getattr(assignment, "trajectory_id", None)
         if not isinstance(trajectory_id, str) or not trajectory_id:
             raise ValueError("assignment must carry a trajectory_id")
         task_id = getattr(getattr(assignment, "task_key", None), "task_id", None)
         if not isinstance(task_id, str) or not task_id:
             raise ValueError("assignment must carry an official task_key.task_id")
-        attempt_id = f"{assignment.trajectory_id}-a{attempt_index:03d}-{uuid.uuid4().hex[:8]}"
+        if endpoint_rollout_id is not None and (
+                not isinstance(endpoint_rollout_id, str) or not endpoint_rollout_id):
+            raise ValueError("endpoint rollout namespace must be a nonempty string")
+        namespace = endpoint_rollout_id or trajectory_id
+        attempt_id = f"{trajectory_id}-a{attempt_index:06d}-{uuid.uuid4().hex[:8]}"
         agent_uid, judge_uid = self.uids.allocate(attempt_index)
         paths = self.cache.prepare_attempt(attempt_id, task_id=task_id)
         SandboxGuard.check_execution(
@@ -106,6 +119,7 @@ class OfficialWorker:
             agent_uid=agent_uid,
             judge_uid=judge_uid,
             paths=paths,
+            endpoint_rollout_id=namespace,
         )
 
     def build_command(self, assignment: Any, attempt: AttemptContext, *, endpoint_token_path: Path) -> list[str]:
@@ -116,7 +130,7 @@ class OfficialWorker:
             "--data-root", str(self.config.data_root),
             "--submission-dir", str(self.config.submission_dir),
             "--endpoint", self.config.endpoint_url.rstrip("/"),
-            "--rollout-id", assignment.trajectory_id,
+            "--rollout-id", attempt.endpoint_rollout_id,
             "--workspace", str(attempt.paths.workspace_dir),
             "--result-file", str(attempt.paths.result_path),
             "--sandbox", "subprocess",
@@ -218,7 +232,8 @@ class OfficialWorker:
             outcome: dict[str, Any] = {
                 "attempt_id": attempt.attempt_id,
                 "task_id": assignment.task_key.task_id,
-                "rollout_id": assignment.trajectory_id,
+                "rollout_id": attempt.endpoint_rollout_id,
+                "trajectory_id": assignment.trajectory_id,
                 "returncode": process.returncode,
                 "worker_log": str(attempt.paths.log_path),
                 "result_path": str(attempt.paths.result_path),

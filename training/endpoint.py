@@ -35,10 +35,16 @@ class _PolicyHTTPServer(ThreadingHTTPServer):
 
 
 class PolicyEndpoint:
-    def __init__(self, policy, run_dir: Path, port: int = 0, generation_config=None):
+    def __init__(self, policy, run_dir: Path, port: int = 0, generation_config=None,
+                 serving_backend=None):
         self.policy, self.run_dir = policy, Path(run_dir)
         self.generation_config = dict(generation_config or {})
         self.generation_config.setdefault("max_batch_size", 4)
+        # serving_backend is a trajectory-bound inference gateway (DoubleBuffer
+        # over SGLang). When set, token production uses the lease-guarded
+        # server and the local learner weights are never required for serving;
+        # when None, the legacy local continuous engine is used.
+        self.serving_backend = serving_backend
         self.batch_wait_seconds = float(self.generation_config.get("batch_wait_ms", 5)) / 1000
         if not math.isfinite(self.batch_wait_seconds) or not 0 <= self.batch_wait_seconds <= 1:
             raise ValueError("batch_wait_ms must be finite and between 0 and 1000")
@@ -431,6 +437,25 @@ class PolicyEndpoint:
             self.thread.join()
         self.server.server_close()
         self.store.close()
+
+    def advance_version(self, version: int) -> int:
+        """Move a continuous SPO collection to a newly published rollout version.
+
+        In-flight rows keep their recorded version; only new registrations and
+        new requests observe the new version. Must be called after the serving
+        pointer has moved (barrier publish), never speculatively.
+        """
+        version = int(version)
+        if version < 0:
+            raise ValueError("policy version must be nonnegative")
+        with self.condition:
+            if not self.collecting or self._fatal_error:
+                raise RuntimeError("Cannot advance a closed or failed collection")
+            if version < self.policy_version:
+                raise ValueError("policy version must not move backwards")
+            self.policy_version = version
+            self.condition.notify_all()
+            return self.policy_version
 
     def begin(self, identities, version):
         with self.condition:
@@ -871,9 +896,15 @@ class PolicyEndpoint:
         steps = completed = admitted = 0
         inflight = set()
         try:
-            from .generation import GenerationEngine
-            engine = GenerationEngine(self.policy, {**self.generation_config, "policy_version": self.policy_version},
-                                      self.run_dir, on_request_started=self._request_started)
+            if self.serving_backend is not None:
+                from .sglang_serving import SGLangServingEngine
+                engine = SGLangServingEngine(self.policy, self.serving_backend,
+                                             {**self.generation_config, "policy_version": self.policy_version},
+                                             self.run_dir, on_request_started=self._request_started)
+            else:
+                from .generation import GenerationEngine
+                engine = GenerationEngine(self.policy, {**self.generation_config, "policy_version": self.policy_version},
+                                          self.run_dir, on_request_started=self._request_started)
             self._generation_ready.set()
             while True:
                 if self.policy.abort_generation.is_set():

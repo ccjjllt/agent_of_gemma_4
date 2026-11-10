@@ -44,6 +44,44 @@ def _request_hash(trajectory_id: str, request_id: str, payload: Mapping[str, Any
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+class AttemptSequence:
+    """Monotonic, persisted per-attempt numbering for one run directory.
+
+    Every actual attempt — first tries, retries and baseline probes — consumes
+    the next number exactly once. Numbers never repeat within a run or across
+    resume, so UID pairs and request namespaces derived from them cannot
+    collide the way slot_index + retry_number did.
+    """
+
+    def __init__(self, path: str | object):
+        from pathlib import Path
+        self._path = Path(path)
+        self._lock = threading.Lock()
+        self._next = self._read()
+
+    def _read(self) -> int:
+        try:
+            value = json.loads(self._path.read_text(encoding="utf-8"))["next_attempt"]
+            if type(value) is not int or value < 0:
+                raise ValueError("invalid attempt counter")
+            return value
+        except (OSError, ValueError, KeyError, TypeError):
+            return 0
+
+    def take(self) -> int:
+        """Consume and persist the next attempt number."""
+        from pathlib import Path
+        with self._lock:
+            value = self._next
+            self._next = value + 1
+            record = json.dumps({"next_attempt": self._next}) + "\n"
+            temporary = self._path.with_name(self._path.name + ".tmp")
+            temporary.write_text(record, encoding="utf-8")
+            import os
+            os.replace(temporary, self._path)
+            return value
+
+
 class ExecutionManager:
     def __init__(
         self,
@@ -55,6 +93,7 @@ class ExecutionManager:
         max_attempts: int = 2,
         task_timeout_seconds: float | None = 3600.0,
         emit: Callable[..., None] | None = None,
+        attempt_seq: Callable[[], int] | None = None,
     ):
         if not isinstance(worker, OfficialWorker):
             raise TypeError("worker must be OfficialWorker")
@@ -77,6 +116,9 @@ class ExecutionManager:
         self.max_attempts = max_attempts
         self.task_timeout = None if task_timeout_seconds is None else float(task_timeout_seconds)
         self.emit = emit
+        # Without an explicit sequence, attempts fall back to a process-local
+        # counter that cannot survive resume; pass AttemptSequence for runs.
+        self._attempt_seq = attempt_seq
         self._pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="spo-worker")
         self._lock = threading.RLock()
         self._paused = False
@@ -130,11 +172,12 @@ class ExecutionManager:
         with self._lock:
             state = self._active.get(trajectory_id)
             executor_future = state["executor_future"] if state else None
+            namespaces = list(state.get("namespaces", ())) if state else []
         if state is None:
             return
         state["cancel"].set()
         try:
-            self.endpoint.cancel_rollouts([trajectory_id], reason=reason)
+            self.endpoint.cancel_rollouts(namespaces or [trajectory_id], reason=reason)
         except Exception:
             pass
         if executor_future is not None:
@@ -179,18 +222,31 @@ class ExecutionManager:
         trajectory_id = assignment.trajectory_id
         digest = _behavior(assignment)[1]
         adapter = {"version": version, "sha256": digest}
-        attempt_index = self._next_attempt()
-        try:
-            self.endpoint.register([trajectory_id], version)
-            token = self.endpoint.rollout_token(trajectory_id)
-        except Exception as error:
-            return rollout_engine.exclude(assignment, f"endpoint_registration_{type(error).__name__}: {error}")
+        namespaces: list[str] = []
         outcome: Mapping[str, Any] | None = None
+        winning_namespace: str | None = None
         try:
             for attempt_number in range(self.max_attempts):
                 if cancel_event.is_set():
                     return rollout_engine.exclude(assignment, "worker_cancelled_before_attempt")
-                attempt = self.worker.prepare_attempt(assignment, attempt_index + attempt_number)
+                # Every actual attempt owns a globally unique sequence number.
+                # UID pairs and request namespaces derive from it, so a retry
+                # can never reuse another trajectory's identities.
+                seq = self._take_attempt()
+                namespace = f"{trajectory_id}-a{seq:06d}"
+                try:
+                    self.endpoint.register([namespace], version)
+                    token = self.endpoint.rollout_token(namespace)
+                except Exception as error:
+                    return rollout_engine.exclude(
+                        assignment, f"endpoint_registration_{type(error).__name__}: {error}")
+                namespaces.append(namespace)
+                with self._lock:
+                    active = self._active.get(trajectory_id)
+                    if active is not None:
+                        active.setdefault("namespaces", []).append(namespace)
+                attempt = self.worker.prepare_attempt(
+                    assignment, seq, endpoint_rollout_id=namespace)
                 deadline = None if self.task_timeout is None else time.time() + self.task_timeout
                 try:
                     outcome = self.worker.run(
@@ -209,17 +265,23 @@ class ExecutionManager:
                 if self._retry_worker(outcome) and attempt_number + 1 < self.max_attempts:
                     self._event("worker_attempt_retry", trajectory_id=trajectory_id, attempt=attempt.attempt_id)
                     continue
+                winning_namespace = namespace
                 break
             assert outcome is not None
-            self._bridge_endpoint_calls(trajectory_id, adapter)
+            # Only the winning attempt's consumed calls enter the trajectory.
+            # Failed attempts keep their own namespace rows for forensics and
+            # are never spliced into a later attempt.
+            self._bridge_endpoint_calls(trajectory_id, winning_namespace, adapter)
             return rollout_engine.run(assignment, dict(outcome))
         finally:
             try:
-                self.endpoint.release_rollouts([trajectory_id])
+                self.endpoint.release_rollouts(namespaces)
             except Exception:
                 pass
 
-    def _next_attempt(self) -> int:
+    def _take_attempt(self) -> int:
+        if self._attempt_seq is not None:
+            return int(self._attempt_seq())
         with self._lock:
             value = self._attempts
             self._attempts += 1
@@ -238,8 +300,8 @@ class ExecutionManager:
             return True
         return False
 
-    def _bridge_endpoint_calls(self, trajectory_id: str, adapter: Mapping[str, Any]) -> int:
-        rows = self.endpoint.recover_full_rollout_calls(trajectory_id, int(adapter["version"]))
+    def _bridge_endpoint_calls(self, trajectory_id: str, namespace: str, adapter: Mapping[str, Any]) -> int:
+        rows = self.endpoint.recover_full_rollout_calls(namespace, int(adapter["version"]))
         bridged = 0
         for row in sorted(rows, key=lambda item: int(item.get("call_index", 0))):
             request_id = row.get("request_id")
