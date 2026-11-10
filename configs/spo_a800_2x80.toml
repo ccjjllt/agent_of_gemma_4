@@ -3,6 +3,7 @@ algorithm = "single_stream_spo"
 
 [policy]
 model_name = "google/gemma-4-31B-it-qat-q4_0-unquantized"
+model_path = "/root/autodl-fs/models/gemma4-31b-qat"
 model_revision = "1e4d8beecacb8b7590c1d8bedd7335f687bf311f"
 model_source_uri = "https://huggingface.co/google/gemma-4-31B-it-qat-q4_0-unquantized/tree/1e4d8beecacb8b7590c1d8bedd7335f687bf311f"
 response_parser = "official_vllm_gemma4_0_19_1"
@@ -24,6 +25,13 @@ max_worker_retries = 1
 
 [inference]
 engine = "sglang"
+base_url = "http://127.0.0.1:8000"
+# Deployment contract (server side): the engine must serve policy.model_path
+# with tensor_parallel_size 2 and expose exactly the endpoints in
+# training/rollout/backend.py HTTPInferenceBackend.paths
+# (SGLang: /pause_generation + /continue_generation). run_spo verifies the
+# deployment with a start()/health handshake before any rollout; the SGLang
+# server's own launch command and version pin live with the deployment.
 tensor_parallel_size = 2
 colocated = true
 enable_prefix_cache = true
@@ -82,3 +90,6 @@ max_turns = 50
 temperature = 1.0
 top_p = 1.0
 top_k = 0
+# Native SGLang budget per request (stock default 128 would silently truncate
+# rollouts). Matches the harness max_output_tokens generation constraint.
+max_new_tokens = 16384

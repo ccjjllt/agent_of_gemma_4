@@ -350,6 +350,9 @@ R_train = R_base + λ resolved (E-R_base)
 
 ## 11. SFT、教师蒸馏与 OPD
 
+分阶段：首轮只启动在线 SPO（`training/run_spo.py` 不接入本节模块）。
+实现已存在（`training/data/sft.py`、`training/data/distillation.py`：SFTDataset/TeacherOfflineDataset/OPDDataset、masked CE、OPD forward-KL），但须在首个真实 SPO 更新证明循环成立后，再接入 SFT 冷启动→教师蒸馏→OPD；在此之前本节是后续阶段，不是第一轮启动的前置条件。
+
 所有数据源复用 `Trajectory/ActionCall` 和官方 VerificationBundle，来源字段为 `student_rl`、`verified_sft`、`teacher_offline` 或 `teacher_opd`。
 
 ### SFT 冷启动

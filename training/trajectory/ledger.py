@@ -183,6 +183,14 @@ class TrajectoryLedger:
         """
         with self.transaction() as conn:
             conn.executescript(schema)
+            for column, declaration in (
+                ("dispatch_v", "REAL"), ("dispatch_kl_cursor", "INTEGER"),
+            ):
+                try:
+                    conn.execute(
+                        f"ALTER TABLE value_observations ADD COLUMN {column} {declaration}")
+                except sqlite3.OperationalError:
+                    pass
             conn.execute(
                 "INSERT OR IGNORE INTO metadata(key,value) VALUES('schema_version',?)",
                 (str(SCHEMA_VERSION),),

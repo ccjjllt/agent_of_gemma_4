@@ -32,6 +32,31 @@ class ValueRecord:
 
 
 @dataclass(frozen=True)
+class FrozenBaseline:
+    """Dispatch-time value snapshot pinned to one trajectory.
+
+    ``V``/``success_p``/``effective_count`` already include KL forgetting for
+    segments known at dispatch.  Later segments (policy updates during
+    execution) must not move this trajectory's advantage baseline; they only
+    affect shared value maintenance at observation time.
+    """
+
+    task_key: TaskKey
+    V: float
+    success_p: float
+    effective_count: float
+    kl_cursor: int
+    policy_version: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "task_key": self.task_key.to_dict(), "V": self.V,
+            "success_p": self.success_p, "effective_count": self.effective_count,
+            "kl_cursor": self.kl_cursor, "policy_version": self.policy_version,
+        }
+
+
+@dataclass(frozen=True)
 class ValueObservation:
     trajectory_id: str
     task_key: TaskKey
@@ -45,6 +70,9 @@ class ValueObservation:
     forgotten_kl: float
     kl_cursor: int
     idempotent_replay: bool = False
+    dispatch_V: float | None = None
+    dispatch_kl_cursor: int | None = None
+    dispatch_policy_version: int | None = None
 
 
 class ValueTracker:
@@ -141,13 +169,68 @@ class ValueTracker:
 
     get = snapshot
 
+    def peek(self, task_key: TaskKey) -> ValueRecord:
+        """Read-only dispatch view: forgetting without persisting anything.
+
+        Sampling and dispatch freezing must not advance the persisted KL
+        cursor; only :meth:`observe` consumes segments.  Repeated peeks with
+        no intervening observation return identical values.
+        """
+        if not isinstance(task_key, TaskKey):
+            raise TypeError("task_key must be TaskKey")
+        with self.ledger.transaction() as conn:
+            record = self._ensure(conn, task_key)
+            rows = conn.execute(
+                "SELECT segment_id,kl_value FROM kl_segments WHERE segment_id>? ORDER BY segment_id",
+                (record.kl_cursor,),
+            ).fetchall()
+            if not rows:
+                return record
+            divergence = math.fsum(float(row["kl_value"]) for row in rows)
+            rho = 2.0 ** (-divergence / self.kl_half_life)
+            return ValueRecord(
+                record.task_key,
+                self.prior_value + rho * (record.V - self.prior_value),
+                self.prior_success + rho * (record.success_p - self.prior_success),
+                rho * record.effective_count,
+                record.last_observation_sequence, record.last_policy_version,
+                int(rows[-1]["segment_id"]),
+            )
+
+    def freeze_dispatch(self, task_key: TaskKey, policy_version: int) -> FrozenBaseline:
+        """Pin the dispatch-time advantage baseline for one trajectory."""
+        if isinstance(policy_version, bool) or not isinstance(policy_version, int) \
+                or policy_version < 0:
+            raise ValueError("policy_version must be a non-negative integer")
+        record = self.peek(task_key)
+        return FrozenBaseline(
+            task_key=task_key, V=record.V, success_p=record.success_p,
+            effective_count=record.effective_count, kl_cursor=record.kl_cursor,
+            policy_version=policy_version,
+        )
+
     def observe(self, trajectory: Trajectory,
-                reward: RewardRecord) -> ValueObservation:
-        """Commit lazy forgetting, ``A=R-V_pre``, V/P update and raw A atomically."""
+                reward: RewardRecord,
+                baseline: FrozenBaseline | None = None) -> ValueObservation:
+        """Commit one observation with a dispatch-frozen advantage baseline.
+
+        ``A = R - V_dispatch`` where ``V_dispatch`` was pinned at dispatch;
+        policy updates during execution cannot move this trajectory's baseline.
+        Shared V/success_p maintenance still consumes newly committed KL
+        segments exactly once, so concurrent observations never lose updates.
+        Replaying an observed trajectory returns the stored observation.
+        """
         if not isinstance(trajectory, Trajectory) or not isinstance(reward, RewardRecord):
             raise TypeError("observe requires Trajectory and RewardRecord")
         if not reward.eligible:
             raise ValueError("ineligible rewards cannot update SPO value state")
+        if baseline is not None:
+            if not isinstance(baseline, FrozenBaseline):
+                raise TypeError("baseline must be a FrozenBaseline")
+            if baseline.task_key != trajectory.task_key:
+                raise ValueError("frozen baseline belongs to another task")
+            if baseline.policy_version != trajectory.behavior_adapter.version:
+                raise ValueError("frozen baseline policy must match the behavior adapter")
         with self.ledger.transaction() as conn:
             stored_trajectory = self.ledger._get_trajectory(conn, trajectory.trajectory_id)
             if (stored_trajectory.task_key != trajectory.task_key
@@ -176,6 +259,15 @@ class ValueTracker:
                 )
                 if actual != expected:
                     raise ValueError("observation ID replay has different evidence")
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(value_observations)")}
+                dispatch_v = float(existing["dispatch_v"]) \
+                    if "dispatch_v" in columns and existing["dispatch_v"] is not None else None
+                dispatch_cursor = existing["dispatch_kl_cursor"] \
+                    if "dispatch_kl_cursor" in columns else None
+                if baseline is not None and (dispatch_v is None
+                        or abs(dispatch_v - baseline.V) > 1e-12
+                        or dispatch_cursor != baseline.kl_cursor):
+                    raise ValueError("replay frozen baseline differs from the stored observation")
                 return ValueObservation(
                     trajectory_id=trajectory.trajectory_id, task_key=trajectory.task_key,
                     V_pre=float(existing["V_pre"]),
@@ -187,6 +279,9 @@ class ValueTracker:
                     forgetting_factor=float(existing["forgetting_factor"]),
                     forgotten_kl=float(existing["forgotten_kl"]),
                     kl_cursor=int(existing["kl_cursor_after"]), idempotent_replay=True,
+                    dispatch_V=dispatch_v,
+                    dispatch_kl_cursor=int(dispatch_cursor) if dispatch_cursor is not None else None,
+                    dispatch_policy_version=trajectory.behavior_adapter.version,
                 )
             sequence_conflict = conn.execute(
                 "SELECT trajectory_id FROM value_observations WHERE stream_sequence=?",
@@ -197,26 +292,48 @@ class ValueTracker:
             record, rho, divergence = self._forget(
                 conn, self._ensure(conn, stored_trajectory.task_key)
             )
-            v_pre = record.V
+            if baseline is None:
+                v_pre = record.V
+                dispatch_v = None
+                dispatch_cursor = None
+            else:
+                v_pre = baseline.V
+                dispatch_v = baseline.V
+                dispatch_cursor = baseline.kl_cursor
             raw_advantage = float(reward.total_reward) - v_pre
             eta = 1.0 / (record.effective_count + 1.0)
-            v_after = v_pre + eta * (float(reward.total_reward) - v_pre)
+            v_after = record.V + eta * (float(reward.total_reward) - record.V)
             success_after = record.success_p + eta * (
                 float(reward.resolved) - record.success_p
             )
             effective_after = record.effective_count + 1.0
             now = time.time()
-            conn.execute(
-                "INSERT INTO value_observations(trajectory_id,stream_sequence,task_key,reward,"
-                "resolved,V_pre,raw_advantage,V_after,success_p_after,effective_count_after,"
-                "eta,policy_version,kl_cursor_after,forgetting_factor,forgotten_kl,created_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (trajectory.trajectory_id, trajectory.stream_sequence,
-                 task_key_id(trajectory.task_key), float(reward.total_reward),
-                 int(reward.resolved), v_pre, raw_advantage, v_after, success_after,
-                 effective_after, eta, trajectory.behavior_adapter.version,
-                 record.kl_cursor, rho, divergence, now),
-            )
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(value_observations)")}
+            if {"dispatch_v", "dispatch_kl_cursor"} <= columns:
+                conn.execute(
+                    "INSERT INTO value_observations(trajectory_id,stream_sequence,task_key,reward,"
+                    "resolved,V_pre,raw_advantage,V_after,success_p_after,effective_count_after,"
+                    "eta,policy_version,kl_cursor_after,forgetting_factor,forgotten_kl,created_at,"
+                    "dispatch_v,dispatch_kl_cursor) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (trajectory.trajectory_id, trajectory.stream_sequence,
+                     task_key_id(trajectory.task_key), float(reward.total_reward),
+                     int(reward.resolved), v_pre, raw_advantage, v_after, success_after,
+                     effective_after, eta, trajectory.behavior_adapter.version,
+                     record.kl_cursor, rho, divergence, now, dispatch_v, dispatch_cursor),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO value_observations(trajectory_id,stream_sequence,task_key,reward,"
+                    "resolved,V_pre,raw_advantage,V_after,success_p_after,effective_count_after,"
+                    "eta,policy_version,kl_cursor_after,forgetting_factor,forgotten_kl,created_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (trajectory.trajectory_id, trajectory.stream_sequence,
+                     task_key_id(trajectory.task_key), float(reward.total_reward),
+                     int(reward.resolved), v_pre, raw_advantage, v_after, success_after,
+                     effective_after, eta, trajectory.behavior_adapter.version,
+                     record.kl_cursor, rho, divergence, now),
+                )
             conn.execute(
                 "UPDATE value_records SET V=?,success_p=?,effective_count=?,"
                 "last_observation_sequence=?,last_policy_version=?,kl_cursor=? WHERE task_key=?",
@@ -230,7 +347,8 @@ class ValueTracker:
             self.ledger._event(conn, "value_observed", trajectory.trajectory_id, {
                 "R": reward.total_reward, "V_pre": v_pre, "A": raw_advantage,
                 "V_after": v_after, "eta": eta, "forgotten_kl": divergence,
-                "kl_cursor": record.kl_cursor,
+                "kl_cursor": record.kl_cursor, "dispatch_V": dispatch_v,
+                "dispatch_kl_cursor": dispatch_cursor,
             })
             return ValueObservation(
                 trajectory_id=trajectory.trajectory_id, task_key=trajectory.task_key,
@@ -238,4 +356,6 @@ class ValueTracker:
                 success_p_after=success_after, effective_count_after=effective_after,
                 eta=eta, forgetting_factor=rho, forgotten_kl=divergence,
                 kl_cursor=record.kl_cursor,
+                dispatch_V=dispatch_v, dispatch_kl_cursor=dispatch_cursor,
+                dispatch_policy_version=trajectory.behavior_adapter.version,
             )

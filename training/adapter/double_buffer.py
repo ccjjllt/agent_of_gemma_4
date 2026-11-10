@@ -175,6 +175,24 @@ class DoubleBuffer:
             self.manager.release(self._training)
             self._training = None
 
+    @property
+    def rollout_refcount(self) -> int:
+        """Live trajectory references pinning the current rollout version."""
+        with self._lock:
+            if self._rollout is None:
+                return 0
+            return int(self._trajectory_refs.get(self._rollout.version, 0))
+
+    def wait_drained(self, timeout: float = 300.0) -> bool:
+        """Poll until no trajectory pins the rollout version."""
+        import time as _time
+        deadline = _time.monotonic() + max(0.0, float(timeout))
+        while self.rollout_refcount > 0:
+            if _time.monotonic() >= deadline:
+                return False
+            _time.sleep(0.2)
+        return True
+
     def bind_trajectory(self, trajectory_id: str) -> AdapterManifest:
         if not isinstance(trajectory_id, str) or not trajectory_id:
             raise ValueError("trajectory_id must be a non-empty string")
@@ -203,6 +221,8 @@ class DoubleBuffer:
     def submit(self, trajectory_id: str, input_ids: list[int], **kwargs: Any) -> dict[str, Any]:
         if self.backend is None:
             raise RuntimeError("submit requires an inference backend")
+        from ..rollout.gateway import validate_sampling
+        kwargs["sampling"] = validate_sampling(kwargs.get("sampling"))
         binding = self.submission(trajectory_id)
         with self._inference():
             return self.backend.submit(

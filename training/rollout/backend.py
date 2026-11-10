@@ -273,6 +273,17 @@ class HTTPInferenceBackend(InferenceBackend):
         returned_request = result.get("request_id", request_id)
         if returned_request != request_id:
             raise BackendResponseError("response request_id differs from the submitted request")
+        submitted_sampling = dict(sampling or {})
+        echoed = result.get("sampling_params", result.get("sampling"))
+        if isinstance(echoed, Mapping):
+            for key, value in submitted_sampling.items():
+                if key in echoed and echoed[key] != value:
+                    raise BackendResponseError(
+                        f"response sampling_params[{key}] differs from the submitted value")
+            sampling_record = {**submitted_sampling, **{k: v for k, v in echoed.items()
+                               if isinstance(k, str)}}
+        else:
+            sampling_record = dict(submitted_sampling)
         return {
             "request_id": request_id,
             "input_ids": returned_prompt,
@@ -280,6 +291,8 @@ class HTTPInferenceBackend(InferenceBackend):
             "logprobs": [float(item) for item in logprobs],
             "finish_reason": finish_reason,
             "adapter_sha256": digest,
+            "sampling": sampling_record,
+            "sampling_server_echo": isinstance(echoed, Mapping),
         }
 
     def cancel(self, request_id: str) -> Mapping[str, Any]:
@@ -386,8 +399,234 @@ class HTTPInferenceBackend(InferenceBackend):
 
 
 class SGLangBackend(HTTPInferenceBackend):
+    """Native SGLang protocol translation (verified against sglang 0.4.10).
+
+    Deviations from stock SGLang that this client intentionally does NOT
+    assume are remapped here instead of in deployment docs:
+
+    - ``request_id`` -> native ``rid``; the response binds via
+      ``meta_info.id``.  Stock /generate does not echo ``input_ids``; the
+      client returns the submitted copy labeled ``input_ids_server_echo``.
+    - ``top_k=0`` (our "unfiltered" spelling) -> native ``-1``; native
+      ``max_new_tokens`` has no safe training default, so the caller must
+      supply it explicitly in ``sampling`` (stock default 128 would silently
+      truncate rollouts).  Native sampling has no seed channel; ``seed``
+      stays a client-side record (``-1`` = engine-owned RNG).
+    - ``lora_path`` carries the adapter SHA256 registered by
+      ``load_adapter``; per-request adapter binding is ``rid``-scoped, and
+      the weight hash is proven at load time, not per response.
+    - ``drain`` has no native route: pause (idempotent) plus polling
+      ``/get_load`` for zero running/waiting requests.
+    - Empty-200 native confirmations (abort/release/resume-memory) count as
+      success; ``pause``/``resume`` require ``status == "ok"``.
+    """
+
     name = "sglang"
-    paths = dict(HTTPInferenceBackend.paths, pause="/pause_generation", resume="/continue_generation")
+    paths = dict(HTTPInferenceBackend.paths,
+                 pause="/pause_generation", resume="/continue_generation",
+                 cancel="/abort_request", metrics="/get_load")
+
+    @staticmethod
+    def _native_sampling(sampling: Mapping[str, Any]) -> dict[str, Any]:
+        if not isinstance(sampling, Mapping):
+            raise BackendResponseError("sampling must be a mapping")
+        try:
+            temperature = float(sampling["temperature"])
+            top_p = float(sampling["top_p"])
+            top_k = int(sampling["top_k"])
+            max_new_tokens = int(sampling["max_new_tokens"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise BackendResponseError(
+                "sglang sampling requires temperature/top_p/top_k/max_new_tokens") from exc
+        if not math.isfinite(temperature) or temperature < 0:
+            raise BackendResponseError("sglang temperature must be finite and non-negative")
+        if not math.isfinite(top_p) or not 0 < top_p <= 1:
+            raise BackendResponseError("sglang top_p must be in (0, 1]")
+        native_top_k = -1 if top_k == 0 else top_k
+        if native_top_k != -1 and native_top_k < 1:
+            raise BackendResponseError("sglang top_k must be 0 (unfiltered), -1 or >= 1")
+        if max_new_tokens <= 0:
+            raise BackendResponseError("sglang max_new_tokens must be positive")
+        return {"temperature": temperature, "top_p": top_p, "top_k": native_top_k,
+                "max_new_tokens": max_new_tokens}
+
+    def submit(self, input_ids: list[int], *, adapter: AdapterIdentity,
+               request_id: str | None = None, sampling: Mapping[str, Any] | None = None,
+               cache_namespace: str | None = None, timeout: float | None = None) -> dict[str, Any]:
+        with self._state_lock:
+            self._require_inference()
+        try:
+            prompt = _token_ids(input_ids, "input_ids")
+        except BackendResponseError as exc:
+            raise ValueError(str(exc)) from exc
+        digest = _adapter_hash(adapter)
+        rid = request_id if isinstance(request_id, str) and request_id else uuid.uuid4().hex
+        if not isinstance(rid, str) or not rid:
+            raise ValueError("request_id must be a non-empty string")
+        if cache_namespace is not None and cache_namespace != digest:
+            raise ValueError("cache_namespace must equal the behavior adapter SHA256")
+        native_sampling = self._native_sampling(sampling or {})
+        payload = {
+            "rid": rid,
+            "input_ids": prompt,
+            "sampling_params": native_sampling,
+            "lora_path": digest,
+            "return_logprob": True,
+            "top_logprobs_num": 1,
+            "stream": False,
+        }
+        raw = self._object(self._request("POST", self.endpoints["generate"], payload, timeout=timeout), "submit")
+        meta = raw.get("meta_info")
+        if not isinstance(meta, Mapping):
+            raise BackendResponseError("sglang response is missing meta_info")
+        if meta.get("id") != rid:
+            raise BackendResponseError("sglang meta_info.id does not bind this rid")
+        output_ids = _token_ids(raw.get("output_ids"), "response output_ids", allow_empty=True)
+        rows = meta.get("output_token_logprobs")
+        if isinstance(rows, list) and rows and all(isinstance(row, (list, tuple)) for row in rows):
+            logprobs = [row[0] for row in rows]
+        elif isinstance(meta.get("output_token_logprobs_val"), list):
+            logprobs = list(meta["output_token_logprobs_val"])
+        else:
+            raise BackendResponseError("sglang response has no output token logprobs")
+        if len(logprobs) != len(output_ids):
+            raise BackendResponseError("sglang logprobs are not one-to-one with output_ids")
+        if any(isinstance(item, bool) or not isinstance(item, (int, float)) or not math.isfinite(item)
+               for item in logprobs):
+            raise BackendResponseError("every sampled logprob must be a finite number")
+        finish_reason = meta.get("finish_reason")
+        if isinstance(finish_reason, Mapping):
+            finish_reason = finish_reason.get("type")
+        if not isinstance(finish_reason, str) or not finish_reason:
+            raise BackendResponseError("finish_reason is required")
+        submitted_sampling = dict(sampling or {})
+        return {
+            "request_id": rid,
+            "input_ids": list(prompt),
+            "input_ids_server_echo": False,
+            "output_ids": output_ids,
+            "logprobs": [float(item) for item in logprobs],
+            "finish_reason": finish_reason,
+            "adapter_sha256": digest,
+            "sampling": submitted_sampling,
+            "sampling_server_echo": False,
+        }
+
+    def cancel(self, request_id: str) -> Mapping[str, Any]:
+        if not isinstance(request_id, str) or not request_id:
+            raise ValueError("request_id must be a non-empty string")
+        self._require_started()
+        self._request("POST", self.endpoints["cancel"], {"rid": request_id})
+        return {"cancelled": True, "request_id": request_id}
+
+    def drain(self, timeout: float | None = None) -> Mapping[str, Any]:
+        self._require_started()
+        self._request("POST", self.endpoints["pause"], {})
+        import time as _time
+        deadline = _time.monotonic() + (30.0 if timeout is None else max(0.0, float(timeout)))
+        last: Any = None
+        while True:
+            last = self._request("GET", self.endpoints["metrics"])
+            running = waiting = None
+            queue: list[Any] = [last]
+            while queue:
+                node = queue.pop()
+                if isinstance(node, Mapping):
+                    for key, value in node.items():
+                        name = str(key).lower()
+                        if name in {"num_running_reqs", "num_running_requests"} and running is None:
+                            running = value
+                        elif name in {"num_waiting_reqs", "num_waiting_requests", "num_queued_reqs"} \
+                                and waiting is None:
+                            waiting = value
+                        else:
+                            queue.append(value)
+                elif isinstance(node, list):
+                    queue.extend(node)
+            if isinstance(running, int) and isinstance(waiting, int):
+                if running <= 0 and waiting <= 0:
+                    return {"drained": True, "load": last}
+            else:
+                raise BackendResponseError(
+                    f"sglang /get_load has no running/waiting counts: {last!r:.200}")
+            if _time.monotonic() >= deadline:
+                raise BackendError(f"sglang drain timed out with load: {last!r:.200}")
+            _time.sleep(0.5)
+
+    def _ok(self, operation: str, path_key: str, payload: Mapping[str, Any] | None = None) -> Any:
+        result = self._request("POST", self.endpoints[path_key], dict(payload or {}))
+        if result is None:
+            return None
+        return self._object(result, operation)
+
+    def pause(self) -> Mapping[str, Any]:
+        self._require_inference()
+        result = self._ok("pause", "pause")
+        if isinstance(result, Mapping) and result.get("status") != "ok":
+            raise BackendResponseError("sglang pause requires status ok")
+        with self._state_lock:
+            self._paused = True
+        return {"paused": True}
+
+    def resume(self) -> Mapping[str, Any]:
+        self._require_started()
+        if self._memory_released:
+            raise BackendError("resume_memory() is required before resuming generation")
+        result = self._ok("resume", "resume")
+        if isinstance(result, Mapping) and result.get("status") != "ok":
+            raise BackendResponseError("sglang resume requires status ok")
+        with self._state_lock:
+            self._paused = False
+        return {"resumed": True}
+
+    def release_memory(self) -> Mapping[str, Any]:
+        self._require_started()
+        self._ok("release_memory", "release_memory")
+        with self._state_lock:
+            self._memory_released = True
+        return {"released": True}
+
+    def resume_memory(self) -> Mapping[str, Any]:
+        self._require_started()
+        self._ok("resume_memory", "resume_memory")
+        with self._state_lock:
+            self._memory_released = False
+        return {"resumed": True}
+
+    def load_adapter(self, manifest: AdapterManifest, path: str | Path) -> Mapping[str, Any]:
+        self._require_started()
+        if self._memory_released:
+            raise BackendError("adapter memory cannot be loaded while engine memory is released")
+        if not isinstance(manifest, AdapterManifest):
+            raise TypeError("load_adapter requires an AdapterManifest")
+        directory = Path(path).expanduser().resolve(strict=True)
+        weights = directory / "adapter_model.safetensors"
+        if not weights.is_file() or sha256_file(weights) != manifest.adapter_sha256:
+            raise ValueError("adapter weights are missing or do not match the manifest")
+        result = self._object(self._request("POST", self.endpoints["load_adapter"], {
+            "lora_name": manifest.adapter_sha256,
+            "lora_path": str(directory),
+        }), "load_adapter")
+        if result.get("success") is not True:
+            raise BackendResponseError(
+                f"sglang refused the adapter: {result.get('error_message')}")
+        with self._state_lock:
+            self._adapters[manifest.adapter_sha256] = (manifest, str(directory))
+            self._active_adapter_hash = manifest.adapter_sha256
+        return {"loaded": True, "adapter_sha256": manifest.adapter_sha256}
+
+    def unload_adapter(self, adapter: AdapterIdentity) -> Mapping[str, Any]:
+        self._require_started()
+        if self._memory_released:
+            raise BackendError("adapter memory cannot be changed while engine memory is released")
+        digest = _adapter_hash(adapter)
+        result = self._object(self._request("POST", self.endpoints["unload_adapter"], {
+            "lora_name": digest,
+        }), "unload_adapter")
+        if result.get("success") is not True:
+            raise BackendResponseError(
+                f"sglang refused the adapter unload: {result.get('error_message')}")
+        return {"unloaded": True, "adapter_sha256": digest}
 
     def _normalize_generation(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         """Map SGLang's native meta_info without inventing absent evidence."""
@@ -426,16 +665,22 @@ VllmHTTPBackend = VLLMBackend
 
 
 class GpuLease:
-    """Serialize inference and learner use of colocated GPUs.
+    """Reader-writer GPU ownership for colocated inference and training.
 
-    A training context is entered only after pause, drain and explicit memory
-    release. Every exit path attempts to restore engine memory and the exact
-    previously confirmed adapters before another inference context can run.
+    Any number of inference readers may hold the lease concurrently so that
+    independent worker requests reach the engine together and benefit from
+    continuous batching.  Training takes an exclusive lease: it stops new
+    readers, server-side drains, then waits for in-flight readers (drain
+    barrier) before releasing engine memory.  Inference and training contexts
+    must not nest.
     """
 
     def __init__(self, backend: InferenceBackend):
         self.backend = backend
-        self._lock = threading.RLock()
+        self._cond = threading.Condition(threading.RLock())
+        self._readers = 0
+        self._writer = False
+        self._drain_requested = False
         self._mode = "idle"
         self._resume_required = False
         self._memory_resume_done = False
@@ -443,7 +688,13 @@ class GpuLease:
 
     @property
     def mode(self) -> str:
-        return self._mode
+        with self._cond:
+            return self._mode
+
+    @property
+    def active_readers(self) -> int:
+        with self._cond:
+            return self._readers
 
     def _restore_inference(self) -> None:
         if not self._resume_required:
@@ -462,19 +713,34 @@ class GpuLease:
 
     @contextmanager
     def inference(self) -> Iterator[InferenceBackend]:
-        with self._lock:
-            self._restore_inference()
-            self.backend.health()
+        with self._cond:
+            while self._writer or self._drain_requested:
+                self._cond.wait()
+            if self._resume_required and self._readers == 0:
+                self._restore_inference()
+            self._readers += 1
             self._mode = "inference"
-            try:
-                yield self.backend
-            finally:
-                self._mode = "idle"
+        try:
+            self.backend.health()
+            yield self.backend
+        finally:
+            with self._cond:
+                self._readers -= 1
+                if self._readers == 0 and not self._writer:
+                    self._mode = "idle"
+                self._cond.notify_all()
 
     @contextmanager
     def training(self) -> Iterator[InferenceBackend]:
-        with self._lock:
+        with self._cond:
+            if self._writer:
+                raise BackendError("a training lease is already active")
+            self._writer = True
+            self._drain_requested = True
             if self._resume_required:
+                self._writer = False
+                self._drain_requested = False
+                self._cond.notify_all()
                 raise BackendError("inference restoration must succeed before another training lease")
             pause_attempted = False
             release_attempted = False
@@ -484,6 +750,8 @@ class GpuLease:
                 pause_attempted = True
                 self.backend.pause()
                 self.backend.drain()
+                while self._readers > 0:
+                    self._cond.wait()
                 manifests = self.backend.adapter_manifests if isinstance(self.backend, HTTPInferenceBackend) else {}
                 paths = self.backend.loaded_adapters if isinstance(self.backend, HTTPInferenceBackend) else {}
                 self._restore_adapters = {
@@ -522,3 +790,7 @@ class GpuLease:
                             original.add_note(f"GPU inference restoration also failed: {exc}")
                     else:
                         raise
+                finally:
+                    self._writer = False
+                    self._drain_requested = False
+                    self._cond.notify_all()

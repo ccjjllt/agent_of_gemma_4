@@ -8,7 +8,7 @@ from typing import Any, Mapping
 
 from ..request_store import RequestConflict, RequestUnavailable
 from ..reward.engine import RewardEngine
-from ..spo.value_tracker import ValueTracker
+from ..spo.value_tracker import FrozenBaseline, ValueTracker
 from ..trajectory.buffer import TrajectoryBuffer
 from ..trajectory.ledger import TrajectoryLedger, canonical_json
 from ..trajectory.schema import RewardRecord, Trajectory
@@ -283,8 +283,18 @@ class RolloutEngine:
             self._ensure_excluded(trajectory_id, reward.exclusion_reason or "ineligible")
             return self.ledger.get_trajectory(trajectory_id)
 
-        # observe persists A=R-V_pre before any new value is visible to the buffer.
-        observation = self.value_tracker.observe(trajectory, reward)
+        # observe persists A=R-V_dispatch before any new value is visible to
+        # the buffer.  The baseline was frozen at dispatch; policy updates
+        # during execution cannot move this trajectory's advantage.
+        baseline = FrozenBaseline(
+            task_key=trajectory.task_key,
+            V=float(getattr(assignment, "frozen_V", 0.5)),
+            success_p=float(getattr(assignment, "frozen_success_p", 0.5)),
+            effective_count=float(getattr(assignment, "frozen_effective_count", 1.0)),
+            kl_cursor=int(getattr(assignment, "frozen_kl_cursor", 0)),
+            policy_version=trajectory.behavior_adapter.version,
+        )
+        observation = self.value_tracker.observe(trajectory, reward, baseline=baseline)
         if not math.isfinite(observation.raw_advantage):
             raise RuntimeError("ValueTracker produced a non-finite raw advantage")
         self.buffer.offer(trajectory_id)

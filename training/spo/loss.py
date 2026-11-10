@@ -108,12 +108,21 @@ def spo_ppo_loss(current_logprobs: Any, behavior_logprobs: Any, action_mask: Any
     if local_tokens == 0:
         # Preserve a differentiable zero for an empty microbatch in a nonempty update.
         return current.sum() * 0.0
-    ratio = torch.exp(current - behavior)
+    # Mask numerical safety: sanitize non-action slots BEFORE exp, so that
+    # 0 * NaN can never pollute the loss.  Masked deltas are exactly 0
+    # (ratio exactly 1) regardless of whatever non-evidence the slots hold.
+    zeros = torch.zeros_like(current)
+    safe_current = torch.where(selected, current, zeros)
+    safe_behavior = torch.where(selected, behavior, zeros)
+    safe_advantage = torch.where(selected, advantage, zeros)
+    ratio = torch.exp(safe_current - safe_behavior)
     if not bool(torch.isfinite(ratio[selected]).all().item()):
         raise ValueError("PPO ratio overflowed; check current/behavior logprob evidence")
     clipped = torch.clamp(ratio, 1.0 - low, 1.0 + high)
-    surrogate = torch.minimum(ratio * advantage, clipped * advantage)
+    surrogate = torch.minimum(ratio * safe_advantage, clipped * safe_advantage)
     loss = -((surrogate * mask).sum() / denominator)
+    if not bool(torch.isfinite(loss).item()):
+        raise ValueError("PPO actor loss is non-finite at action tokens")
     if kl_coefficient:
         if reference_logprobs is None:
             raise ValueError("reference_logprobs are required when reference KL is enabled")
@@ -124,11 +133,14 @@ def spo_ppo_loss(current_logprobs: Any, behavior_logprobs: Any, action_mask: Any
             raise ValueError("reference logprobs must match current logprobs")
         if not bool(torch.isfinite(reference[selected]).all().item()):
             raise ValueError("reference logprobs must be finite at action tokens")
-        log_difference = reference - current
+        safe_reference = torch.where(selected, reference, zeros)
+        log_difference = safe_reference - safe_current
         token_kl = torch.exp(log_difference) - log_difference - 1.0
         if not bool(torch.isfinite(token_kl[selected]).all().item()):
             raise ValueError("reference KL overflowed")
         loss = loss + kl_coefficient * (token_kl * mask).sum() / denominator
+        if not bool(torch.isfinite(loss).item()):
+            raise ValueError("PPO loss with reference KL is non-finite")
     return loss
 
 

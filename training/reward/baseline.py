@@ -141,7 +141,7 @@ def normalize_baseline(task_key: TaskKey | Mapping[str, object], report: Mapping
     junit_available = report.get("junit_available")
     if junit_available is not None and type(junit_available) is not bool:
         raise ValueError("junit_available must be bool when present")
-    return {
+    body = {
         "schema_version": BASELINE_SCHEMA_VERSION,
         "task_key": key.as_dict(),
         "cache_key": key.cache_key,
@@ -154,6 +154,8 @@ def normalize_baseline(task_key: TaskKey | Mapping[str, object], report: Mapping
         "infrastructure_error": infrastructure_error,
         "status": "complete" if complete and valid and not infrastructure_error else "incomplete",
     }
+    body["content_sha256"] = _sha256_json({k: v for k, v in body.items() if k != "content_sha256"})
+    return body
 
 
 class EmptyPatchBaselineStore:
@@ -202,6 +204,9 @@ class EmptyPatchBaselineStore:
             raise ValueError("Baseline cache identity or schema mismatch")
         if TaskKey.from_dict(record.get("task_key")) != key:
             raise ValueError("Baseline cache TaskKey mismatch")
+        expected_hash = _sha256_json({k: v for k, v in record.items() if k != "content_sha256"})
+        if record.get("content_sha256") != expected_hash:
+            raise ValueError("Baseline cache content hash mismatch")
         return normalized
 
     def _write(self, key: TaskKey, record: Mapping[str, object]) -> None:

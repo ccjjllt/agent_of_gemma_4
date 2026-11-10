@@ -12,10 +12,15 @@ operator handling (no silent zero rewards).
 
 from __future__ import annotations
 
-from typing import Any, Sequence
+from contextlib import contextmanager
+from typing import Any, Callable, Iterator, Sequence
 
 from ..trajectory.ledger import TrajectoryLedger
 from ..trajectory.schema import BehaviorAdapter, UpdateBatch
+
+
+class BarrierBlocked(RuntimeError):
+    """Publish refused: old-policy trajectories still pin the rollout adapter."""
 
 
 def commit_optimized_update(trainer: Any, policy_after: BehaviorAdapter,
@@ -45,3 +50,64 @@ def commit_optimized_update(trainer: Any, policy_after: BehaviorAdapter,
     )
     trainer.acknowledge_commit(batch.update_id)
     return consumed
+
+
+class VersionBarrier:
+    """Explicit policy-version barrier: hold, drain, publish, resume.
+
+    1. Hold the scheduler: no new task is dispatched on the old policy.
+    2. Pause the execution manager and drain in-flight trajectories.
+    3. Wait until no trajectory pins the rollout adapter (refcount zero).
+    4. Publish the new adapter; old references are already gone, so the
+       double buffer cannot refuse and starvation is impossible.
+    5. Release the hold: sampling resumes on the new policy.
+
+    The caller performs training/export/commit inside :meth:`update_window`;
+    the barrier owns dispatch gating and the publish precondition.
+    """
+
+    def __init__(self, scheduler: Any, execution: Any, buffers: Any,
+                 *, drain_timeout_seconds: float = 600.0,
+                 emit: Callable[..., None] | None = None):
+        self.scheduler = scheduler
+        self.execution = execution
+        self.buffers = buffers
+        if isinstance(drain_timeout_seconds, bool) \
+                or not isinstance(drain_timeout_seconds, (int, float)) \
+                or drain_timeout_seconds <= 0:
+            raise ValueError("drain_timeout_seconds must be positive")
+        self.drain_timeout_seconds = float(drain_timeout_seconds)
+        self.emit = emit
+
+    def _event(self, name: str, **fields: Any) -> None:
+        if self.emit is not None:
+            self.emit(name, **fields)
+
+    @contextmanager
+    def update_window(self) -> Iterator[None]:
+        """Hold dispatches and pause workers; release on exit."""
+        self.scheduler.hold_dispatch()
+        self._event("version_barrier_hold")
+        paused = self.execution.paused()
+        paused.__enter__()
+        try:
+            yield
+        finally:
+            try:
+                paused.__exit__(None, None, None)
+            finally:
+                self.scheduler.release_dispatch()
+                self._event("version_barrier_released")
+
+    def publish_or_raise(self, timeout: float | None = None) -> bool:
+        """Wait for rollout references to clear, then publish or raise."""
+        limit = self.drain_timeout_seconds if timeout is None else float(timeout)
+        if not self.buffers.wait_drained(timeout=limit):
+            raise BarrierBlocked(
+                f"rollout adapter still pinned by {self.buffers.rollout_refcount} trajectories")
+        published = self.buffers.publish()
+        if not published:
+            raise BarrierBlocked(
+                f"publish refused with {self.buffers.rollout_refcount} rollout references")
+        self._event("version_barrier_published")
+        return True

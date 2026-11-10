@@ -45,6 +45,11 @@ class RolloutAssignment:
     attempt_id: str
     selected_at_unix: float
     provenance: Mapping[str, Any] = field(default_factory=dict)
+    frozen_V: float = 0.5
+    frozen_success_p: float = 0.5
+    frozen_effective_count: float = 1.0
+    frozen_kl_cursor: int = 0
+    dispatch_policy_version: int = 0
 
 
 @dataclass
@@ -59,6 +64,10 @@ class _QueuedTask:
 class _ActiveTask:
     assignment: RolloutAssignment
     started_at: float
+
+
+class BarrierActive(RuntimeError):
+    """Raised when dispatch is held for a policy version barrier."""
 
 
 class RolloutScheduler:
@@ -121,6 +130,7 @@ class RolloutScheduler:
         self.exposure_window_seconds = float(exposure_window_seconds)
         self._rng = random.Random(seed)
         self._lock = threading.RLock()
+        self._hold = False
         self._queues = {"short": deque(), "long": deque()}
         self._active: dict[str, _ActiveTask] = {}
         self._duration_ewma: dict[str, float] = {}
@@ -192,12 +202,19 @@ class RolloutScheduler:
     def next_assignment(self) -> RolloutAssignment:
         """Sample/enqueue at most one task, then dispatch the highest-priority one."""
         with self._lock:
+            if self._hold:
+                raise BarrierActive("dispatch is held for a policy version barrier")
             now = time.monotonic()
             self._sample_one(now)
             selected = self._select_queued(now)
             adapter = behavior_adapter(
                 self.adapter_source() if callable(self.adapter_source) else self.adapter_source
             )
+            try:
+                frozen = self.sampler.value_tracker.freeze_dispatch(
+                    selected.task, adapter.version)
+            except (ValueError, TypeError):
+                frozen = None
             self._stream_sequence += 1
             trajectory_id = f"traj-{self._stream_sequence:012d}-{uuid.uuid4().hex[:12]}"
             assignment = RolloutAssignment(
@@ -214,7 +231,18 @@ class RolloutScheduler:
                     "queue_wait_seconds": max(0.0, now - selected.queued_at),
                     "recent_task_exposure": self._recent_tasks.get(selected.task.task_id, 0),
                     "recent_repo_exposure": self._recent_repos.get(selected.task.repo, 0),
+                    **({"frozen_V": frozen.V, "frozen_kl_cursor": frozen.kl_cursor,
+                        "frozen_effective_count": frozen.effective_count,
+                        "frozen_success_p": frozen.success_p,
+                        "dispatch_policy_version": frozen.policy_version}
+                       if frozen is not None else {}),
                 },
+                **({"frozen_V": frozen.V, "frozen_success_p": frozen.success_p,
+                    "frozen_effective_count": frozen.effective_count,
+                    "frozen_kl_cursor": frozen.kl_cursor,
+                    "dispatch_policy_version": frozen.policy_version}
+                   if frozen is not None else {
+                       "dispatch_policy_version": adapter.version}),
             )
             self._active[trajectory_id] = _ActiveTask(assignment, now)
             self._exposures.append((now, selected.task.task_id, selected.task.repo))
@@ -271,6 +299,20 @@ class RolloutScheduler:
                 float(elapsed) if previous is None else
                 self.ewma_alpha * float(elapsed) + (1.0 - self.ewma_alpha) * previous
             )
+
+    def hold_dispatch(self) -> None:
+        """Stop new dispatches for a policy version barrier."""
+        with self._lock:
+            self._hold = True
+
+    def release_dispatch(self) -> None:
+        """Resume dispatches after the barrier publishes."""
+        with self._lock:
+            self._hold = False
+
+    def dispatch_held(self) -> bool:
+        with self._lock:
+            return self._hold
 
     def state(self) -> dict[str, Any]:
         with self._lock:

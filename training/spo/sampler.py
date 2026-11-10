@@ -91,7 +91,7 @@ class SPOSampler:
             if isinstance(count, bool) or not isinstance(count, int) or count < 0:
                 raise ValueError("recent_exposure counts must be non-negative integers")
             task_type = types.get(task.task_id)
-            record = self.value_tracker.snapshot(task)
+            record = self.value_tracker.peek(task)
             uncertainty = math.sqrt(record.success_p * (1.0 - record.success_p))
             weight = uncertainty + self.epsilon
             weight *= repo_weights.get(task.repo, 1.0)
