@@ -326,9 +326,10 @@ def run_spo(args: argparse.Namespace) -> int:
          "max_batch_size": int(cfg["inference"].get("max_inflight", 16))},
         serving_backend=double_buffer)
     endpoint.start()
-    # Open the continuous SPO collection on genesis version 0. Later publishes
-    # advance it via advance_version(); it is never closed and re-begun.
-    endpoint.begin([], 0)
+    # Resume on the actual serving version, not genesis 0: after a restart the
+    # registry may already hold v1+. Workers register against the live rollout;
+    # a version-0 collection would reject every registration.
+    endpoint.begin([], genesis_rollout.version)
     try:
         worker_cfg = OfficialWorkerConfig(
             data_root=data_root,
@@ -510,6 +511,21 @@ def run_spo(args: argparse.Namespace) -> int:
             if ledger.get_update(update_id).phase != "CONSUMED":
                 commit_optimized_update(trainer, behavior_after,
                                         version_chain=(behavior_before, behavior_after))
+            # Post-commit consistency: the ledger, trainer, registry, serving
+            # buffer and endpoint must agree on the new version before the
+            # barrier releases dispatch. Fail loudly, never drift silently.
+            if ledger.get_update(update_id).phase != "CONSUMED":
+                raise RuntimeError(f"update {update_id} did not reach CONSUMED")
+            if trainer.pending_update_id is not None:
+                raise RuntimeError(f"trainer still holds {trainer.pending_update_id} after commit")
+            if double_buffer.rollout is None or double_buffer.rollout.version != manifest.version:
+                raise RuntimeError("serving rollout does not match the committed adapter")
+            if adapters.active is None or adapters.active.version != manifest.version:
+                raise RuntimeError("adapter registry pointer does not match the committed adapter")
+            if getattr(endpoint, "policy_version", None) != manifest.version:
+                raise RuntimeError("endpoint policy version does not match the committed adapter")
+            if not trainer_state.is_file():
+                raise RuntimeError("trainer checkpoint is missing after commit")
             _emit(metrics_path, "spo_update", update_id=update_id, version=manifest.version,
                   action_tokens=batch.total_action_tokens, published=True,
                   kl_value=stats.get("kl_value"), token_count=stats.get("token_count"))
@@ -632,7 +648,51 @@ def run_spo(args: argparse.Namespace) -> int:
                 finished += 1
             return finished
 
+        def restore_committed_base() -> bool:
+            """Restore the last committed adapter + AdamW/scheduler/RNG on --resume.
+
+            A fresh process starts with completed_optimizer_steps == 0 even
+            when the disk holds committed training. Without this step the next
+            update would train from a zero LoRA with fresh moments. Runs
+            inside a training lease; the learner is suspended/released after.
+            Skipped when the checkpoint still owns an uncommitted batch
+            (resume_pending_updates handles that path instead).
+            """
+            if not trainer_state.is_file():
+                return False
+            import torch as _torch
+            state = _torch.load(trainer_state, map_location="cpu", weights_only=False)
+            if not isinstance(state, Mapping) or int(state.get("completed_optimizer_steps", 0)) <= 0:
+                return False
+            active_id = (state.get("active_batch") or {}).get("update_id")
+            if active_id is not None:
+                try:
+                    pending_phase = ledger.get_update(active_id).phase
+                except (KeyError, ValueError):
+                    pending_phase = None
+                if pending_phase != "CONSUMED":
+                    return False
+            with barrier.update_window():
+                with lease.training():
+                    policy.ensure_loaded()
+                    try:
+                        trainer.restore_training_state(state)
+                        _emit(metrics_path, "spo_base_restored",
+                              completed_optimizer_steps=trainer.completed_optimizer_steps)
+                        return True
+                    finally:
+                        trainer.suspend_learner_binding()
+                        policy.release_memory()
+
         if args.resume:
+            restore_committed_base()
+            # Fold any observations that were staged but unapplied at
+            # interruption, in stream order. No GPU or learner is needed.
+            drained = 0
+            for pending_task in catalog.sampler_tasks():
+                drained += tracker.drain_pending(pending_task)
+            if drained:
+                _emit(metrics_path, "spo_pending_drained", applied_observations=drained)
             resumed = resume_pending_updates()
             if resumed:
                 _emit(metrics_path, "spo_resume_completed", finished_updates=resumed)

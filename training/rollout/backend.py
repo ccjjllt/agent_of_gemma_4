@@ -412,9 +412,10 @@ class SGLangBackend(HTTPInferenceBackend):
       supply it explicitly in ``sampling`` (stock default 128 would silently
       truncate rollouts).  Native sampling has no seed channel; ``seed``
       stays a client-side record (``-1`` = engine-owned RNG).
-    - ``lora_path`` carries the adapter SHA256 registered by
+    - ``lora_path`` carries the exact server-side path registered by
       ``load_adapter``; per-request adapter binding is ``rid``-scoped, and
-      the weight hash is proven at load time, not per response.
+      the weight hash is proven at load time, not per response. Submitting
+      with an unloaded adapter fails instead of sending a bare digest.
     - ``drain`` has no native route: pause (idempotent) plus polling
       ``/get_load`` for zero running/waiting requests.
     - Empty-200 native confirmations (abort/release/resume-memory) count as
@@ -466,11 +467,21 @@ class SGLangBackend(HTTPInferenceBackend):
         if cache_namespace is not None and cache_namespace != digest:
             raise ValueError("cache_namespace must equal the behavior adapter SHA256")
         native_sampling = self._native_sampling(sampling or {})
+        # Per-request binding uses the exact server-side path registered by
+        # load_adapter, never a bare digest: stock /generate resolves
+        # lora_path against the server filesystem, and this client assumes no
+        # hash-to-path mapping protocol on the deployment.
+        with self._state_lock:
+            registered = self._adapters.get(digest)
+        if registered is None:
+            raise BackendError(
+                "adapter is not loaded on the inference server; "
+                "call load_adapter(manifest, path) before submitting")
         payload = {
             "rid": rid,
             "input_ids": prompt,
             "sampling_params": native_sampling,
-            "lora_path": digest,
+            "lora_path": registered[1],
             "return_logprob": True,
             "top_logprobs_num": 1,
             "stream": False,

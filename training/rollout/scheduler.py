@@ -248,6 +248,11 @@ class RolloutScheduler:
                    if frozen is not None else {
                        "dispatch_policy_version": adapter.version}),
             )
+            # Dispatch markers are fail-closed: an unmarked assignment would be
+            # invisible to stream-ordered value application, so a marker
+            # failure must surface instead of degrading ordering silently.
+            self.sampler.value_tracker.note_dispatch(
+                selected.task, self._stream_sequence, trajectory_id)
             self._active[trajectory_id] = _ActiveTask(assignment, now)
             self._exposures.append((now, selected.task.task_id, selected.task.repo))
             self._recent_tasks[selected.task.task_id] += 1
@@ -282,6 +287,10 @@ class RolloutScheduler:
             active = self._active.pop(assignment.trajectory_id, None)
             if active is None:
                 return
+            try:
+                self.sampler.value_tracker.unmark_dispatch(assignment.trajectory_id)
+            except (ValueError, TypeError, RuntimeError, OSError):
+                pass
             self._sequence += 1
             self._queues[assignment.queue].appendleft(_QueuedTask(
                 assignment.task_key, assignment.queue, self._sequence, time.monotonic(),

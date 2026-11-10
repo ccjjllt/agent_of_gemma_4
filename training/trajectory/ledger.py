@@ -129,6 +129,28 @@ class TrajectoryLedger:
         );
         CREATE INDEX IF NOT EXISTS observations_task
             ON value_observations(task_key, stream_sequence);
+        CREATE TABLE IF NOT EXISTS value_pending (
+            trajectory_id TEXT PRIMARY KEY REFERENCES trajectories(trajectory_id),
+            stream_sequence INTEGER NOT NULL,
+            task_key TEXT NOT NULL,
+            reward REAL NOT NULL,
+            resolved INTEGER NOT NULL,
+            policy_version INTEGER NOT NULL,
+            dispatch_v REAL,
+            dispatch_kl_cursor INTEGER,
+            reward_payload TEXT NOT NULL,
+            created_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS pending_task_seq
+            ON value_pending(task_key, stream_sequence);
+        CREATE TABLE IF NOT EXISTS dispatch_markers (
+            stream_sequence INTEGER NOT NULL,
+            task_key TEXT NOT NULL,
+            trajectory_id TEXT PRIMARY KEY,
+            created_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS dispatch_task_seq
+            ON dispatch_markers(task_key, stream_sequence);
         CREATE TABLE IF NOT EXISTS buffer_entries (
             offer_order INTEGER PRIMARY KEY AUTOINCREMENT,
             trajectory_id TEXT NOT NULL UNIQUE REFERENCES trajectories(trajectory_id),

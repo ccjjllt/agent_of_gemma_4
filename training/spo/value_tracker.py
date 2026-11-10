@@ -73,6 +73,7 @@ class ValueObservation:
     dispatch_V: float | None = None
     dispatch_kl_cursor: int | None = None
     dispatch_policy_version: int | None = None
+    shared_applied: bool = True
 
 
 class ValueTracker:
@@ -85,7 +86,7 @@ class ValueTracker:
 
     def __init__(self, ledger: TrajectoryLedger, *, prior_value: float = 0.5,
                  prior_success: float = 0.5, prior_strength: float = 1.0,
-                 kl_half_life: float = 0.05):
+                 kl_half_life: float = 0.05, stale_dispatch_seconds: float = 3600.0):
         self.ledger = ledger
         self.prior_value = self._unit(prior_value, "prior_value")
         self.prior_success = self._unit(prior_success, "prior_success")
@@ -95,8 +96,14 @@ class ValueTracker:
         if isinstance(kl_half_life, bool) or not isinstance(kl_half_life, (int, float)) \
                 or not math.isfinite(float(kl_half_life)) or kl_half_life <= 0:
             raise ValueError("kl_half_life must be finite and positive")
+        if isinstance(stale_dispatch_seconds, bool) \
+                or not isinstance(stale_dispatch_seconds, (int, float)) \
+                or not math.isfinite(float(stale_dispatch_seconds)) \
+                or stale_dispatch_seconds <= 0:
+            raise ValueError("stale_dispatch_seconds must be finite and positive")
         self.prior_strength = float(prior_strength)
         self.kl_half_life = float(kl_half_life)
+        self.stale_dispatch_seconds = float(stale_dispatch_seconds)
 
     @staticmethod
     def _unit(value: float, name: str) -> float:
@@ -209,6 +216,164 @@ class ValueTracker:
             policy_version=policy_version,
         )
 
+    TERMINAL_UNOBSERVABLE_STATUSES = frozenset({"EXCLUDED", "STALE_EXCLUDED"})
+
+    def note_dispatch(self, task_key: TaskKey, stream_sequence: int,
+                      trajectory_id: str) -> None:
+        """Record a dispatch marker so later completions wait their turn.
+
+        Markers make earlier-but-slower trajectories visible before they seal.
+        They are removed when the observation applies, on requeue, or when a
+        stale marker ages out during drain. Idempotent per trajectory.
+        """
+        if not isinstance(task_key, TaskKey):
+            raise TypeError("task_key must be TaskKey")
+        if isinstance(stream_sequence, bool) or not isinstance(stream_sequence, int) \
+                or stream_sequence <= 0:
+            raise ValueError("stream_sequence must be a positive integer")
+        if not isinstance(trajectory_id, str) or not trajectory_id:
+            raise ValueError("trajectory_id must be a non-empty string")
+        with self.ledger.transaction() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO dispatch_markers(stream_sequence,task_key,"
+                "trajectory_id,created_at) VALUES(?,?,?,?)",
+                (stream_sequence, task_key_id(task_key), trajectory_id, time.time()),
+            )
+
+    def unmark_dispatch(self, trajectory_id: str) -> None:
+        """Drop a dispatch marker for an assignment that will never run."""
+        with self.ledger.transaction() as conn:
+            conn.execute("DELETE FROM dispatch_markers WHERE trajectory_id=?",
+                         (trajectory_id,))
+
+    def drain_pending(self, task_key: TaskKey) -> int:
+        """Apply ready pending observations for one task in stream order."""
+        if not isinstance(task_key, TaskKey):
+            raise TypeError("task_key must be TaskKey")
+        with self.ledger.transaction() as conn:
+            before = conn.execute(
+                "SELECT COUNT(*) FROM value_pending WHERE task_key=?",
+                (task_key_id(task_key),)).fetchone()[0]
+            self._drain_task(conn, task_key)
+            after = conn.execute(
+                "SELECT COUNT(*) FROM value_pending WHERE task_key=?",
+                (task_key_id(task_key),)).fetchone()[0]
+            return int(before - after)
+
+    def _turn_ready(self, conn: Any, key: str, seq: int, now: float) -> bool:
+        """An earlier sealed-but-unobserved trajectory, or a live earlier
+        dispatch marker, blocks this sequence. Terminally unobservable rows
+        (excluded, or an ineligible recorded reward) never block."""
+        blocking = conn.execute(
+            "SELECT t.trajectory_id,t.status,r.payload FROM trajectories t "
+            "LEFT JOIN rewards r ON r.trajectory_id=t.trajectory_id "
+            "LEFT JOIN value_observations v ON v.trajectory_id=t.trajectory_id "
+            "WHERE t.task_key=? AND t.stream_sequence<? AND v.trajectory_id IS NULL",
+            (key, seq)).fetchall()
+        for row in blocking:
+            if row["status"] in self.TERMINAL_UNOBSERVABLE_STATUSES:
+                continue
+            payload = row["payload"]
+            if payload is not None:
+                try:
+                    staged_reward = RewardRecord.from_dict(json.loads(payload))
+                except (ValueError, TypeError, KeyError):
+                    return False
+                if not staged_reward.eligible:
+                    continue
+            return False
+        markers = conn.execute(
+            "SELECT trajectory_id,created_at FROM dispatch_markers "
+            "WHERE task_key=? AND stream_sequence<? AND trajectory_id NOT IN "
+            "(SELECT trajectory_id FROM trajectories)",
+            (key, seq)).fetchall()
+        for marker in markers:
+            if now - float(marker["created_at"]) > self.stale_dispatch_seconds:
+                conn.execute("DELETE FROM dispatch_markers WHERE trajectory_id=?",
+                             (marker["trajectory_id"],))
+                self.ledger._event(conn, "value_observation_gap_skipped",
+                                   marker["trajectory_id"], {"task_key": key})
+                continue
+            return False
+        return True
+
+    def _apply_pending_row(self, conn: Any, row: Any, *, late: bool = False) -> None:
+        """Fold one staged observation into shared V/success_p exactly once."""
+        trajectory = self.ledger._get_trajectory(conn, row["trajectory_id"])
+        reward = RewardRecord.from_dict(json.loads(row["reward_payload"]))
+        record, rho, divergence = self._forget(
+            conn, self._ensure(conn, trajectory.task_key)
+        )
+        v_pre = float(row["dispatch_v"]) if row["dispatch_v"] is not None else record.V
+        raw_advantage = float(reward.total_reward) - v_pre
+        eta = 1.0 / (record.effective_count + 1.0)
+        v_after = record.V + eta * (float(reward.total_reward) - record.V)
+        success_after = record.success_p + eta * (float(reward.resolved) - record.success_p)
+        effective_after = record.effective_count + 1.0
+        conn.execute(
+            "INSERT INTO value_observations(trajectory_id,stream_sequence,task_key,reward,"
+            "resolved,V_pre,raw_advantage,V_after,success_p_after,effective_count_after,"
+            "eta,policy_version,kl_cursor_after,forgetting_factor,forgotten_kl,created_at,"
+            "dispatch_v,dispatch_kl_cursor) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (trajectory.trajectory_id, trajectory.stream_sequence,
+             task_key_id(trajectory.task_key), float(reward.total_reward),
+             int(reward.resolved), v_pre, raw_advantage, v_after, success_after,
+             effective_after, eta, trajectory.behavior_adapter.version,
+             record.kl_cursor, rho, divergence, time.time(),
+             row["dispatch_v"], row["dispatch_kl_cursor"]),
+        )
+        conn.execute(
+            "UPDATE value_records SET V=?,success_p=?,effective_count=?,"
+            "last_observation_sequence=?,last_policy_version=?,kl_cursor=? WHERE task_key=?",
+            (v_after, success_after, effective_after, trajectory.stream_sequence,
+             trajectory.behavior_adapter.version, record.kl_cursor,
+             task_key_id(trajectory.task_key)),
+        )
+        self.ledger._put_trajectory(conn, replace(
+            trajectory, raw_advantage=raw_advantage, status="REWARDED"
+        ))
+        conn.execute("DELETE FROM value_pending WHERE trajectory_id=?",
+                     (trajectory.trajectory_id,))
+        conn.execute("DELETE FROM dispatch_markers WHERE trajectory_id=?",
+                     (trajectory.trajectory_id,))
+        self.ledger._event(conn, "value_observed", trajectory.trajectory_id, {
+            "R": reward.total_reward, "V_pre": v_pre, "A": raw_advantage,
+            "V_after": v_after, "eta": eta, "forgotten_kl": divergence,
+            "kl_cursor": record.kl_cursor, "dispatch_V": row["dispatch_v"],
+            "dispatch_kl_cursor": row["dispatch_kl_cursor"], "ordered": True,
+            "late": late,
+        })
+
+    def _drain_task(self, conn: Any, task_key: TaskKey) -> None:
+        """Apply staged observations in dispatch order; stop at the first gap."""
+        key = task_key_id(task_key)
+        now = time.time()
+        while True:
+            floor = conn.execute(
+                "SELECT last_observation_sequence FROM value_records WHERE task_key=?",
+                (key,)).fetchone()
+            floor_seq = int(floor[0]) if floor is not None and floor[0] is not None else 0
+            nxt = conn.execute(
+                "SELECT * FROM value_pending WHERE task_key=? AND stream_sequence>? "
+                "ORDER BY stream_sequence LIMIT 1", (key, floor_seq)).fetchone()
+            if nxt is None:
+                break
+            if not self._turn_ready(conn, key, int(nxt["stream_sequence"]), now):
+                break
+            self._apply_pending_row(conn, nxt)
+        # Dispatch markers cannot track assignments that sealed late without
+        # one (or predated markers): fold leftovers immediately and log them.
+        floor = conn.execute(
+            "SELECT last_observation_sequence FROM value_records WHERE task_key=?",
+            (key,)).fetchone()
+        floor_seq = int(floor[0]) if floor is not None and floor[0] is not None else 0
+        leftovers = conn.execute(
+            "SELECT * FROM value_pending WHERE task_key=? AND stream_sequence<=? "
+            "ORDER BY stream_sequence", (key, floor_seq)).fetchall()
+        for row in leftovers:
+            self._apply_pending_row(conn, row, late=True)
+
     def observe(self, trajectory: Trajectory,
                 reward: RewardRecord,
                 baseline: FrozenBaseline | None = None) -> ValueObservation:
@@ -216,8 +381,9 @@ class ValueTracker:
 
         ``A = R - V_dispatch`` where ``V_dispatch`` was pinned at dispatch;
         policy updates during execution cannot move this trajectory's baseline.
-        Shared V/success_p maintenance still consumes newly committed KL
-        segments exactly once, so concurrent observations never lose updates.
+        The shared V/success_p update is applied in dispatch (stream_sequence)
+        order per task: a completion waits in ``value_pending`` while earlier
+        dispatches are unobserved, so completion order cannot reorder history.
         Replaying an observed trajectory returns the stored observation.
         """
         if not isinstance(trajectory, Trajectory) or not isinstance(reward, RewardRecord):
@@ -282,80 +448,148 @@ class ValueTracker:
                     dispatch_V=dispatch_v,
                     dispatch_kl_cursor=int(dispatch_cursor) if dispatch_cursor is not None else None,
                     dispatch_policy_version=trajectory.behavior_adapter.version,
+                    shared_applied=True,
                 )
-            sequence_conflict = conn.execute(
-                "SELECT trajectory_id FROM value_observations WHERE stream_sequence=?",
-                (trajectory.stream_sequence,),
-            ).fetchone()
-            if sequence_conflict is not None:
-                raise ValueError("stream_sequence already belongs to another observation")
-            record, rho, divergence = self._forget(
-                conn, self._ensure(conn, stored_trajectory.task_key)
-            )
             if baseline is None:
-                v_pre = record.V
-                dispatch_v = None
-                dispatch_cursor = None
-            else:
-                v_pre = baseline.V
-                dispatch_v = baseline.V
-                dispatch_cursor = baseline.kl_cursor
-            raw_advantage = float(reward.total_reward) - v_pre
-            eta = 1.0 / (record.effective_count + 1.0)
-            v_after = record.V + eta * (float(reward.total_reward) - record.V)
-            success_after = record.success_p + eta * (
-                float(reward.resolved) - record.success_p
-            )
-            effective_after = record.effective_count + 1.0
-            now = time.time()
-            columns = {row[1] for row in conn.execute("PRAGMA table_info(value_observations)")}
-            if {"dispatch_v", "dispatch_kl_cursor"} <= columns:
-                conn.execute(
-                    "INSERT INTO value_observations(trajectory_id,stream_sequence,task_key,reward,"
-                    "resolved,V_pre,raw_advantage,V_after,success_p_after,effective_count_after,"
-                    "eta,policy_version,kl_cursor_after,forgetting_factor,forgotten_kl,created_at,"
-                    "dispatch_v,dispatch_kl_cursor) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (trajectory.trajectory_id, trajectory.stream_sequence,
-                     task_key_id(trajectory.task_key), float(reward.total_reward),
-                     int(reward.resolved), v_pre, raw_advantage, v_after, success_after,
-                     effective_after, eta, trajectory.behavior_adapter.version,
-                     record.kl_cursor, rho, divergence, now, dispatch_v, dispatch_cursor),
-                )
-            else:
-                conn.execute(
-                    "INSERT INTO value_observations(trajectory_id,stream_sequence,task_key,reward,"
-                    "resolved,V_pre,raw_advantage,V_after,success_p_after,effective_count_after,"
-                    "eta,policy_version,kl_cursor_after,forgetting_factor,forgotten_kl,created_at) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (trajectory.trajectory_id, trajectory.stream_sequence,
-                     task_key_id(trajectory.task_key), float(reward.total_reward),
-                     int(reward.resolved), v_pre, raw_advantage, v_after, success_after,
-                     effective_after, eta, trajectory.behavior_adapter.version,
-                     record.kl_cursor, rho, divergence, now),
-                )
+                return self._observe_immediate(
+                    conn, stored_trajectory, trajectory, reward)
+            dispatch_v = baseline.V
+            dispatch_cursor = baseline.kl_cursor
             conn.execute(
-                "UPDATE value_records SET V=?,success_p=?,effective_count=?,"
-                "last_observation_sequence=?,last_policy_version=?,kl_cursor=? WHERE task_key=?",
-                (v_after, success_after, effective_after, trajectory.stream_sequence,
-                 trajectory.behavior_adapter.version, record.kl_cursor,
-                 task_key_id(trajectory.task_key)),
+                "INSERT OR IGNORE INTO value_pending(trajectory_id,stream_sequence,task_key,"
+                "reward,resolved,policy_version,dispatch_v,dispatch_kl_cursor,"
+                "reward_payload,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (trajectory.trajectory_id, trajectory.stream_sequence,
+                 task_key_id(trajectory.task_key), float(reward.total_reward),
+                 int(reward.resolved), trajectory.behavior_adapter.version,
+                 dispatch_v, dispatch_cursor, canonical_json(reward), time.time()),
             )
-            self.ledger._put_trajectory(conn, replace(
-                stored_trajectory, raw_advantage=raw_advantage, status="REWARDED"
-            ))
-            self.ledger._event(conn, "value_observed", trajectory.trajectory_id, {
-                "R": reward.total_reward, "V_pre": v_pre, "A": raw_advantage,
-                "V_after": v_after, "eta": eta, "forgotten_kl": divergence,
-                "kl_cursor": record.kl_cursor, "dispatch_V": dispatch_v,
-                "dispatch_kl_cursor": dispatch_cursor,
-            })
+            staged = conn.execute(
+                "SELECT * FROM value_pending WHERE trajectory_id=?",
+                (trajectory.trajectory_id,)).fetchone()
+            if (staged is None or staged["stream_sequence"] != trajectory.stream_sequence
+                    or staged["task_key"] != task_key_id(trajectory.task_key)
+                    or staged["reward_payload"] != canonical_json(reward)
+                    or staged["dispatch_v"] is None
+                    or abs(float(staged["dispatch_v"]) - dispatch_v) > 1e-12
+                    or staged["dispatch_kl_cursor"] != dispatch_cursor):
+                raise ValueError("pending observation already staged with different evidence")
+            # The frozen advantage is order-independent: publish it on the
+            # trajectory now so the buffer can proceed while shared V waits
+            # for earlier dispatch sequences.
+            raw_advantage = float(reward.total_reward) - dispatch_v
+            if stored_trajectory.raw_advantage is None:
+                self.ledger._put_trajectory(conn, replace(
+                    stored_trajectory, raw_advantage=raw_advantage, status="REWARDED"
+                ))
+            self._drain_task(conn, trajectory.task_key)
+            applied = conn.execute(
+                "SELECT * FROM value_observations WHERE trajectory_id=?",
+                (trajectory.trajectory_id,)).fetchone()
+            if applied is not None:
+                return ValueObservation(
+                    trajectory_id=trajectory.trajectory_id, task_key=trajectory.task_key,
+                    V_pre=float(applied["V_pre"]),
+                    raw_advantage=float(applied["raw_advantage"]),
+                    V_after=float(applied["V_after"]),
+                    success_p_after=float(applied["success_p_after"]),
+                    effective_count_after=float(applied["effective_count_after"]),
+                    eta=float(applied["eta"]),
+                    forgetting_factor=float(applied["forgetting_factor"]),
+                    forgotten_kl=float(applied["forgotten_kl"]),
+                    kl_cursor=int(applied["kl_cursor_after"]),
+                    dispatch_V=dispatch_v, dispatch_kl_cursor=dispatch_cursor,
+                    dispatch_policy_version=trajectory.behavior_adapter.version,
+                    shared_applied=True,
+                )
+            current = self._ensure(conn, trajectory.task_key)
             return ValueObservation(
                 trajectory_id=trajectory.trajectory_id, task_key=trajectory.task_key,
-                V_pre=v_pre, raw_advantage=raw_advantage, V_after=v_after,
-                success_p_after=success_after, effective_count_after=effective_after,
-                eta=eta, forgetting_factor=rho, forgotten_kl=divergence,
-                kl_cursor=record.kl_cursor,
+                V_pre=dispatch_v, raw_advantage=raw_advantage,
+                V_after=current.V, success_p_after=current.success_p,
+                effective_count_after=current.effective_count, eta=0.0,
+                forgetting_factor=1.0, forgotten_kl=0.0,
+                kl_cursor=current.kl_cursor,
                 dispatch_V=dispatch_v, dispatch_kl_cursor=dispatch_cursor,
                 dispatch_policy_version=trajectory.behavior_adapter.version,
+                shared_applied=False,
             )
+
+    def _observe_immediate(self, conn: Any, stored_trajectory: Trajectory,
+                           trajectory: Trajectory,
+                           reward: RewardRecord) -> ValueObservation:
+        """Legacy unordered path for manual/recovery callers without a baseline.
+
+        The production engine always passes a dispatch-frozen baseline and
+        uses the ordered pending queue above.
+        """
+        sequence_conflict = conn.execute(
+            "SELECT trajectory_id FROM value_observations WHERE stream_sequence=?",
+            (trajectory.stream_sequence,),
+        ).fetchone()
+        if sequence_conflict is not None:
+            raise ValueError("stream_sequence already belongs to another observation")
+        record, rho, divergence = self._forget(
+            conn, self._ensure(conn, stored_trajectory.task_key)
+        )
+        v_pre = record.V
+        raw_advantage = float(reward.total_reward) - v_pre
+        eta = 1.0 / (record.effective_count + 1.0)
+        v_after = record.V + eta * (float(reward.total_reward) - record.V)
+        success_after = record.success_p + eta * (
+            float(reward.resolved) - record.success_p
+        )
+        effective_after = record.effective_count + 1.0
+        now = time.time()
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(value_observations)")}
+        if {"dispatch_v", "dispatch_kl_cursor"} <= columns:
+            conn.execute(
+                "INSERT INTO value_observations(trajectory_id,stream_sequence,task_key,reward,"
+                "resolved,V_pre,raw_advantage,V_after,success_p_after,effective_count_after,"
+                "eta,policy_version,kl_cursor_after,forgetting_factor,forgotten_kl,created_at,"
+                "dispatch_v,dispatch_kl_cursor) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (trajectory.trajectory_id, trajectory.stream_sequence,
+                 task_key_id(trajectory.task_key), float(reward.total_reward),
+                 int(reward.resolved), v_pre, raw_advantage, v_after, success_after,
+                 effective_after, eta, trajectory.behavior_adapter.version,
+                 record.kl_cursor, rho, divergence, now, None, None),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO value_observations(trajectory_id,stream_sequence,task_key,reward,"
+                "resolved,V_pre,raw_advantage,V_after,success_p_after,effective_count_after,"
+                "eta,policy_version,kl_cursor_after,forgetting_factor,forgotten_kl,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (trajectory.trajectory_id, trajectory.stream_sequence,
+                 task_key_id(trajectory.task_key), float(reward.total_reward),
+                 int(reward.resolved), v_pre, raw_advantage, v_after, success_after,
+                 effective_after, eta, trajectory.behavior_adapter.version,
+                 record.kl_cursor, rho, divergence, now),
+            )
+        conn.execute(
+            "UPDATE value_records SET V=?,success_p=?,effective_count=?,"
+            "last_observation_sequence=?,last_policy_version=?,kl_cursor=? WHERE task_key=?",
+            (v_after, success_after, effective_after, trajectory.stream_sequence,
+             trajectory.behavior_adapter.version, record.kl_cursor,
+             task_key_id(trajectory.task_key)),
+        )
+        self.ledger._put_trajectory(conn, replace(
+            stored_trajectory, raw_advantage=raw_advantage, status="REWARDED"
+        ))
+        self.ledger._event(conn, "value_observed", trajectory.trajectory_id, {
+            "R": reward.total_reward, "V_pre": v_pre, "A": raw_advantage,
+            "V_after": v_after, "eta": eta, "forgotten_kl": divergence,
+            "kl_cursor": record.kl_cursor, "dispatch_V": None,
+            "dispatch_kl_cursor": None, "ordered": False,
+        })
+        return ValueObservation(
+            trajectory_id=trajectory.trajectory_id, task_key=trajectory.task_key,
+            V_pre=v_pre, raw_advantage=raw_advantage, V_after=v_after,
+            success_p_after=success_after, effective_count_after=effective_after,
+            eta=eta, forgetting_factor=rho, forgotten_kl=divergence,
+            kl_cursor=record.kl_cursor,
+            dispatch_V=None, dispatch_kl_cursor=None,
+            dispatch_policy_version=trajectory.behavior_adapter.version,
+            shared_applied=True,
+        )
