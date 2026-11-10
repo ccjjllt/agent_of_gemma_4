@@ -27,7 +27,8 @@ from .loss import spo_ppo_loss
 TRAINER_STATE_VERSION = 1
 SPO_KL_ESTIMATOR = "spo_behavior_old_to_new_action_token_k3_v1"
 SPO_INTERVAL_KL_ESTIMATOR = "spo_pre_to_post_action_token_k3_v1"
-_PHASE_ORDER = {"RESERVED": 0, "LEARNING": 1, "OPTIMIZED": 2, "CONSUMED": 3}
+_PHASE_ORDER = {"RESERVED": 0, "LEARNING": 1, "OPTIMIZED": 2, "EXPORTED": 3,
+                "REGISTERED": 4, "ACTIVATED": 5, "CONSUMED": 6}
 
 
 def _torch() -> Any:
@@ -218,25 +219,12 @@ class SPOTrainer:
                      "score_call", "export_adapter_state", "restore_adapter_state", "_for_training"):
             if not callable(getattr(policy, name, None)):
                 raise TypeError(f"policy must provide {name}()")
-        self._parameters = list(policy.trainable_parameters())
-        named = [(name, parameter) for name, parameter in policy.model.named_parameters()
-                 if parameter.requires_grad]
-        if not self._parameters or len(named) != len(self._parameters) \
-                or {id(parameter) for _, parameter in named} != {id(p) for p in self._parameters}:
-            raise ValueError("Policy.trainable_parameters must exactly match trainable model parameters")
+        # Learner binding is lazy: the policy is deliberately unloaded at
+        # startup (SGLang owns the colocated GPUs), so parameter capture,
+        # rank validation and optimizer creation happen on first
+        # bind_parameters() inside a training lease, not here.
+        self._parameters: list[Any] = []
         self._parameter_names: list[str] = []
-        for name, parameter in named:
-            if ".lora_" not in name or not parameter.is_floating_point():
-                raise ValueError("only floating-point LoRA parameters may train")
-            if parameter.device.type == "meta":
-                raise ValueError("trainable LoRA parameters cannot be meta tensors")
-            if parameter.device.type == "cuda" and not self.fused:
-                raise ValueError("CUDA training requires fused=True")
-            if ".lora_A." in name and parameter.ndim == 2 and parameter.shape[0] != 128:
-                raise ValueError(f"LoRA A rank is not 128: {name}")
-            if ".lora_B." in name and parameter.ndim == 2 and parameter.shape[1] != 128:
-                raise ValueError(f"LoRA B rank is not 128: {name}")
-            self._parameter_names.append(name)
 
         self.torch: Any | None = None
         self.optimizer: Any | None = None
@@ -250,6 +238,93 @@ class SPOTrainer:
         self._busy = False
         self._checkpoint_safe = True
         self._checkpoint_phase = "initialized"
+        self._bound_generation: int | None = None
+        self._suspended_optimizer: Any | None = None
+        self._suspended_scheduler: Any | None = None
+
+    def bind_parameters(self) -> None:
+        """Bind (or rebind after a learner reload) to the resident LoRA."""
+        policy = self.policy
+        if getattr(policy, "_model", None) is None:
+            raise RuntimeError(
+                "learner is not resident; call policy.ensure_loaded() inside a "
+                "training lease before binding the trainer")
+        current = list(policy.trainable_parameters())
+        named = [(name, parameter) for name, parameter in policy.model.named_parameters()
+                 if parameter.requires_grad]
+        if not current or len(named) != len(current) \
+                or {id(parameter) for _, parameter in named} != {id(p) for p in current}:
+            raise ValueError("Policy.trainable_parameters must exactly match trainable model parameters")
+        names: list[str] = []
+        for name, parameter in named:
+            if ".lora_" not in name or not parameter.is_floating_point():
+                raise ValueError("only floating-point LoRA parameters may train")
+            if parameter.device.type == "meta":
+                raise ValueError("trainable LoRA parameters cannot be meta tensors")
+            if parameter.device.type == "cuda" and not self.fused:
+                raise ValueError("CUDA training requires fused=True")
+            if ".lora_A." in name and parameter.ndim == 2 and parameter.shape[0] != 128:
+                raise ValueError(f"LoRA A rank is not 128: {name}")
+            if ".lora_B." in name and parameter.ndim == 2 and parameter.shape[1] != 128:
+                raise ValueError(f"LoRA B rank is not 128: {name}")
+            names.append(name)
+        if self._parameter_names and names != self._parameter_names:
+            raise ValueError("LoRA layout changed across a learner reload")
+        generation = getattr(policy, "learner_generation", None)
+        if self.optimizer is not None and self._bound_generation is not None \
+                and generation != self._bound_generation:
+            # Fresh nn.Module objects after ensure_loaded(): the optimizer's
+            # param_groups still point at the released tensors. Preserve the
+            # AdamW first/second moments by rebuilding the groups around the
+            # new tensors and loading the previous state by parameter order.
+            torch = self._require_torch()
+            opt_state = self.optimizer.state_dict()
+            sched_state = self.scheduler.state_dict() if self.scheduler is not None else None
+            self._parameters = list(current)
+            self._parameter_names = list(names)
+            self.optimizer = torch.optim.AdamW(
+                self._parameters, lr=self.learning_rate,
+                weight_decay=self.weight_decay, fused=self.fused,
+            )
+            self.optimizer.load_state_dict(opt_state)
+            if sched_state is not None:
+                if self.scheduler is None:
+                    self.scheduler = make_scheduler(self.optimizer, self.schedule_contract)
+                self.scheduler.load_state_dict(sched_state)
+            self._bound_generation = generation
+            return
+        self._parameters = list(current)
+        self._parameter_names = list(names)
+        self._bound_generation = generation
+        if self._suspended_optimizer is not None:
+            torch = self._require_torch()
+            self.optimizer = torch.optim.AdamW(
+                self._parameters, lr=self.learning_rate,
+                weight_decay=self.weight_decay, fused=self.fused,
+            )
+            self.optimizer.load_state_dict(self._suspended_optimizer)
+            if self._suspended_scheduler is not None:
+                self.scheduler = make_scheduler(self.optimizer, self.schedule_contract)
+                self.scheduler.load_state_dict(self._suspended_scheduler)
+            self._suspended_optimizer = None
+            self._suspended_scheduler = None
+
+    def suspend_learner_binding(self) -> None:
+        """Drop GPU parameter references before policy.release_memory().
+
+        AdamW moments are kept as CPU-side state so the next bind rebuilds
+        the optimizer around the reloaded LoRA without losing momentum.
+        Safe to call when no learner is bound.
+        """
+        if self.optimizer is not None and self._parameters:
+            torch = self._require_torch()
+            self._suspended_optimizer = _cpu_state(self.optimizer.state_dict(), torch)
+            self._suspended_scheduler = _cpu_state(
+                self.scheduler.state_dict(), torch) if self.scheduler is not None else None
+            self.optimizer = None
+            self.scheduler = None
+        self._parameters = []
+        self._bound_generation = None
 
     @property
     def has_pending_batch(self) -> bool:
@@ -269,6 +344,8 @@ class SPOTrainer:
     def _initialize_optimizer(self) -> None:
         if self.optimizer is not None:
             return
+        if not self._parameters:
+            raise RuntimeError("bind_parameters() inside a training lease before creating the optimizer")
         torch = self._require_torch()
         if any(parameter.dtype != torch.float32 for parameter in self._parameters):
             raise ValueError("SPO training requires FP32 LoRA parameters")
@@ -312,6 +389,8 @@ class SPOTrainer:
 
     def _autocast(self):
         torch = self._require_torch()
+        if not self._parameters:
+            raise RuntimeError("bind_parameters() inside a training lease before scoring")
         if any(parameter.device.type == "cuda" for parameter in self._parameters):
             return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
         return nullcontext()
@@ -495,6 +574,7 @@ class SPOTrainer:
             else _integer(current_policy_version, "current_policy_version")
         self._busy = True
         try:
+            self.bind_parameters()
             trajectories = self._load_trajectories(stored, version)
             self._new_active(stored, trajectories, version)
             self._initialize_optimizer()
@@ -515,6 +595,7 @@ class SPOTrainer:
         """Resume LEARNING or redo only KL/commit work after OPTIMIZED."""
         if self._busy or not self._checkpoint_safe or self._active is None or self._batch is None:
             raise RuntimeError("no safe restored SPO batch is pending")
+        self.bind_parameters()
         self._busy = True
         try:
             self._reconcile_ledger()
@@ -531,7 +612,8 @@ class SPOTrainer:
             raise RuntimeError("no active SPO batch")
         if self._batch.phase == "CONSUMED":
             return self._public_stats()
-        if self._batch.phase == "OPTIMIZED" and self._kl_ready():
+        if self._batch.phase in ("OPTIMIZED", "EXPORTED", "REGISTERED", "ACTIVATED") \
+                and self._kl_ready():
             return self._public_stats()
         if self._batch.phase == "RESERVED":
             if self._batch.optimizer_cursor != 0:
@@ -831,12 +913,15 @@ class SPOTrainer:
             raise ValueError("checkpoint trainer configuration differs")
         if state.get("lr_schedule") != self.schedule_contract:
             raise ValueError("checkpoint LR schedule differs")
-        if state.get("optimizer_parameter_names") != self._parameter_names:
-            raise ValueError("checkpoint optimizer parameter ordering differs")
         completed = state.get("completed_optimizer_steps")
         if type(completed) is not int or completed < 0:
             raise ValueError("invalid completed optimizer count")
         torch = self._require_torch()
+        # Bind before the layout check: with lazy learner loading the
+        # trainer holds no parameters until the resident model is bound.
+        self.bind_parameters()
+        if state.get("optimizer_parameter_names") != self._parameter_names:
+            raise ValueError("checkpoint optimizer parameter ordering differs")
         self.policy.restore_adapter_state(state["adapter"])
         if state.get("optimizer") is not None:
             self._initialize_optimizer()

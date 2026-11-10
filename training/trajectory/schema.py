@@ -399,7 +399,8 @@ class UpdateBatch:
     phase: str
 
     PHASES: ClassVar[frozenset[str]] = frozenset({
-        "RESERVED", "LEARNING", "OPTIMIZED", "CONSUMED",
+        "RESERVED", "LEARNING", "OPTIMIZED", "EXPORTED", "REGISTERED",
+        "ACTIVATED", "CONSUMED",
     })
 
     def __post_init__(self) -> None:

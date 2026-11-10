@@ -94,6 +94,7 @@ class RolloutScheduler:
         max_long_active: int = 1,
         max_queued: int = 128,
         exposure_window_seconds: float = 3600.0,
+        initial_stream_sequence: int = 0,
     ):
         self.tasks = tuple(tasks)
         if not self.tasks or any(not isinstance(item, TaskKey) for item in self.tasks):
@@ -138,7 +139,10 @@ class RolloutScheduler:
         self._recent_tasks: Counter[str] = Counter()
         self._recent_repos: Counter[str] = Counter()
         self._sequence = 0
-        self._stream_sequence = 0
+        if isinstance(initial_stream_sequence, bool) or not isinstance(
+                initial_stream_sequence, int) or initial_stream_sequence < 0:
+            raise ValueError("initial_stream_sequence must be a non-negative integer")
+        self._stream_sequence = int(initial_stream_sequence)
 
     def _queue_for(self, task: TaskKey) -> str:
         # Unknown tasks deliberately enter short with their epsilon exploration mass.

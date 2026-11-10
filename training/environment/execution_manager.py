@@ -61,12 +61,21 @@ class AttemptSequence:
 
     def _read(self) -> int:
         try:
-            value = json.loads(self._path.read_text(encoding="utf-8"))["next_attempt"]
-            if type(value) is not int or value < 0:
-                raise ValueError("invalid attempt counter")
-            return value
-        except (OSError, ValueError, KeyError, TypeError):
+            raw = self._path.read_text(encoding="utf-8")
+        except FileNotFoundError:
             return 0
+        except OSError as exc:
+            raise RuntimeError(f"attempt counter unreadable, refusing to reuse UIDs: {exc}") from exc
+        try:
+            value = json.loads(raw)["next_attempt"]
+        except (ValueError, KeyError, TypeError) as exc:
+            raise RuntimeError(
+                "attempt counter is corrupt, refusing to restart numbering: "
+                f"{self._path}") from exc
+        if type(value) is not int or value < 0:
+            raise RuntimeError(
+                f"attempt counter holds an invalid number, refusing to reuse UIDs: {self._path}")
+        return value
 
     def take(self) -> int:
         """Consume and persist the next attempt number."""

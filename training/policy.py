@@ -99,8 +99,16 @@ class Policy:
         self.softcap = float(text_config.get("final_logit_softcapping") or 0.0)
         self._mode = None
         self._model_loaded = False
+        self._learner_generation = 0
         if not config.get("defer_learner_load"):
             self.ensure_loaded()
+
+    def is_resident(self) -> bool:
+        return self._model is not None and self._model_loaded
+
+    @property
+    def learner_generation(self) -> int:
+        return self._learner_generation
 
     @property
     def model(self):
@@ -203,6 +211,7 @@ class Policy:
         self.softcap = float(text_config.get("final_logit_softcapping") or 0.0)
         self._mode = None
         self._model_loaded = True
+        self._learner_generation += 1
 
     @staticmethod
     def _lora_targets(model, text_config: dict) -> list[str]:

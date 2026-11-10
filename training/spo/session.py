@@ -25,13 +25,13 @@ class BarrierBlocked(RuntimeError):
 
 def commit_optimized_update(trainer: Any, policy_after: BehaviorAdapter,
                             version_chain: Sequence[BehaviorAdapter] | None = None) -> UpdateBatch:
-    """Commit an OPTIMIZED trainer batch and release it. Returns CONSUMED batch."""
+    """Commit a post-optimizer batch and release it. Returns CONSUMED batch."""
     batch = getattr(trainer, "_batch", None)
     active = getattr(trainer, "_active", None)
     if batch is None or active is None:
         raise RuntimeError("trainer has no active SPO batch")
-    if batch.phase != "OPTIMIZED":
-        raise RuntimeError("only an OPTIMIZED update can be committed")
+    if batch.phase not in ("OPTIMIZED", "EXPORTED", "REGISTERED", "ACTIVATED"):
+        raise RuntimeError("only a post-optimizer update can be committed")
     stats = active.get("stats", {})
     kl_value = stats.get("kl_value")
     token_count = stats.get("token_count")

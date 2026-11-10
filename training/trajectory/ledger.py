@@ -523,7 +523,8 @@ class TrajectoryLedger:
 
     def set_update_phase(self, update_id: str, phase: str,
                          optimizer_cursor: int | None = None) -> UpdateBatch:
-        order = {"RESERVED": 0, "LEARNING": 1, "OPTIMIZED": 2, "CONSUMED": 3}
+        order = {"RESERVED": 0, "LEARNING": 1, "OPTIMIZED": 2, "EXPORTED": 3,
+                 "REGISTERED": 4, "ACTIVATED": 5, "CONSUMED": 6}
         if phase not in order:
             raise ValueError("invalid update phase")
         with self.transaction() as conn:
@@ -648,8 +649,8 @@ class TrajectoryLedger:
         batch = self._get_update(conn, update_id)
         if batch.phase == "CONSUMED":
             return batch
-        if batch.phase != "OPTIMIZED":
-            raise RuntimeError("only an OPTIMIZED update can be consumed")
+        if batch.phase not in ("OPTIMIZED", "EXPORTED", "REGISTERED", "ACTIVATED"):
+            raise RuntimeError("only a post-optimizer update can be consumed")
         if conn.execute(
                 "SELECT 1 FROM kl_segments WHERE update_id=?", (update_id,)).fetchone() is None:
             raise RuntimeError("update consumption requires its committed KL segment")
@@ -703,6 +704,22 @@ class TrajectoryLedger:
                 ).fetchall()
         return tuple(UpdateBatch.from_dict(json.loads(row[0])) for row in rows)
 
+    def max_stream_sequence(self) -> int:
+        """Highest stream_sequence ever issued (trajectories and observations)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT COALESCE(MAX(stream_sequence),0) FROM trajectories"
+            ).fetchone()
+            peak = int(rows[0])
+            try:
+                obs = self._conn.execute(
+                    "SELECT COALESCE(MAX(stream_sequence),0) FROM value_observations"
+                ).fetchone()
+                peak = max(peak, int(obs[0]))
+            except Exception:
+                pass
+            return peak
+
     def buffer_state(self) -> dict[str, int]:
         with self._lock:
             rows = self._conn.execute(
@@ -719,7 +736,8 @@ class TrajectoryLedger:
             foreign = self._conn.execute("PRAGMA foreign_key_check").fetchall()
             if foreign:
                 raise RuntimeError("SQLite foreign-key recovery check failed")
-            for batch in self.list_updates(("RESERVED", "LEARNING", "OPTIMIZED")):
+            for batch in self.list_updates(("RESERVED", "LEARNING", "OPTIMIZED",
+                                               "EXPORTED", "REGISTERED", "ACTIVATED")):
                 trajectories = self.get_trajectories(batch.trajectory_ids)
                 validate_update_batch(batch, trajectories)
             counts = self.buffer_state()
@@ -731,7 +749,7 @@ class TrajectoryLedger:
             "schema_version": SCHEMA_VERSION,
             "buffer": counts,
             "resume_updates": [batch.to_dict() for batch in self.list_updates(
-                ("RESERVED", "LEARNING", "OPTIMIZED")
+                ("RESERVED", "LEARNING", "OPTIMIZED", "EXPORTED", "REGISTERED", "ACTIVATED")
             )],
             "value_records": int(values),
             "kl_cursor": int(latest_kl),

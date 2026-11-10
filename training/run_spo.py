@@ -54,6 +54,11 @@ def load_config(path: Path) -> dict:
     for key in FORBIDDEN_KEYS:
         if key in text:
             raise ValueError(f"legacy GRPO key must not appear in SPO config: {key}")
+    for section in ("sft", "distillation", "opd", "teacher"):
+        if section in cfg:
+            raise ValueError(
+                f"[{section}] is a post-first-update phase and is not wired into "
+                "the online-SPO launcher; first round runs online SPO only")
     policy = cfg["policy"]
     if (policy.get("lora_rank"), policy.get("lora_alpha")) != (128, 256):
         raise ValueError("SPO requires lora_rank=128, lora_alpha=256")
@@ -350,7 +355,8 @@ def run_spo(args: argparse.Namespace) -> int:
         scheduler = RolloutScheduler(
             catalog.sampler_tasks(), sampler,
             lambda: double_buffer.rollout,
-            seed=int(policy_cfg.get("seed", 3407)), health=catalog.healthy)
+            seed=int(policy_cfg.get("seed", 3407)), health=catalog.healthy,
+            initial_stream_sequence=ledger.max_stream_sequence())
         barrier = VersionBarrier(
             scheduler, exec_manager, double_buffer,
             drain_timeout_seconds=float(run.get("barrier_drain_timeout_seconds", 600)),
@@ -375,6 +381,9 @@ def run_spo(args: argparse.Namespace) -> int:
             "spo": cfg["spo"],
             "optimizer": {**cfg["optimizer"], "total_optimizer_steps": max(1, max_batches)},
         }, checkpoint_callback=persist_trainer_state)
+        # P0-1: safe while the learner is unloaded. Parameter capture, rank
+        # validation and optimizer creation happen in bind_parameters()
+        # inside the training lease; P0-2 reloads rebind without losing AdamW.
         # Resume is handled below by resume_pending_updates() under a training
         # lease (the learner must be resident to restore into). Never restore
         # here: the model is deliberately unloaded at startup.
@@ -391,7 +400,11 @@ def run_spo(args: argparse.Namespace) -> int:
         def settle_done(future: concurrent.futures.Future, trajectory_id: str, assignment: object) -> None:
             try:
                 try:
-                    double_buffer.release_trajectory(trajectory_id)
+                    # Never auto-publish from a worker callback: publication is
+                    # owned by the version barrier outside the training lease
+                    # (auto-publish would re-enter an inference lease while a
+                    # training lease is held).
+                    double_buffer.release_trajectory(trajectory_id, auto_publish=False)
                 except (KeyError, ValueError):
                     pass
                 error = future.exception()
@@ -415,36 +428,106 @@ def run_spo(args: argparse.Namespace) -> int:
                 with lock:
                     in_flight.pop(trajectory_id, None)
 
-        def finalize_update(update_id: str, batch: object, stats: Mapping[str, Any],
-                            behavior_before: BehaviorAdapter) -> int:
-            """Export, persist, commit and serve an OPTIMIZED batch.
+        def restore_learner_weights() -> bool:
+            """Restore the last committed LoRA into a freshly loaded learner.
 
-            Caller holds the training lease with a resident learner. Order:
-            adapter export, trainer-state save, ledger commit, adapter
-            registry, serving pointer. Memory is released by the caller.
+            ensure_loaded() always builds a zero-initialized LoRA; without
+            this step the next update would train from genesis and the AdamW
+            moments would apply to the wrong weights. Skipped only when this
+            process has never completed an optimizer step.
             """
+            if trainer.completed_optimizer_steps <= 0 or not trainer_state.is_file():
+                return False
+            import torch as _torch
+            state = _torch.load(trainer_state, map_location="cpu", weights_only=False)
+            policy.restore_adapter_state(state["adapter"])
+            return True
+
+        def export_and_register(update_id: str, batch: object) -> Any:
+            """Idempotent OPTIMIZED -> EXPORTED -> REGISTERED (no GPU needed)."""
+            from .rollout.policy_version import AdapterManifest
             base = double_buffer.rollout
             if base is None:
                 raise RuntimeError("no rollout adapter is available for update export")
             version = base.version + 1
             candidate_dir = run_dir / "adapters" / f"staging-v{version}"
-            manifest = exporter.export(
-                policy, candidate_dir, version=version,
-                parent_version=base.version,
-                optimizer_step=trainer.completed_optimizer_steps)
-            import torch as _torch
-            _torch.save(trainer.export_training_state(), trainer_state)
+            manifest_path = candidate_dir / "manifest.json"
+            if manifest_path.is_file():
+                manifest = AdapterManifest.read(manifest_path)
+                if manifest.version != version or manifest.parent_version != base.version:
+                    raise ValueError(f"stale candidate export in {candidate_dir}")
+            else:
+                manifest = exporter.export(
+                    policy, candidate_dir, version=version,
+                    parent_version=base.version,
+                    optimizer_step=trainer.completed_optimizer_steps)
+            ledger.set_update_phase(update_id, "EXPORTED", optimizer_cursor=1)
+            try:
+                adapters.publish(manifest, candidate_dir)
+            except FileExistsError:
+                registered = adapters.get(manifest.version)
+                if registered != manifest:
+                    raise ValueError(
+                        f"adapter version {manifest.version} is registered with different content")
+            pending = double_buffer.training
+            if pending is None:
+                double_buffer.begin_training(manifest)
+            elif pending != manifest:
+                raise ValueError("double buffer holds a different training candidate")
+            ledger.set_update_phase(update_id, "REGISTERED", optimizer_cursor=1)
+            return manifest
+
+        def activate_and_commit(update_id: str, batch: object, stats: Mapping[str, Any],
+                                behavior_before: BehaviorAdapter) -> int:
+            """Idempotent REGISTERED -> ACTIVATED -> CONSUMED (inference lease only).
+
+            Must run outside any training lease: double_buffer.publish() takes
+            an inference lease, which waits for an exclusive training lease.
+            """
+            from .rollout.policy_version import AdapterManifest
+            stored = ledger.get_update(update_id)
+            base = double_buffer.rollout
+            if base is None:
+                raise RuntimeError("no rollout adapter is available for activation")
+            version = stored.policy_before.version + 1
+            if base.version == version:
+                manifest = base
+            else:
+                if base.version != stored.policy_before.version:
+                    raise ValueError("rollout moved past this update's base version")
+                barrier.publish_or_raise()
+                manifest = double_buffer.rollout
+                if manifest is None or manifest.version != version:
+                    raise RuntimeError("publish did not advance the rollout version")
+            ledger.set_update_phase(update_id, "ACTIVATED", optimizer_cursor=1)
+            try:
+                endpoint.advance_version(manifest.version)
+            except (ValueError, RuntimeError) as error:
+                current = getattr(endpoint, "policy_version", None)
+                if current != manifest.version:
+                    raise
             behavior_after = BehaviorAdapter(version=manifest.version, sha256=manifest.adapter_sha256)
-            commit_optimized_update(trainer, behavior_after,
-                                    version_chain=(behavior_before, behavior_after))
-            adapters.publish(manifest, candidate_dir)
-            double_buffer.begin_training(manifest)
-            barrier.publish_or_raise()
-            endpoint.advance_version(manifest.version)
-            _emit(metrics_path, "spo_update", update_id=update_id, version=version,
+            if ledger.get_update(update_id).phase != "CONSUMED":
+                commit_optimized_update(trainer, behavior_after,
+                                        version_chain=(behavior_before, behavior_after))
+            _emit(metrics_path, "spo_update", update_id=update_id, version=manifest.version,
                   action_tokens=batch.total_action_tokens, published=True,
                   kl_value=stats.get("kl_value"), token_count=stats.get("token_count"))
-            return version
+            return manifest.version
+
+        def finalize_update(update_id: str, batch: object, stats: Mapping[str, Any],
+                            behavior_before: BehaviorAdapter) -> int:
+            """Export, persist, commit and serve an OPTIMIZED batch.
+
+            Split across leases: registry work runs inside the caller's
+            training lease, serving activation and ledger commit run outside
+            it (see activate_and_commit). Memory is released by the caller.
+            """
+            export_and_register(update_id, batch)
+            import torch as _torch
+            _torch.save(trainer.export_training_state(), trainer_state)
+            stored = ledger.get_update(update_id)
+            return stored.policy_before.version + 1
 
         def do_update(update_id: str) -> bool:
             manifest = double_buffer.rollout
@@ -460,10 +543,16 @@ def run_spo(args: argparse.Namespace) -> int:
                 with lease.training():
                     policy.ensure_loaded()
                     try:
+                        restore_learner_weights()
                         stats = trainer.optimize_batch(batch)
                         finalize_update(update_id, batch, stats, behavior_before)
                     finally:
+                        trainer.suspend_learner_binding()
                         policy.release_memory()
+                # Training lease is released (SGLang resumed) before any
+                # inference-lease work: publish would deadlock inside it.
+                version = activate_and_commit(update_id, batch, stats, behavior_before)
+                _emit(metrics_path, "spo_update_activated", update_id=update_id, version=version)
                 return True
 
         update_index = len(ledger.list_updates()) if args.resume else 0
@@ -479,8 +568,12 @@ def run_spo(args: argparse.Namespace) -> int:
             RESERVED batches optimize fresh through the normal finalize path.
             A single LEARNING/OPTIMIZED batch restores its exact checkpoint
             (update identity is verified) and resumes before any new reserve.
+            EXPORTED/REGISTERED/ACTIVATED batches already finished the
+            optimizer step: their remaining publish stages replay idempotently
+            without another gradient step.
             """
-            pending = list(ledger.list_updates(("RESERVED", "LEARNING", "OPTIMIZED")))
+            pending = list(ledger.list_updates(("RESERVED", "LEARNING", "OPTIMIZED",
+                                                "EXPORTED", "REGISTERED", "ACTIVATED")))
             if not pending:
                 return 0
             import torch as _torch
@@ -497,10 +590,15 @@ def run_spo(args: argparse.Namespace) -> int:
                         with lease.training():
                             policy.ensure_loaded()
                             try:
+                                restore_learner_weights()
                                 stats = trainer.optimize_batch(batch)
                                 finalize_update(update_id, batch, stats, behavior_before)
                             finally:
+                                trainer.suspend_learner_binding()
                                 policy.release_memory()
+                        batch = ledger.get_update(update_id)
+                        stored_stats = dict(trainer._active["stats"]) if trainer._active else {}
+                        activate_and_commit(update_id, batch, stored_stats, behavior_before)
                     finished += 1
                     continue
                 if not trainer_state.is_file():
@@ -517,11 +615,20 @@ def run_spo(args: argparse.Namespace) -> int:
                         policy.ensure_loaded()
                         try:
                             trainer.restore_training_state(state)
-                            stats = trainer.resume_batch()
-                            batch = ledger.get_update(update_id)
-                            finalize_update(update_id, batch, stats, batch.policy_before)
+                            fresh = ledger.get_update(update_id)
+                            if fresh.phase in ("LEARNING", "OPTIMIZED", "RESERVED"):
+                                stats = trainer.resume_batch()
+                                batch = ledger.get_update(update_id)
+                                finalize_update(update_id, batch, stats, batch.policy_before)
+                                stats = dict(trainer._active["stats"]) if trainer._active else {}
+                            else:
+                                stats = dict((state.get("active_batch") or {}).get("stats", {}))
+                                batch = fresh
                         finally:
+                            trainer.suspend_learner_binding()
                             policy.release_memory()
+                    batch = ledger.get_update(update_id)
+                    activate_and_commit(update_id, batch, stats, batch.policy_before)
                 finished += 1
             return finished
 
@@ -540,6 +647,11 @@ def run_spo(args: argparse.Namespace) -> int:
               inference={"engine": engine_name, "base_url": backend_url},
               backend_handshake=handshake,
               model_revision=identity["model_revision"], model_path=identity["model_path"])
+        # Phase declaration: first round is online SPO only. SFT cold-start,
+        # teacher distillation and OPD (training/data/*) are implemented but
+        # staged after the first real SPO update proves the loop.
+        _emit(metrics_path, "spo_training_phase", phase="online_spo_only",
+              sft_wired=False, distillation_wired=False, opd_wired=False)
         while batches < max_batches and time.monotonic() < stop_submit:
             with lock:
                 room = max_workers - len(in_flight)
