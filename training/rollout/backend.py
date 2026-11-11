@@ -412,10 +412,11 @@ class SGLangBackend(HTTPInferenceBackend):
       supply it explicitly in ``sampling`` (stock default 128 would silently
       truncate rollouts).  Native sampling has no seed channel; ``seed``
       stays a client-side record (``-1`` = engine-owned RNG).
-    - ``lora_path`` carries the exact server-side path registered by
-      ``load_adapter``; per-request adapter binding is ``rid``-scoped, and
-      the weight hash is proven at load time, not per response. Submitting
-      with an unloaded adapter fails instead of sending a bare digest.
+    - ``lora_path`` carries the registered LoRA name (chosen as the adapter
+      SHA256 at load time); per-request binding is ``rid``-scoped and the
+      name is resolved server-side through the LoRA registry. The weight
+      hash is proven at load time, not per response. Submitting with an
+      unloaded adapter fails instead of sending an unregistered name.
     - ``drain`` has no native route: pause (idempotent) plus polling
       ``/get_load`` for zero running/waiting requests.
     - Empty-200 native confirmations (abort/release/resume-memory) count as
@@ -467,21 +468,24 @@ class SGLangBackend(HTTPInferenceBackend):
         if cache_namespace is not None and cache_namespace != digest:
             raise ValueError("cache_namespace must equal the behavior adapter SHA256")
         native_sampling = self._native_sampling(sampling or {})
-        # Per-request binding uses the exact server-side path registered by
-        # load_adapter, never a bare digest: stock /generate resolves
-        # lora_path against the server filesystem, and this client assumes no
-        # hash-to-path mapping protocol on the deployment.
+        # Per-request binding uses the registered LoRA NAME, not a filesystem
+        # path: stock /generate resolves lora_path through the server-side
+        # LoRA registry populated by /load_lora_adapter (verified against the
+        # sglang 0.4.10 wheel: lora_registry.acquire(obj.lora_path)). The
+        # registered name is exactly the adapter SHA256 chosen at load time,
+        # so sha256 -> name -> directory stays consistent end to end.
         with self._state_lock:
             registered = self._adapters.get(digest)
         if registered is None:
             raise BackendError(
                 "adapter is not loaded on the inference server; "
                 "call load_adapter(manifest, path) before submitting")
+        lora_name = digest
         payload = {
             "rid": rid,
             "input_ids": prompt,
             "sampling_params": native_sampling,
-            "lora_path": registered[1],
+            "lora_path": lora_name,
             "return_logprob": True,
             "top_logprobs_num": 1,
             "stream": False,
@@ -614,17 +618,23 @@ class SGLangBackend(HTTPInferenceBackend):
         weights = directory / "adapter_model.safetensors"
         if not weights.is_file() or sha256_file(weights) != manifest.adapter_sha256:
             raise ValueError("adapter weights are missing or do not match the manifest")
+        lora_name = manifest.adapter_sha256
         result = self._object(self._request("POST", self.endpoints["load_adapter"], {
-            "lora_name": manifest.adapter_sha256,
+            "lora_name": lora_name,
             "lora_path": str(directory),
         }), "load_adapter")
         if result.get("success") is not True:
             raise BackendResponseError(
                 f"sglang refused the adapter: {result.get('error_message')}")
+        loaded = result.get("loaded_adapters")
+        if isinstance(loaded, Mapping) and lora_name not in loaded:
+            raise BackendResponseError(
+                "sglang load succeeded but did not register the requested lora_name")
         with self._state_lock:
             self._adapters[manifest.adapter_sha256] = (manifest, str(directory))
             self._active_adapter_hash = manifest.adapter_sha256
-        return {"loaded": True, "adapter_sha256": manifest.adapter_sha256}
+        return {"loaded": True, "adapter_sha256": manifest.adapter_sha256,
+                "lora_name": lora_name}
 
     def unload_adapter(self, adapter: AdapterIdentity) -> Mapping[str, Any]:
         self._require_started()
@@ -637,6 +647,10 @@ class SGLangBackend(HTTPInferenceBackend):
         if result.get("success") is not True:
             raise BackendResponseError(
                 f"sglang refused the adapter unload: {result.get('error_message')}")
+        with self._state_lock:
+            self._adapters.pop(digest, None)
+            if self._active_adapter_hash == digest:
+                self._active_adapter_hash = None
         return {"unloaded": True, "adapter_sha256": digest}
 
     def _normalize_generation(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:

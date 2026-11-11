@@ -438,6 +438,17 @@ def run_spo(args: argparse.Namespace) -> int:
                                                infrastructure_error=f"{type(error).__name__}")
                     except (ValueError, KeyError, TypeError):
                         pass
+                    # A trajectory sealed before the crash still blocks later
+                    # dispatch sequences of its task. Finalize it now so the
+                    # run continues without waiting for a restart.
+                    try:
+                        action = tracker.recover_trajectory(trajectory_id)
+                        if action not in ("unknown", "no_reward_other_state",
+                                          "already_staged"):
+                            _emit(metrics_path, "trajectory_recovered",
+                                  trajectory_id=trajectory_id, action=action)
+                    except (ValueError, TypeError, RuntimeError, OSError):
+                        pass
                 else:
                     try:
                         reward = ledger.get_reward(trajectory_id)
