@@ -46,7 +46,7 @@ export TMPDIR=/root/autodl-tmp/gemma4/tmp
   --backend-url http://127.0.0.1:8000
 ```
 
-启动前只有纯 CPU 预检（`--check-only`）：配置、模型目录结构、tokenizer、SGLang 可达性。非空 run_dir 直接拒绝启动；继续训练必须用 `--resume`，且恢复时校验 serving 版本、adapter SHA、trainer checkpoint 步数与 ledger（含 ACTIVATED 中断态的来源证明），对不上就停。
+启动前只有纯 CPU 预检（`--check-only`）：配置、模型目录结构、tokenizer、SGLang 可达性（对 `base_url` 做只读 `GET /health`，不提交、不加载）。非空 run_dir 直接拒绝启动；继续训练必须用 `--resume`，且恢复时校验 serving 版本、adapter SHA、trainer checkpoint 步数与 ledger（含 ACTIVATED 中断态的来源证明），对不上就停。`--resume` 必须沿用首次启动的 `max_batches`（全局累计上限，LR 计划总量）；改动即停，不静默重置计划。
 
 更新事务按阶段推进：RESERVED → LEARNING → OPTIMIZED → EXPORTED → REGISTERED → ACTIVATED → CONSUMED；训练租约内只做优化、导出与注册，发布与提交在训练租约之外完成，避免 GPU 租约死锁。退出码：0 跑满批次，75 预算耗尽（可续跑），2 配置或运行失败。
 

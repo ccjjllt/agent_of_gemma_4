@@ -516,6 +516,29 @@ def run_spo(args: argparse.Namespace) -> int:
             "spo": cfg["spo"],
             "optimizer": {**cfg["optimizer"], "total_optimizer_steps": max(1, max_batches)},
         }, checkpoint_callback=persist_trainer_state)
+        # max_batches is the global cumulative update budget for the whole
+        # training task, not a per-process allowance: the LR schedule total is
+        # max(1, max_batches) and the main loop below is driven by the global
+        # trainer.completed_optimizer_steps. A --resume run must reuse the
+        # original max_batches; changing it would rewrite the schedule total
+        # and break the restored AdamW/scheduler state (restore_training_state
+        # already rejects a mismatched trainer_config/schedule).
+        global_total = int(trainer.schedule_contract["total_steps"])
+        if args.resume and trainer_state.is_file():
+            import torch as _torch_check
+            try:
+                _saved = _torch_check.load(trainer_state, map_location="cpu",
+                                           weights_only=False)
+            except Exception as exc:
+                raise RuntimeError(f"trainer checkpoint is unreadable: {exc}") from exc
+            _saved_total = ((_saved.get("lr_schedule") or {}).get("total_steps")
+                            if isinstance(_saved, Mapping) else None)
+            if _saved_total != global_total:
+                raise RuntimeError(
+                    f"resume requested total_optimizer_steps={global_total} "
+                    f"(max_batches={max_batches}) but the checkpoint holds "
+                    f"total_steps={_saved_total}; max_batches is a global "
+                    f"cumulative budget and must not change across --resume")
         # P0-1: safe while the learner is unloaded. Parameter capture, rank
         # validation and optimizer creation happen in bind_parameters()
         # inside the training lease; P0-2 reloads rebind without losing AdamW.
@@ -648,6 +671,88 @@ def run_spo(args: argparse.Namespace) -> int:
                 raise ValueError("double buffer holds a different training candidate")
             ledger.set_update_phase(update_id, "REGISTERED", optimizer_cursor=1)
             return manifest
+
+        def restore_training_candidate(update_id: str) -> Any:
+            """Rebuild the DoubleBuffer N+1 slot for an EXPORTED/REGISTERED resume.
+
+            A restart always constructs DoubleBuffer with training=None, so a
+            pending update that already finished its optimizer step would hit
+            ``publish()`` with no candidate. Rebuild from the staged export
+            and the immutable registry without re-running AdamW:
+
+            - EXPORTED: staging manifest must exist; publish it if the
+              registry does not have it yet, then begin_training().
+            - REGISTERED: registry must already hold the candidate; only
+              begin_training() is missing.
+            Verifies update id, parent version, adapter SHA256 (weights file
+            hash), optimizer step and trainer checkpoint identity.
+            """
+            from .rollout.policy_version import AdapterManifest, sha256_file
+            stored = ledger.get_update(update_id)
+            if stored.phase not in ("EXPORTED", "REGISTERED"):
+                raise RuntimeError(
+                    f"restore_training_candidate only handles EXPORTED/REGISTERED, "
+                    f"not {stored.phase} for {update_id}")
+            expected_version = stored.policy_before.version + 1
+            pending = double_buffer.training
+            if pending is not None:
+                if pending.version != expected_version \
+                        or pending.parent_version != stored.policy_before.version:
+                    raise ValueError(
+                        f"double buffer holds v{pending.version}, not the candidate "
+                        f"v{expected_version} for {update_id}")
+                return pending
+            if double_buffer.rollout is None \
+                    or double_buffer.rollout.version != stored.policy_before.version:
+                raise ValueError(
+                    f"rollout v{double_buffer.rollout.version if double_buffer.rollout else None} "
+                    f"is not the base v{stored.policy_before.version} of {update_id}")
+            candidate_dir = run_dir / "adapters" / f"staging-v{expected_version}"
+            manifest_path = candidate_dir / "manifest.json"
+            if not manifest_path.is_file():
+                raise RuntimeError(
+                    f"staged candidate export is missing for {update_id}: {manifest_path}")
+            manifest = AdapterManifest.read(manifest_path)
+            if manifest.version != expected_version \
+                    or manifest.parent_version != stored.policy_before.version:
+                raise ValueError(
+                    f"staged candidate v{manifest.version}/parent {manifest.parent_version} "
+                    f"does not match update {update_id} v{expected_version}/"
+                    f"parent {stored.policy_before.version}")
+            if manifest.optimizer_step != trainer.completed_optimizer_steps:
+                raise ValueError(
+                    f"staged candidate optimizer_step {manifest.optimizer_step} disagrees "
+                    f"with trainer {trainer.completed_optimizer_steps} for {update_id}")
+            weights_path = candidate_dir / "adapter_model.safetensors"
+            if not weights_path.is_file() \
+                    or sha256_file(weights_path) != manifest.adapter_sha256:
+                raise ValueError(
+                    f"staged weights for {update_id} are missing or do not match "
+                    f"manifest SHA256")
+            try:
+                registered = adapters.get(expected_version)
+            except KeyError:
+                registered = None
+            if registered is None:
+                registered = adapters.publish(manifest, candidate_dir)
+                _emit(metrics_path, "spo_candidate_republished",
+                      update_id=update_id, version=registered.version)
+            if registered != manifest:
+                raise ValueError(
+                    f"adapter version {expected_version} is registered with different "
+                    f"content than the staged candidate for {update_id}")
+            if adapters.active is not None \
+                    and adapters.active.version >= expected_version:
+                raise ValueError(
+                    f"registry already serves v{adapters.active.version}; cannot "
+                    f"restore candidate v{expected_version} for {update_id}")
+            double_buffer.begin_training(registered)
+            if stored.phase == "EXPORTED":
+                ledger.set_update_phase(update_id, "REGISTERED", optimizer_cursor=1)
+            _emit(metrics_path, "spo_candidate_restored",
+                  update_id=update_id, version=registered.version,
+                  sha256=registered.adapter_sha256[:16])
+            return registered
 
         def activate_and_commit(update_id: str, batch: object, stats: Mapping[str, Any],
                                 behavior_before: BehaviorAdapter) -> int:
@@ -815,6 +920,9 @@ def run_spo(args: argparse.Namespace) -> int:
                             trainer.suspend_learner_binding()
                             policy.release_memory()
                     batch = ledger.get_update(update_id)
+                    if batch.phase in ("EXPORTED", "REGISTERED"):
+                        restore_training_candidate(update_id)
+                        batch = ledger.get_update(update_id)
                     activate_and_commit(update_id, batch, stats, batch.policy_before)
                 finished += 1
             return finished
@@ -883,7 +991,7 @@ def run_spo(args: argparse.Namespace) -> int:
         # staged after the first real SPO update proves the loop.
         _emit(metrics_path, "spo_training_phase", phase="online_spo_only",
               sft_wired=False, distillation_wired=False, opd_wired=False)
-        while batches < max_batches and time.monotonic() < stop_submit:
+        while trainer.completed_optimizer_steps < global_total and time.monotonic() < stop_submit:
             with lock:
                 room = max_workers - len(in_flight)
             for _ in range(room):
@@ -931,7 +1039,7 @@ def run_spo(args: argparse.Namespace) -> int:
                                     timeout=min(5.0, max(0.05, deadline - time.monotonic())),
                                     return_when=concurrent.futures.FIRST_COMPLETED)
             rollout_now = double_buffer.rollout
-            if rollout_now is not None and batches < max_batches:
+            if rollout_now is not None and trainer.completed_optimizer_steps < global_total:
                 try:
                     if do_update(f"upd-{update_index:04d}"):
                         batches += 1
@@ -944,7 +1052,7 @@ def run_spo(args: argparse.Namespace) -> int:
                     [f for f, _ in in_flight.values()],
                     timeout=max(0.05, deadline - time.monotonic()))
             final_done = False
-            if batches < max_batches and time.monotonic() < deadline:
+            if trainer.completed_optimizer_steps < global_total and time.monotonic() < deadline:
                 try:
                     rollout_now = double_buffer.rollout
                     if rollout_now is not None and do_update(f"upd-{update_index:04d}"):
@@ -954,8 +1062,10 @@ def run_spo(args: argparse.Namespace) -> int:
                     _emit(metrics_path, "spo_update_failed", error=str(error))
             persist_budget(consumed + (time.monotonic() - start))
             _emit(metrics_path, "spo_run_stopped", batches=batches, final_update=final_done,
+                  completed_optimizer_steps=trainer.completed_optimizer_steps,
+                  global_total_steps=global_total,
                   buffer=ledger.buffer_state())
-        return 0 if batches >= max_batches else 75
+        return 0 if trainer.completed_optimizer_steps >= global_total else 75
     finally:
         try:
             exec_manager.shutdown(cancel_pending=True)
@@ -1002,6 +1112,23 @@ def main(argv: list[str] | None = None) -> int:
             print(f"spo_config_ok sections={sorted(cfg.keys())} model=unresolved")
         backend_url = args.backend_url or cfg["inference"].get("base_url")
         print(f"inference engine={cfg['inference'].get('engine')} base_url={backend_url}")
+        if not backend_url:
+            print("spo_check_backend_missing: no inference base_url configured", file=sys.stderr)
+            return 2
+        # Read-only preflight: GET /health only, never submit/drain/load.
+        # A stopped SGLang server must fail this preflight instead of
+        # printing a config-only OK.
+        try:
+            from .rollout.backend import SGLangBackend, VLLMBackend
+            engine_name = str(cfg["inference"].get("engine", "sglang"))
+            probe = SGLangBackend(backend_url, timeout=5.0) \
+                if engine_name == "sglang" else VLLMBackend(backend_url, timeout=5.0)
+            health = probe.health()
+            print(f"inference_reachable=true health={health!r:.200}")
+        except Exception as error:
+            print(f"spo_check_backend_unreachable: {type(error).__name__}: {error}",
+                  file=sys.stderr)
+            return 2
         return 0
     for name in ("data_root",):
         if getattr(args, name) is None:
