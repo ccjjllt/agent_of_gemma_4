@@ -45,11 +45,13 @@ class RolloutAssignment:
     attempt_id: str
     selected_at_unix: float
     provenance: Mapping[str, Any] = field(default_factory=dict)
-    frozen_V: float = 0.5
-    frozen_success_p: float = 0.5
-    frozen_effective_count: float = 1.0
-    frozen_kl_cursor: int = 0
-    dispatch_policy_version: int = 0
+    # Dispatch-frozen SPO baseline. None means no snapshot was pinned: the
+    # assignment must never dispatch (fail closed, never default to 0.5).
+    frozen_V: float | None = None
+    frozen_success_p: float | None = None
+    frozen_effective_count: float | None = None
+    frozen_kl_cursor: int | None = None
+    dispatch_policy_version: int | None = None
 
 
 @dataclass
@@ -217,8 +219,15 @@ class RolloutScheduler:
             try:
                 frozen = self.sampler.value_tracker.freeze_dispatch(
                     selected.task, adapter.version)
-            except (ValueError, TypeError):
-                frozen = None
+            except (ValueError, TypeError, RuntimeError, OSError) as exc:
+                # Fail closed: without a dispatch-time value snapshot there
+                # is no valid SPO baseline. Never substitute a default 0.5.
+                # Return the task to its queue front so the failure is
+                # retried, not silently dropped with the assignment.
+                self._queues[selected.queue].appendleft(_QueuedTask(
+                    selected.task, selected.queue, selected.sequence, now,
+                ))
+                raise
             self._stream_sequence += 1
             trajectory_id = f"traj-{self._stream_sequence:012d}-{uuid.uuid4().hex[:12]}"
             assignment = RolloutAssignment(
@@ -235,18 +244,16 @@ class RolloutScheduler:
                     "queue_wait_seconds": max(0.0, now - selected.queued_at),
                     "recent_task_exposure": self._recent_tasks.get(selected.task.task_id, 0),
                     "recent_repo_exposure": self._recent_repos.get(selected.task.repo, 0),
-                    **({"frozen_V": frozen.V, "frozen_kl_cursor": frozen.kl_cursor,
-                        "frozen_effective_count": frozen.effective_count,
-                        "frozen_success_p": frozen.success_p,
-                        "dispatch_policy_version": frozen.policy_version}
-                       if frozen is not None else {}),
-                },
-                **({"frozen_V": frozen.V, "frozen_success_p": frozen.success_p,
-                    "frozen_effective_count": frozen.effective_count,
+                    "frozen_V": frozen.V,
                     "frozen_kl_cursor": frozen.kl_cursor,
-                    "dispatch_policy_version": frozen.policy_version}
-                   if frozen is not None else {
-                       "dispatch_policy_version": adapter.version}),
+                    "frozen_effective_count": frozen.effective_count,
+                    "frozen_success_p": frozen.success_p,
+                    "dispatch_policy_version": frozen.policy_version,
+                },
+                frozen_V=frozen.V, frozen_success_p=frozen.success_p,
+                frozen_effective_count=frozen.effective_count,
+                frozen_kl_cursor=frozen.kl_cursor,
+                dispatch_policy_version=frozen.policy_version,
             )
             # Dispatch markers are fail-closed: an unmarked assignment would be
             # invisible to stream-ordered value application, so a marker

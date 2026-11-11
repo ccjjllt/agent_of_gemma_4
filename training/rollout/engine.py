@@ -289,13 +289,24 @@ class RolloutEngine:
 
         # observe persists A=R-V_dispatch before any new value is visible to
         # the buffer.  The baseline was frozen at dispatch; policy updates
-        # during execution cannot move this trajectory's advantage.
+        # during execution cannot move this trajectory's advantage. A missing
+        # frozen baseline is a hard failure: fabricating V=0.5 would silently
+        # corrupt the SPO advantage.
+        frozen_v = getattr(assignment, "frozen_V", None)
+        frozen_p = getattr(assignment, "frozen_success_p", None)
+        frozen_n = getattr(assignment, "frozen_effective_count", None)
+        frozen_cursor = getattr(assignment, "frozen_kl_cursor", None)
+        if (frozen_v is None or frozen_p is None or frozen_n is None
+                or frozen_cursor is None):
+            raise ValueError(
+                "assignment carries no dispatch-frozen SPO baseline; refusing "
+                "to train on a fabricated default")
         baseline = FrozenBaseline(
             task_key=trajectory.task_key,
-            V=float(getattr(assignment, "frozen_V", 0.5)),
-            success_p=float(getattr(assignment, "frozen_success_p", 0.5)),
-            effective_count=float(getattr(assignment, "frozen_effective_count", 1.0)),
-            kl_cursor=int(getattr(assignment, "frozen_kl_cursor", 0)),
+            V=float(frozen_v),
+            success_p=float(frozen_p),
+            effective_count=float(frozen_n),
+            kl_cursor=int(frozen_cursor),
             policy_version=trajectory.behavior_adapter.version,
         )
         observation = self.value_tracker.observe(trajectory, reward, baseline=baseline)

@@ -116,6 +116,61 @@ def validate_model_dir(model_path: Path, policy: dict) -> dict:
     }
 
 
+def _verify_resume_consistency(run_dir: Path, ledger: Any) -> dict[str, Any]:
+    """Fail closed when a --resume run cannot continue the previous run.
+
+    Checks the serving registry, the trainer checkpoint and the ledger
+    against each other before any GPU work:
+    - serving v>0 requires a trainer checkpoint (else LoRA restarts under a
+      trained policy);
+    - checkpoint completed-steps must equal CONSUMED updates, or exceed them
+      by exactly one when an update is still pending;
+    - serving version must equal the genesis base plus CONSUMED updates.
+    Returns the verified resume summary.
+    """
+    import torch as _torch  # noqa: F401 (resume requires torch regardless)
+    from .adapter.manager import AdapterManager
+    adapters = AdapterManager(run_dir / "adapters")
+    active = adapters.active
+    state_path = run_dir / "spo_trainer_state.pt"
+    if active is not None and active.version > 0 and not state_path.is_file():
+        raise RuntimeError(
+            f"serving adapter is v{active.version} but no trainer checkpoint "
+            "exists; resuming would restart LoRA from zero under a trained policy")
+    completed = 0
+    if state_path.is_file():
+        try:
+            state = _torch.load(state_path, map_location="cpu", weights_only=False)
+        except Exception as exc:
+            raise RuntimeError(f"trainer checkpoint is unreadable: {exc}") from exc
+        if not isinstance(state, Mapping) or state.get("algorithm") != "single_stream_spo":
+            raise RuntimeError("trainer checkpoint is not a single_stream_spo state")
+        completed = state.get("completed_optimizer_steps", 0)
+        if type(completed) is not int or completed < 0:
+            raise RuntimeError("trainer checkpoint has an invalid optimizer-step count")
+        if active is None and completed > 0:
+            raise RuntimeError(
+                "trainer checkpoint claims completed steps but no adapter is serving")
+        if active is not None and active.version == 0 and completed > 0:
+            raise RuntimeError(
+                "trainer checkpoint claims completed steps but serving is still genesis")
+    consumed = len(ledger.list_updates(("CONSUMED",)))
+    pending = len(ledger.list_updates(
+        ("RESERVED", "LEARNING", "OPTIMIZED", "EXPORTED", "REGISTERED", "ACTIVATED")))
+    if active is None and consumed > 0:
+        raise RuntimeError("ledger has consumed updates but no adapter is serving")
+    if active is not None and consumed > 0 and active.version != consumed:
+        raise RuntimeError(
+            f"serving adapter v{active.version} disagrees with {consumed} consumed updates")
+    if completed < consumed or completed > consumed + (1 if pending else 0):
+        raise RuntimeError(
+            f"trainer checkpoint ({completed} steps) disagrees with ledger "
+            f"({consumed} consumed, {pending} pending)")
+    return {"serving_version": active.version if active is not None else None,
+            "completed_optimizer_steps": completed, "consumed_updates": consumed,
+            "pending_updates": pending}
+
+
 def build_task_keys(tasks_path: Path, fingerprint: str,
                     include: list[str], exclude: list[str]) -> list[object]:
     """Judge TaskKeys for catalog binding; heldout rows are never read."""
@@ -237,6 +292,14 @@ def run_spo(args: argparse.Namespace) -> int:
         "allowance_seconds": walltime, "consumed_seconds": 0.0}
     allowance = saved_budget["allowance_seconds"] + float(args.additional_walltime_seconds or 0)
     consumed = saved_budget["consumed_seconds"]
+    # P0-2a: a reused run_dir without --resume would silently serve an old
+    # adapter while training a fresh LoRA. Fail closed before touching GPUs.
+    _RUN_STATE_FILES = ("adapters/registry.json", "spo_stream.db",
+                        "spo_trainer_state.pt", "budget.json")
+    if not args.resume and any((run_dir / name).exists() for name in _RUN_STATE_FILES):
+        raise RuntimeError(
+            "run_dir already holds training state; start fresh in an empty "
+            "directory or continue explicitly with --resume")
     identity = validate_model_dir(model_path, cfg["policy"])
     with open(run_dir / "model_identity.json", "w", encoding="utf-8") as handle:
         json.dump(identity, handle, ensure_ascii=False, indent=2, sort_keys=True)
@@ -306,6 +369,9 @@ def run_spo(args: argparse.Namespace) -> int:
     handshake = {**handshake, "deployment_probe": deployment}
     lease = GpuLease(backend)
     adapters = AdapterManager(run_dir / "adapters")
+    if args.resume:
+        resume_summary = _verify_resume_consistency(run_dir, ledger)
+        _emit(metrics_path, "spo_resume_verified", **resume_summary)
 
     policy_cfg = dict(cfg["policy"])
     policy_cfg["model_path"] = str(model_path)
@@ -443,8 +509,17 @@ def run_spo(args: argparse.Namespace) -> int:
                     # run continues without waiting for a restart.
                     try:
                         action = tracker.recover_trajectory(trajectory_id)
-                        if action not in ("unknown", "no_reward_other_state",
-                                          "already_staged"):
+                        if action == "unknown":
+                            # Sealed before crash would have returned a real
+                            # action; unknown means no trajectory row exists,
+                            # so drop the marker instead of blocking the task
+                            # until it ages out.
+                            try:
+                                tracker.unmark_dispatch(trajectory_id)
+                            except (ValueError, TypeError, RuntimeError, OSError):
+                                pass
+                        elif action not in ("no_reward_other_state",
+                                            "already_staged"):
                             _emit(metrics_path, "trajectory_recovered",
                                   trajectory_id=trajectory_id, action=action)
                     except (ValueError, TypeError, RuntimeError, OSError):

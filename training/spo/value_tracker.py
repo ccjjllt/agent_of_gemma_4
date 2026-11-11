@@ -401,12 +401,15 @@ class ValueTracker:
             provenance = trajectory.provenance
             if not isinstance(provenance, dict):
                 return None
+            # All-or-nothing: a partial frozen snapshot is not a baseline.
+            # Missing keys (rows sealed before strict dispatch) fall back to
+            # the explicitly unordered legacy observation path.
             return FrozenBaseline(
                 task_key=trajectory.task_key,
                 V=float(provenance["frozen_V"]),
-                success_p=float(provenance.get("frozen_success_p", 0.5)),
-                effective_count=float(provenance.get("frozen_effective_count", 1.0)),
-                kl_cursor=int(provenance.get("frozen_kl_cursor", 0)),
+                success_p=float(provenance["frozen_success_p"]),
+                effective_count=float(provenance["frozen_effective_count"]),
+                kl_cursor=int(provenance["frozen_kl_cursor"]),
                 policy_version=trajectory.behavior_adapter.version,
             )
         except (KeyError, TypeError, ValueError):
