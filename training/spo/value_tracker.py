@@ -298,9 +298,51 @@ class ValueTracker:
         return True
 
     def _apply_pending_row(self, conn: Any, row: Any, *, late: bool = False) -> None:
-        """Fold one staged observation into shared V/success_p exactly once."""
+        """Fold one staged observation into shared V/success_p exactly once.
+
+        A late row (dispatched before the current sequence floor but applied
+        after it) keeps its frozen reward/snapshot/advantage for training,
+        but must not move shared state: no V/success_p/effective update, no
+        KL refold, and no last_observation_sequence rollback. It is recorded
+        as an explicitly late observation instead.
+        """
         trajectory = self.ledger._get_trajectory(conn, row["trajectory_id"])
         reward = RewardRecord.from_dict(json.loads(row["reward_payload"]))
+        if late:
+            v_pre = float(row["dispatch_v"]) if row["dispatch_v"] is not None else None
+            if v_pre is None:
+                raise ValueError("late observations require a dispatch-frozen baseline")
+            raw_advantage = float(reward.total_reward) - v_pre
+            current = self._ensure(conn, trajectory.task_key)
+            conn.execute(
+                "INSERT INTO value_observations(trajectory_id,stream_sequence,task_key,reward,"
+                "resolved,V_pre,raw_advantage,V_after,success_p_after,effective_count_after,"
+                "eta,policy_version,kl_cursor_after,forgetting_factor,forgotten_kl,created_at,"
+                "dispatch_v,dispatch_kl_cursor) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (trajectory.trajectory_id, trajectory.stream_sequence,
+                 task_key_id(trajectory.task_key), float(reward.total_reward),
+                 int(reward.resolved), v_pre, raw_advantage, current.V,
+                 current.success_p, current.effective_count, 0.0,
+                 trajectory.behavior_adapter.version, current.kl_cursor,
+                 1.0, 0.0, time.time(),
+                 row["dispatch_v"], row["dispatch_kl_cursor"]),
+            )
+            self.ledger._put_trajectory(conn, replace(
+                trajectory, raw_advantage=raw_advantage,
+                status="REWARDED" if trajectory.status == "VERIFYING" else trajectory.status,
+            ))
+            conn.execute("DELETE FROM value_pending WHERE trajectory_id=?",
+                         (trajectory.trajectory_id,))
+            conn.execute("DELETE FROM dispatch_markers WHERE trajectory_id=?",
+                         (trajectory.trajectory_id,))
+            self.ledger._event(conn, "value_observed_late", trajectory.trajectory_id, {
+                "R": reward.total_reward, "V_pre": v_pre, "A": raw_advantage,
+                "reason": "dispatched before the applied sequence floor",
+                "dispatch_V": row["dispatch_v"],
+                "dispatch_kl_cursor": row["dispatch_kl_cursor"],
+            })
+            return
         record, rho, divergence = self._forget(
             conn, self._ensure(conn, trajectory.task_key)
         )

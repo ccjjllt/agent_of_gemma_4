@@ -125,7 +125,11 @@ def _verify_resume_consistency(run_dir: Path, ledger: Any) -> dict[str, Any]:
       trained policy);
     - checkpoint completed-steps must equal CONSUMED updates, or exceed them
       by exactly one when an update is still pending;
-    - serving version must equal the genesis base plus CONSUMED updates.
+    - serving version equals CONSUMED updates, except one ACTIVATED pending
+      update which legitimately serves consumed+1. That case must prove the
+      serving adapter is the pending update's own product: registered
+      manifest version/parent/SHA, matching checkpoint update id, and exactly
+      one optimizer step ahead.
     Returns the verified resume summary.
     """
     import torch as _torch  # noqa: F401 (resume requires torch regardless)
@@ -138,6 +142,7 @@ def _verify_resume_consistency(run_dir: Path, ledger: Any) -> dict[str, Any]:
             f"serving adapter is v{active.version} but no trainer checkpoint "
             "exists; resuming would restart LoRA from zero under a trained policy")
     completed = 0
+    state: Any = None
     if state_path.is_file():
         try:
             state = _torch.load(state_path, map_location="cpu", weights_only=False)
@@ -155,20 +160,58 @@ def _verify_resume_consistency(run_dir: Path, ledger: Any) -> dict[str, Any]:
             raise RuntimeError(
                 "trainer checkpoint claims completed steps but serving is still genesis")
     consumed = len(ledger.list_updates(("CONSUMED",)))
-    pending = len(ledger.list_updates(
-        ("RESERVED", "LEARNING", "OPTIMIZED", "EXPORTED", "REGISTERED", "ACTIVATED")))
-    if active is None and consumed > 0:
-        raise RuntimeError("ledger has consumed updates but no adapter is serving")
-    if active is not None and consumed > 0 and active.version != consumed:
+    pending = ledger.list_updates(
+        ("RESERVED", "LEARNING", "OPTIMIZED", "EXPORTED", "REGISTERED", "ACTIVATED"))
+    activated = [batch for batch in pending if batch.phase == "ACTIVATED"]
+    if active is None:
+        if consumed > 0 or pending:
+            raise RuntimeError(
+                "ledger has consumed/pending updates but no adapter is serving")
+    elif len(activated) > 1:
+        raise RuntimeError(
+            f"{len(activated)} ACTIVATED updates are pending; at most one serving "
+            "advance may be uncommitted")
+    elif len(activated) == 1:
+        batch = activated[0]
+        expected_version = consumed + 1
+        if active.version != expected_version:
+            raise RuntimeError(
+                f"serving adapter v{active.version} is not the product of pending "
+                f"{batch.update_id} (expected v{expected_version})")
+        try:
+            registered = adapters.get(active.version)
+        except (KeyError, ValueError) as exc:
+            raise RuntimeError(f"serving adapter v{active.version} is not registered") from exc
+        if registered.adapter_sha256 != active.adapter_sha256:
+            raise RuntimeError("serving registry entry does not match the active adapter")
+        if registered.parent_version != batch.policy_before.version:
+            raise RuntimeError(
+                f"serving v{active.version} is not the child of update "
+                f"{batch.update_id}'s base v{batch.policy_before.version}")
+        if state is not None:
+            checkpoint_update = (state.get("active_batch") or {}).get("update_id")
+            if checkpoint_update != batch.update_id:
+                raise RuntimeError(
+                    f"trainer checkpoint belongs to {checkpoint_update}, not pending "
+                    f"{batch.update_id}")
+        if completed != consumed + 1:
+            raise RuntimeError(
+                f"ACTIVATED update {batch.update_id} requires exactly one finished "
+                f"optimizer step, not {completed} completed vs {consumed} consumed")
+    elif consumed > 0 and active.version != consumed:
         raise RuntimeError(
             f"serving adapter v{active.version} disagrees with {consumed} consumed updates")
+    elif consumed == 0 and active.version != 0:
+        raise RuntimeError(
+            f"serving adapter v{active.version} exists with no consumed update")
     if completed < consumed or completed > consumed + (1 if pending else 0):
         raise RuntimeError(
             f"trainer checkpoint ({completed} steps) disagrees with ledger "
-            f"({consumed} consumed, {pending} pending)")
+            f"({consumed} consumed, {len(pending)} pending)")
     return {"serving_version": active.version if active is not None else None,
             "completed_optimizer_steps": completed, "consumed_updates": consumed,
-            "pending_updates": pending}
+            "pending_updates": len(pending),
+            "activated_pending": [batch.update_id for batch in activated]}
 
 
 def build_task_keys(tasks_path: Path, fingerprint: str,
@@ -222,7 +265,7 @@ def run_spo(args: argparse.Namespace) -> int:
     from .rollout.backend import GpuLease, SGLangBackend, VLLMBackend
     from .rollout.engine import RolloutEngine
     from .rollout.request_manager import RequestManager
-    from .rollout.scheduler import BarrierActive, RolloutScheduler
+    from .rollout.scheduler import BarrierActive, NoDispatchableTask, RolloutScheduler
     from .spo.sampler import SPOSampler
     from .spo.session import VersionBarrier, commit_optimized_update
     from .spo.trainer import make_spo_trainer
@@ -292,6 +335,10 @@ def run_spo(args: argparse.Namespace) -> int:
         "allowance_seconds": walltime, "consumed_seconds": 0.0}
     allowance = saved_budget["allowance_seconds"] + float(args.additional_walltime_seconds or 0)
     consumed = saved_budget["consumed_seconds"]
+    # The allowance covers the whole GPU session, including genesis load,
+    # backend handshake and trainer construction: the clock starts here, not
+    # at the first rollout.
+    start = time.monotonic()
     # P0-2a: a reused run_dir without --resume would silently serve an old
     # adapter while training a fresh LoRA. Fail closed before touching GPUs.
     _RUN_STATE_FILES = ("adapters/registry.json", "spo_stream.db",
@@ -476,10 +523,12 @@ def run_spo(args: argparse.Namespace) -> int:
         # lease (the learner must be resident to restore into). Never restore
         # here: the model is deliberately unloaded at startup.
 
-        start = time.monotonic()
         remaining = max(0.0, allowance - consumed)
         deadline = start + remaining
         stop_submit = start + max(0.0, remaining - reserve)
+        _emit(metrics_path, "spo_budget_window",
+              allowance_seconds=allowance, consumed_seconds=consumed,
+              init_seconds=round(time.monotonic() - start, 3))
         persist_budget(consumed)
         batches = 0
         in_flight: dict[str, tuple[object, object]] = {}
@@ -844,6 +893,12 @@ def run_spo(args: argparse.Namespace) -> int:
                     assignment = scheduler.next_assignment()
                 except BarrierActive:
                     time.sleep(1.0)
+                    break
+                except NoDispatchableTask as idle:
+                    # Normal wait (e.g. the only queued tasks are long and the
+                    # long slot is occupied): back off, keep the run alive.
+                    _emit(metrics_path, "scheduler_waiting", reason=str(idle))
+                    time.sleep(min(5.0, max(0.5, stop_submit - time.monotonic())))
                     break
                 except (ValueError, RuntimeError) as error:
                     _emit(metrics_path, "scheduler_empty", error=str(error))

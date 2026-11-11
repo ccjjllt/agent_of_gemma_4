@@ -1,8 +1,8 @@
-"""Unsloth policy and full-prefix scoring for official-task GRPO.
+"""Unsloth policy and full-prefix scoring for official-task SPO.
 
 CUDA libraries are imported only when Policy is constructed. Generation uses
-HF/Unsloth generate; training losses and optimizer steps belong to the TRL
-adapter in grpo_trainer.py. Every model call retains its actual full prefix.
+HF/Unsloth generate; SPO losses and optimizer steps belong to spo/trainer.py.
+Every model call retains its actual full prefix.
 """
 
 from __future__ import annotations
@@ -797,7 +797,7 @@ class Policy:
             "declared_model_source": self.config["model_name"],
             "declared_model_revision": self.config.get("model_revision"),
             "declared_model_source_uri": self.config.get("model_source_uri"),
-            "algorithm": "trl_grpo_with_official_multiturn_rollouts",
+            "algorithm": "single_stream_spo",
             "targets": self.targets,
             "max_context": self.max_context,
             "sampler": "temperature=1, top_p=1, top_k=0; no separate thinking cap",

@@ -37,11 +37,11 @@ def lr_multiplier(completed_steps, total_steps, warmup_steps):
     return (total - k) / max(1, total - warmup)
 
 
-def resolve_schedule(grpo, *, total_steps, learning_rate):
-    """Resolve an effective JSON-safe schedule shared by comparison arms."""
-    if grpo.get("lr_schedule_version", SCHEDULE_VERSION) != SCHEDULE_VERSION:
+def resolve_schedule(cfg, *, total_steps, learning_rate):
+    """Resolve an effective JSON-safe schedule for the single SPO route."""
+    if cfg.get("lr_schedule_version", SCHEDULE_VERSION) != SCHEDULE_VERSION:
         raise ValueError("Unsupported LR schedule version")
-    if grpo.get("lr_scheduler_type", "linear") != "linear":
+    if cfg.get("lr_scheduler_type", "linear") != "linear":
         raise ValueError("positive_warmup_linear_v1 supports only the linear schedule")
     total = _integer(total_steps, "total_steps", minimum=1)
     if isinstance(learning_rate, bool):
@@ -49,10 +49,10 @@ def resolve_schedule(grpo, *, total_steps, learning_rate):
     base_lr = float(learning_rate)
     if not math.isfinite(base_lr) or base_lr < 0:
         raise ValueError("learning_rate must be a finite nonnegative number")
-    if "warmup_steps" in grpo:
-        warmup = _integer(grpo["warmup_steps"], "warmup_steps")
+    if "warmup_steps" in cfg:
+        warmup = _integer(cfg["warmup_steps"], "warmup_steps")
     else:
-        ratio = grpo.get("warmup_ratio", 0.0)
+        ratio = cfg.get("warmup_ratio", 0.0)
         if isinstance(ratio, bool) or not math.isfinite(float(ratio)) or float(ratio) < 0:
             raise ValueError("warmup_ratio must be finite and nonnegative")
         warmup = math.ceil(total * float(ratio))

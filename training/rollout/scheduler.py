@@ -72,6 +72,14 @@ class BarrierActive(RuntimeError):
     """Raised when dispatch is held for a policy version barrier."""
 
 
+class NoDispatchableTask(IndexError):
+    """No queued task can dispatch right now (e.g. long-worker cap reached).
+
+    This is a normal scheduling wait, not a failure: the caller should back
+    off and retry rather than treat it as a run-ending error.
+    """
+
+
 class RolloutScheduler:
     """Select one independent task and maintain short/long aging queues.
 
@@ -200,7 +208,7 @@ class RolloutScheduler:
                 priority = age + uncovered
                 candidates.append((priority, -item.queued_at, -item.sequence, item))
         if not candidates:
-            raise IndexError("no dispatchable queued task (long-worker cap may be reached)")
+            raise NoDispatchableTask("no dispatchable queued task (long-worker cap may be reached)")
         selected = max(candidates, key=lambda row: row[:3])[3]
         self._queues[selected.queue].remove(selected)
         return selected

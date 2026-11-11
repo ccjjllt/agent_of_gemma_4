@@ -574,7 +574,7 @@ def _stop_replay(child):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, default=PROJECT / "configs/a800_2x80.toml")
+    parser.add_argument("--config", type=Path, default=PROJECT / "configs/spo_a800_2x80.toml")
     parser.add_argument("--model-path", type=Path, required=True)
     parser.add_argument("--calls", type=Path, action="append", required=True)
     parser.add_argument("--max-calls", type=int, default=4)
