@@ -151,16 +151,50 @@ import training.run_spo, training.rollout.backend,
 
 `--check-only` 对 mock 返回 `rc=0`，输出 `engine=vllm`、`deployment_reachable=true`、`metrics_available=true`，并验证了 `max_lora_rank=128`、`max_loras=2`、`sleep_enabled=true`。
 
-## 6. 仍需 A800 实测
+## 6. A800 首次实测（2026-11-13，2×A800 80GB）
 
-1. 31B BF16 在 vLLM TP=2 下加载，A800 80GB 显存峰值。
-2. 真实 Unsloth Rank 128 adapter 的 `load_lora_adapter` 是否 200 且 `/v1/models` 注册；逐 token logprob 与 Transformers+peft 对照。
+启动（`--enable-lora --max-loras 2 --max-cpu-loras 2 --max-lora-rank 128 --enable-sleep-mode --enable-prefix-caching`，TP=2）：
+
+```text
+Resolved architecture: Gemma4ForConditionalGeneration
+权重从 /autodl-fs（FUSE.AutoFS）加载：Model loading 235s；每卡 32.78 GiB
+GPU KV cache size: 148,633 tokens（32K 请求 4.54× 并发）
+health 200 后每卡 74.9 GiB 常驻
+```
+
+实测中修掉的问题：
+
+1. **`ninja` 不在 PATH**：torch.compile 子进程需要 `ninja`，只给绝对路径的 `vllm` 启动会 `FileNotFoundError: ninja`，engine 初始化失败。启动脚本必须把推理环境的 `bin` 放进 PATH。
+2. **sleep level 2 实测**：每卡 74,901 → 3,151 MiB（释放 143.5 GB，95.9%），wake 后回到 74,899 MiB；`reload_weights` 后 logprob 与 sleep 前逐位一致（max|diff|=0.0）。
+3. **prefix caching 是 agent loop 的必需项**：关闭时每轮重算 32K 前缀，单次调用约 25s，8 分钟会话预算只够约 20 次调用，全部轨迹超时被排除。开启后实测 `Prefix cache hit rate: 88.7%`、`Running: 7–8 reqs`、生成 131–172 tok/s（关闭时 1 reqs、20–51 tok/s）。`cache_salt` 字段被 vLLM 0.32 接受（HTTP 200）。
+
+真实 rollout 链路修复的四个缺陷（此前没有任何一条官方轨迹能完成）：
+
+| 缺陷 | 症状 | 修复 |
+| --- | --- | --- |
+| `PYTHONSAFEPATH=1` + 脚本方式启动 `official_runtime.py` | `ModuleNotFoundError: recovery`（还有 `model_transport`、`session_clock`） | 模块加载时把脚本目录加回 `sys.path` |
+| empty-patch probe 不传 `--endpoint` | 基线永远 `baseline_infrastructure_error` | probe 传合法占位 endpoint（不调模型） |
+| attempt 命名空间与 trajectory 绑定不一致 | `KeyError: 'trajectory has no pinned adapter'` | serving 层把 `<traj>-aNNNNNN` 还原为父 trajectory |
+| `build_node_report` 只用空的 `FAIL_TO_PASS` | `expected_universes` 为空，奖励永远 ineligible | 与 `junit_reward_features` 一致，使用 test_patch fallback |
+
+另有一个运维教训：vLLM 对已注册 LoRA 是**懒加载**，删除 adapter 目录而不先 unload 会让下一个请求把 engine 打挂（`LoRAAdapterNotFoundError` → `EngineDeadError`）。
+
+首条有效的官方轨迹（`fastapi` 类任务，agent 未修复，但验收有效）：
+
+```text
+status=BUFFERED   action_tokens=6996
+P=0.0  G=0.0  total_reward=0.15  resolved=False  eligible=True
+```
+
+## 7. 仍需 A800 实测
+
+1. 一次完整 SPO 优化步：forward/backward/optimizer/checkpoint 秒数、训练态显存峰值。
+2. 真实 Unsloth Rank 128 adapter 的逐 token logprob 与 Transformers+peft 对照（当前只有 sleep/wake 前后自一致）。
 3. `attention_k_eq_v` 层（当前 adapter 不覆盖 k_proj）在 vLLM 0.32.0 下是否与 HF 一致；若未来覆盖 k_proj，必须换 #61267 后的版本。
-4. Level-2 sleep 后 `reload_weights` 的 31B 重载秒数、NVMe 读带宽、显存释放量；`wake_up` 后是否可立即生成。
-5. `pause?mode=wait` 在长轨迹（最长 16K completion）下的排水时间，是否超过 `control_timeout_seconds=600`；单个 completion 是否能在 `generation_timeout_seconds=1800` 内完成。
-6. 两个 adapter 注册/切换时 `/v1/models`、`model` 参数和 prefix cache salt 的行为。
-7. 训练租约期间 vLLM 是否真正释放 GPU 权重，learner 是否能拿到足够显存。
-8. CT runtime 加载非零 adapter 的端到端结果。
+4. `pause?mode=wait` 在长轨迹下的排水时间，是否超过 `control_timeout_seconds=600`。
+5. 两个 adapter 注册/切换时 `/v1/models`、`model` 参数和 prefix cache salt 的行为。
+6. CT runtime 加载非零 adapter 的端到端结果。
+
 
 以上任何一项未通过，不能宣称 vLLM 迁移完成或 SPO 可启动。
 
