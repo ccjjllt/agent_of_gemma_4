@@ -27,10 +27,18 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import math
+import re
 import threading
 import time
 from pathlib import Path
 from typing import Any, Mapping
+
+
+# The execution manager registers one request namespace per attempt
+# (``<trajectory_id>-aNNNNNN``) and issues that namespace its own bearer token,
+# while DoubleBuffer pins exactly one adapter per trajectory.  Serving resolves
+# the adapter, so it must translate the attempt namespace back to its parent.
+_ATTEMPT_NAMESPACE = re.compile(r"^(?P<trajectory>.+)-a\d{6}$")
 
 
 class _NoClientPrefixes:
@@ -123,8 +131,12 @@ class RemoteServingEngine:
             "seed": int(self.config.get("seed", -1)),
         }
         try:
+            trajectory_id = rollout_id
+            match = _ATTEMPT_NAMESPACE.match(rollout_id)
+            if match is not None:
+                trajectory_id = match.group("trajectory")
             response = self.buffers.submit(
-                rollout_id, prompt_ids,
+                trajectory_id, prompt_ids,
                 request_id=request_id, sampling=sampling,
                 timeout=self.generation_timeout)
         except (ValueError, KeyError, TypeError) as error:

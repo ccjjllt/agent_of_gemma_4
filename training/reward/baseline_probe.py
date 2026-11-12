@@ -114,6 +114,10 @@ class EmptyPatchProbeRunner:
                 self.evaluation_overrides, sort_keys=True, separators=(",", ":"), allow_nan=False),
             "--rollout-id", rollout_id,
             "--auth-token-file", str(credential_path),
+            # The probe never calls a model; the runtime still requires a
+            # syntactically valid, credential-free API base, so pass a
+            # deliberately unreachable placeholder instead of omitting it.
+            "--endpoint", "http://127.0.0.1:9/v1",
             "--empty-patch-probe",
         ]
         self._event("baseline_probe_started", task_id=key.task_id, attempt=seq)

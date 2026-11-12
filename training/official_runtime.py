@@ -33,6 +33,17 @@ from typing import Any, Mapping
 from urllib.parse import urlsplit
 
 
+# The training worker launches this file as a script with PYTHONSAFEPATH=1
+# (see training/environment/worker.py), which keeps the script directory off
+# sys.path.  The ``__package__``-less import fallbacks below (recovery,
+# model_transport, session_clock) would then fail with ModuleNotFoundError
+# before the first model call, so restore the trusted project directory once.
+if not __package__:
+    _SCRIPT_DIR = str(Path(__file__).resolve().parent)
+    if _SCRIPT_DIR not in sys.path:
+        sys.path.insert(0, _SCRIPT_DIR)
+
+
 COMPETITION = "gemma-4-developer-agent"
 MODEL_ALIAS = "gemma-4-31b-it-qat-w4a16-ct"
 OFFICIAL_STARTER_SHA256 = "8e7d84a326acae509fb596163ba085831961b588b86d51af31e037c5319b917c"
