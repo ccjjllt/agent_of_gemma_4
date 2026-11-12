@@ -26,23 +26,37 @@ max_cpu_workers = 8
 max_worker_retries = 1
 
 [inference]
-engine = "sglang"
+engine = "vllm"
 base_url = "http://127.0.0.1:8000"
-# Maximum concurrent whole-completion requests the endpoint serves through
-# SGLang; the server batches natively, so this is an in-flight cap, not a
-# decode batch size.
+# The server must be launched with --served-model-name equal to this value.
+served_model_name = "google/gemma-4-31B-it-qat-q4_0-unquantized"
+# Maximum concurrent whole-completion requests; vLLM batches natively, so
+# this is an in-flight cap, not a decode batch size.
 max_inflight = 16
-# Deployment contract (server side): the engine must serve policy.model_path
-# with tensor_parallel_size 2 and expose exactly the endpoints in
-# training/rollout/backend.py HTTPInferenceBackend.paths
-# (SGLang: /pause_generation + /continue_generation). run_spo verifies the
-# deployment with a start()/health handshake before any rollout; the SGLang
-# server's own launch command and version pin live with the deployment.
+# Whole-completion HTTP wait; 16K-token rollouts take far longer than the
+# 30-second health/control default. This is a client timeout, not a token cap.
+generation_timeout_seconds = 1800
+# Deployment contract (server side): vLLM OpenAI server serving
+# policy.model_path with tensor_parallel_size 2, dynamic LoRA enabled
+# (VLLM_ALLOW_RUNTIME_LORA_UPDATING=True), at least two LoRA slots with
+# --max-lora-rank 128, and Level-2 sleep enabled
+# (VLLM_SERVER_DEV_MODE=1 --enable-sleep-mode).
+# run_spo verifies /server_info, /v1/models and the sleep endpoints before any
+# rollout. The server launch command lives in training/README.md.
 tensor_parallel_size = 2
 colocated = true
-enable_prefix_cache = true
+# Prefix caching is intentionally off for the first migration. If enabled
+# later, the backend sends cache_salt=adapter_sha256, but cross-adapter
+# isolation has not been measured on A800 yet.
+enable_prefix_cache = false
 return_token_ids = true
 return_logprobs = true
+require_runtime_lora = true
+require_sleep_mode = true
+sleep_level = 2
+max_loras = 2
+lora_name_prefix = "spo"
+control_timeout_seconds = 600
 
 [spo]
 target_action_tokens = 32768
@@ -108,6 +122,6 @@ max_turns = 50
 temperature = 1.0
 top_p = 1.0
 top_k = 0
-# Native SGLang budget per request (stock default 128 would silently truncate
+# Native vLLM max_tokens per request (stock default 16 would silently truncate
 # rollouts). Matches the harness max_output_tokens generation constraint.
 max_new_tokens = 16384

@@ -2,7 +2,9 @@
 
 状态：实施基线，2026-11-10，分支 `codex/training-plan-refactor`。
 
-本文是代码重构的直接依据。固定路线为 Gemma 4 31B IT QAT BF16、LoRA Rank 128 / Alpha 256 / Dropout 0、Single-stream Policy Optimization、异步 Agent RL、SGLang 优先、Unsloth + Fused AdamW、官方验收差分奖励、SFT + 在线 RL + 教师蒸馏/OPD、2×A800 80GB。不安排 GRPO/GSPO/SAPO 或不同 Rank 的对比实验。
+本文是代码重构的直接依据。固定路线为 Gemma 4 31B IT QAT BF16、LoRA Rank 128 / Alpha 256 / Dropout 0、Single-stream Policy Optimization、异步 Agent RL、vLLM 优先、Unsloth + Fused AdamW、官方验收差分奖励、SFT + 在线 RL + 教师蒸馏/OPD、2×A800 80GB。不安排 GRPO/GSPO/SAPO 或不同 Rank 的对比实验。
+
+2026-11-12 推理后端迁移：活动路径已从 SGLang 切换到独立 vLLM OpenAI 后端；vLLM 使用单独 Python 环境，Level-2 sleep 释放 GPU 权重与 KV。迁移细节、版本约束和本地核对见 `docs/plan/008-vllm-backend-migration.md`。
 
 设计和代码完成不等于已有训练收益。真实更新、吞吐改善、修复率提升和 CT 兼容必须由后续运行证据分别证明。
 
@@ -59,7 +61,7 @@ RolloutScheduler ──► ExecutionManager ──► OfficialEnvironment/Worker
           │                               TrajectoryBuffer
           │                                      │ action-token budget
           ▼                                      ▼
-SGLang/vLLM Backend ◄── GpuLease/AdapterManager ── SPOTrainer
+vLLM Backend ◄── GpuLease/AdapterManager ── SPOTrainer
    TP=2, sleep/wake          versions N/N+1       Unsloth Rank128
 ```
 
@@ -187,7 +189,7 @@ SERVING → QUIESCING_GPU → LEARNING → OPTIMIZED → PUBLISHING → SERVING
 
 1. buffer 达到 `target_action_tokens`，或最老样本接近 lag 上限时，按完整轨迹 FIFO 预留 batch。
 2. `QUIESCING_GPU` 只停止新 GPU prefill/decode；CPU 工具、测试、验收、ACK 和数据库写入继续。
-3. SGLang 完成安全排水并释放 KV/权重占用；learner 获得 lease 后加载/恢复训练状态。
+3. vLLM 完成 `/pause?mode=wait` 排水并 `sleep?level=2` 释放权重/KV 占用；learner 获得 lease 后加载/恢复训练状态。
 4. 更新提交后记录 action-token KL、导出不可变候选 adapter，再释放 learner GPU 占用并恢复推理。
 5. 新轨迹使用已发布新版本；旧轨迹继续使用原版本直至结束。不能安全并存时，推迟发布而不是切换旧轨迹。
 6. `max_policy_lag` 在 batch 预留和每个 optimizer 边界逐 call 校验；超限只记 `stale_excluded`，不记模型失败或零奖励。
@@ -309,22 +311,24 @@ R_train = R_base + λ resolved (E-R_base)
 
 过程结果用于奖励审计、失败分类、SFT/教师轨迹筛选和课程记录，不额外发明未定义的标量权重。任何“模型声称已定位/已测试”但没有执行证据的字段保持 unknown。
 
-## 9. SGLang、双 A800 与 Adapter 双缓冲
+## 9. vLLM、双 A800 与 Adapter 双缓冲
 
 ### 9.1 推理后端
 
 统一 `InferenceBackend`：`start/submit/cancel/drain/pause/resume/release_memory/load_adapter/unload_adapter/health/metrics`。
 
-- 默认 `sglang`，TP=2，启用 continuous batching、radix/prefix cache、分层 KV 和内存预算。
-- 保留 `vllm` 同接口实现；两者都必须返回原始 input/output IDs、实际采样 logprob、finish reason 和 adapter hash。
+- 活动实现为 `training/rollout/vllm_backend.py`，直接使用 vLLM OpenAI 协议，TP=2；SGLang 仅保留历史类，不参与配置分派。
+- `/v1/completions` 以原始 token IDs 为 prompt，返回 `prompt_token_ids`、`token_ids` 和逐 token `token_logprobs`；`add_special_tokens=false`，不接受文本重 tokenization 冒充 TITO。
+- 动态 LoRA 使用 `/v1/load_lora_adapter` 与 `/v1/unload_lora_adapter`；server 名与 adapter SHA256 建立稳定映射，至少两个 LoRA slot，`max_lora_rank=128`。
+- 请求通过 `model=<lora_name>` 绑定 adapter；响应 `model` 必须等于该名称，`/v1/models` 必须列出该名称。
 - 后端不支持 Gemma 4、指定 LoRA 或所需 token/logprob 字段时明确失败，不静默换后端或重算行为概率冒充采样证据。
-- OpenAI 兼容层仅负责官方 ADK 协议，不作为丢失 token 信息的抽象边界。
+- vLLM 0.32.0 早于 PR #61267；当前 adapter 省略 k_eq_v full-attention 层的 `k_proj`，并在加载前审计 target 布局，发现风险目标直接拒绝。
 
 ### 9.2 Colocated GPU 协议
 
-默认采用分时 colocated 模式：推理阶段 learner 状态在 CPU/NVMe；SGLang 占用双卡。更新时 SGLang 停止接纳、排水并 `release_memory_occupation`，确认权重/KV占用释放后 learner 上卡。更新结束释放 learner，再 `resume_memory_occupation` 并加载正确 adapter。
+默认采用分时 colocated 模式：推理阶段 learner 状态在 CPU/NVMe；vLLM 占用双卡。更新时 vLLM 先 `/pause?mode=wait` 排水，再卸载 resident adapter，随后 `/sleep?level=2` 丢弃 GPU 权重和 KV；learner 上卡。更新结束释放 learner，再 `/wake_up?tags=weights`、`/collective_rpc {"method":"reload_weights"}`、`/wake_up?tags=kv_cache`，重新加载 adapter 后 `/resume`。
 
-该协议不承诺双引擎同时常驻。显存记录必须包括基座、两份 adapter、梯度、Adam、KV、prefix tree workspace 和激活；adapter 文件大小不能替代峰值测量。
+Level-2 sleep 不依赖 CPU 权重缓存，但每次 wake 都从磁盘重载基座权重；实际秒数、显存峰值和 NVMe 带宽必须在 A800 pilot 记录。该协议不承诺双引擎同时常驻。显存记录必须包括基座、两份 adapter、梯度、Adam、KV、prefix tree workspace 和激活；adapter 文件大小不能替代峰值测量。
 
 ### 9.3 双缓冲所有权
 
@@ -414,12 +418,17 @@ adapter_export_dtype = "bfloat16"
 max_context = 32768
 
 [inference]
-engine = "sglang"
+engine = "vllm"
 tensor_parallel_size = 2
 colocated = true
-enable_prefix_cache = true
+enable_prefix_cache = false  # 首轮保守；开启时才发送 cache_salt=adapter SHA
 return_token_ids = true
 return_logprobs = true
+require_runtime_lora = true
+require_sleep_mode = true
+sleep_level = 2
+max_loras = 2
+lora_name_prefix = "spo"
 
 [spo]
 target_action_tokens = 32768
@@ -458,7 +467,7 @@ allow_resident_pair = false # 实测显存后才允许改为 true
 3. 拆官方 worker/验收，加入逐节点空补丁基线、差分奖励和过程证据。
 4. 实现 V/P tracker、SPO sampler、token-measure advantage、buffer 和 PPO trainer。
 5. 用异步 orchestrator 替代 collection/session；实现长短队列、完成即入队和 lag 控制。
-6. 接 SGLang/vLLM backend、GPU lease、双 adapter、colocated sleep/wake 和完整恢复。
+6. 接独立 vLLM backend、动态 LoRA、GPU lease、双 adapter、Level-2 sleep/wake 和完整恢复。
 7. 接 Fused AdamW、梯度累积、prefix tree 和 BF16 exporter。
 8. 接 SFT、教师蒸馏、OPD，复用同一轨迹和 adapter 版本链。
 9. 更新 paired evaluation、CT 导出、README 和研究现状；删除不再使用的 GRPO 入口及配置。
@@ -466,7 +475,7 @@ allow_resident_pair = false # 实测显存后才允许改为 true
 
 ## 15. 完成度与真实运行验收
 
-代码完成审计必须逐项证明：独立轨迹、TITO、action mask、差分奖励、V/P 顺序、KL 遗忘、token-measure 归一化、PPO-Clip、lag、Rank 128、Fused AdamW、gradient accumulation/checkpointing、prefix tree、双 adapter、SGLang/vLLM、缓存、恢复、SFT、教师蒸馏、OPD、评估和导出均有实际实现与调用入口。
+代码完成审计必须逐项证明：独立轨迹、TITO、action mask、差分奖励、V/P 顺序、KL 遗忘、token-measure 归一化、PPO-Clip、lag、Rank 128、Fused AdamW、gradient accumulation/checkpointing、prefix tree、双 adapter、vLLM 动态 LoRA、缓存、恢复、SFT、教师蒸馏、OPD、评估和导出均有实际实现与调用入口。
 
 后续真实运行另行取得以下证据，不能用静态核对代替：
 
@@ -474,7 +483,7 @@ allow_resident_pair = false # 实测显存后才允许改为 true
 | --- | --- |
 | 采样效率 | 同口径有效轨迹数/GPU小时及排除原因 |
 | 环境效率 | 仓库/依赖缓存命中、工具和沙箱耗时分解 |
-| 推理效率 | SGLang tokens/s、GPU利用率、batch和cache指标 |
+| 推理效率 | vLLM tokens/s、GPU利用率、batch和cache指标 |
 | SPO正确性 | 具体样本V_pre/R/A/后值、冻结归一化和恢复一致性 |
 | 奖励安全性 | 失败轨迹不随速度增加奖励，缺失证据无有效奖励 |
 | Adapter更新 | Rank 128非零权重diff、实际LR/梯度和独立导出 |
@@ -490,4 +499,8 @@ allow_resident_pair = false # 实测显存后才允许改为 true
 - [SPO++](https://arxiv.org/abs/2608.24870)：action-token-measure 均值/方差归一化及长轨迹权重问题。
 - [GLM-5 技术报告](https://arxiv.org/abs/2602.15763)：异步 Agent RL 系统参考，不作为本项目独立 GPU 池的证据。
 - [verl 文档](https://verl.readthedocs.io/en/latest/) 与 [Miles](https://github.com/radixark/miles)：colocated 推理/训练与异步系统参考。
-- [SGLang issue #22243](https://github.com/sgl-project/sglang/issues/22243)：`release_memory_occupation` / `resume_memory_occupation` 与 KV 恢复边界；实际 Gemma 4/LoRA 支持仍以部署版本核对为准。
+- [vLLM LoRA Adapters](https://docs.vllm.ai/en/stable/features/lora)：动态加载/卸载、`max_lora_rank`、`VLLM_ALLOW_RUNTIME_LORA_UPDATING`。
+- [vLLM Sleep Mode](https://docs.vllm.ai/en/stable/features/sleep_mode)：Level-2 sleep、`wake_up?tags=weights`、`collective_rpc("reload_weights")` 与 KV 恢复顺序。
+- [vLLM OpenAI-Compatible Server](https://docs.vllm.ai/en/stable/serving/online_serving/openai_compatible_server)：`/v1/completions`、token IDs、`return_token_ids`、`cache_salt`。
+- [vLLM PR #61267](https://github.com/vllm-project/vllm/pull/61267)：`attention_k_eq_v` 层 K→V LoRA 打包修复；2026-11-02 合并，晚于 0.32.0。
+- [vLLM PR #39816](https://github.com/vllm-project/vllm/pull/39816)：Gemma4 LoRA alias 激活问题；仍需用真实 Unsloth adapter 做 GPU 端 logprob 对照。

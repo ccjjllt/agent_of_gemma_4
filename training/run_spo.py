@@ -2,11 +2,11 @@
 
 Wiring (one process, colocated 2xA800):
   TaskCatalog -> SPOSampler -> RolloutScheduler -> ExecutionManager
-  (OfficialWorker + SGLang gateway endpoint + RequestManager) -> RolloutEngine
+  (OfficialWorker + vLLM OpenAI gateway + RequestManager) -> RolloutEngine
   -> RewardEngine -> ValueTracker -> TrajectoryBuffer -> ledger.reserve_update
   -> GpuLease.training + SPOTrainer.optimize_batch -> AdapterExporter
   -> AdapterManager/DoubleBuffer publish -> ledger.commit_update
-  -> barrier publish + endpoint version advance (SGLang serving resume).
+  -> barrier publish + endpoint version advance (vLLM serving resume).
 
 Usage (server, authorized session only):
   python -m training.run_spo --config configs/spo_a800_2x80.toml \
@@ -15,9 +15,9 @@ Usage (server, authorized session only):
     --run-dir /root/autodl-tmp/gemma4/runs/spo-next \
     --backend-url http://127.0.0.1:8000
 
-The SGLang server itself is deployed separately; this launcher only speaks the
-HTTP contract in training/rollout/backend.py (health/submit/drain/
-release_memory_occupation/resume_memory_occupation/load_lora_adapter).
+The vLLM OpenAI server itself is deployed separately; this launcher speaks the
+native vLLM contract in training/rollout/vllm_backend.py
+(OpenAI /v1/completions, dynamic LoRA, /pause + /resume, Level-2 sleep/wake).
 Exit codes: 0 finished all batches, 75 budget exhausted / continue with
 --resume, 2 configuration/run failure.
 """
@@ -35,6 +35,9 @@ import time
 import tomllib
 from pathlib import Path
 from typing import Any, Mapping
+
+from .rollout.backend import SGLangBackend
+from .rollout.vllm_backend import VLLMBackend
 
 
 REQUIRED_SECTIONS = ("policy", "run", "inference", "spo", "optimizer", "rewards", "adapter")
@@ -114,6 +117,28 @@ def validate_model_dir(model_path: Path, policy: dict) -> dict:
         "lora": {"rank": policy.get("lora_rank"), "alpha": policy.get("lora_alpha"),
                  "dropout": policy.get("lora_dropout")},
     }
+
+
+def _make_inference_backend(cfg: Mapping[str, Any], backend_url: str):
+    """Construct the configured engine; no silent cross-engine fallback."""
+    inference = cfg["inference"]
+    engine = str(inference.get("engine", "vllm")).lower()
+    if engine == "vllm":
+        served = inference.get("served_model_name") or cfg["policy"].get("model_name")
+        return VLLMBackend(
+            backend_url,
+            expected_base_model=served,
+            max_resident_adapters=int(inference.get("max_loras", 2)),
+            lora_name_prefix=str(inference.get("lora_name_prefix", "spo")),
+            require_sleep_mode=bool(inference.get("require_sleep_mode", True)),
+            require_runtime_lora=bool(inference.get("require_runtime_lora", True)),
+            sleep_level=int(inference.get("sleep_level", 2)),
+            enable_prefix_cache=bool(inference.get("enable_prefix_cache", False)),
+            control_timeout=float(inference.get("control_timeout_seconds", 600)),
+        )
+    if engine == "sglang":
+        return SGLangBackend(backend_url)
+    raise ValueError(f"unsupported inference engine: {engine!r}")
 
 
 def _active_update_id(state: Any) -> Any:
@@ -286,7 +311,7 @@ def run_spo(args: argparse.Namespace) -> int:
     from .policy import Policy
     from .reward.baseline import EmptyPatchBaselineStore
     from .reward.engine import RewardEngine
-    from .rollout.backend import GpuLease, SGLangBackend, VLLMBackend
+    from .rollout.backend import GpuLease
     from .rollout.engine import RolloutEngine
     from .rollout.request_manager import RequestManager
     from .rollout.scheduler import BarrierActive, NoDispatchableTask, RolloutScheduler
@@ -421,11 +446,10 @@ def run_spo(args: argparse.Namespace) -> int:
         advantage_epsilon=float(cfg["spo"].get("advantage_epsilon", 1.0e-6)))
     rollout_engine = RolloutEngine(requests, reward_engine, ledger, tracker, trajectory_buffer)
 
-    engine_name = str(cfg["inference"].get("engine", "sglang"))
     backend_url = args.backend_url or cfg["inference"].get("base_url")
     if not backend_url:
         raise ValueError("inference backend URL is required (--backend-url)")
-    backend = SGLangBackend(backend_url) if engine_name == "sglang" else VLLMBackend(backend_url)
+    backend = _make_inference_backend(cfg, backend_url)
     try:
         handshake = backend.start()
     except (ValueError, RuntimeError, OSError) as error:
@@ -440,13 +464,18 @@ def run_spo(args: argparse.Namespace) -> int:
     handshake = {**handshake, "deployment_probe": deployment}
     lease = GpuLease(backend)
     adapters = AdapterManager(run_dir / "adapters")
+    if isinstance(backend, VLLMBackend):
+        # The runtime validator checks the PEFT target layout against the
+        # actual Gemma 4 config before vLLM is allowed to load the adapter.
+        backend.adapter_validator = lambda manifest, directory: adapters.audit_lora_compatibility(
+            manifest, model_config=model_path / "config.json", source=directory)
     if args.resume:
         resume_summary = _verify_resume_consistency(run_dir, ledger)
         _emit(metrics_path, "spo_resume_verified", **resume_summary)
 
     policy_cfg = dict(cfg["policy"])
     policy_cfg["model_path"] = str(model_path)
-    # The 31B learner must not occupy GPU at startup: SGLang holds the colocated
+    # The 31B learner must not occupy GPU at startup: vLLM holds the colocated
     # GPUs until the first training lease. Tokenizer-only serving works unloaded.
     policy_cfg["defer_learner_load"] = True
     policy_cfg.setdefault("gradient_checkpointing", True)
@@ -455,7 +484,7 @@ def run_spo(args: argparse.Namespace) -> int:
     exporter = AdapterExporter()
     if adapters.active is None:
         # Genesis export needs the learner weights: load them inside the first
-        # training lease (SGLang memory is released), then unload before the
+        # training lease (vLLM memory is released), then unload before the
         # inference engine resumes below.
         with lease.training():
             load_started = time.monotonic()
@@ -466,9 +495,12 @@ def run_spo(args: argparse.Namespace) -> int:
                 genesis_dir = run_dir / "adapters" / "staging-genesis"
                 manifest = exporter.export(policy, genesis_dir, version=0, parent_version=None, optimizer_step=0)
                 adapters.publish(manifest, genesis_dir, activate=True)
+                binding = adapters.serving_binding(
+                    manifest, prefix=str(cfg["inference"].get("lora_name_prefix", "spo")))
             finally:
                 policy.release_memory()
-        _emit(metrics_path, "adapter_genesis", version=0)
+        _emit(metrics_path, "adapter_genesis", version=0,
+              lora_name=binding["lora_name"])
     else:
         _emit(metrics_path, "adapter_resumed", version=adapters.active.version)
     double_buffer = DoubleBuffer(adapters, backend, gpu_lease=lease, allow_resident_pair=False)
@@ -483,8 +515,14 @@ def run_spo(args: argparse.Namespace) -> int:
           sha256=genesis_rollout.adapter_sha256)
     endpoint = PolicyEndpoint(
         policy, run_dir / "endpoint", int(cfg["runtime"].get("port", 0)),
-        {"sglang_max_inflight": int(cfg["inference"].get("max_inflight", 16)),
-         "max_batch_size": int(cfg["inference"].get("max_inflight", 16))},
+        {"max_inflight": int(cfg["inference"].get("max_inflight", 16)),
+         "max_batch_size": int(cfg["inference"].get("max_inflight", 16)),
+         "generation_timeout_seconds": float(
+             cfg["inference"].get("generation_timeout_seconds", 1800)),
+         "temperature": float(cfg["sampling"].get("temperature", 1.0)),
+         "top_p": float(cfg["sampling"].get("top_p", 1.0)),
+         "top_k": int(cfg["sampling"].get("top_k", 0)),
+         "max_new_tokens": int(cfg["sampling"].get("max_new_tokens", 16384))},
         serving_backend=double_buffer)
     endpoint.start()
     # Resume on the actual serving version, not genesis 0: after a restart the
@@ -896,7 +934,7 @@ def run_spo(args: argparse.Namespace) -> int:
                     finally:
                         trainer.suspend_learner_binding()
                         policy.release_memory()
-                # Training lease is released (SGLang resumed) before any
+                # Training lease is released (vLLM resumed) before any
                 # inference-lease work: publish would deadlock inside it.
                 version = activate_and_commit(update_id, batch, stats, behavior_before)
                 _emit(metrics_path, "spo_update_activated", update_id=update_id, version=version)
@@ -1129,7 +1167,7 @@ def run_spo(args: argparse.Namespace) -> int:
             update_index = 0
         _emit(metrics_path, "spo_run_started", config=cfg.get("algorithm"),
               tasks=len(catalog), resume=bool(args.resume),
-              inference={"engine": engine_name, "base_url": backend_url},
+              inference={"engine": backend.name, "base_url": backend_url},
               backend_handshake=handshake,
               model_revision=identity["model_revision"], model_path=identity["model_path"])
         # Phase declaration: first round is online SPO only. SFT cold-start,
@@ -1270,16 +1308,16 @@ def main(argv: list[str] | None = None) -> int:
         if not backend_url:
             print("spo_check_backend_missing: no inference base_url configured", file=sys.stderr)
             return 2
-        # Read-only preflight: GET /health only, never submit/drain/load.
-        # A stopped SGLang server must fail this preflight instead of
-        # printing a config-only OK.
+        # Read-only preflight: health, deployment metadata and metrics only.
+        # start() never submits/drains/loads; it verifies the vLLM LoRA rank,
+        # runtime-LoRA flag and Level-2 sleep endpoints before a GPU session.
         try:
-            from .rollout.backend import SGLangBackend, VLLMBackend
-            engine_name = str(cfg["inference"].get("engine", "sglang"))
-            probe = SGLangBackend(backend_url, timeout=5.0) \
-                if engine_name == "sglang" else VLLMBackend(backend_url, timeout=5.0)
-            health = probe.health()
-            print(f"inference_reachable=true health={health!r:.200}")
+            probe = _make_inference_backend(cfg, backend_url)
+            report = probe.start()
+            from .rollout.gateway import InferenceGateway
+            deployment = InferenceGateway(probe).probe_deployment()
+            print("inference_start=" + json.dumps(
+                {"start": report, "deployment": deployment}, default=str)[:4000])
         except Exception as error:
             print(f"spo_check_backend_unreachable: {type(error).__name__}: {error}",
                   file=sys.stderr)

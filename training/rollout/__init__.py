@@ -19,6 +19,8 @@ from .backend import (
     InferenceBackend,
     SGLangBackend,
     SGLangHTTPBackend,
+)
+from .vllm_backend import (
     VLLMBackend,
     VLLMHTTPBackend,
     VllmBackend,

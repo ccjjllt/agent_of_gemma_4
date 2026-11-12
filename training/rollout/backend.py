@@ -1,8 +1,11 @@
 """Strict HTTP inference backends and colocated GPU ownership.
 
-The HTTP clients do not launch a server and never emulate a missing engine
-feature. Control operations require explicit JSON confirmations from the
-server; generation requires the original token IDs and sampled logprobs.
+The active vLLM implementation lives in :mod:`training.rollout.vllm_backend`;
+this module owns the shared transport, the historical SGLang translation and
+the GPU lease. The HTTP clients do not launch a server and never emulate a
+missing engine feature. Control operations require explicit confirmations
+from the server; generation requires the original token IDs and sampled
+logprobs.
 """
 from __future__ import annotations
 
@@ -675,18 +678,7 @@ class SGLangBackend(HTTPInferenceBackend):
         return result
 
 
-class VLLMBackend(HTTPInferenceBackend):
-    name = "vllm"
-    paths = dict(HTTPInferenceBackend.paths,
-                 load_adapter="/v1/load_lora_adapter",
-                 unload_adapter="/v1/unload_lora_adapter")
-
-
-# Common spellings retained as aliases, not different implementations.
-VllmBackend = VLLMBackend
 SGLangHTTPBackend = SGLangBackend
-VLLMHTTPBackend = VLLMBackend
-VllmHTTPBackend = VLLMBackend
 
 
 class GpuLease:

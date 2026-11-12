@@ -232,7 +232,7 @@ class SPOTrainer:
             if not callable(getattr(policy, name, None)):
                 raise TypeError(f"policy must provide {name}()")
         # Learner binding is lazy: the policy is deliberately unloaded at
-        # startup (SGLang owns the colocated GPUs), so parameter capture,
+        # startup (vLLM owns the colocated GPUs), so parameter capture,
         # rank validation and optimizer creation happen on first
         # bind_parameters() inside a training lease, not here.
         self._parameters: list[Any] = []

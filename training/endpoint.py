@@ -41,9 +41,9 @@ class PolicyEndpoint:
         self.generation_config = dict(generation_config or {})
         self.generation_config.setdefault("max_batch_size", 4)
         # serving_backend is a trajectory-bound inference gateway (DoubleBuffer
-        # over SGLang). When set, token production uses the lease-guarded
-        # server and the local learner weights are never required for serving;
-        # when None, the legacy local continuous engine is used.
+        # over the remote vLLM server). When set, token production uses the
+        # lease-guarded server and the local learner weights are never required
+        # for serving; when None, the legacy local continuous engine is used.
         self.serving_backend = serving_backend
         self.batch_wait_seconds = float(self.generation_config.get("batch_wait_ms", 5)) / 1000
         if not math.isfinite(self.batch_wait_seconds) or not 0 <= self.batch_wait_seconds <= 1:
@@ -897,8 +897,8 @@ class PolicyEndpoint:
         inflight = set()
         try:
             if self.serving_backend is not None:
-                from .sglang_serving import SGLangServingEngine
-                engine = SGLangServingEngine(self.policy, self.serving_backend,
+                from .remote_serving import RemoteServingEngine
+                engine = RemoteServingEngine(self.policy, self.serving_backend,
                                              {**self.generation_config, "policy_version": self.policy_version},
                                              self.run_dir, on_request_started=self._request_started)
             else:

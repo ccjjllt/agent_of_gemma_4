@@ -1,6 +1,6 @@
 # 双 A800 训练与运行（Single-stream SPO）
 
-固定路线：Gemma 4 31B IT QAT BF16 基座＋LoRA Rank 128 / Alpha 256 / Dropout 0＋单流 SPO＋异步多 worker。SGLang 负责生成，同机双 A800 同时承担推理与训练（分时租约，非双引擎并行）。首轮只跑在线 SPO。
+固定路线：Gemma 4 31B IT QAT BF16 基座＋LoRA Rank 128 / Alpha 256 / Dropout 0＋单流 SPO＋异步多 worker。vLLM 负责生成，同机双 A800 同时承担推理与训练（分时租约，非双引擎并行）。首轮只跑在线 SPO。vLLM 使用独立 Python 环境；learner 的 Unsloth/PyTorch 2.9.1 环境不安装 vLLM。
 
 训练基座为 `google/gemma-4-31B-it-qat-q4_0-unquantized`，固定 revision 与参数见[主配置](../configs/spo_a800_2x80.toml)。目标是在官方 `gemma-4-31b-it-qat-w4a16-ct` 上挂 PEFT adapter；基座与格式有官方依据，非零 adapter 的 CT 兼容与收益仍待验证。
 
@@ -10,9 +10,10 @@
 | --- | --- |
 | 项目代码 | `/root/gemma4/project` |
 | 学习器 Python | `/root/gemma4/envs/learner/bin/python` |
+| 推理 Python（独立） | `/root/gemma4/envs/inference-vllm/bin/python` |
 | 官方公开数据 | `/root/gemma4/official/competition` |
 | QAT未量化31B模型 | `/root/autodl-fs/models/gemma4-31b-qat` |
-| SGLang 服务 | `http://127.0.0.1:8000`（另行部署，本程序只做 health 握手） |
+| vLLM OpenAI 服务 | `http://127.0.0.1:8000`（另行部署，本程序只做 health/部署探测） |
 | 运行输出 | `/root/autodl-tmp/gemma4/runs` |
 | 沙箱、临时目录 | `/root/autodl-tmp/gemma4/sandboxes`、`/root/autodl-tmp/gemma4/tmp` |
 
@@ -26,7 +27,28 @@ subprocess 后端需 root 启动，再由不同低权限 UID 运行 agent 工具
 
 ## 启动与续跑
 
-以下命令只在已授权的 Linux GPU 服务器执行。SGLang 须先用基座模型、双卡并行、`--enable-lora` 部署好；本程序不拉起服务端，只做启动握手与部署探针。
+以下命令只在已授权的 Linux GPU 服务器执行。vLLM 须先用基座模型、双卡并行、动态 LoRA 和 Level-2 sleep 部署好；本程序不拉起服务端，只做启动握手与部署探针。vLLM 与 learner 使用两个独立环境，安装入口见 `requirements/inference-vllm.lock.txt`。
+
+服务端启动示例（CUDA 13 wheel 线；`--served-model-name` 必须与配置一致）：
+
+```bash
+export VLLM_SERVER_DEV_MODE=1
+export VLLM_ALLOW_RUNTIME_LORA_UPDATING=True
+/root/gemma4/envs/inference-vllm/bin/vllm serve /root/autodl-fs/models/gemma4-31b-qat \
+  --served-model-name google/gemma-4-31B-it-qat-q4_0-unquantized \
+  --tensor-parallel-size 2 \
+  --dtype bfloat16 \
+  --max-model-len 32768 \
+  --enable-lora \
+  --max-loras 2 \
+  --max-cpu-loras 2 \
+  --max-lora-rank 128 \
+  --enable-sleep-mode \
+  --no-enable-prefix-caching \
+  --host 127.0.0.1 --port 8000
+```
+
+`VLLM_SERVER_DEV_MODE=1` 只用于受控训练机，不暴露到不可信网络。`--no-enable-prefix-caching` 是首轮保守设置；若以后开启 prefix cache，后端会为每个请求发送 `cache_salt=adapter_sha256`，跨 adapter 的隔离仍须在 A800 pilot 单独验证。
 
 在同一终端先设置环境，再执行所需命令：
 
@@ -46,7 +68,7 @@ export TMPDIR=/root/autodl-tmp/gemma4/tmp
   --backend-url http://127.0.0.1:8000
 ```
 
-启动前只有纯 CPU 预检（`--check-only`）：配置、模型目录结构、tokenizer、SGLang 可达性（对 `base_url` 做只读 `GET /health`，不提交、不加载）。非空 run_dir 直接拒绝启动；继续训练必须用 `--resume`，且恢复时校验 serving 版本、adapter SHA、trainer checkpoint 步数与 ledger（含 ACTIVATED 中断态的来源证明），对不上就停。trainer checkpoint schema 为 2，旧 schema 明确拒绝。`--resume` 必须沿用首次启动的 `max_batches`（全局累计上限，LR 计划总量）；改动即停，不静默重置计划。
+启动前只有纯 CPU 预检（`--check-only`）：配置、模型目录结构、tokenizer、vLLM 可达性，以及 `/server_info` 中的 `max_lora_rank>=128`、`max_loras>=2`、`VLLM_ALLOW_RUNTIME_LORA_UPDATING=True`、`enable_sleep_mode=True` 和 `/is_sleeping` 端点。预检只读，不提交、不加载、不 sleep。非空 run_dir 直接拒绝启动；继续训练必须用 `--resume`，且恢复时校验 serving 版本、adapter SHA、trainer checkpoint 步数与 ledger（含 ACTIVATED 中断态的来源证明），对不上就停。trainer checkpoint schema 为 2，旧 schema 明确拒绝。`--resume` 必须沿用首次启动的 `max_batches`（全局累计上限，LR 计划总量）；改动即停，不静默重置计划。
 
 更新事务按阶段推进：RESERVED → LEARNING → OPTIMIZED → EXPORTED → REGISTERED → ACTIVATED → CONSUMED；训练租约内只做优化、导出与注册，发布与提交在训练租约之外完成，避免 GPU 租约死锁。退出码：0 跑满批次，75 预算耗尽（可续跑），2 配置或运行失败。
 
@@ -66,4 +88,6 @@ export TMPDIR=/root/autodl-tmp/gemma4/tmp
 
 ## 尚未验证
 
-双 A800 80GB 能否同时容纳 31B BF16、Rank 128、32K 上下文与训练激活，须经受控首次 GPU 启动实测（模型加载→Genesis adapter→单次完整更新），确认显存峰值、真实吞吐与权重变化后再进入正式训练预算。本地 CPU/Mock 验证不代替该结论。
+双 A800 80GB 能否同时容纳 31B BF16、Rank 128、32K 上下文与训练激活，须经受控首次 GPU 启动实测（模型加载→Genesis adapter→单次完整更新），确认显存峰值、真实吞吐与权重变化后再进入正式训练预算。vLLM 0.32.0 的动态 LoRA、Level-2 `reload_weights`、`/pause` 排水和 adapter 发布仍须在 A800 上验证；本地 mock 只证明 HTTP 协议、token/logprob 字段和 lease 顺序，不证明 GPU 行为。
+
+vLLM 0.32.0 早于 PR #61267（2026-11-02 合并），该 PR 修复 `attention_k_eq_v` 层 K→V 的 LoRA 打包。当前 adapter 按 `policy.py` 的规则省略 10 个 full-attention 层的 `k_proj`，因此不触发该 bug；`AdapterManager.audit_lora_compatibility` 会在加载前检查 400 个目标及 k_eq_v 风险，发现 `k_proj`/`v_proj` 落在 full-attention 层就拒绝加载。若以后修改目标模块，必须换到包含 #61267 的 wheel/commit。
