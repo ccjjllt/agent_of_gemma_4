@@ -1,10 +1,10 @@
 # 007 训练吞吐优化：Checkpoint、KL 前向复用与 Prefix Tree
 
-状态：实现完成，纯 CPU 核对通过；A800 实测待授权 / 实例当前不可达。
-日期：2026-11-12。
-范围：只改训练吞吐路径，不改 SPO 目标、Rank 128、奖励公式、训练数据和官方任务预算。
+状态：P0 checkpoint/transaction 恢复窗口已修复并通过 CPU torch 小模型手动恢复验证；A800 实测待授权 / 实例当前不可达。
+日期：2026-11-12（2026-11-12 复核后追加 P0 修复）。
+范围：只改训练吞吐与恢复一致性路径，不改 SPO 目标、Rank 128、奖励公式、训练数据和官方任务预算。
 
-> A800 状态：2026-11-12 本地只读连通性探测显示既定 AutoDL SSH 端口 `Connection refused`；备用 22 端口返回已变更的主机密钥，未绕过校验、未连接、未启动训练。首次 A800 指标仍待实例与访问方式确认后采集。
+> A800 状态（2026-11-12 复核后再次只读探测）：端口 11692 已能建立 TCP，但 SSH 在实际连接地址 `106.120.183.117:11692` 被对端 `Connection reset by peer`；备用 22 端口仍是已变更的主机密钥。未绕过主机密钥校验、未连接、未启动训练。首次 A800 指标仍待实例与访问方式确认后采集。
 
 ## 0. 边界
 
@@ -54,6 +54,7 @@ B. 轻量事务记录：`spo_trainer_tx.json`
 - `kl_ready`、`policy_before`、`checkpoint` 文件引用（或首次更新时的 `null`）。
 - `EXPORTED/REGISTERED` 阶段追加 `adapter`：`version`、`parent_version`、`optimizer_step`、`adapter_sha256`。
 - 由 `training/checkpoint_io.py:write_transaction` 写临时文件、`fsync`、原子替换；读取时校验 checkpoint 引用和 adapter SHA256。
+- 完整 checkpoint 落盘后、ledger cursor 推进前，立即写一条与 checkpoint 相同 `completed_optimizer_steps`、`optimizer_cursor=1`、`phase=LEARNING` 的事务记录；这是本轮 P0 修复的关键顺序。
 
 训练器状态的 schema 版本从 1 升到 2。旧 SPO checkpoint 不会被静默当作新格式恢复；`_verify_resume_consistency` 会给出明确的 schema 不匹配错误。
 
@@ -62,11 +63,12 @@ B. 轻量事务记录：`spo_trainer_tx.json`
 `training/checkpoint_io.py:CheckpointWriter` 使用单后台线程、单队列：
 
 - 调用方先完成 CPU 侧克隆（`export_training_state`），后台线程只做 `torch.save`、文件 `fsync`、`os.replace` 和目录 `fsync`。CPU 克隆仍占用训练线程。
-- 本轮唯一 full 快照是 `optimizer_step`，用 `sync=True` 等待；它是唯一真正的恢复边界。`learning_started` 与 `optimized` 只写事务记录，不再排队大权重。
+- 本轮唯一 full 快照是 `optimizer_step`，用 `sync=True` 等待；它是唯一真正的恢复边界。`learning_started`、同 step 的匹配事务和 `optimized` 只写事务记录，不再排队大权重。
 - `sync=False` 接口保留给后续可能的非边界快照；本轮没有 full 调用使用它。
 - 任一次写入失败会被保存，下一次同步提交或关闭时抛出，不会把失败静默当成可恢复边界。
-- `learning_started` 期间 ledger 仍保持 `RESERVED`；只有 `optimizer_step` 全量落盘后才推进到 `LEARNING/1`。这样即使事务记录已写而 full 尚未完成就崩溃，恢复时仍可从头重放该 batch，而不会出现“ledger 已 LEARNING、checkpoint 还是上一条”的死路。
-- 若崩溃发生在 `optimizer_step` 全量落盘之后、ledger 推进之前，恢复会看到 `RESERVED` + checkpoint cursor 1，直接恢复该 post-step 状态并继续 KL/导出，不重复 AdamW。
+- `learning_started` 期间 ledger 仍保持 `RESERVED`；只有 `optimizer_step` 全量落盘后，先写匹配事务，再推进 ledger 到 `LEARNING/1`。这样即使事务记录已写而 full 尚未完成就崩溃，恢复时仍可从头重放该 batch，而不会出现“ledger 已 LEARNING、checkpoint 还是上一条”的死路。
+- 若崩溃发生在 `optimizer_step` 全量落盘之后、ledger 推进之前，磁盘上是 post-step checkpoint（cursor 1）＋匹配的新事务；恢复直接进入 KL/导出，不重复 AdamW。
+- 若崩溃恰好发生在全量落盘之后、匹配事务替换之前，磁盘上会短暂保留旧的 `learning_started` 事务。恢复时校验 checkpoint 的 `completed_optimizer_steps` 已领先旧事务，明确忽略旧统计（full checkpoint 是唯一模型状态来源），仍按 cursor 1 继续，不重复 AdamW。
 
 ### 2.4 恢复语义
 
@@ -74,8 +76,8 @@ B. 轻量事务记录：`spo_trainer_tx.json`
 | --- | --- | --- | --- |
 | forward 前/中，未 step | 上一条 committed（首次更新无 full） | `LEARNING` | ledger 仍 RESERVED；从头重放该 batch，AdamW 未执行 |
 | step 后、checkpoint 前 | 上一条 committed | `LEARNING` | ledger 仍 RESERVED；从已提交 base 重放该 batch，post-step 结果从未持久化 |
-| checkpoint 后、ledger 前 | `optimizer_step`（cursor 1） | `LEARNING`（旧） | 看到 RESERVED + cursor 1，直接恢复 post-step，不重复 AdamW |
-| KL 前 | `optimizer_step`（cursor 1） | `LEARNING`（旧） | 恢复全量，重算 KL，不重复 AdamW |
+| checkpoint 后、ledger 前 | `optimizer_step`（cursor 1） | 匹配的新 `LEARNING`；若替换前崩溃则为旧 `LEARNING` | 看到 RESERVED + cursor 1，直接恢复 post-step，不重复 AdamW；旧事务按 step 落后明确忽略 |
+| KL 前 | `optimizer_step`（cursor 1） | 匹配的 `LEARNING` | 恢复全量，重算 KL，不重复 AdamW |
 | KL 后、导出前 | `optimizer_step` | `OPTIMIZED` | 合并 KL 统计，直接进入导出/发布 |
 | 导出/注册后 | `optimizer_step` | `EXPORTED/REGISTERED` + `adapter` | 合并统计与 adapter SHA，重放幂等发布阶段 |
 | 已 CONSUMED 后重启 | `optimizer_step`（cursor 1） | 旧记录 | 允许从 cursor 1 恢复已消费 base，不再要求 OPTIMIZED 全量文件 |
@@ -83,6 +85,19 @@ B. 轻量事务记录：`spo_trainer_tx.json`
 `_reconcile_ledger()` 对 `CONSUMED` 的检查从“必须是 OPTIMIZED 全量快照”放宽为“optimizer cursor 必须为 1”。已消费更新的 KL 不再影响后续训练；cursor 1 已足以证明 AdamW 执行过。
 
 `ensure_kl_ready()` 用于 `EXPORTED/REGISTERED/ACTIVATED` 恢复：若事务记录没有有效 KL，则只做一次 KL probe，不把 ledger phase 回退到 OPTIMIZED。
+
+### 2.5 复核发现的 P0 与修复
+
+原顺序是：`learning_started` 事务（step N）→ AdamW → full checkpoint（step N+1）→ ledger cursor 1。full checkpoint 成功后没有同步替换事务记录；若在 ledger 推进前崩溃，恢复时 `_merge_transaction()` 看到事务 step N、checkpoint step N+1，直接以“transaction optimizer step differs”拒绝恢复。文档中“checkpoint 已保存但不重复 AdamW”的路径实际没有打通。
+
+修复：
+
+1. `_apply_optimizer_step()` 在 `_checkpoint("optimizer_step")` 同步返回后、`_set_phase("LEARNING", 1)` 之前，立即调用 `_write_transaction("optimizer_step_transaction", "LEARNING")`。新事务与 full checkpoint 同 update id、同 completed step、cursor 1，并带同一个 checkpoint 文件引用。
+2. `_merge_transaction()` 不再要求事务 step 必须等于 checkpoint step：
+   - 事务 step 大于 checkpoint：拒绝（事务不能领先模型状态）。
+   - 事务 step 小于 checkpoint：说明崩溃发生在“full 已落盘、匹配事务尚未替换”窗口；忽略旧事务的 stats/phase 覆盖，保留 full checkpoint 的 post-step 状态，继续恢复。
+   - 相等：按原逻辑合并 KL/phase。
+3. KL 复用的覆盖检查同时修复了一个会阻断所有更新的类型错误：`pre_update` 的键是字符串索引，`kl_indices` 是整数集合，原 `set(pre_update) != kl_indices` 对非空 KL probe 永远为真。现改为 `{int(index) for index in pre_update} != kl_indices`。
 
 ## 3. KL：复用训练前向
 
@@ -166,7 +181,7 @@ CPU 合成用例（300 token 公共前缀，3 个调用，`max_tree_tokens=350`�
 `metrics.jsonl` 新增：
 
 - `spo_model_loaded`：`phase=genesis/update/resume_*`、`seconds`。
-- `spo_update_timing`：`forward_seconds`、`backward_seconds`、`optimizer_seconds`、`kl_seconds`、`checkpoint_learning_started_export_seconds`、`checkpoint_learning_started_submit_seconds`、`checkpoint_optimizer_step_export_seconds`、`checkpoint_optimizer_step_submit_seconds`、`checkpoint_optimized_seconds`、`checkpoint_writer.last`（实际磁盘写入秒数和字节数）。
+- `spo_update_timing`：`forward_seconds`、`backward_seconds`、`optimizer_seconds`、`kl_seconds`、`checkpoint_learning_started_export_seconds`、`checkpoint_learning_started_submit_seconds`、`checkpoint_optimizer_step_export_seconds`、`checkpoint_optimizer_step_submit_seconds`、`checkpoint_optimizer_step_transaction_export_seconds`、`checkpoint_optimizer_step_transaction_submit_seconds`、`checkpoint_optimized_seconds`、`checkpoint_writer.last`（实际磁盘写入秒数和字节数）。
   - `learning_started` 的 `submit_seconds` 只是入队时间；实际磁盘写入看 `checkpoint_writer.history`。
   - `optimizer_step` 的 `submit_seconds` 包含同步等待，因此就是“写盘+fsync”时间。
 - `spo_checkpoint_queued`：`phase`、`sync`、completed steps。
@@ -174,33 +189,27 @@ CPU 合成用例（300 token 公共前缀，3 个调用，`max_tree_tokens=350`�
 
 这四项分别回答：模型加载、单次前向、反向传播、checkpoint 写盘各占多少时间。
 
-## 6. 本轮已执行的纯 CPU 核对
+## 6. 本地手动验证（CPU torch 小模型 + 纯 Python）
 
-环境没有安装 torch，无法在本地执行 31B 或真实 `SPOTrainer` 前向；以下是不依赖 GPU/torch 的核对：
+本地 `.venv` 安装了 CPU torch 2.15.0 与 numpy；用一次性脚本驱动真实 `SPOTrainer`、真实 AdamW、真实 `CheckpointWriter` 和真实 SQLite ledger（tiny policy，不是 31B），未新增测试文件。
 
 ```text
-python -m compileall -q training
-compile_exit=0
-
-import training.run_spo, training.spo.trainer, training.prefix_tree,
-       training.tree_backend, training.checkpoint_io
-imports_ok
+training 编译与导入：
+python -m compileall -q training -> 0
+import training.run_spo, training.spo.trainer, training.checkpoint_io,
+       training.prefix_tree -> imports_ok
 ```
 
-- Prefix 分组：`lexicographic` 3 个单例 vs `lcp_greedy` 成树保存 301 tokens；索引覆盖完整；小 mask 预算下两种分组都退回单例（chunk floor）。
-- Checkpoint 去重：`learning_started` → transaction(`LEARNING`)，`optimizer_step` → full(sync)，`optimized` → transaction(`OPTIMIZED`)；本轮 full 只写 1 次，timing 保留 `export/submit/seconds` 三类键。
-- 轻量事务：首次更新没有 full 时 `checkpoint=null` 可读；`REGISTERED` 记录 `adapter_sha256` 和 full checkpoint 字节数；缺少 full 的 post-optimizer 记录被拒绝。
-- 训练器事件：`learning_started` → `tx(LEARNING)`，`optimizer_step` → `full(sync)`，`optimized` → `tx(OPTIMIZED)`；单次更新 full 保存 1 次。
-- 事务合并：KL 统计可从 `spo_trainer_tx.json` 叠加到恢复状态。
-- `CheckpointWriter`：异步提交 1、同步提交 2，最终文件为 2，写入计数 2，history 2 条；启动时只清理 PID 已死的遗留 `*.tmp-*`，保留当前 PID 的临时文件。
-- schema：`TRAINER_STATE_VERSION=2`，旧 v1 checkpoint 被明确拒绝。
-- `Policy._load_learner`：AST 检查无裸 `torch`/`FastModel`。
-- 恢复顺序：`checkpoint("optimizer_step")` 在 ledger cursor 推进之前；`_checkpoint_phase` 在 `_merge_transaction` 之前读取。
-- `RESERVED` 更新如果看到 cursor-1 full checkpoint，走 `restore_training_state + resume_batch`；只有 cursor-0/已消费 base 才走 `restore_base_state`，并用 `_active_update_id` 做身份校验。
-- 旧/新 checkpoint 的 active update id 都能从 `active_batch.update_id` 或 `active_batch.update.update_id` 读取；`_install_active` 会交叉校验两者，不匹配直接失败。
-- KL 捕获顺序：AST 检查 `_freeze_logprobs` 行号小于 `optimizer.step()`，且 `pre_update_logprobs` 在 step 前赋值。
+- **P0 正常顺序**：一次更新只写一次 full，事件顺序为
+  `tx(step 0, LEARNING, ledger RESERVED)` → `full(step 1, sync=True, ledger RESERVED, cursor 0)` → `tx(step 1, LEARNING, ledger RESERVED)` → ledger 推进 → `tx(step 1, OPTIMIZED, ledger OPTIMIZED)`。匹配事务确实在 ledger 推进之前落盘。
+- **崩溃点 A：full 已落盘、匹配事务尚未写**：注入崩溃后磁盘状态为 `checkpoint_steps=1, checkpoint_cursor=1, tx_steps=0, tx_phase=LEARNING, ledger=RESERVED/0`。新进程恢复成功：`steps=1, cursor=1, phase=LEARNING`，`resume_batch()` 的 `optimizer_calls=0`，最终 `ledger=OPTIMIZED/1`。旧事务被识别为落后并忽略，没有重复 AdamW。
+- **崩溃点 B：匹配事务已落盘、ledger 尚未推进**：磁盘状态为 `checkpoint_steps=1, checkpoint_cursor=1, tx_steps=1, tx_phase=LEARNING, ledger=RESERVED/0`。恢复同样 `optimizer_calls=0`，最终 `ledger=OPTIMIZED/1`。
+- **KL 前向复用**：捕获的 KL probe 索引为 `[0, 1]`，与独立更新前前向逐 token 比较 `independent_max_abs_diff=0.0`，共 6 个 action token；更新后区间 K3 为 `1.31e-05`（tiny policy，数值仅用于验证接线与顺序，不代表 31B 的真实 KL）。类型修复前该检查会在 `optimizer.step()` 前抛出“training forward did not cover every KL probe call”。
+- **Prefix Tree token occurrence**：4 个合成 call 分为 `[[0, 1, 2], [3]]`，共 `11` 个原始 completion-token loss occurrence，唯一键 `11`，无遗漏/重复，`saved_tokens=37`；每个映射行的 token ID 与其原始 call 位置逐一相等。小树（unique < 16）按 query-chunk floor 退回单例。
+- **Checkpoint/事务基础检查**：首次更新无 full 时 `checkpoint=null` 可读；`REGISTERED` 记录 `adapter_sha256` 和 full checkpoint 字节数；缺少 full 的 post-optimizer 记录被拒绝；`CheckpointWriter` 异步/同步提交 history 正确；schema 为 2，旧 v1 被拒绝。
+- **静态检查**：`Policy._load_learner` 无裸 `torch`/`FastModel`；KL 捕获在 `optimizer.step()` 之前；`RESERVED` + cursor-1 full 走 `restore_training_state + resume_batch`，只有 cursor-0/已消费 base 才走 `restore_base_state`。
 
-未执行：真实模型加载、真实前向/反向、真实 checkpoint 写盘、SGLang 握手、A800 显存和吞吐。
+未执行：31B 真实模型加载、真实 tree attention/反向、真实 GPU checkpoint 写盘、SGLang 握手、A800 显存和吞吐。上述 CPU tiny-policy 结果不能替代这些测量。
 
 ## 7. 首次 A800 运行协议
 
@@ -212,7 +221,8 @@ imports_ok
 
 ## 8. 风险与回滚
 
-- `learning_started` 事务写失败会在进入 forward 前抛出；不会静默跳过。`optimizer_step` 的 full 写失败会在 KL 前抛出。
+- `learning_started` 事务写失败会在进入 forward 前抛出；不会静默跳过。`optimizer_step` 的 full 写失败会在 KL 前抛出。full 成功后的匹配事务写失败会让进程停止；恢复时旧事务 step 落后于 checkpoint，按 2.5 的规则忽略旧统计并从 cursor 1 继续，不会重复 AdamW。
+- `_merge_transaction()` 只在事务 step 等于 checkpoint step 时覆盖 stats/phase；事务 step 领先 checkpoint 直接失败，避免把未来状态套到旧权重上。
 - `optimizer_step` 的 CPU 克隆/`torch.save` 准备仍在训练线程；只有文件写入与 `fsync` 进入后台线程。首次 profile 必须分开看 `export_seconds` 和 `submit_seconds` / `checkpoint_writer.history`。
 - 事务记录损坏或指向错误 checkpoint 时，`load_transaction_state()` 直接失败，不回退到猜测。
 - 全量 checkpoint 仍是唯一模型状态来源；事务文件只携带统计和引用，删除它最多导致一次 KL 重算。

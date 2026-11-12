@@ -57,7 +57,7 @@ export TMPDIR=/root/autodl-tmp/gemma4/tmp
 - `model_identity.json`：模型路径、revision、config/tokenizer 哈希、LoRA 配置。
 - `spo_stream.db`：轨迹、奖励、价值、buffer、更新事务账本。
 - `spo_trainer_state.pt`：FP32 LoRA＋AdamW＋scheduler＋RNG 检查点；只在 `optimizer_step` 参数边界写入。
-- `spo_trainer_tx.json`：轻量事务记录（阶段、optimizer step、KL 统计、checkpoint 文件引用；`EXPORTED/REGISTERED` 还包含导出 adapter 的 SHA256）；`learning_started`/`optimized`/导出阶段不再重复序列化大权重。
+- `spo_trainer_tx.json`：轻量事务记录（阶段、optimizer step、KL 统计、checkpoint 文件引用；`EXPORTED/REGISTERED` 还包含导出 adapter 的 SHA256）；`learning_started`/`optimized`/导出阶段不再重复序列化大权重。`optimizer_step` full 落盘后、ledger 推进前会先写匹配的 step/cursor/checkpoint 引用，崩溃恢复不会因旧事务 step 落后而拒绝。
 - `adapters/versions/`：不可变版本注册表；`metrics.jsonl`、`budget.json`：运行事件与预算。
 - `metrics.jsonl` 中 `spo_model_loaded`、`spo_update_timing` 记录模型加载、前向、反向、优化器和 checkpoint 秒数，供首次 A800 调优。
 - 提交取所选 adapter 的 `adapter_config.json` 与 `adapter_model.safetensors`，仍需验证官方 CT 加载与修复收益。

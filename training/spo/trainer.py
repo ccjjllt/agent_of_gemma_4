@@ -379,6 +379,20 @@ class SPOTrainer:
         if self.emit_callback is not None:
             self.emit_callback(event, **payload)
 
+    def _write_transaction(self, timing_phase: str, record_phase: str) -> None:
+        started = time.perf_counter()
+        transaction = self.export_transaction_state(phase=record_phase)
+        export_elapsed = time.perf_counter() - started
+        write_started = time.perf_counter()
+        try:
+            self.transaction_callback(transaction)
+        finally:
+            self._record_checkpoint_timing(
+                timing_phase, export_elapsed, time.perf_counter() - write_started)
+        self._emit("spo_transaction_exported", phase=timing_phase,
+                   optimizer_steps=self.completed_optimizer_steps,
+                   update_id=self._batch.update_id if self._batch else None)
+
     def _checkpoint(self, phase: str) -> None:
         self._checkpoint_phase = phase
         # OPTIMIZED and LEARNING_STARTED only advance transaction metadata.
@@ -386,19 +400,8 @@ class SPOTrainer:
         # checkpoint (or null on the first update); no LoRA/Adam tensor has
         # changed since that checkpoint. The only full save is optimizer_step.
         if phase in ("learning_started", "optimized") and self.transaction_callback is not None:
-            started = time.perf_counter()
-            transaction = self.export_transaction_state(
-                phase="OPTIMIZED" if phase == "optimized" else "LEARNING")
-            export_elapsed = time.perf_counter() - started
-            write_started = time.perf_counter()
-            try:
-                self.transaction_callback(transaction)
-            finally:
-                self._record_checkpoint_timing(
-                    phase, export_elapsed, time.perf_counter() - write_started)
-            self._emit("spo_transaction_exported", phase=phase,
-                       optimizer_steps=self.completed_optimizer_steps,
-                       update_id=self._batch.update_id if self._batch else None)
+            self._write_transaction(
+                phase, "OPTIMIZED" if phase == "optimized" else "LEARNING")
             return
         if self.checkpoint_callback is None:
             return
@@ -765,7 +768,7 @@ class SPOTrainer:
                 group_loss.backward()
                 self._sync_cuda()
                 backward_seconds += time.perf_counter() - backward_started
-        if set(pre_update) != kl_indices:
+        if {int(index) for index in pre_update} != kl_indices:
             raise RuntimeError(
                 "training forward did not cover every KL probe call; refusing to mislabel drift")
         self._active["pre_update_logprobs"] = pre_update
@@ -817,6 +820,13 @@ class SPOTrainer:
         # crash between these two writes leaves ledger cursor 0 but a cursor-1
         # checkpoint, which _reconcile_ledger repairs without repeating AdamW.
         self._checkpoint("optimizer_step")
+        if self.transaction_callback is not None:
+            # Publish the matching transaction immediately after the full
+            # checkpoint, before the ledger cursor advances. A crash in the
+            # window after AdamW used to leave the pre-step LEARNING record on
+            # disk with completed_optimizer_steps=N while the checkpoint held
+            # N+1; recovery then rejected the transaction instead of resuming.
+            self._write_transaction("optimizer_step_transaction", "LEARNING")
         self._set_phase("LEARNING", 1)
 
     def _kl_ready(self) -> bool:
@@ -1014,11 +1024,22 @@ class SPOTrainer:
             raise ValueError(
                 f"transaction record belongs to {transaction.get('update_id')}, "
                 f"not {self._batch.update_id}")
-        if transaction.get("completed_optimizer_steps") != self.completed_optimizer_steps:
-            raise ValueError("transaction optimizer step differs from the full checkpoint")
+        tx_completed = transaction.get("completed_optimizer_steps")
+        if type(tx_completed) is not int or tx_completed < 0:
+            raise ValueError("transaction has an invalid completed optimizer count")
+        if tx_completed > self.completed_optimizer_steps:
+            raise ValueError("transaction is ahead of the full checkpoint")
         policy_before = transaction.get("policy_before")
         if policy_before is not None and policy_before != self._batch.policy_before.to_dict():
             raise ValueError("transaction policy_before differs from the frozen batch")
+        if tx_completed < self.completed_optimizer_steps:
+            # Crash after the full optimizer_step snapshot but before the
+            # matching transaction was durably replaced. The stale record was
+            # written before AdamW and describes the superseded pre-step state;
+            # the full checkpoint already holds the post-step stats and KL
+            # evidence. Ignoring it must never be mistaken for "no step ran":
+            # the checkpoint's optimizer cursor is the authority.
+            return
         stats = transaction.get("stats")
         if not isinstance(stats, Mapping):
             raise ValueError("transaction record has no stats mapping")
