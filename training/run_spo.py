@@ -11,7 +11,7 @@ Wiring (one process, colocated 2xA800):
 Usage (server, authorized session only):
   python -m training.run_spo --config configs/spo_a800_2x80.toml \
     --data-root /root/gemma4/official/competition \
-    --model-path /root/autodl-fs/models/gemma4-31b-qat \
+    --model-path /autodl-fs/data \
     --run-dir /root/autodl-tmp/gemma4/runs/spo-next \
     --backend-url http://127.0.0.1:8000
 

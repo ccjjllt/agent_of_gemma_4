@@ -12,7 +12,7 @@
 | 学习器 Python | `/root/gemma4/envs/learner/bin/python` |
 | 推理 Python（独立） | `/root/gemma4/envs/inference-vllm/bin/python` |
 | 官方公开数据 | `/root/gemma4/official/competition` |
-| QAT未量化31B模型 | `/root/autodl-fs/models/gemma4-31b-qat` |
+| QAT未量化31B模型 | `/autodl-fs/data` |
 | vLLM OpenAI 服务 | `http://127.0.0.1:8000`（另行部署，本程序只做 health/部署探测） |
 | 运行输出 | `/root/autodl-tmp/gemma4/runs` |
 | 沙箱、临时目录 | `/root/autodl-tmp/gemma4/sandboxes`、`/root/autodl-tmp/gemma4/tmp` |
@@ -34,7 +34,7 @@ subprocess 后端需 root 启动，再由不同低权限 UID 运行 agent 工具
 ```bash
 export VLLM_SERVER_DEV_MODE=1
 export VLLM_ALLOW_RUNTIME_LORA_UPDATING=True
-/root/gemma4/envs/inference-vllm/bin/vllm serve /root/autodl-fs/models/gemma4-31b-qat \
+/root/gemma4/envs/inference-vllm/bin/vllm serve /autodl-fs/data \
   --served-model-name google/gemma-4-31B-it-qat-q4_0-unquantized \
   --tensor-parallel-size 2 \
   --dtype bfloat16 \
@@ -63,7 +63,7 @@ export TMPDIR=/root/autodl-tmp/gemma4/tmp
 /root/gemma4/envs/learner/bin/python -m training.run_spo \
   --config configs/spo_a800_2x80.toml \
   --data-root /root/gemma4/official/competition \
-  --model-path /root/autodl-fs/models/gemma4-31b-qat \
+  --model-path /autodl-fs/data \
   --run-dir /root/autodl-tmp/gemma4/runs/spo-next \
   --backend-url http://127.0.0.1:8000
 ```

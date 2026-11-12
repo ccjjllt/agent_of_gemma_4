@@ -95,19 +95,22 @@ PR #39816 仍 Open，针对 Gemma4 `self_decoder`/`cross_decoder` alias 导致 L
 
 ## 4. 服务端部署
 
-独立环境：
+独立环境（已装在数据盘，避免占用系统盘；`/root/gemma4/envs/inference-vllm` 是指向它的软链）：
 
 ```bash
-python3.12 -m venv /root/gemma4/envs/inference-vllm
-/root/gemma4/envs/inference-vllm/bin/pip install -r requirements/inference-vllm.lock.txt
+python3.12 -m venv /root/autodl-tmp/gemma4/envs/inference-vllm
+ln -sfn /root/autodl-tmp/gemma4/envs/inference-vllm /root/gemma4/envs/inference-vllm
+/root/gemma4/envs/inference-vllm/bin/python -m pip install -r requirements/inference-vllm.lock.txt
 ```
+
+2026-11-12 无卡模式实测：PyPI 官方源单连接被限速到约 20–50 KB/s，必须换国内镜像并提高并发（`--index-url https://mirrors.aliyun.com/pypi/simple/`、`UV_CONCURRENT_DOWNLOADS=24`）；32 个连接聚合可达 50 MB/s，整套 8.0 GB 环境约 11 分钟装完。`torch==2.13.0` 在 PyPI 上就是 CUDA 13.0 构建（`cuda-toolkit==13.0.3`、`nvidia-*-cu13`），不需要 `download.pytorch.org` 的 cu130 索引。`numpy` 同时被 `numba==0.65.0`（`<2.5`）和 Python 3.12 上的 `mistral-common[image]`（`<2.4`）限制，锁定为 2.3.5。
 
 启动：
 
 ```bash
 export VLLM_SERVER_DEV_MODE=1
 export VLLM_ALLOW_RUNTIME_LORA_UPDATING=True
-/root/gemma4/envs/inference-vllm/bin/vllm serve /root/autodl-fs/models/gemma4-31b-qat \
+/root/gemma4/envs/inference-vllm/bin/vllm serve /autodl-fs/data \
   --served-model-name google/gemma-4-31B-it-qat-q4_0-unquantized \
   --tensor-parallel-size 2 \
   --dtype bfloat16 \
