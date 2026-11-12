@@ -198,7 +198,41 @@ P=0.0  G=0.0  total_reward=0.15  resolved=False  eligible=True
 
 以上任何一项未通过，不能宣称 vLLM 迁移完成或 SPO 可启动。
 
-## 7. 回滚
+## 7. 首次 A800 pilot 结论（2026-11-13）
+
+服务侧全部通过，训练侧未能在本次会话内完成一次优化步。
+
+已验证：
+
+| 项目 | 证据 |
+| --- | --- |
+| vLLM TP=2 加载 31B | `Gemma4ForConditionalGeneration`，权重 235s，每卡 32.78 GiB，health 200，常驻 74.9 GiB/卡 |
+| Genesis Rank 128 adapter | `spo-v00000000-b70fe5a72f418f8c` 载入 `/v1/models` |
+| Level-2 sleep / wake | 每卡 74,901 → 3,151 → 74,899 MiB；释放 143.5 GB（95.9%） |
+| logprob 一致性 | 同请求重复与 wake 后均 `max|diff| = 0.0` |
+| prefix caching | 命中率 88.7%，7–8 并发，生成 131–172 tok/s（关闭时 1 并发、20–51 tok/s） |
+
+未完成：**没有 SPO 优化步，没有 v1 adapter，没有 adapter 权重差异，没有训练态显存峰值**（76,875 MiB 是服务态采样）。
+
+原因（`logs/pilot-g-evidence/` 与 `results/a800-vllm-pilot-20261113/`）：
+
+```text
+441 次官方 rollout：440 EXCLUDED，1 BUFFERED
+排除原因：438 candidate_verification_incomplete，2 baseline_verification_incomplete
+抽样 result.json：Agent exceeded session timeout (8.0 min) / pytest_ran=true
+唯一有效轨迹：rich_4070，verdict_valid=true，verdict_kind=agent_pytest_collection_failure
+              reward=0.0，action_tokens=6,996（目标 32,768）
+              其 candidate/baseline expected_universes 均为空 → 零信号
+```
+
+两个叠加的结构性问题：
+
+1. **8 分钟 / 28 次工具调用的官方会话预算与 31B 模型的节奏不匹配**：`pytest_ran=true` 说明补丁和裁判都跑完了，但整条 episode 超时，被判无效。合格率约 0.2%（1/441），无法在 90 分钟内凑满 32,768 token 的批次。
+2. **奖励信号为真空**：本数据集没有 `FAIL_TO_PASS`/`PASS_TO_PASS`，只能从 test_patch 提取测试函数；对 `rich_4070` 这类任务提取为空，`expected_universes` 两侧皆空，P/G 恒为 0，即使凑满批次也只会得到全零优势（代码会扩批或降级成 NOOP，不产生真实梯度）。
+
+需要用户决策才能继续（都涉及研究口径，不能自动改）：放宽 `[runtime.evaluation]` 的会话预算、改用更容易的任务子集、还是接受更长会话以收集足够轨迹。修改 `target_action_tokens` 会改变 SPO 批次语义，未获授权前不动。
+
+## 8. 回滚
 
 - 配置把 `engine` 改回 `"sglang"` 只会走历史 SGLangBackend；不保证新 vLLM 路径的 sleep/LoRA 语义可复用。
 - vLLM 路径的 adapter 名称、`/v1/models` 校验和 target 审计是强制的；不要通过关闭校验来绕过加载失败。
