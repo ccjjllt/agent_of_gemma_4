@@ -736,8 +736,15 @@ def _capture_final_verification(task: Any, manager: Any = None, *, delivery_cloc
                     else:
                         from reward.junit_bridge import build_node_report
                     matcher = getattr(verification, "_node_matches_requirement", None)
+                    # This dataset ships no FAIL_TO_PASS/PASS_TO_PASS, so the
+                    # repair universe comes from the test patch exactly as it
+                    # does for junit_reward_features above.  Passing the empty
+                    # official list here made expected_universes empty while
+                    # reward_features expected 1 node, and every differential
+                    # reward was rejected as "_expected_universes_missing".
                     active_capture["node_report"] = build_node_report(
-                        tuple(task.FAIL_TO_PASS or ()), tuple(task.PASS_TO_PASS or ()),
+                        tuple(task.FAIL_TO_PASS or ()) or tuple(fallback),
+                        tuple(task.PASS_TO_PASS or ()),
                         xml_text, matcher,
                     )
                 except Exception:
