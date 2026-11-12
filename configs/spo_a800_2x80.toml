@@ -20,7 +20,7 @@ seed = 3407
 
 [run]
 max_batches = 32
-walltime_seconds = 7200
+walltime_seconds = 5400
 update_reserve_seconds = 900
 max_cpu_workers = 8
 max_worker_retries = 1
@@ -45,10 +45,12 @@ generation_timeout_seconds = 1800
 # rollout. The server launch command lives in training/README.md.
 tensor_parallel_size = 2
 colocated = true
-# Prefix caching is intentionally off for the first migration. If enabled
-# later, the backend sends cache_salt=adapter_sha256, but cross-adapter
-# isolation has not been measured on A800 yet.
-enable_prefix_cache = false
+# Prefix caching is required for the agent loop: without it every turn
+# re-prefills the whole conversation (~27 s/call on 2xA800) and the 8-minute
+# official session budget is exhausted after ~20 tool calls.  The backend
+# sends cache_salt=adapter_sha256, so cached blocks are namespaced per adapter
+# version; vLLM 0.32 accepts the field (verified 200 on /v1/completions).
+enable_prefix_cache = true
 return_token_ids = true
 return_logprobs = true
 require_runtime_lora = true
