@@ -116,6 +116,21 @@ def validate_model_dir(model_path: Path, policy: dict) -> dict:
     }
 
 
+def _active_update_id(state: Any) -> Any:
+    """Read the active update id from current and older checkpoint layouts."""
+    if not isinstance(state, Mapping):
+        return None
+    active = state.get("active_batch")
+    if not isinstance(active, Mapping):
+        return None
+    value = active.get("update_id")
+    if value is None:
+        update = active.get("update")
+        if isinstance(update, Mapping):
+            value = update.get("update_id")
+    return value
+
+
 def _verify_resume_consistency(run_dir: Path, ledger: Any) -> dict[str, Any]:
     """Fail closed when a --resume run cannot continue the previous run.
 
@@ -150,6 +165,11 @@ def _verify_resume_consistency(run_dir: Path, ledger: Any) -> dict[str, Any]:
             raise RuntimeError(f"trainer checkpoint is unreadable: {exc}") from exc
         if not isinstance(state, Mapping) or state.get("algorithm") != "single_stream_spo":
             raise RuntimeError("trainer checkpoint is not a single_stream_spo state")
+        from .spo.trainer import TRAINER_STATE_VERSION
+        if state.get("schema_version") != TRAINER_STATE_VERSION:
+            raise RuntimeError(
+                f"trainer checkpoint schema {state.get('schema_version')} is not "
+                f"the current schema {TRAINER_STATE_VERSION}; start a new run")
         completed = state.get("completed_optimizer_steps", 0)
         if type(completed) is not int or completed < 0:
             raise RuntimeError("trainer checkpoint has an invalid optimizer-step count")
@@ -163,6 +183,9 @@ def _verify_resume_consistency(run_dir: Path, ledger: Any) -> dict[str, Any]:
     pending = ledger.list_updates(
         ("RESERVED", "LEARNING", "OPTIMIZED", "EXPORTED", "REGISTERED", "ACTIVATED"))
     activated = [batch for batch in pending if batch.phase == "ACTIVATED"]
+    if len([batch for batch in pending if batch.phase != "ACTIVATED"]) > 1:
+        raise RuntimeError(
+            "more than one non-ACTIVATED pending update; refusing ambiguous recovery")
     if active is None:
         if consumed > 0 or pending:
             raise RuntimeError(
@@ -189,7 +212,7 @@ def _verify_resume_consistency(run_dir: Path, ledger: Any) -> dict[str, Any]:
                 f"serving v{active.version} is not the child of update "
                 f"{batch.update_id}'s base v{batch.policy_before.version}")
         if state is not None:
-            checkpoint_update = (state.get("active_batch") or {}).get("update_id")
+            checkpoint_update = _active_update_id(state)
             if checkpoint_update != batch.update_id:
                 raise RuntimeError(
                     f"trainer checkpoint belongs to {checkpoint_update}, not pending "
@@ -252,6 +275,7 @@ def run_spo(args: argparse.Namespace) -> int:
     from .adapter.double_buffer import DoubleBuffer
     from .adapter.exporter import AdapterExporter
     from .adapter.manager import AdapterManager
+    from .checkpoint_io import CheckpointWriter, read_transaction, write_transaction
     from .data.curriculum import TaskCatalog
     from .endpoint import PolicyEndpoint
     from .environment.execution_manager import AttemptSequence, ExecutionManager
@@ -342,7 +366,7 @@ def run_spo(args: argparse.Namespace) -> int:
     # P0-2a: a reused run_dir without --resume would silently serve an old
     # adapter while training a fresh LoRA. Fail closed before touching GPUs.
     _RUN_STATE_FILES = ("adapters/registry.json", "spo_stream.db",
-                        "spo_trainer_state.pt", "budget.json")
+                        "spo_trainer_state.pt", "spo_trainer_tx.json", "budget.json")
     if not args.resume and any((run_dir / name).exists() for name in _RUN_STATE_FILES):
         raise RuntimeError(
             "run_dir already holds training state; start fresh in an empty "
@@ -434,7 +458,10 @@ def run_spo(args: argparse.Namespace) -> int:
         # training lease (SGLang memory is released), then unload before the
         # inference engine resumes below.
         with lease.training():
+            load_started = time.monotonic()
             policy.ensure_loaded()
+            _emit(metrics_path, "spo_model_loaded", phase="genesis",
+                  seconds=round(time.monotonic() - load_started, 3))
             try:
                 genesis_dir = run_dir / "adapters" / "staging-genesis"
                 manifest = exporter.export(policy, genesis_dir, version=0, parent_version=None, optimizer_step=0)
@@ -464,6 +491,8 @@ def run_spo(args: argparse.Namespace) -> int:
     # registry may already hold v1+. Workers register against the live rollout;
     # a version-0 collection would reject every registration.
     endpoint.begin([], genesis_rollout.version)
+    exec_manager = None
+    checkpoint_writer = None
     try:
         worker_cfg = OfficialWorkerConfig(
             data_root=data_root,
@@ -497,25 +526,40 @@ def run_spo(args: argparse.Namespace) -> int:
             drain_timeout_seconds=float(run.get("barrier_drain_timeout_seconds", 600)),
             emit=lambda n, **f: _emit(metrics_path, n, **f))
         trainer_state = run_dir / "spo_trainer_state.pt"
+        trainer_tx_path = run_dir / "spo_trainer_tx.json"
+        checkpoint_writer = CheckpointWriter(trainer_state, torch)
 
-        def persist_trainer_state(state: Mapping[str, Any]) -> None:
-            """Atomically persist the trainer boundary reached inside optimize.
+        def persist_trainer_state(state: Mapping[str, Any], *, sync: bool) -> None:
+            """Queue the optimizer_step full snapshot; wait before KL.
 
-            The checkpoint callback fires at learning_started/optimizer_step/
-            optimized boundaries while the training lease is held and the
-            learner is resident; the file is the resume point for an
-            interrupted update. Tensors are already CPU-side.
+            The trainer clones LoRA/Adam/scheduler/RNG to CPU before this call,
+            so the background thread only owns filesystem I/O. This is the
+            only full snapshot in the SPO update; learning_started/optimized
+            use the lightweight transaction record.
             """
-            import torch as _torch
-            temporary = trainer_state.with_name(
-                trainer_state.name + f".tmp-{os.getpid()}")
-            _torch.save(dict(state), temporary)
-            os.replace(temporary, trainer_state)
+            checkpoint_writer.submit(state, sync=sync)
+            _emit(metrics_path, "spo_checkpoint_queued",
+                  phase=state.get("checkpoint_phase"), sync=bool(sync),
+                  completed_optimizer_steps=state.get("completed_optimizer_steps"))
+
+        def persist_transaction_state(transaction: Mapping[str, Any], *, adapter: Any = None) -> None:
+            """Fsync the small phase/KL/link record; never the large tensors."""
+            record = write_transaction(
+                trainer_tx_path, transaction,
+                checkpoint_path=trainer_state, adapter=adapter)
+            _emit(metrics_path, "spo_transaction_persisted",
+                  update_id=record.get("update_id"), phase=record.get("phase"),
+                  kl_ready=record.get("kl_ready"),
+                  adapter_sha256=(record.get("adapter") or {}).get("adapter_sha256"))
+
+        def load_transaction_state() -> Mapping[str, Any] | None:
+            return read_transaction(trainer_tx_path, checkpoint_path=trainer_state)
 
         trainer = make_spo_trainer(policy, ledger, {
             "spo": cfg["spo"],
             "optimizer": {**cfg["optimizer"], "total_optimizer_steps": max(1, max_batches)},
-        }, checkpoint_callback=persist_trainer_state)
+        }, checkpoint_callback=persist_trainer_state,
+           transaction_callback=persist_transaction_state)
         # max_batches is the global cumulative update budget for the whole
         # training task, not a per-process allowance: the LR schedule total is
         # max(1, max_batches) and the main loop below is driven by the global
@@ -814,11 +858,14 @@ def run_spo(args: argparse.Namespace) -> int:
             Split across leases: registry work runs inside the caller's
             training lease, serving activation and ledger commit run outside
             it (see activate_and_commit). Memory is released by the caller.
+            The optimizer_step full checkpoint is already current; this only
+            advances the lightweight transaction record.
             """
-            export_and_register(update_id, batch)
-            import torch as _torch
-            _torch.save(trainer.export_training_state(), trainer_state)
+            manifest = export_and_register(update_id, batch)
             stored = ledger.get_update(update_id)
+            persist_transaction_state(
+                trainer.export_transaction_state(phase=stored.phase),
+                adapter=manifest)
             return stored.policy_before.version + 1
 
         def do_update(update_id: str) -> bool:
@@ -833,10 +880,18 @@ def run_spo(args: argparse.Namespace) -> int:
             with barrier.update_window():
                 concurrent.futures.wait([f for f, _ in in_flight.values()])
                 with lease.training():
+                    load_started = time.monotonic()
                     policy.ensure_loaded()
+                    _emit(metrics_path, "spo_model_loaded", phase="update",
+                          seconds=round(time.monotonic() - load_started, 3),
+                          completed_optimizer_steps=trainer.completed_optimizer_steps)
                     try:
                         restore_learner_weights()
                         stats = trainer.optimize_batch(batch)
+                        timing = dict(stats.get("timing") or {})
+                        timing["checkpoint_writer"] = checkpoint_writer.stats()
+                        _emit(metrics_path, "spo_update_timing", update_id=update_id,
+                              timing=timing)
                         finalize_update(update_id, batch, stats, behavior_before)
                     finally:
                         trainer.suspend_learner_binding()
@@ -869,10 +924,69 @@ def run_spo(args: argparse.Namespace) -> int:
             if not pending:
                 return 0
             import torch as _torch
+            transaction = load_transaction_state()
             finished = 0
             for record in pending:
                 update_id = record.update_id
+                transaction_for_update = transaction \
+                    if transaction is not None and transaction.get("update_id") == update_id else None
                 if record.phase == "RESERVED":
+                    # The ledger stays RESERVED while the async learning_started
+                    # snapshot is in flight. If an optimizer_step checkpoint
+                    # already exists (crash after the checkpoint but before the
+                    # ledger cursor advanced), resume that post-step state
+                    # instead of re-running AdamW from a stale base.
+                    checkpoint_state = None
+                    if trainer_state.is_file():
+                        checkpoint_state = _torch.load(
+                            trainer_state, map_location="cpu", weights_only=False)
+                        if not isinstance(checkpoint_state, Mapping) \
+                                or checkpoint_state.get("algorithm") != "single_stream_spo":
+                            raise RuntimeError("trainer checkpoint is not a single_stream_spo state")
+                        active = checkpoint_state.get("active_batch") or {}
+                        if not isinstance(active, Mapping):
+                            raise RuntimeError("trainer checkpoint has an invalid active batch")
+                        active_update = active.get("update") or {}
+                        if not isinstance(active_update, Mapping):
+                            raise RuntimeError("trainer checkpoint has an invalid update payload")
+                        if _active_update_id(checkpoint_state) == update_id \
+                                and active_update.get("optimizer_cursor") not in (0, 1):
+                            raise RuntimeError(
+                                "current update checkpoint has a missing/invalid optimizer cursor")
+                        if _active_update_id(checkpoint_state) == update_id \
+                                and active_update.get("optimizer_cursor") == 1:
+                            with barrier.update_window():
+                                concurrent.futures.wait([f for f, _ in in_flight.values()])
+                                with lease.training():
+                                    load_started = time.monotonic()
+                                    policy.ensure_loaded()
+                                    _emit(metrics_path, "spo_model_loaded",
+                                          phase="resume_post_step",
+                                          seconds=round(time.monotonic() - load_started, 3))
+                                    try:
+                                        trainer.restore_training_state(
+                                            checkpoint_state,
+                                            transaction=transaction_for_update)
+                                        stats = trainer.resume_batch()
+                                        batch = ledger.get_update(update_id)
+                                        finalize_update(update_id, batch, stats,
+                                                        batch.policy_before)
+                                        stats = dict(trainer._active["stats"]) \
+                                            if trainer._active else {}
+                                    finally:
+                                        trainer.suspend_learner_binding()
+                                        policy.release_memory()
+                                batch = ledger.get_update(update_id)
+                                if batch.phase in ("EXPORTED", "REGISTERED"):
+                                    manifest = restore_training_candidate(update_id)
+                                    batch = ledger.get_update(update_id)
+                                    persist_transaction_state(
+                                        trainer.export_transaction_state(phase=batch.phase),
+                                        adapter=manifest)
+                                activate_and_commit(update_id, batch, stats,
+                                                    batch.policy_before)
+                            finished += 1
+                            continue
                     behavior_before = record.policy_before
                     batch = ledger.get_update(update_id)
                     if batch.phase != "RESERVED":
@@ -880,10 +994,32 @@ def run_spo(args: argparse.Namespace) -> int:
                     with barrier.update_window():
                         concurrent.futures.wait([f for f, _ in in_flight.values()])
                         with lease.training():
+                            load_started = time.monotonic()
                             policy.ensure_loaded()
+                            _emit(metrics_path, "spo_model_loaded", phase="resume_reserved",
+                                  seconds=round(time.monotonic() - load_started, 3))
                             try:
-                                restore_learner_weights()
+                                if trainer._active is None and checkpoint_state is not None:
+                                    checkpoint_active = _active_update_id(checkpoint_state)
+                                    if checkpoint_active in (None, update_id):
+                                        trainer.restore_base_state(checkpoint_state)
+                                    else:
+                                        try:
+                                            previous_phase = ledger.get_update(checkpoint_active).phase
+                                        except (KeyError, ValueError):
+                                            previous_phase = None
+                                        if previous_phase != "CONSUMED":
+                                            raise RuntimeError(
+                                                f"trainer checkpoint belongs to non-consumed "
+                                                f"update {checkpoint_active}, not pending {update_id}")
+                                        trainer.restore_base_state(checkpoint_state)
+                                else:
+                                    restore_learner_weights()
                                 stats = trainer.optimize_batch(batch)
+                                timing = dict(stats.get("timing") or {})
+                                timing["checkpoint_writer"] = checkpoint_writer.stats()
+                                _emit(metrics_path, "spo_update_timing", update_id=update_id,
+                                      timing=timing)
                                 finalize_update(update_id, batch, stats, behavior_before)
                             finally:
                                 trainer.suspend_learner_binding()
@@ -897,7 +1033,7 @@ def run_spo(args: argparse.Namespace) -> int:
                     raise RuntimeError(
                         f"interrupted update {update_id} has no trainer checkpoint; refusing to skip it")
                 state = _torch.load(trainer_state, map_location="cpu", weights_only=False)
-                active_id = (state.get("active_batch") or {}).get("update_id")
+                active_id = _active_update_id(state)
                 if active_id != update_id:
                     raise RuntimeError(
                         f"trainer checkpoint belongs to {active_id}, not pending {update_id}")
@@ -906,7 +1042,8 @@ def run_spo(args: argparse.Namespace) -> int:
                     with lease.training():
                         policy.ensure_loaded()
                         try:
-                            trainer.restore_training_state(state)
+                            trainer.restore_training_state(
+                                state, transaction=transaction_for_update)
                             fresh = ledger.get_update(update_id)
                             if fresh.phase in ("LEARNING", "OPTIMIZED", "RESERVED"):
                                 stats = trainer.resume_batch()
@@ -914,15 +1051,21 @@ def run_spo(args: argparse.Namespace) -> int:
                                 finalize_update(update_id, batch, stats, batch.policy_before)
                                 stats = dict(trainer._active["stats"]) if trainer._active else {}
                             else:
-                                stats = dict((state.get("active_batch") or {}).get("stats", {}))
+                                # EXPORTED/REGISTERED/ACTIVATED already ran AdamW.
+                                # Spend only a KL probe if the transaction record
+                                # did not carry valid KL evidence.
+                                stats = trainer.ensure_kl_ready()
                                 batch = fresh
                         finally:
                             trainer.suspend_learner_binding()
                             policy.release_memory()
                     batch = ledger.get_update(update_id)
                     if batch.phase in ("EXPORTED", "REGISTERED"):
-                        restore_training_candidate(update_id)
+                        manifest = restore_training_candidate(update_id)
                         batch = ledger.get_update(update_id)
+                        persist_transaction_state(
+                            trainer.export_transaction_state(phase=batch.phase),
+                            adapter=manifest)
                     activate_and_commit(update_id, batch, stats, batch.policy_before)
                 finished += 1
             return finished
@@ -943,7 +1086,7 @@ def run_spo(args: argparse.Namespace) -> int:
             state = _torch.load(trainer_state, map_location="cpu", weights_only=False)
             if not isinstance(state, Mapping) or int(state.get("completed_optimizer_steps", 0)) <= 0:
                 return False
-            active_id = (state.get("active_batch") or {}).get("update_id")
+            active_id = _active_update_id(state)
             if active_id is not None:
                 try:
                     pending_phase = ledger.get_update(active_id).phase
@@ -953,7 +1096,10 @@ def run_spo(args: argparse.Namespace) -> int:
                     return False
             with barrier.update_window():
                 with lease.training():
+                    load_started = time.monotonic()
                     policy.ensure_loaded()
+                    _emit(metrics_path, "spo_model_loaded", phase="resume_base",
+                          seconds=round(time.monotonic() - load_started, 3))
                     try:
                         trainer.restore_training_state(state)
                         _emit(metrics_path, "spo_base_restored",
@@ -1068,9 +1214,18 @@ def run_spo(args: argparse.Namespace) -> int:
         return 0 if trainer.completed_optimizer_steps >= global_total else 75
     finally:
         try:
-            exec_manager.shutdown(cancel_pending=True)
+            if exec_manager is not None:
+                exec_manager.shutdown(cancel_pending=True)
         except (RuntimeError, OSError, ValueError):
             pass
+        try:
+            if checkpoint_writer is not None:
+                checkpoint_writer.close()
+        except (RuntimeError, OSError, ValueError) as error:
+            try:
+                _emit(metrics_path, "spo_checkpoint_writer_failed", error=str(error))
+            except OSError:
+                pass
         try:
             persist_budget(consumed + (time.monotonic() - start))
         except (RuntimeError, OSError, ValueError):

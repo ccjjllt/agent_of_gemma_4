@@ -163,10 +163,10 @@ class Policy:
             kwargs["max_memory"] = {
                 int(k): f"{int(v)}GiB" for k, v in config["max_memory_gib"].items()
             }
-        self.model, self.processor = FastModel.from_pretrained(
+        self.model, self.processor = self.FastModel.from_pretrained(
             model_name=str(model_path),
             max_seq_length=self.max_context,
-            dtype=torch.bfloat16,
+            dtype=self.torch.bfloat16,
             load_in_4bit=False,
             load_in_8bit=False,
             load_in_16bit=True,
@@ -180,7 +180,7 @@ class Policy:
             **kwargs,
         )
         self.targets = self._lora_targets(self.model, text_config)
-        self.model = FastModel.get_peft_model(
+        self.model = self.FastModel.get_peft_model(
             self.model,
             r=int(config.get("lora_rank", 128)),
             lora_alpha=int(config.get("lora_alpha", 256)),
@@ -727,7 +727,10 @@ class Policy:
         if (len(score_indices) != len(calls)
                 or any(len(indices) != len(call["completion_ids"]) for call, indices in zip(calls, score_indices))):
             raise ValueError("Prefix tree must retain every original completion-token loss occurrence")
-        with native_tree_forward(decoder, gradient_checkpointing=bool(self.gradient_checkpointing)):
+        with native_tree_forward(decoder,
+                                 gradient_checkpointing=bool(self.gradient_checkpointing),
+                                 checkpoint_policy=str(getattr(
+                                     self, "tree_checkpoint_policy", "all"))):
             outputs = decoder(input_ids=ids, attention_mask=masks, position_ids=positions,
                               use_cache=False, return_dict=True, output_hidden_states=False)
             hidden = outputs.last_hidden_state.squeeze(0)

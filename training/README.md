@@ -46,7 +46,7 @@ export TMPDIR=/root/autodl-tmp/gemma4/tmp
   --backend-url http://127.0.0.1:8000
 ```
 
-启动前只有纯 CPU 预检（`--check-only`）：配置、模型目录结构、tokenizer、SGLang 可达性（对 `base_url` 做只读 `GET /health`，不提交、不加载）。非空 run_dir 直接拒绝启动；继续训练必须用 `--resume`，且恢复时校验 serving 版本、adapter SHA、trainer checkpoint 步数与 ledger（含 ACTIVATED 中断态的来源证明），对不上就停。`--resume` 必须沿用首次启动的 `max_batches`（全局累计上限，LR 计划总量）；改动即停，不静默重置计划。
+启动前只有纯 CPU 预检（`--check-only`）：配置、模型目录结构、tokenizer、SGLang 可达性（对 `base_url` 做只读 `GET /health`，不提交、不加载）。非空 run_dir 直接拒绝启动；继续训练必须用 `--resume`，且恢复时校验 serving 版本、adapter SHA、trainer checkpoint 步数与 ledger（含 ACTIVATED 中断态的来源证明），对不上就停。trainer checkpoint schema 为 2，旧 schema 明确拒绝。`--resume` 必须沿用首次启动的 `max_batches`（全局累计上限，LR 计划总量）；改动即停，不静默重置计划。
 
 更新事务按阶段推进：RESERVED → LEARNING → OPTIMIZED → EXPORTED → REGISTERED → ACTIVATED → CONSUMED；训练租约内只做优化、导出与注册，发布与提交在训练租约之外完成，避免 GPU 租约死锁。退出码：0 跑满批次，75 预算耗尽（可续跑），2 配置或运行失败。
 
@@ -56,8 +56,10 @@ export TMPDIR=/root/autodl-tmp/gemma4/tmp
 
 - `model_identity.json`：模型路径、revision、config/tokenizer 哈希、LoRA 配置。
 - `spo_stream.db`：轨迹、奖励、价值、buffer、更新事务账本。
-- `spo_trainer_state.pt`：FP32 LoRA＋AdamW＋scheduler＋RNG 检查点。
+- `spo_trainer_state.pt`：FP32 LoRA＋AdamW＋scheduler＋RNG 检查点；只在 `optimizer_step` 参数边界写入。
+- `spo_trainer_tx.json`：轻量事务记录（阶段、optimizer step、KL 统计、checkpoint 文件引用；`EXPORTED/REGISTERED` 还包含导出 adapter 的 SHA256）；`learning_started`/`optimized`/导出阶段不再重复序列化大权重。
 - `adapters/versions/`：不可变版本注册表；`metrics.jsonl`、`budget.json`：运行事件与预算。
+- `metrics.jsonl` 中 `spo_model_loaded`、`spo_update_timing` 记录模型加载、前向、反向、优化器和 checkpoint 秒数，供首次 A800 调优。
 - 提交取所选 adapter 的 `adapter_config.json` 与 `adapter_model.safetensors`，仍需验证官方 CT 加载与修复收益。
 
 原始调用、轨迹、补丁和 JUnit 留服务器；用[日志同步入口](../scripts/sync_experiment_logs.py)经 SSH 取回数值摘要、重要日志与配置，不同步题目、权重或凭据。关机前正常停止实验，等待进程退出及 checkpoint 落盘，完成关键记录和代码同步；不擅自重启。续跑状态与有用 adapter 留服务器非共享盘，本地不保留重复初始状态和临时流水。

@@ -118,16 +118,10 @@ def mask_workspace_bytes(token_count, query_chunk_size, mask_element_size=4):
     return 3 * count * 8 + 2 * min(chunk, count) * count * size
 
 
-def plan_call_groups(calls, *, max_context, max_group_calls, max_tree_tokens,
-                     max_mask_bytes, mask_element_size, min_shared_tokens,
-                     attention_query_chunk_size=256):
-    """Plan deterministic lexicographic groups, falling back to full calls.
-
-    Attention work remains conservatively bounded by N^2, compared with the
-    independent input-length squares. Mask memory is only Q_chunk-by-N plus
-    linear indices; query chunks shrink to fit the explicit per-device budget.
-    A singleton uses the original independent scorer and allocates no tree mask.
-    """
+def _plan_lexicographic(calls, *, max_context, max_group_calls, max_tree_tokens,
+                        max_mask_bytes, mask_element_size, min_shared_tokens,
+                        attention_query_chunk_size=256):
+    """Deterministic contiguous groups over a lexicographic token order."""
     max_context = _integer(max_context, "max_context", minimum=1)
     max_group_calls = _integer(max_group_calls, "max_group_calls", minimum=1)
     max_tree_tokens = _integer(max_tree_tokens, "max_tree_tokens", minimum=1)
@@ -160,7 +154,7 @@ def plan_call_groups(calls, *, max_context, max_group_calls, max_tree_tokens,
                 break
             available_mask_rows = (max_mask_bytes - 3 * unique * 8) // (2 * unique * mask_element_size)
             chunk = min(attention_query_chunk_size, unique, available_mask_rows)
-            if chunk < 1:
+            if chunk < min(16, attention_query_chunk_size):
                 reason = "mask_budget"
                 break
             mask_bytes = mask_workspace_bytes(unique, chunk, mask_element_size)
@@ -192,6 +186,174 @@ def plan_call_groups(calls, *, max_context, max_group_calls, max_tree_tokens,
                            "tree_attention_elements": 0, "independent_attention_elements": length * length})
             cursor += 1
     return groups
+
+
+def _lcp_length(left: tuple[int, ...], right: tuple[int, ...]) -> int:
+    limit = min(len(left), len(right))
+    index = 0
+    while index < limit and left[index] == right[index]:
+        index += 1
+    return index
+
+
+def _prefix_group_metrics(indices, inputs, *, max_tree_tokens, max_mask_bytes,
+                          mask_element_size, min_shared_tokens,
+                          attention_query_chunk_size):
+    tree = _Trie()
+    total_tokens = 0
+    independent_attention = 0
+    for index in indices:
+        length = len(inputs[index])
+        tree.add(inputs[index])
+        total_tokens += length
+        independent_attention += length * length
+    unique = len(tree.input_ids)
+    if unique > max_tree_tokens:
+        return None, "tree_token_limit"
+    available_mask_rows = (max_mask_bytes - 3 * unique * 8) // (2 * unique * mask_element_size)
+    chunk = min(attention_query_chunk_size, unique, available_mask_rows)
+    # A one-row query chunk turns tree attention into a per-token launch storm.
+    # Prefer a singleton over that cliff; the caller can still raise the mask
+    # budget or lower min_shared_tokens explicitly.
+    if chunk < min(16, attention_query_chunk_size):
+        return None, "mask_budget"
+    if unique * unique > independent_attention:
+        return None, "dense_attention_work_limit"
+    saved = total_tokens - unique
+    if saved < min_shared_tokens:
+        return None, "insufficient_shared_tokens"
+    return {
+        "input_tokens": total_tokens,
+        "unique_tokens": unique,
+        "saved_tokens": saved,
+        "mode": "tree",
+        "reason": "exact_prefix_reuse",
+        "mask_bytes": mask_workspace_bytes(unique, chunk, mask_element_size),
+        "tree_attention_elements": unique * unique,
+        "attention_layout_version": ATTENTION_LAYOUT_VERSION,
+        "attention_query_chunk_size": chunk,
+        "independent_attention_elements": independent_attention,
+    }, "exact_prefix_reuse"
+
+
+def _plan_lcp_greedy(calls, *, max_context, max_group_calls, max_tree_tokens,
+                     max_mask_bytes, mask_element_size, min_shared_tokens,
+                     attention_query_chunk_size=256, lookahead=8):
+    """Prefer the longest shared prefix among nearby calls before tree build.
+
+    Lexicographic order already puts equal prefixes next to each other. This
+    planner adds a bounded lookahead: within the next ``lookahead`` calls it
+    tries the highest-LCP partner first, so one over-budget or short-prefix
+    neighbour cannot block a better tree partner. Exact token occurrences and
+    the per-call loss mapping are unchanged.
+    """
+    max_context = _integer(max_context, "max_context", minimum=1)
+    max_group_calls = _integer(max_group_calls, "max_group_calls", minimum=1)
+    max_tree_tokens = _integer(max_tree_tokens, "max_tree_tokens", minimum=1)
+    max_mask_bytes = _integer(max_mask_bytes, "max_mask_bytes")
+    mask_element_size = _integer(mask_element_size, "mask_element_size", minimum=1)
+    min_shared_tokens = _integer(min_shared_tokens, "min_shared_tokens")
+    attention_query_chunk_size = _integer(
+        attention_query_chunk_size, "attention_query_chunk_size", minimum=1)
+    lookahead = _integer(lookahead, "lookahead", minimum=1)
+    inputs = [_call_input(call) for call in calls]
+    for index, tokens in enumerate(inputs):
+        if len(tokens) + 1 > max_context:
+            raise ValueError(f"Call {index} exceeds complete-context limit; no truncation is allowed")
+    remaining = sorted(range(len(calls)), key=inputs.__getitem__)
+    groups = []
+    while remaining:
+        seed = remaining.pop(0)
+        length = len(inputs[seed])
+        if max_group_calls == 1:
+            groups.append({
+                "call_indices": [seed], "input_tokens": length,
+                "unique_tokens": length, "saved_tokens": 0,
+                "mode": "independent", "reason": "group_call_limit",
+                "mask_bytes": 0, "tree_attention_elements": 0,
+                "independent_attention_elements": length * length,
+                "grouping": "lcp_greedy", "lookahead": lookahead,
+            })
+            continue
+        window = remaining[:lookahead]
+        ranked = sorted(
+            range(len(window)),
+            key=lambda position: (-_lcp_length(inputs[seed], inputs[window[position]]),
+                                  position),
+        )
+        selected = [seed]
+        best = None
+        reason = "no_partner"
+        for position in ranked:
+            if len(selected) >= max_group_calls:
+                break
+            candidate = window[position]
+            trial = selected + [candidate]
+            metrics, why = _prefix_group_metrics(
+                trial, inputs,
+                max_tree_tokens=max_tree_tokens, max_mask_bytes=max_mask_bytes,
+                mask_element_size=mask_element_size,
+                min_shared_tokens=min_shared_tokens,
+                attention_query_chunk_size=attention_query_chunk_size,
+            )
+            if metrics is None:
+                reason = why
+                continue
+            selected = trial
+            best = metrics
+        if best is None:
+            groups.append({
+                "call_indices": [seed], "input_tokens": length,
+                "unique_tokens": length, "saved_tokens": 0,
+                "mode": "independent", "reason": reason,
+                "mask_bytes": 0, "tree_attention_elements": 0,
+                "independent_attention_elements": length * length,
+                "grouping": "lcp_greedy", "lookahead": lookahead,
+            })
+            continue
+        chosen = set(selected[1:])
+        remaining = [index for index in remaining if index not in chosen]
+        groups.append({
+            **best,
+            "call_indices": selected,
+            "grouping": "lcp_greedy",
+            "lookahead": lookahead,
+        })
+    return groups
+
+
+def plan_call_groups(calls, *, max_context, max_group_calls, max_tree_tokens,
+                     max_mask_bytes, mask_element_size, min_shared_tokens,
+                     attention_query_chunk_size=256, grouping="lcp_greedy",
+                     lookahead=8):
+    """Plan deterministic exact-prefix groups, falling back to full calls.
+
+    Attention work remains conservatively bounded by N^2, compared with the
+    independent input-length squares. Mask memory is only Q_chunk-by-N plus
+    linear indices; query chunks shrink to fit the explicit per-device budget.
+    A singleton uses the original independent scorer and allocates no tree mask.
+    """
+    if grouping not in {"lcp_greedy", "lexicographic"}:
+        raise ValueError("grouping must be lcp_greedy or lexicographic")
+    if grouping == "lexicographic":
+        groups = _plan_lexicographic(
+            calls, max_context=max_context, max_group_calls=max_group_calls,
+            max_tree_tokens=max_tree_tokens, max_mask_bytes=max_mask_bytes,
+            mask_element_size=mask_element_size,
+            min_shared_tokens=min_shared_tokens,
+            attention_query_chunk_size=attention_query_chunk_size,
+        )
+        for group in groups:
+            group["grouping"] = "lexicographic"
+        return groups
+    return _plan_lcp_greedy(
+        calls, max_context=max_context, max_group_calls=max_group_calls,
+        max_tree_tokens=max_tree_tokens, max_mask_bytes=max_mask_bytes,
+        mask_element_size=mask_element_size,
+        min_shared_tokens=min_shared_tokens,
+        attention_query_chunk_size=attention_query_chunk_size,
+        lookahead=lookahead,
+    )
 
 
 def tree_segments(tree):

@@ -257,11 +257,13 @@ def _validate_decoder(decoder):
 
 
 @contextmanager
-def native_tree_forward(decoder, *, gradient_checkpointing):
+def native_tree_forward(decoder, *, gradient_checkpointing, checkpoint_policy="all"):
     """Bind mask-aware native forwards until all associated backward work ends."""
     import torch
     from torch.utils.checkpoint import checkpoint
 
+    if checkpoint_policy not in {"all", "none"}:
+        raise ValueError("checkpoint_policy must be all or none")
     _validate_decoder(decoder)
     native = _native_gemma4()
     missing = object()
@@ -301,7 +303,8 @@ def native_tree_forward(decoder, *, gradient_checkpointing):
 
     def checkpointed_layer(instance, *args, **kwargs):
         forward = MethodType(native.Gemma4TextDecoderLayer.forward, instance)
-        if gradient_checkpointing and instance.training and torch.is_grad_enabled():
+        if checkpoint_policy == "all" and gradient_checkpointing \
+                and instance.training and torch.is_grad_enabled():
             return checkpoint(forward, *args, use_reentrant=False, **kwargs)
         return forward(*args, **kwargs)
 

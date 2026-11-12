@@ -12,6 +12,7 @@
 - [official/](official/README.md)：少量官方原始说明、模型配置与依赖缓存，附来源和文件指纹。
 - [scripts/](scripts/)：服务器环境安装；数据与模型手动获取。
 - [training/](training/)：SPO 训练链（调度、执行、奖励、更新、adapter 管理）；旧 GRPO 文件已从本分支删除，历史可查 Git 记录。
+- [docs/plan/007-training-throughput-optimization.md](docs/plan/007-training-throughput-optimization.md)：Checkpoint、KL 前向复用与 Prefix Tree 吞吐优化记录。
 - [requirements/](requirements/)：学习器候选依赖及已解析的版本清单。
 - `.venv/`：保留的本地 Python 环境。
 - `.git/`：保留现有 Git 历史；已提交的旧内容仍可从历史中查阅。

@@ -14,6 +14,7 @@ from dataclasses import replace
 import importlib
 import math
 import random
+import time
 from typing import Any, Mapping, Sequence
 
 from ..lr_schedule import make_scheduler, resolve_schedule
@@ -24,7 +25,7 @@ from ..trajectory.token_alignment import validate_token_alignment
 from .loss import spo_ppo_loss
 
 
-TRAINER_STATE_VERSION = 1
+TRAINER_STATE_VERSION = 2
 SPO_KL_ESTIMATOR = "spo_behavior_old_to_new_action_token_k3_v1"
 SPO_INTERVAL_KL_ESTIMATOR = "spo_pre_to_post_action_token_k3_v1"
 _PHASE_ORDER = {"RESERVED": 0, "LEARNING": 1, "OPTIMIZED": 2, "EXPORTED": 3,
@@ -135,16 +136,19 @@ class SPOTrainer:
     """Apply one PPO epoch to a frozen, complete-trajectory ``UpdateBatch``.
 
     ``config`` accepts the new flat SPO options, or a mapping containing
-    ``spo`` and ``optimizer`` sections.  The checkpoint callback is invoked at
-    the pre-forward and post-optimizer boundaries, and again after KL/OPTIMIZED.
-    It must durably persist the supplied state before returning if crash
-    recovery is desired.  Adapter export and ``ledger.commit_update`` remain
-    with the session because only the exported file supplies ``policy_after``
-    its real SHA256.
+    ``spo`` and ``optimizer`` sections. The full checkpoint callback is invoked
+    only at the post-optimizer boundary; `learning_started` and the post-KL
+    `optimized` phase are lightweight transaction records because no model,
+    AdamW or scheduler tensor changes between the last committed checkpoint
+    and those phases. It must durably persist the supplied state before
+    returning if crash recovery is desired. Adapter export and
+    ``ledger.commit_update`` remain with the session because only the exported
+    file supplies ``policy_after`` its real SHA256.
     """
 
     def __init__(self, policy: Any, ledger: TrajectoryLedger, config: Mapping[str, Any] | None = None,
-                 *, emit_callback: Any = None, checkpoint_callback: Any = None):
+                 *, emit_callback: Any = None, checkpoint_callback: Any = None,
+                 transaction_callback: Any = None):
         if not isinstance(ledger, TrajectoryLedger):
             raise TypeError("ledger must be a TrajectoryLedger")
         declared = dict(config or {})
@@ -157,6 +161,9 @@ class SPOTrainer:
         self.ledger = ledger
         self.emit_callback = emit_callback
         self.checkpoint_callback = checkpoint_callback
+        self.transaction_callback = transaction_callback
+        if transaction_callback is not None and checkpoint_callback is None:
+            raise ValueError("transaction_callback requires a full checkpoint_callback")
         self._declared_config = copy.deepcopy(declared)
         self.config = copy.deepcopy(cfg)
 
@@ -213,6 +220,11 @@ class SPOTrainer:
             raise ValueError("unsupported tree attention layout")
         self.post_update_kl_max_calls = _integer(
             cfg.get("post_update_kl_max_calls", 4), "post_update_kl_max_calls", 1)
+        self.profile_timing = bool(cfg.get("profile_training_timing", True))
+        tree_checkpoint_policy = str(cfg.get("training_tree_checkpoint_policy", "all"))
+        if tree_checkpoint_policy not in {"all", "none"}:
+            raise ValueError("training_tree_checkpoint_policy must be all or none")
+        self.policy.tree_checkpoint_policy = tree_checkpoint_policy
         self.policy.training_tree_backend = self.prefix_mode == "tree"
 
         for name in ("trainable_parameters", "per_token_logprobs", "per_token_logprobs_group",
@@ -369,18 +381,55 @@ class SPOTrainer:
 
     def _checkpoint(self, phase: str) -> None:
         self._checkpoint_phase = phase
+        # OPTIMIZED and LEARNING_STARTED only advance transaction metadata.
+        # A learning_started record points at the last committed full
+        # checkpoint (or null on the first update); no LoRA/Adam tensor has
+        # changed since that checkpoint. The only full save is optimizer_step.
+        if phase in ("learning_started", "optimized") and self.transaction_callback is not None:
+            started = time.perf_counter()
+            transaction = self.export_transaction_state(
+                phase="OPTIMIZED" if phase == "optimized" else "LEARNING")
+            export_elapsed = time.perf_counter() - started
+            write_started = time.perf_counter()
+            try:
+                self.transaction_callback(transaction)
+            finally:
+                self._record_checkpoint_timing(
+                    phase, export_elapsed, time.perf_counter() - write_started)
+            self._emit("spo_transaction_exported", phase=phase,
+                       optimizer_steps=self.completed_optimizer_steps,
+                       update_id=self._batch.update_id if self._batch else None)
+            return
         if self.checkpoint_callback is None:
             return
+        export_started = time.perf_counter()
         state = self.export_training_state()
+        export_elapsed = time.perf_counter() - export_started
         rng = copy.deepcopy(state["rng"])
+        write_started = time.perf_counter()
         try:
-            self.checkpoint_callback(state)
+            # Fallback path when no transaction callback is configured. The
+            # formal run reaches this only for optimizer_step; learning_started
+            # is a lightweight transaction above.
+            self.checkpoint_callback(state, sync=(phase != "learning_started"))
         finally:
+            write_elapsed = time.perf_counter() - write_started
+            self._record_checkpoint_timing(phase, export_elapsed, write_elapsed)
             # Checkpoint I/O and event serialization must not perturb training RNG.
             restore_rng_state(rng, self._require_torch())
         self._emit("spo_state_exported", phase=phase,
                    optimizer_steps=self.completed_optimizer_steps,
-                   update_id=self._batch.update_id if self._batch else None)
+                   update_id=self._batch.update_id if self._batch else None,
+                   export_seconds=export_elapsed, write_seconds=write_elapsed)
+
+    def _record_checkpoint_timing(self, phase: str, export_elapsed: float,
+                                  write_elapsed: float) -> None:
+        if self._active is None:
+            return
+        timing = self._active["stats"].setdefault("timing", {})
+        timing[f"checkpoint_{phase}_export_seconds"] = float(export_elapsed)
+        timing[f"checkpoint_{phase}_submit_seconds"] = float(write_elapsed)
+        timing[f"checkpoint_{phase}_seconds"] = float(export_elapsed + write_elapsed)
 
     def _check_cancelled(self) -> None:
         event = getattr(self.policy, "abort_generation", None)
@@ -441,6 +490,11 @@ class SPOTrainer:
 
     def _install_active(self, active: Mapping[str, Any], trajectories: Sequence[Trajectory]) -> None:
         self._active = copy.deepcopy(dict(active))
+        active_update = self._active.get("update")
+        if isinstance(active_update, Mapping):
+            batch_id = active_update.get("update_id")
+            if self._active.get("update_id") not in (None, batch_id):
+                raise ValueError("active update id disagrees with its frozen batch")
         self._trajectories = tuple(trajectories)
         self._flat = [(trajectory, call) for trajectory in trajectories for call in trajectory.calls]
         self._calls = [self._call_payload(call) for _, call in self._flat]
@@ -464,6 +518,8 @@ class SPOTrainer:
             min_shared_tokens=int(self.config.get("training_prefix_min_tokens", 256)),
             attention_query_chunk_size=int(self.config.get(
                 "training_prefix_query_chunk_size", 256)),
+            grouping=str(self.config.get("training_prefix_grouping", "lcp_greedy")),
+            lookahead=int(self.config.get("training_prefix_lookahead", 8)),
         )
         if self.prefix_mode == "none":
             groups.sort(key=lambda group: group["call_indices"][0])
@@ -490,6 +546,7 @@ class SPOTrainer:
         self._flat = [(trajectory, call) for trajectory in trajectories for call in trajectory.calls]
         self._calls = [self._call_payload(call) for _, call in self._flat]
         active = {
+            "update_id": batch.update_id,
             "update": batch.to_dict(),
             "current_policy_version": current_policy_version,
             "offset": self.completed_optimizer_steps,
@@ -507,32 +564,27 @@ class SPOTrainer:
         }
         self._install_active(active, trajectories)
         self._batch = batch
-        # Freeze the pre-update policy's scores before any optimizer step. The
-        # registered drift is K3(pre || post) over exactly this update's
-        # version interval; behavior→current stays a separate, explicitly
-        # labeled off-policy diagnostic and must never stand in for it.
-        self._active["pre_update_logprobs"] = self._capture_pre_update_logprobs()
+        # Pre-update KL scores are captured from the same differentiable
+        # training forward in _apply_optimizer_step, before AdamW advances.
+        # No separate probe forward is run here.
 
-    def _capture_pre_update_logprobs(self) -> dict[str, list[float]]:
-        """Score the KL probe calls with the unstepped policy (training lease)."""
+    def _freeze_logprobs(self, values: Any, call: Any, *, label: str) -> list[float]:
+        """Detach one call's selected-token scores into CPU float64 evidence."""
         torch = self._require_torch()
-        if self._active is None or self._flat is None:
-            raise RuntimeError("no active SPO batch to score")
-        captured: dict[str, list[float]] = {}
-        for index in self._active["kl_call_indices"]:
-            _, call = self._flat[index]
-            with torch.no_grad():
-                scores = self.policy.score_call(self._call_payload(call), reference=False)
-            values = (scores.detach().to(device="cpu", dtype=torch.float64).tolist()
-                      if isinstance(scores, torch.Tensor)
-                      else [float(value) for value in scores])
-            if len(values) != len(call.behavior_logprobs) \
-                    or not all(math.isfinite(value) for value in values):
-                raise RuntimeError("pre-update scoring must return one finite logprob per behavior token")
-            captured[str(index)] = values
-        if not captured:
-            raise RuntimeError("pre-update KL capture selected no calls")
-        return captured
+        if isinstance(values, torch.Tensor):
+            frozen = values.detach().to(device="cpu", dtype=torch.float64).tolist()
+        else:
+            frozen = [float(value) for value in values]
+        if len(frozen) != len(call.behavior_logprobs) \
+                or not all(math.isfinite(value) for value in frozen):
+            raise RuntimeError(
+                f"{label} must return one finite logprob per behavior token")
+        return frozen
+
+    def _sync_cuda(self) -> None:
+        """Make timing include completed GPU work; opt out for low overhead."""
+        if self.profile_timing and self.torch is not None and self.torch.cuda.is_available():
+            self.torch.cuda.synchronize()
 
     def _adopt_batch(self, batch: UpdateBatch) -> None:
         self._batch = batch
@@ -543,13 +595,15 @@ class SPOTrainer:
         stats["optimizer_cursor"] = batch.optimizer_cursor
         stats["phase"] = batch.phase
 
-    def _set_phase(self, phase: str, cursor: int) -> None:
+    def _set_phase(self, phase: str, cursor: int, *, write_ledger: bool = True) -> None:
         if self._batch is None:
             raise RuntimeError("no active SPO batch")
         # Keep the in-memory checkpoint at the real model boundary even if the
         # separate ledger commit fails; restore reconciles a ledger behind it.
         self._adopt_batch(replace(self._batch, phase=phase, optimizer_cursor=cursor))
         self._checkpoint_safe = True
+        if not write_ledger:
+            return
         persisted = self.ledger.set_update_phase(
             self._batch.update_id, phase, optimizer_cursor=cursor)
         self._adopt_batch(persisted)
@@ -579,7 +633,10 @@ class SPOTrainer:
             self._new_active(stored, trajectories, version)
             self._initialize_optimizer()
             self._ensure_positive_lr()
-            self._set_phase("LEARNING", 0)
+            # Ledger stays RESERVED until the post-step checkpoint is durable.
+            # The async learning_started snapshot may still be in flight; a
+            # crash now must be able to redo the whole update from the base.
+            self._set_phase("LEARNING", 0, write_ledger=False)
             self._checkpoint_safe = True
             self._checkpoint("learning_started")
             self.ledger.assert_update_lag(stored.update_id, version, self.max_policy_lag)
@@ -652,12 +709,19 @@ class SPOTrainer:
         total_loss = 0.0
         groups = self._active["training_groups"]
         global_tokens = self._batch.total_action_tokens
+        kl_indices = {int(index) for index in self._active["kl_call_indices"]}
+        pre_update: dict[str, list[float]] = {}
+        forward_seconds = 0.0
+        backward_seconds = 0.0
         for group in groups:
             self._check_cancelled()
-            members = [self._flat[index] for index in group["call_indices"]]
-            calls = [self._calls[index] for index in group["call_indices"]]
+            call_indices = list(group["call_indices"])
+            members = [self._flat[index] for index in call_indices]
+            calls = [self._calls[index] for index in call_indices]
             with ExitStack() as lifetime:
                 with self._autocast():
+                    self._sync_cuda()
+                    forward_started = time.perf_counter()
                     if self.prefix_mode == "tree":
                         scores = lifetime.enter_context(self.policy.per_token_logprobs_group(
                             calls, compute_entropy=False,
@@ -667,11 +731,20 @@ class SPOTrainer:
                     else:
                         scores = [self.policy.per_token_logprobs(
                             calls[0], compute_entropy=False)]
+                    self._sync_cuda()
+                    forward_seconds += time.perf_counter() - forward_started
                     if len(scores) != len(members):
                         raise RuntimeError("Policy scorer dropped an original call occurrence")
                     losses = []
-                    for (trajectory, call), scored in zip(members, scores):
+                    for index, (trajectory, call), scored in zip(call_indices, members, scores):
                         current = scored[0] if isinstance(scored, (tuple, list)) else scored
+                        if index in kl_indices:
+                            # This is the same differentiable forward that will
+                            # produce the actor loss. Freeze its detached scores
+                            # before AdamW; no separate pre-update probe forward
+                            # is needed for the KL interval.
+                            pre_update[str(index)] = self._freeze_logprobs(
+                                current, call, label="training forward for KL probe")
                         advantage = self._batch.frozen_advantages[trajectory.trajectory_id]
                         # Every call contributes its local token sum divided by the
                         # SAME global denominator.  Sum group losses; never average
@@ -687,7 +760,15 @@ class SPOTrainer:
                     raise FloatingPointError("non-finite SPO microbatch objective")
                 total_loss += float(group_loss.detach().cpu())
                 # The native tree/checkpoint context stays open through backward.
+                self._sync_cuda()
+                backward_started = time.perf_counter()
                 group_loss.backward()
+                self._sync_cuda()
+                backward_seconds += time.perf_counter() - backward_started
+        if set(pre_update) != kl_indices:
+            raise RuntimeError(
+                "training forward did not cover every KL probe call; refusing to mislabel drift")
+        self._active["pre_update_logprobs"] = pre_update
         self._check_cancelled()
         self.ledger.assert_update_lag(
             self._batch.update_id, self._active["current_policy_version"],
@@ -695,6 +776,8 @@ class SPOTrainer:
         )
         self._ensure_positive_lr()
         rates = [float(group["lr"]) for group in self.optimizer.param_groups]
+        self._sync_cuda()
+        optimizer_started = time.perf_counter()
         grad_norm = torch.nn.utils.clip_grad_norm_(
             self._parameters, self.max_grad_norm, error_if_nonfinite=True)
         norm = float(grad_norm.detach().cpu())
@@ -703,8 +786,17 @@ class SPOTrainer:
         scheduler_before = self.scheduler.state_dict()["last_epoch"]
         self.optimizer.step()
         self.scheduler.step()
+        self._sync_cuda()
+        optimizer_seconds = time.perf_counter() - optimizer_started
         self.completed_optimizer_steps += 1
         self.optimizer.zero_grad(set_to_none=True)
+        timing = self._active["stats"].setdefault("timing", {})
+        timing.update({
+            "forward_seconds": forward_seconds,
+            "backward_seconds": backward_seconds,
+            "optimizer_seconds": optimizer_seconds,
+            "timing_synced": bool(self.profile_timing),
+        })
         self._active["stats"].update({
             "optimizer_steps": 1,
             "nonzero_lr_optimizer_steps": 1,
@@ -719,9 +811,13 @@ class SPOTrainer:
             "optimizer_step": self.completed_optimizer_steps,
             "nonzero_lr_step_semantics": "successful AdamW step at positive LR; not proof of weight change",
         })
-        self._set_phase("LEARNING", 1)
+        self._set_phase("LEARNING", 1, write_ledger=False)
         self._checkpoint_safe = True
+        # Durable post-step checkpoint before the ledger cursor advances. A
+        # crash between these two writes leaves ledger cursor 0 but a cursor-1
+        # checkpoint, which _reconcile_ledger repairs without repeating AdamW.
         self._checkpoint("optimizer_step")
+        self._set_phase("LEARNING", 1)
 
     def _kl_ready(self) -> bool:
         if self._active is None:
@@ -750,7 +846,9 @@ class SPOTrainer:
         token_count = 0
         indices = list(self._active["kl_call_indices"])
         behavior_versions = set()
+        kl_started = time.perf_counter()
         try:
+            self._sync_cuda()
             for index in indices:
                 self._check_cancelled()
                 _, call = self._flat[index]
@@ -815,6 +913,10 @@ class SPOTrainer:
                 },
             }
         finally:
+            self._sync_cuda()
+            if self._active is not None:
+                timing = self._active["stats"].setdefault("timing", {})
+                timing["kl_seconds"] = time.perf_counter() - kl_started
             restore_rng_state(rng, torch)
 
     def _public_stats(self) -> dict[str, Any]:
@@ -835,6 +937,7 @@ class SPOTrainer:
             "global_action_token_denominator": self._batch.total_action_tokens,
             "ppo_epochs": 1,
             "microbatch_count": len(self._active["training_groups"]),
+            "logprob_chunk_size": int(getattr(self.policy, "chunk_size", 0)),
             "lr_schedule": dict(self.schedule_contract),
             "commit_ready": self._batch.phase == "OPTIMIZED" and ready,
             "adapter_hash_change_required": True,
@@ -847,6 +950,7 @@ class SPOTrainer:
                 "mode": self.prefix_mode,
                 "version": "exact_token_tree_v1",
                 "attention_layout_version": ATTENTION_LAYOUT_VERSION,
+                "checkpoint_policy": getattr(self.policy, "tree_checkpoint_policy", "all"),
                 "groups": copy.deepcopy(self._active["training_groups"]),
                 "scope": "exact token paths and per-call loss occurrences; not a measured speedup",
             },
@@ -875,6 +979,75 @@ class SPOTrainer:
             "rng": capture_rng_state(torch),
         }
 
+    def export_transaction_state(self, *, phase: str | None = None) -> dict[str, Any]:
+        """Small, fsynced companion to the last full optimizer_step snapshot.
+
+        It carries only the phase/cursor/stats needed to finish an update
+        without re-serializing the 31B-size LoRA and AdamW tensors.
+        """
+        if self._active is None or self._batch is None:
+            raise RuntimeError("no active SPO batch for a transaction record")
+        return {
+            "schema_version": 1,
+            "algorithm": "single_stream_spo",
+            "update_id": self._batch.update_id,
+            "phase": str(phase or self._batch.phase),
+            "checkpoint_phase": self._checkpoint_phase,
+            "optimizer_cursor": self._batch.optimizer_cursor,
+            "completed_optimizer_steps": self.completed_optimizer_steps,
+            "offset": self._active.get("offset"),
+            "policy_before": self._batch.policy_before.to_dict(),
+            "stats": copy.deepcopy(self._active.get("stats") or {}),
+            "kl_ready": self._kl_ready(),
+        }
+
+    def _merge_transaction(self, transaction: Mapping[str, Any] | None) -> None:
+        """Overlay a lightweight record on the restored full checkpoint."""
+        if transaction is None:
+            return
+        if not isinstance(transaction, Mapping) or transaction.get("schema_version") != 1 \
+                or transaction.get("algorithm") != "single_stream_spo":
+            raise ValueError("unsupported SPO transaction record")
+        if self._active is None or self._batch is None:
+            raise RuntimeError("cannot merge a transaction without an active batch")
+        if transaction.get("update_id") != self._batch.update_id:
+            raise ValueError(
+                f"transaction record belongs to {transaction.get('update_id')}, "
+                f"not {self._batch.update_id}")
+        if transaction.get("completed_optimizer_steps") != self.completed_optimizer_steps:
+            raise ValueError("transaction optimizer step differs from the full checkpoint")
+        policy_before = transaction.get("policy_before")
+        if policy_before is not None and policy_before != self._batch.policy_before.to_dict():
+            raise ValueError("transaction policy_before differs from the frozen batch")
+        stats = transaction.get("stats")
+        if not isinstance(stats, Mapping):
+            raise ValueError("transaction record has no stats mapping")
+        self._active["stats"].update(copy.deepcopy(dict(stats)))
+        if transaction.get("kl_ready") is True and not self._kl_ready():
+            raise ValueError("transaction claims KL readiness without matching evidence")
+        tx_phase = transaction.get("phase")
+        if isinstance(tx_phase, str) and tx_phase in _PHASE_ORDER:
+            self._checkpoint_phase = tx_phase.lower()
+
+    def ensure_kl_ready(self) -> dict[str, Any]:
+        """Measure post-step KL once without moving a later ledger phase back."""
+        if self._active is None or self._batch is None:
+            raise RuntimeError("no active SPO batch")
+        if self._batch.optimizer_cursor != 1:
+            raise RuntimeError("KL interval evidence requires a completed optimizer step")
+        if not self._kl_ready():
+            self._checkpoint_safe = False
+            try:
+                diagnostic = self._measure_post_update_kl()
+            finally:
+                self._checkpoint_safe = True
+            self._active["stats"].update(
+                kl_value=diagnostic["kl_value"], token_count=diagnostic["token_count"],
+                estimator=diagnostic["estimator"], post_update_kl=diagnostic,
+            )
+            self._emit("spo_post_update_kl", update_id=self._batch.update_id, **diagnostic)
+        return self._public_stats()
+
     def _reconcile_ledger(self) -> None:
         if self._active is None or self._batch is None:
             raise RuntimeError("no active SPO batch")
@@ -883,8 +1056,12 @@ class SPOTrainer:
         if not _same_frozen_batch(saved, stored):
             raise ValueError("ledger frozen advantages/IDs differ from the training checkpoint")
         if stored.phase == "CONSUMED":
-            if saved.phase != "OPTIMIZED" or not self._kl_ready():
-                raise ValueError("consumed ledger update needs its OPTIMIZED KL checkpoint")
+            # A CONSUMED update is already durable in the ledger and registry.
+            # The only model requirement is proof that AdamW ran: cursor 1 at
+            # either LEARNING (optimizer_step snapshot) or OPTIMIZED (legacy
+            # optimized snapshot). KL is no longer needed for future training.
+            if saved.optimizer_cursor != 1:
+                raise ValueError("consumed ledger update needs a post-optimizer checkpoint")
             self._adopt_batch(stored)
             return
         if stored.optimizer_cursor > saved.optimizer_cursor:
@@ -901,7 +1078,8 @@ class SPOTrainer:
             # is already restored, and missing KL can be measured without Adam.
             self._adopt_batch(stored)
 
-    def restore_training_state(self, state: Mapping[str, Any]) -> None:
+    def restore_training_state(self, state: Mapping[str, Any],
+                               transaction: Mapping[str, Any] | None = None) -> None:
         """Restore model/Adam/schedule/RNG and the exact current batch once."""
         if self._busy or self._active is not None or self.optimizer is not None \
                 or self.completed_optimizer_steps:
@@ -934,6 +1112,7 @@ class SPOTrainer:
         elif state.get("scheduler") is not None or completed:
             raise ValueError("completed updates require Adam and scheduler state")
         self.completed_optimizer_steps = completed
+        self._checkpoint_phase = str(state.get("checkpoint_phase", "restored"))
 
         active = copy.deepcopy(state.get("active_batch"))
         if active is not None:
@@ -953,11 +1132,53 @@ class SPOTrainer:
             trajectories = self._load_trajectories(batch, version)
             self._install_active(active, trajectories)
             self._batch = batch
+            self._merge_transaction(transaction)
             self._reconcile_ledger()
         restore_rng_state(state["rng"], torch)
         self.policy.model.zero_grad(set_to_none=True)
         self.policy._mode = None
-        self._checkpoint_phase = str(state.get("checkpoint_phase", "restored"))
+        self._checkpoint_safe = True
+
+    def restore_base_state(self, state: Mapping[str, Any]) -> None:
+        """Restore adapter/AdamW/scheduler/RNG without installing an active batch.
+
+        Used when a RESERVED update must be replayed from the committed base
+        after an async learning_started snapshot. The frozen batch stays in
+        the ledger; optimize_batch() builds a fresh active state from it.
+        """
+        if self._busy or self._active is not None or self.optimizer is not None \
+                or self.completed_optimizer_steps:
+            raise RuntimeError("base restore requires a fresh, inactive SPOTrainer")
+        if not isinstance(state, Mapping) or state.get("schema_version") != TRAINER_STATE_VERSION \
+                or state.get("algorithm") != "single_stream_spo":
+            raise ValueError("unsupported SPO trainer checkpoint")
+        if state.get("trainer_config") != self._declared_config:
+            raise ValueError("checkpoint trainer configuration differs")
+        if state.get("lr_schedule") != self.schedule_contract:
+            raise ValueError("checkpoint LR schedule differs")
+        completed = state.get("completed_optimizer_steps")
+        if type(completed) is not int or completed < 0:
+            raise ValueError("invalid completed optimizer count")
+        torch = self._require_torch()
+        self.bind_parameters()
+        if state.get("optimizer_parameter_names") != self._parameter_names:
+            raise ValueError("checkpoint optimizer parameter ordering differs")
+        self.policy.restore_adapter_state(state["adapter"])
+        if state.get("optimizer") is not None:
+            self._initialize_optimizer()
+            self.optimizer.load_state_dict(state["optimizer"])
+            for parameter, values in self.optimizer.state.items():
+                self.optimizer.state[parameter] = _clone_cpu_tensors(values, torch)
+            if state.get("scheduler") is None:
+                raise ValueError("optimizer checkpoint requires scheduler state")
+            self.scheduler.load_state_dict(state["scheduler"])
+        elif state.get("scheduler") is not None or completed:
+            raise ValueError("completed updates require Adam and scheduler state")
+        self.completed_optimizer_steps = completed
+        self._checkpoint_phase = str(state.get("checkpoint_phase", "restored_base"))
+        restore_rng_state(state["rng"], torch)
+        self.policy.model.zero_grad(set_to_none=True)
+        self.policy._mode = None
         self._checkpoint_safe = True
 
     def acknowledge_commit(self, update_id: str) -> None:
