@@ -1,6 +1,6 @@
 # 项目工作约定
 
-> 分支边界（2026-11-15）：`main` 只用于 submission 构建与提交，不进行研究、训练或 GPU 实验。训练与研究代码、配置、结果和实验约定保留在 `codex/training-plan-refactor` 分支；本文件以下研究约定仅在该分支适用。
+> 分支边界（2026-11-15）：`main` 用于 submission 构建/提交与竞赛调研证据（`research/competition-intel/`），不进行模型训练或 GPU 实验。模型 adapter 的训练代码、配置、结果与实验约定保留在 `codex/training-plan-refactor` 分支；本文件以下研究约定仅在该分支适用。
 
 用户于2026-10-11明确要求：专注比赛研究，不纠结测试和门控，不写测试文件，所有验证手动进行。
 

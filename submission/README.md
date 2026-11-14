@@ -30,4 +30,4 @@ sha256sum ../submission.zip   # 应匹配 provenance.json
 
 不要把 `submission.zip` 自身、`.DS_Store`、`__MACOSX` 或任何测试文件放进包内；根配置只保留 `agent.yaml`。
 
-完整调研与改进判定见研究分支 `codex/training-plan-refactor` 的 `research/competition-intel/`。
+完整调研与改进判定见本分支 `research/competition-intel/`。
