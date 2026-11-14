@@ -1,0 +1,101 @@
+{
+  "record_type": "local_protocol_check",
+  "date": "2026-11-12",
+  "scope": "vLLM HTTP protocol, lease order and PEFT target audit on CPU; not A800/GPU evidence",
+  "vllm_version_target": "0.32.0",
+  "python": "3.11 local .venv (CPU-only; vLLM itself is not installed locally)",
+  "checks": {
+    "compileall": "ok",
+    "imports": [
+      "training.run_spo",
+      "training.rollout.backend",
+      "training.rollout.vllm_backend",
+      "training.adapter.manager",
+      "training.remote_serving"
+    ],
+    "import_result": "ok"
+  },
+  "mock_vllm_backend": {
+    "deployment": {
+      "lora_enabled": true,
+      "max_lora_rank": 128,
+      "max_loras": 2,
+      "max_cpu_loras": 2,
+      "sleep_enabled": true,
+      "sleep_level": 2,
+      "base_model": "google/gemma-4-31B-it-qat-q4_0-unquantized"
+    },
+    "load_adapter": {
+      "lora_name": "spo-v00000000-a8112ebd13ba298f",
+      "loaded": true
+    },
+    "generation": {
+      "input_ids_echo": [11, 12, 13],
+      "output_ids": [9001, 9002],
+      "logprobs": [-0.25, -0.5],
+      "finish_reason": "stop",
+      "adapter_sha256_bound": true
+    },
+    "training_lease": {
+      "entered_level2_sleep": true,
+      "adapters_unloaded_before_sleep": true,
+      "wake_weights_reload_kv_sequence": true,
+      "adapters_reloaded_on_exit": true,
+      "post_lease_submit_succeeded": true
+    },
+    "cancel": {
+      "status": "aborted",
+      "aborted": 2,
+      "note": "client sends both bare and cmpl-prefixed ids"
+    },
+    "http_calls_observed": 32,
+    "empty_200_control_check": {
+      "pause_resume_sleep_wake_abort_reload_returned_empty_200": true,
+      "training_lease_completed": true,
+      "adapter_reloaded_after_wake": true
+    },
+    "restart_adopt_check": {
+      "second_backend_same_server": true,
+      "load_adapter_result": {
+        "loaded": true,
+        "already_loaded": true,
+        "server_resident": true
+      }
+    }
+  },
+  "check_only": {
+    "return_code": 0,
+    "engine": "vllm",
+    "deployment_reachable": true,
+    "metrics_available": true,
+    "mock_server_config": {
+      "max_lora_rank": 128,
+      "max_loras": 2,
+      "sleep_enabled": true
+    }
+  },
+  "adapter_audit": {
+    "adapter_config_sha256": "9bb2a63cf7f8bc2f5dfe46538593a1c029ff52c5b71038e523730f65b2d983b8",
+    "target_count": 400,
+    "expected_target_count": 400,
+    "k_eq_v_layers": [5, 11, 17, 23, 29, 35, 41, 47, 53, 59],
+    "k_eq_v_targets": [],
+    "compatible": true,
+    "reasons": []
+  },
+  "negative_adapter_audit": {
+    "change": "synthetic target_modules adds layers.5.self_attn.k_proj",
+    "target_count": 401,
+    "k_eq_v_targets": ["model.language_model.layers.5.self_attn.k_proj"],
+    "compatible": false,
+    "reasons": ["target_count_mismatch", "k_eq_v_k_proj_requires_vllm_pr_61267"]
+  },
+  "not_executed": [
+    "31B model load on vLLM",
+    "A800 tensor-parallel generation",
+    "real Unsloth adapter load and logprob parity vs Transformers",
+    "Level-2 sleep/wake GPU memory and reload time",
+    "LoRA swap under a live vLLM server",
+    "CT runtime adapter load"
+  ]
+}
