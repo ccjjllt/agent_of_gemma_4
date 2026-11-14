@@ -1,23 +1,26 @@
-# Gemma 4 Developer Agent
+# Gemma 4 Developer Agent — Submission Branch
 
-单一路线：Gemma 4 31B BF16 + LoRA Rank 128 / Alpha 256 + Single-stream SPO + 异步 Agent RL。推理走 vLLM，同机双 A800 模型并行；vLLM 使用独立 Python 环境，不并入 Unsloth learner。不做算法对比，不降 Rank。
+`main` 只用于构建和提交 Kaggle submission，不保存训练、研究或实验记录。训练与研究代码保留在 `codex/training-plan-refactor` 分支。
 
-实施入口：[双 A800 训练与运行说明](training/README.md)。首轮只跑在线 SPO；SFT 冷启动、教师蒸馏、OPD 已实现（`training/data/`）但明确后置，待首次真实 SPO 更新证明循环成立后再接入。数据与模型在服务器手动获取。
+## 目录
 
-方案细节：[SPO 异步训练设计](research/spo-async-training-design.md)、[vLLM 迁移记录](docs/plan/008-vllm-backend-migration.md)。当前配置：[configs/spo_a800_2x80.toml](configs/spo_a800_2x80.toml)；推理环境：[requirements/inference-vllm.lock.txt](requirements/inference-vllm.lock.txt)。
+- [submission/](submission/README.md)：submission 根目录占位；实际提交内容按官方 `adk-submission` 契约放入。
+- [official/](official/README.md)：官方接口说明、模型配置与依赖缓存，附来源和文件指纹。
+- [patches/](patches/adk-1.36.1-tool-events.patch)：host runtime 的 ADK 事件摘要修复。
+- [AGENTS.md](AGENTS.md)：项目工作约定；研究约定仅适用于 `codex/training-plan-refactor` 分支。
 
-当前目录：
+## Submission 约束
 
-- [AGENTS.md](AGENTS.md)：项目工作约定。
-- [official/](official/README.md)：少量官方原始说明、模型配置与依赖缓存，附来源和文件指纹。
-- [scripts/](scripts/)：服务器环境安装；数据与模型手动获取。
-- [training/](training/)：SPO 训练链（调度、执行、奖励、更新、adapter 管理）；旧 GRPO 文件已从本分支删除，历史可查 Git 记录。
-- [docs/plan/007-training-throughput-optimization.md](docs/plan/007-training-throughput-optimization.md)：Checkpoint、KL 前向复用与 Prefix Tree 吞吐优化记录。
-- [docs/plan/008-vllm-backend-migration.md](docs/plan/008-vllm-backend-migration.md)：vLLM 推理后端、动态 LoRA、Level-2 sleep 与本地核对记录。
-- [requirements/](requirements/)：学习器与独立 vLLM 推理环境的依赖清单。
-- `.venv/`：保留的本地 Python 环境。
-- `.git/`：保留现有 Git 历史；已提交的旧内容仍可从历史中查阅。
+以 `official/HARNESS_README.md` 为准，关键边界包括：
 
-训练数据在运行时直接挂载比赛官方公开集，不在本地下载、复制或另建训练数据包。GPU 实验按新的具体授权与预算执行；没有启动训练或评测，也没有操作远程资源。
+- 提交是声明式 YAML 目录，不提交 `agent.py` / Python 入口；根配置为 `agent.yaml`、`agent.yml`、`root_agent.yaml` 或 `root_agent.yml` 之一。
+- 全部 agent 只能声明一个允许的 base model，并从官方四个量化模型中选择。
+- 解压后总大小必须小于 3 GiB（含 `adapters/`）；LoRA rank 上限 128。
+- 路径不得包含绝对路径、`..`、空字节或指向根目录外的 symlink。
+- 评测题、隐藏任务和官方私有资产不得写入 submission。
+
+## 当前状态
+
+`main` 不包含训练代码、训练数据、实验日志或 adapter 权重；这些资产不随本分支提交。GPU 训练与模型研究不在本分支进行。
 
 比赛入口：[Gemma 4 Developer Agent Competition](https://www.kaggle.com/competitions/gemma-4-developer-agent)。
