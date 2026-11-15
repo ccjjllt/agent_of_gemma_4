@@ -159,6 +159,129 @@ def _active_update_id(state: Any) -> Any:
     return value
 
 
+def _checkpoint_update_cursor(state: Any, update_id: str) -> int | None:
+    """Return the batch cursor only when the checkpoint owns ``update_id``.
+
+    ``None`` means the checkpoint is the committed base or another update's
+    state, or the layout is unknown. Every destructive rollback treats that as
+    "not proven pre-step" and refuses to touch the checkpoint.
+    """
+    if not isinstance(state, Mapping) or _active_update_id(state) != update_id:
+        return None
+    active = state.get("active_batch")
+    if not isinstance(active, Mapping):
+        return None
+    update = active.get("update")
+    if not isinstance(update, Mapping):
+        return None
+    cursor = update.get("optimizer_cursor")
+    if type(cursor) is not int or cursor not in (0, 1):
+        return None
+    return cursor
+
+
+def _base_state_from_prestep_checkpoint(
+    state: Mapping[str, Any], update_id: str
+) -> dict[str, Any]:
+    """Strip a pre-step active batch and keep the committed training tensors.
+
+    A pre-step snapshot is the state *before* this update's AdamW: adapter,
+    AdamW moments, scheduler and RNG all belong to the last committed update.
+    Deleting it would reset training to step 0 while the ledger still reports
+    the committed step count.
+    """
+    if _checkpoint_update_cursor(state, update_id) != 0:
+        raise RuntimeError(
+            f"checkpoint for {update_id} is not a pre-step (cursor 0) snapshot")
+    active = state["active_batch"]
+    offset = active.get("offset")
+    completed = state.get("completed_optimizer_steps")
+    if type(offset) is not int or offset < 0 or completed != offset:
+        raise RuntimeError(
+            "pre-step checkpoint offset and completed optimizer steps disagree")
+    base = dict(state)
+    base["active_batch"] = None
+    base["checkpoint_phase"] = "discarded_unoptimized_batch"
+    return base
+
+
+def recovery_discard_reason(record: Any, checkpoint_state: Any,
+                            transaction: Any, *, require_positive_signal: bool,
+                            ledger: Any) -> str | None:
+    """Decide whether startup recovery must roll a batch back as signal-free.
+
+    A rollback is allowed only when every source agrees that AdamW never ran:
+    ledger phase RESERVED/LEARNING with cursor 0, no post-step transaction, no
+    positive signal, and (for LEARNING) a cursor-0 checkpoint that owns this
+    update. ``require_positive_signal = false`` disables the rollback entirely.
+    """
+    if not require_positive_signal:
+        return None
+    if record.phase not in ("RESERVED", "LEARNING") or record.optimizer_cursor != 0:
+        return None
+    if transaction is not None and transaction.get("update_id") == record.update_id \
+            and transaction.get("optimizer_cursor") != 0:
+        return None
+    if ledger.update_has_positive_signal(record.update_id):
+        return None
+    cursor = _checkpoint_update_cursor(checkpoint_state, record.update_id)
+    if cursor == 1:
+        return None
+    if record.phase == "LEARNING" and cursor != 0:
+        # Without a pre-step checkpoint this update cannot be proven harmless;
+        # the existing missing/foreign checkpoint guards report it instead.
+        return None
+    return "no_positive_repair_signal_on_resume"
+
+
+def discard_unoptimized_update(
+    ledger: Any, update_id: str, reason: str, *,
+    checkpoint_state: Mapping[str, Any] | None = None,
+    transaction: Mapping[str, Any] | None = None,
+    rebase_checkpoint: Any = None,
+    drop_transaction: Any = None,
+) -> dict[str, Any] | None:
+    """Roll back an update that provably never ran AdamW.
+
+    Returns the rebased base snapshot when the full checkpoint pointed at this
+    update, so the caller can restore it into a fresh trainer. Otherwise the
+    on-disk checkpoint already belongs to an earlier committed update and is
+    left byte-for-byte untouched. No training state is ever deleted here.
+    """
+    base_state = None
+    checkpoint_completed = 0
+    if checkpoint_state is not None:
+        if not isinstance(checkpoint_state, Mapping):
+            raise TypeError("checkpoint state must be a mapping")
+        checkpoint_completed = checkpoint_state.get("completed_optimizer_steps")
+        if type(checkpoint_completed) is not int or checkpoint_completed < 0:
+            raise RuntimeError("checkpoint has an invalid completed optimizer count")
+        cursor = _checkpoint_update_cursor(checkpoint_state, update_id)
+        if cursor == 1:
+            raise RuntimeError(
+                f"refusing to discard {update_id}: its optimizer step is durable")
+        if cursor == 0:
+            base_state = _base_state_from_prestep_checkpoint(checkpoint_state, update_id)
+            if rebase_checkpoint is None:
+                raise RuntimeError("a rebase callback is required to preserve the base")
+            rebase_checkpoint(base_state)
+    if transaction is not None and transaction.get("update_id") == update_id:
+        if transaction.get("optimizer_cursor") != 0:
+            raise RuntimeError(
+                f"refusing to discard {update_id}: its transaction records a post-step state")
+        tx_completed = transaction.get("completed_optimizer_steps")
+        if type(tx_completed) is not int or tx_completed < 0:
+            raise RuntimeError("transaction has an invalid completed optimizer count")
+        if tx_completed != checkpoint_completed:
+            raise RuntimeError(
+                "transaction and checkpoint disagree on completed optimizer steps")
+        if drop_transaction is None:
+            raise RuntimeError("a transaction cleanup callback is required")
+        drop_transaction()
+    ledger.discard_unoptimized_update(update_id, reason)
+    return base_state
+
+
 def _verify_resume_consistency(run_dir: Path, ledger: Any) -> dict[str, Any]:
     """Fail closed when a --resume run cannot continue the previous run.
 
@@ -501,11 +624,15 @@ def run_spo(args: argparse.Namespace) -> int:
             extra_wheels=extra_wheels,
             emit=lambda n, **f: _emit(metrics_path, n, **f)))
     reward_engine = RewardEngine(baselines)
+    # One explicit switch drives both the reserve-time gate and startup
+    # recovery: an operator who sets spo.require_positive_signal=false must not
+    # have --resume silently discard a pending signal-free batch.
+    require_positive_signal = bool(cfg["spo"].get("require_positive_signal", True))
     trajectory_buffer = TrajectoryBuffer(
         ledger, target_action_tokens=int(cfg["spo"]["target_action_tokens"]),
         max_policy_lag=int(cfg["spo"]["max_policy_lag"]),
         advantage_epsilon=float(cfg["spo"].get("advantage_epsilon", 1.0e-6)),
-        require_positive_signal=bool(cfg["spo"].get("require_positive_signal", True)))
+        require_positive_signal=require_positive_signal)
     rollout_engine = RolloutEngine(requests, reward_engine, ledger, tracker, trajectory_buffer)
 
     backend_url = args.backend_url or cfg["inference"].get("base_url")
@@ -1034,6 +1161,71 @@ def run_spo(args: argparse.Namespace) -> int:
         else:
             persist_budget(consumed)
 
+        def rebase_trainer_checkpoint(base_state: Mapping[str, Any]) -> None:
+            """Durably replace a pre-step batch snapshot with the committed base.
+
+            The optimizer_step tensors already describe the committed base; only
+            the active-batch marker is removed. The atomic writer keeps the old
+            file until the new one is fsynced, so a crash can only repeat the
+            rebase, never lose the last committed adapter/AdamW.
+            """
+            checkpoint_writer.submit(base_state, sync=True)
+            _emit(metrics_path, "spo_checkpoint_rebased",
+                  completed_optimizer_steps=base_state.get("completed_optimizer_steps"),
+                  checkpoint_phase=base_state.get("checkpoint_phase"))
+
+        def drop_trainer_transaction() -> None:
+            # Only a validated pre-step transaction reaches this point; any
+            # post-step record refuses the discard before deletion.
+            trainer_tx_path.unlink(missing_ok=True)
+            _emit(metrics_path, "spo_transaction_discarded")
+
+        def restore_discarded_base(base_state: Mapping[str, Any] | None) -> None:
+            """Adopt the preserved base so the next update continues trained.
+
+            A fresh trainer starts at completed_optimizer_steps == 0. Without
+            this restore the next optimizer step would use zero LoRA and fresh
+            AdamW moments while the ledger already reports committed updates.
+            """
+            if base_state is None:
+                return
+            completed = base_state.get("completed_optimizer_steps")
+            if type(completed) is not int or completed <= 0:
+                # A zero-step snapshot is equivalent to a fresh trainer;
+                # restore_committed_base() deliberately skips it too.
+                return
+            if trainer._active is not None or trainer.completed_optimizer_steps \
+                    or trainer.optimizer is not None:
+                return
+            with barrier.update_window():
+                with lease.training():
+                    load_started = time.monotonic()
+                    policy.ensure_loaded()
+                    _emit(metrics_path, "spo_model_loaded",
+                          phase="resume_discarded_base",
+                          seconds=round(time.monotonic() - load_started, 3))
+                    try:
+                        trainer.restore_base_state(base_state)
+                        _emit(metrics_path, "spo_base_restored",
+                              completed_optimizer_steps=trainer.completed_optimizer_steps,
+                              source="discarded_unoptimized_update")
+                    finally:
+                        trainer.suspend_learner_binding()
+                        policy.release_memory()
+
+        def discard_prestep_update(update_id: str, reason: str, *,
+                                   checkpoint_state: Mapping[str, Any] | None,
+                                   transaction: Mapping[str, Any] | None) -> bool:
+            """Discard without deleting trained state; True when rebased."""
+            base_state = discard_unoptimized_update(
+                ledger, update_id, reason,
+                checkpoint_state=checkpoint_state,
+                transaction=transaction,
+                rebase_checkpoint=rebase_trainer_checkpoint,
+                drop_transaction=drop_trainer_transaction)
+            restore_discarded_base(base_state)
+            return base_state is not None
+
         def resume_pending_updates() -> int:
             """Finish ledger-uncompleted updates oldest-first; never skip ahead.
 
@@ -1043,6 +1235,13 @@ def run_spo(args: argparse.Namespace) -> int:
             EXPORTED/REGISTERED/ACTIVATED batches already finished the
             optimizer step: their remaining publish stages replay idempotently
             without another gradient step.
+
+            When require_positive_signal is on, a pre-step RESERVED/LEARNING
+            batch with no official P>0 or exact shadow repair is consumed as
+            NOOP. Its full checkpoint is rebased to the committed base, never
+            unlinked: the file also carries every previously trained adapter
+            and AdamW moment. An explicit `require_positive_signal = false`
+            opts out of this startup rollback as well as the reserve gate.
             """
             pending = list(ledger.list_updates(("RESERVED", "LEARNING", "OPTIMIZED",
                                                 "EXPORTED", "REGISTERED", "ACTIVATED")))
@@ -1112,19 +1311,22 @@ def run_spo(args: argparse.Namespace) -> int:
                                                     batch.policy_before)
                             finished += 1
                             continue
-                    if not ledger.update_has_positive_signal(update_id):
+                    discard_reason = recovery_discard_reason(
+                        record, checkpoint_state, transaction_for_update,
+                        require_positive_signal=require_positive_signal, ledger=ledger)
+                    if discard_reason is not None:
                         # A RESERVED batch from an older run (or one reserved
                         # just before a crash) must not bypass the signal gate.
-                        # No optimizer step has run on this path: the cursor==1
-                        # recovery above has already continued.
-                        ledger.discard_reserved_update(
-                            update_id, "no_positive_repair_signal_on_resume")
-                        if (checkpoint_state is not None
-                                and _active_update_id(checkpoint_state) == update_id):
-                            trainer_state.unlink(missing_ok=True)
-                            trainer_tx_path.unlink(missing_ok=True)
+                        # The durable cursor==1 path above already continued, so
+                        # this update never ran AdamW. Rebase the checkpoint to
+                        # its committed base instead of deleting the only copy
+                        # of previously trained adapter/AdamW state.
+                        rebased = discard_prestep_update(
+                            update_id, discard_reason,
+                            checkpoint_state=checkpoint_state,
+                            transaction=transaction_for_update)
                         _emit(metrics_path, "spo_reserved_discarded", update_id=update_id,
-                              reason="no_positive_repair_signal_on_resume")
+                              reason=discard_reason, rebased_checkpoint=rebased)
                         continue
                     behavior_before = record.policy_before
                     batch = ledger.get_update(update_id)
@@ -1176,6 +1378,22 @@ def run_spo(args: argparse.Namespace) -> int:
                 if active_id != update_id:
                     raise RuntimeError(
                         f"trainer checkpoint belongs to {active_id}, not pending {update_id}")
+                discard_reason = recovery_discard_reason(
+                    record, state, transaction_for_update,
+                    require_positive_signal=require_positive_signal, ledger=ledger)
+                if discard_reason is not None:
+                    # Legacy LEARNING/0 recovery used to call resume_batch() and
+                    # run the whole optimizer step, bypassing the signal gate.
+                    # A cursor-0 checkpoint proves AdamW never ran, so roll the
+                    # batch back and keep the committed base it still carries.
+                    rebased = discard_prestep_update(
+                        update_id, discard_reason,
+                        checkpoint_state=state,
+                        transaction=transaction_for_update)
+                    _emit(metrics_path, "spo_unoptimized_discarded", update_id=update_id,
+                          phase=record.phase, reason=discard_reason,
+                          rebased_checkpoint=rebased)
+                    continue
                 with barrier.update_window():
                     concurrent.futures.wait([f for f, _ in in_flight.values()])
                     with lease.training():

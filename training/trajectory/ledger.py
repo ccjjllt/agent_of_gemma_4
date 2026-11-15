@@ -391,10 +391,16 @@ class TrajectoryLedger:
         return json.loads(row[0])
 
     @staticmethod
-    def _discard_reserved_update(conn: sqlite3.Connection, batch: UpdateBatch,
-                                 reason: str) -> None:
-        if batch.phase != "RESERVED" or batch.optimizer_cursor != 0:
-            raise RuntimeError("only an unoptimized RESERVED update can be discarded")
+    def _discard_unoptimized_update(conn: sqlite3.Connection, batch: UpdateBatch,
+                                    reason: str) -> None:
+        # LEARNING/0 is only legal before AdamW: the trainer writes its
+        # post-step checkpoint and advances the cursor before any ledger move
+        # to LEARNING/1. A cursor of 0 therefore proves that no training state
+        # has to be undone, so the same rollback is safe for a legacy
+        # LEARNING record and for the normal RESERVED reservation.
+        if batch.phase not in ("RESERVED", "LEARNING") or batch.optimizer_cursor != 0:
+            raise RuntimeError(
+                "only an unoptimized RESERVED/LEARNING update can be discarded")
         trajectories = [TrajectoryLedger._get_trajectory(conn, trajectory_id)
                         for trajectory_id in batch.trajectory_ids]
         conn.execute("DELETE FROM update_trajectories WHERE update_id=?", (batch.update_id,))
@@ -419,11 +425,21 @@ class TrajectoryLedger:
             return any(self._reward_has_positive_signal(self._conn, trajectory_id)
                        for trajectory_id in batch.trajectory_ids)
 
-    def discard_reserved_update(self, update_id: str, reason: str) -> None:
+    def discard_unoptimized_update(self, update_id: str, reason: str) -> None:
+        """Roll back a provably pre-step RESERVED/LEARNING update.
+
+        The caller must have established that no AdamW step ran (ledger cursor
+        0 and a pre-step trainer checkpoint). This method only moves ledger and
+        buffer rows; trained weights/AdamW stay in the trainer checkpoint.
+        """
         if not isinstance(reason, str) or not reason.strip():
             raise ValueError("a discard reason is required")
         with self.transaction() as conn:
-            self._discard_reserved_update(conn, self._get_update(conn, update_id), reason)
+            self._discard_unoptimized_update(conn, self._get_update(conn, update_id), reason)
+
+    def discard_reserved_update(self, update_id: str, reason: str) -> None:
+        """Retained name for callers of the original RESERVED-only rollback."""
+        self.discard_unoptimized_update(update_id, reason)
 
     def offer_trajectory(self, trajectory_id: str) -> str:
         """Offer one complete rewarded trajectory; never splits or reorders calls."""
@@ -551,7 +567,7 @@ class TrajectoryLedger:
                         and batch.optimizer_cursor == 0
                         and not any(self._reward_has_positive_signal(
                             conn, trajectory_id) for trajectory_id in batch.trajectory_ids)):
-                    self._discard_reserved_update(
+                    self._discard_unoptimized_update(
                         conn, batch, "no_positive_repair_signal_on_retry")
                     return None
                 return batch
