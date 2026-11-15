@@ -117,9 +117,11 @@ agent_pytest_collection_failure / agent_pytest_import_failure
 
 1. **丢弃批次不再删除训练状态**：旧代码在 `--resume` 丢弃无信号 `RESERVED` 批次时，只要完整 checkpoint 的 active batch 指向该批次就 unlink `spo_trainer_state.pt`；该文件同时保存此前已训练的 adapter、AdamW moments、scheduler 和 RNG。现在改为把 pre-step 快照改写为 committed base（`active_batch=None`，`completed_optimizer_steps` 不变），原子写入成功后才删除 ledger 行；删除 ledger 行后，若 base 含已训练状态，在 training lease 内 `restore_base_state()` 装回 fresh trainer。checkpoint 属于更早 committed update 时保持字节不变。
 2. **旧式 `LEARNING`+cursor 0 恢复先过信号门**：恢复不再直接 `resume_batch()` 跑完整个 optimizer step；`recovery_discard_reason()` 要求 ledger phase 为 RESERVED/LEARNING、ledger cursor 0、无 post-step 事务、无 `P>0`/shadow repair；对 LEARNING 还要求 checkpoint cursor 0。事务声称 cursor 1 但 checkpoint 不能证明时 fail closed；checkpoint 声称拥有该 update 但 cursor 不可读时也拒绝回滚。只有 cursor-1 checkpoint 佐证的 post-step 状态才继续走完成发布路径。事务的 `completed_optimizer_steps == offset + optimizer_cursor` 和 batch offset 一致性由非回滚的 `SPOTrainer._merge_transaction()` 在合并前校验，不满足直接拒绝。
-3. **显式关闭选项在 resume 也生效**：`spo.require_positive_signal=false` 现在同时关闭 reserve 与 resume 的回滚；该丢弃在开关为 true（默认，当前配置显式设为 true）时执行，显式设为 false 时 reserve 与 resume 都不回滚。注意全零 frozen advantage 的 NOOP 路径不依赖该开关。
+3. **显式关闭选项在 resume 也生效**：`spo.require_positive_signal=false` 现在同时关闭 reserve 与 resume 的回滚；该丢弃在开关为 true（默认，当前配置显式设为 true）时执行，显式设为 false 时 reserve 与 resume 都不回滚。注意全零 frozen advantage 的 NOOP 路径不依赖该开关。`require_positive_signal` 不参与 trainer checkpoint 的配置等价检查（它是数据门控，不改模型、优化器或调度），因此可以在已有 run 上显式切换，resume 不会报“trainer configuration differs”。
 
-一次性核对（`results/cpu-improve-20261115/recovery_path_validation.json`）：pre-step checkpoint 被改写后 adapter/AdamW 逐张量相等，fresh trainer 恢复 `completed_optimizer_steps=3`、`last_epoch=3` 且 `exp_avg` 非零；`LEARNING`+cursor 0 经真实 ledger 回滚成功；cursor 1 checkpoint 被拒绝且当时 ledger 行保留（`cursor1_row_preserved=true`，随后清理）；属于更早 committed update 的 checkpoint SHA256 不变。该核对使用 CPU fake policy 和真实 ledger/trainer 代码，不调用模型，也不构成训练效果证据。
+另封闭两个崩溃窗口：① rebase 已落盘但 ledger 行未删时，checkpoint 的 `checkpoint_phase=discarded_unoptimized_batch` 标记会在下一次 resume 完成丢弃，`LEARNING` 行不再被 “belongs to None” 卡死；② 若 checkpoint 仍指向已删除 update 的 cursor-0 快照（例如 `reserve_update` 重试路径），`restore_committed_base()` 把它当作 committed base 用 `restore_base_state()` 恢复，而不是静默从 step 0 重新开始；未知 owner 的 cursor-1 快照直接拒绝。
+
+一次性核对（`results/cpu-improve-20261115/recovery_path_validation.json`）：pre-step checkpoint 被改写后 adapter/AdamW 逐张量相等，fresh trainer 恢复 `completed_optimizer_steps=3`、`last_epoch=3` 且 `exp_avg` 非零；`LEARNING`+cursor 0 经真实 ledger 回滚成功；cursor 1 checkpoint 被拒绝且当时 ledger 行保留（`cursor1_row_preserved=true`，随后清理）；已 rebase 的未完成丢弃可在不重写 base 的情况下完成；orphaned pre-step owner 可作为 committed base 恢复；`require_positive_signal` 切换不破坏配置等价；属于更早 committed update 的 checkpoint SHA256 不变。该核对使用 CPU fake policy 和真实 ledger/trainer 代码，不调用模型，也不构成训练效果证据。
 
 ## 4. 证据与边界
 
@@ -138,7 +140,7 @@ agent_pytest_collection_failure / agent_pytest_import_failure
 
 当前实例为无卡模式，`nvidia-smi -L` 无设备；短 GPU 采样需要用户切回 GPU 模式并另行授权预算。建议的首轮条件：
 
-- 代码：`656e6850`（依赖约束、shadow audit、正信号门控修正、恢复路径保留已训练状态）；新 run 目录，沿用同一 v0 和同一公开题集。
+- 代码：`ffa3389a`（依赖约束、shadow audit、正信号门控修正、恢复路径保留已训练状态）；新 run 目录，沿用同一 v0 和同一公开题集。
 - 预算：单次 45–60 分钟，`max_batches=1`，`target_action_tokens=16384`，其余 Rank 128、奖励权重、8 分钟/28 工具调用不变；不再用“缩小 token 阈值制造梯度”。
 - 通过条件：至少一条轨迹出现可观测的 `P>0` 或 `shadow_repair` 正修复；若仍全部为 0.15 或 0.10，`require_positive_signal` 会把该前缀标为 `NOOP_CONSUMED`，不启动优化步，只记录该批没有质量排序信号。
 - 门控实现：`TrajectoryBuffer`/`TrajectoryLedger.reserve_update(require_positive_signal=True)` 在冻结 advantage 前检查 `reward_audit` 事件；`max_batches=1` 不再足以单独触发更新。旧 run 中没有 audit 的 buffered 轨迹按无信号处理，不静默放行。
