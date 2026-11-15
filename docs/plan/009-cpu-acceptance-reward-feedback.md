@@ -116,7 +116,7 @@ agent_pytest_collection_failure / agent_pytest_import_failure
 复核指出三条恢复路径问题，已按“任何路径都不得用无信号批次推进 optimizer，也不得删除已训练状态”修正：
 
 1. **丢弃批次不再删除训练状态**：旧代码在 `--resume` 丢弃无信号 `RESERVED` 批次时，只要完整 checkpoint 的 active batch 指向该批次就 unlink `spo_trainer_state.pt`；该文件同时保存此前已训练的 adapter、AdamW moments、scheduler 和 RNG。现在改为把 pre-step 快照改写为 committed base（`active_batch=None`，`completed_optimizer_steps` 不变），原子写入成功后才删除 ledger 行；若 base 含已训练状态，先在 training lease 内 `restore_base_state()` 装回 fresh trainer。checkpoint 属于更早 committed update 时保持字节不变。
-2. **旧式 `LEARNING`+cursor 0 恢复先过信号门**：恢复不再直接 `resume_batch()` 跑完整个 optimizer step；`recovery_discard_reason()` 要求 ledger cursor 0、事务 cursor 0、checkpoint cursor 0 且无 `P>0`/shadow repair，才回滚。事务还要满足 `completed_optimizer_steps == offset + optimizer_cursor`；不一致的记录在合并前直接拒绝。cursor 1 或任何 post-step 证据继续走完成发布路径，绝不被丢弃。
+2. **旧式 `LEARNING`+cursor 0 恢复先过信号门**：恢复不再直接 `resume_batch()` 跑完整个 optimizer step；`recovery_discard_reason()` 要求 ledger cursor 0、事务 cursor 0、checkpoint cursor 0 且无 `P>0`/shadow repair，才回滚。事务还要满足 `completed_optimizer_steps == offset + optimizer_cursor`，且 offset 等于 checkpoint 的 batch offset；不一致的记录在合并前直接拒绝。若事务声称 cursor 1 但 checkpoint 不能证明该 cursor，也按不一致拒绝，而不是从旧 base 重跑 AdamW。cursor 1 或任何 post-step 证据继续走完成发布路径，绝不被丢弃。
 3. **显式关闭选项在 resume 也生效**：`spo.require_positive_signal=false` 现在同时关闭 reserve 与 resume 的回滚；只有显式开启时才执行上述丢弃。
 
 一次性核对（`results/cpu-improve-20261115/recovery_path_validation.json`）：pre-step checkpoint 被改写后 adapter/AdamW 逐张量相等，fresh trainer 恢复 `completed_optimizer_steps=3`、`last_epoch=3` 且 `exp_avg` 非零；`LEARNING`+cursor 0 经真实 ledger 回滚成功；cursor 1 checkpoint 被拒绝且 ledger 行保留；属于更早 committed update 的 checkpoint SHA256 不变。该核对使用 CPU fake policy 和真实 ledger/trainer 代码，不调用模型，也不构成训练效果证据。
@@ -138,7 +138,7 @@ agent_pytest_collection_failure / agent_pytest_import_failure
 
 当前实例为无卡模式，`nvidia-smi -L` 无设备；短 GPU 采样需要用户切回 GPU 模式并另行授权预算。建议的首轮条件：
 
-- 代码：`8ad73bcd`（依赖约束、shadow audit、正信号门控修正、恢复路径保留已训练状态）；新 run 目录，沿用同一 v0 和同一公开题集。
+- 代码：`03f55d75`（依赖约束、shadow audit、正信号门控修正、恢复路径保留已训练状态）；新 run 目录，沿用同一 v0 和同一公开题集。
 - 预算：单次 45–60 分钟，`max_batches=1`，`target_action_tokens=16384`，其余 Rank 128、奖励权重、8 分钟/28 工具调用不变；不再用“缩小 token 阈值制造梯度”。
 - 通过条件：至少一条轨迹出现可观测的 `P>0` 或 `shadow_repair` 正修复；若仍全部为 0.15 或 0.10，`require_positive_signal` 会把该前缀标为 `NOOP_CONSUMED`，不启动优化步，只记录该批没有质量排序信号。
 - 门控实现：`TrajectoryBuffer`/`TrajectoryLedger.reserve_update(require_positive_signal=True)` 在冻结 advantage 前检查 `reward_audit` 事件；`max_batches=1` 不再足以单独触发更新。旧 run 中没有 audit 的 buffered 轨迹按无信号处理，不静默放行。
