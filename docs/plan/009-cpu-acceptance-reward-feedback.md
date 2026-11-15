@@ -107,7 +107,7 @@ agent_pytest_collection_failure / agent_pytest_import_failure
 | `fastapi_14258` | `tests_completed` | 0.0 | 1.0 | 0.15 | not_applicable：基线 passed 分母为 0 | measured 0/1 | false |
 | `rich_4076` | `tests_completed` | 0.0 | 1.0 | 0.15 | measured 0/20（不是旧表的 0/24；`matching_nodes` 已只数基线 passed） | measured 0/4 | false |
 
-这同时验证了：官方 verdict 和 eligibility 不变；collection failure 的标量确实与普通未修复候选分开；shadow 只在 exact 覆盖完整时给数值，缺失时保持 unavailable；三份候选都没有 `P>0` 或 shadow repair，`require_positive_signal` 会把该批标为 NOOP，不会仅因 `max_batches=1` 自动更新。
+这同时验证了：官方 verdict 和 eligibility 不变；collection failure 的标量确实与普通未修复候选分开；shadow 只在 exact 覆盖完整时给数值，缺失时保持 unavailable；三份候选都没有 `P>0` 或 shadow repair，`require_positive_signal` 会把该批标为 NOOP，不会仅因 `max_batches=1` 自动更新。正式 `RolloutEngine` 路径另用真实 `RewardEngine` 和 fake request manager 跑通：轨迹进入 `BUFFERED`，`P=1.0`，`reward_audit` 事件含 `positive_repair_signal=true` 且不含测试节点名；结果在 `fix_verification.json` 的 `formal_rollout`。
 
 ## 4. 证据与边界
 
