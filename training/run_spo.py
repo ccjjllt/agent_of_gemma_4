@@ -214,17 +214,28 @@ def recovery_discard_reason(record: Any, checkpoint_state: Any,
     ledger phase RESERVED/LEARNING with cursor 0, no post-step transaction, no
     positive signal, and (for LEARNING) a cursor-0 checkpoint that owns this
     update. ``require_positive_signal = false`` disables the rollback entirely.
+
+    A transaction that claims a post-step cursor without the matching cursor-1
+    checkpoint is inconsistent, not durable; raise instead of replaying AdamW.
     """
-    if not require_positive_signal:
-        return None
     if record.phase not in ("RESERVED", "LEARNING") or record.optimizer_cursor != 0:
         return None
-    if transaction is not None and transaction.get("update_id") == record.update_id \
-            and transaction.get("optimizer_cursor") != 0:
+    cursor = _checkpoint_update_cursor(checkpoint_state, record.update_id)
+    if transaction is not None and transaction.get("update_id") == record.update_id:
+        tx_cursor = transaction.get("optimizer_cursor")
+        if type(tx_cursor) is not int or tx_cursor not in (0, 1):
+            raise RuntimeError(
+                f"update {record.update_id} has an invalid transaction cursor")
+        if tx_cursor == 1:
+            if cursor != 1:
+                raise RuntimeError(
+                    f"update {record.update_id} has a post-step transaction but "
+                    "no matching cursor-1 checkpoint")
+            return None
+    if not require_positive_signal:
         return None
     if ledger.update_has_positive_signal(record.update_id):
         return None
-    cursor = _checkpoint_update_cursor(checkpoint_state, record.update_id)
     if cursor == 1:
         return None
     if record.phase == "LEARNING" and cursor != 0:
