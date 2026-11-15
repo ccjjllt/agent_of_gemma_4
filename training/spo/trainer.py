@@ -143,6 +143,7 @@ def _trainer_identity_config(config: Any) -> Any:
     if not isinstance(config, Mapping):
         return config
     normalized = copy.deepcopy(dict(config))
+    normalized.pop("require_positive_signal", None)
     spo = normalized.get("spo")
     if isinstance(spo, dict):
         spo.pop("require_positive_signal", None)
