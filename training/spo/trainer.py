@@ -333,14 +333,14 @@ class SPOTrainer:
         the optimizer load first leaves the group LR at step N and makes
         ``make_scheduler()`` reject the rebind.
         """
+        if opt_state.get("state") and sched_state is None:
+            raise RuntimeError("suspended optimizer state has no scheduler state")
         torch = self._require_torch()
         self.optimizer = torch.optim.AdamW(
             self._parameters, lr=self.learning_rate,
             weight_decay=self.weight_decay, fused=self.fused,
         )
         self.scheduler = make_scheduler(self.optimizer, self.schedule_contract)
-        if opt_state.get("state") and sched_state is None:
-            raise RuntimeError("suspended optimizer state has no scheduler state")
         self.optimizer.load_state_dict(opt_state)
         if sched_state is not None:
             self.scheduler.load_state_dict(sched_state)
