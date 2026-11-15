@@ -127,7 +127,7 @@ agent_pytest_collection_failure / agent_pytest_import_failure
 
 `suspend_learner_binding()` 保存的 AdamW 状态带有恢复时的当前 LR（例如第 3 步的 `0.0008333…`，不是 base `0.001`），而 `make_scheduler()` 要求 fresh optimizer 仍在 base LR。旧 `bind_parameters()` 先 `optimizer.load_state_dict()` 再 `make_scheduler()`，所以恢复后的下一次 learner 重绑定会报 `Construct the LR scheduler on a fresh optimizer at the declared base_lr`；generation-change 分支还会把旧 scheduler 留在旧 optimizer 上，后续 `scheduler.step()` 不再驱动新 optimizer 的 LR。
 
-现在两条路径统一走 `_rebuild_optimizer_binding()`：fresh AdamW → `make_scheduler()`（base LR）→ `optimizer.load_state_dict()`（恢复当前 LR 与动量）→ `scheduler.load_state_dict()`（恢复 `last_epoch`/`base_lrs`）。若 AdamW 有动量但缺少 scheduler 状态，直接拒绝，不静默丢失调度。一次性核对（`results/cpu-improve-20261115/rebind_order_validation.json`）在真实 `SPOTrainer` 上跑 3 步后分别走 `restore_base_state → suspend → bind`、直接 suspended-state 和 generation-change 三条重绑定路径：LR 都恢复为 `0.0008333…`、`last_epoch=3`、scheduler 绑定新 optimizer、AdamW 动量保留；重绑定后的下一步 LR 与未 suspend 的对照同为 `0.0006666…`。修复前同一脚本在 suspended 路径报上述 `ValueError`，generation 路径的 scheduler 仍绑定旧 optimizer。
+现在两条路径统一走 `_rebuild_optimizer_binding()`：fresh AdamW → `make_scheduler()`（base LR）→ `optimizer.load_state_dict()`（恢复当前 LR 与动量）→ `scheduler.load_state_dict()`（恢复 `last_epoch`/`base_lrs`）。若 AdamW 有动量但缺少 scheduler 状态，在替换 optimizer 之前直接拒绝，不静默丢失调度。一次性核对（`results/cpu-improve-20261115/rebind_order_validation.json`）在真实 `SPOTrainer` 上跑 3 步后分别走 `restore_base_state → suspend → bind`、直接 suspended-state 和 generation-change 三条重绑定路径：LR 都恢复为 `0.0008333…`、`last_epoch=3`、scheduler 绑定新 optimizer、AdamW 动量保留；重绑定后的下一步 LR 与未 suspend 的对照同为 `0.0006666…`。修复前同一脚本在 suspended 路径报上述 `ValueError`，generation 路径的 scheduler 仍绑定旧 optimizer。
 
 ## 4. 证据与边界
 
@@ -146,7 +146,7 @@ agent_pytest_collection_failure / agent_pytest_import_failure
 
 当前实例为无卡模式，`nvidia-smi -L` 无设备；短 GPU 采样需要用户切回 GPU 模式并另行授权预算。建议的首轮条件：
 
-- 代码：`b0205479`（依赖约束、shadow audit、正信号门控修正、恢复路径保留已训练状态）；新 run 目录，沿用同一 v0 和同一公开题集。
+- 代码：`7783b44e`（依赖约束、shadow audit、正信号门控修正、恢复路径保留已训练状态）；新 run 目录，沿用同一 v0 和同一公开题集。
 - 预算：单次 45–60 分钟，`max_batches=1`，`target_action_tokens=16384`，其余 Rank 128、奖励权重、8 分钟/28 工具调用不变；不再用“缩小 token 阈值制造梯度”。
 - 通过条件：至少一条轨迹出现可观测的 `P>0` 或 `shadow_repair` 正修复。总奖励仍为 0.15/0.10 并不代表没有 shadow 正修复；只有 `P=0` 且 `shadow_repair` 未测到正修复时，`require_positive_signal` 才把该前缀标为 `NOOP_CONSUMED`，不启动优化步，只记录该批没有质量排序信号。`gate_fallback_validation.json` 在总奖励保持 0.15 时分别验证 shadow 正修复和无 audit 的 `P>0` 都会 reserve，只有 `P=0` 且 audit 为 false 才 NOOP。
 - 门控实现：`TrajectoryBuffer`/`TrajectoryLedger.reserve_update(require_positive_signal=True)` 在冻结 advantage 前检查 `reward_audit` 的 `positive_repair_signal`，否则回退读取 `RewardRecord.P>0`；`max_batches=1` 不再足以单独触发更新。旧 run 中没有 audit 的 buffered 轨迹只要 `P>0` 仍是正信号；只有 `P=0` 且没有 audit/shadow 修复时才按无信号处理，不静默放行。
