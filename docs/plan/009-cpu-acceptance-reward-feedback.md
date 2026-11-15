@@ -126,7 +126,7 @@ agent_pytest_collection_failure / agent_pytest_import_failure
 
 当前实例为无卡模式，`nvidia-smi -L` 无设备；短 GPU 采样需要用户切回 GPU 模式并另行授权预算。建议的首轮条件：
 
-- 代码：`ba1c3c54`（依赖约束、shadow audit、正信号门控修正）；新 run 目录，沿用同一 v0 和同一公开题集。
+- 代码：`07390613`（依赖约束、shadow audit、正信号门控修正）；新 run 目录，沿用同一 v0 和同一公开题集。
 - 预算：单次 45–60 分钟，`max_batches=1`，`target_action_tokens=16384`，其余 Rank 128、奖励权重、8 分钟/28 工具调用不变；不再用“缩小 token 阈值制造梯度”。
 - 通过条件：至少一条轨迹出现可观测的 `P>0` 或 `shadow_repair` 正修复；若仍全部为 0.15 或 0.10，`require_positive_signal` 会把该前缀标为 `NOOP_CONSUMED`，不启动优化步，只记录该批没有质量排序信号。
 - 门控实现：`TrajectoryBuffer`/`TrajectoryLedger.reserve_update(require_positive_signal=True)` 在冻结 advantage 前检查 `reward_audit` 事件；`max_batches=1` 不再足以单独触发更新。旧 run 中没有 audit 的 buffered 轨迹按无信号处理，不静默放行。
