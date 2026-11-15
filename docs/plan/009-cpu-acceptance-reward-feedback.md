@@ -131,7 +131,7 @@ agent_pytest_collection_failure / agent_pytest_import_failure
 
 ## 4. 证据与边界
 
-结果目录：`results/cpu-improve-20261115/`。包含 `summary.json`、覆盖复测 `coverage_recovery.json`、3 份真实候选的同环境重跑 `e2e_same_environment.json`、`reward_shadow_validation.json`（旧跨环境表保留为 `reward_shadow_validation.previous-cross-environment.json`）、`dependency_selection_evidence.json`（真实 FastAPI extras/constraints 选择）、`gate_validation.json`（NOOP/正信号门控）、`fix_verification.json`（约束/Requires-Python/重复节点/matching/正式 audit 的一次性核对）、`recovery_path_validation.json`（恢复路径的 checkpoint/ledger/trainer 一次性核对）、`rebind_order_validation.json`（恢复后 suspended/generation 重绑定的 LR、scheduler 与 AdamW 核对）和额外 wheel 清单/指纹 `wheels-extra-manifest.json`。
+结果目录：`results/cpu-improve-20261115/`。包含 `summary.json`、覆盖复测 `coverage_recovery.json`、3 份真实候选的同环境重跑 `e2e_same_environment.json`、`reward_shadow_validation.json`（旧跨环境表保留为 `reward_shadow_validation.previous-cross-environment.json`）、`dependency_selection_evidence.json`（真实 FastAPI extras/constraints 选择）、`gate_validation.json`（NOOP/正信号门控）、`fix_verification.json`（约束/Requires-Python/重复节点/matching/正式 audit 的一次性核对）、`recovery_path_validation.json`（恢复路径的 checkpoint/ledger/trainer 一次性核对）、`rebind_order_validation.json`（恢复后 suspended/generation 重绑定的 LR、scheduler 与 AdamW 核对）、`gate_fallback_validation.json`（总奖励 0.15 下按 shadow 正修复/P>0 判定门控的一次性核对）和额外 wheel 清单/指纹 `wheels-extra-manifest.json`。
 
 边界：
 
@@ -148,7 +148,7 @@ agent_pytest_collection_failure / agent_pytest_import_failure
 
 - 代码：`b0205479`（依赖约束、shadow audit、正信号门控修正、恢复路径保留已训练状态）；新 run 目录，沿用同一 v0 和同一公开题集。
 - 预算：单次 45–60 分钟，`max_batches=1`，`target_action_tokens=16384`，其余 Rank 128、奖励权重、8 分钟/28 工具调用不变；不再用“缩小 token 阈值制造梯度”。
-- 通过条件：至少一条轨迹出现可观测的 `P>0` 或 `shadow_repair` 正修复。总奖励仍为 0.15/0.10 并不代表没有 shadow 正修复；只有 `P=0` 且 `shadow_repair` 未测到正修复时，`require_positive_signal` 才把该前缀标为 `NOOP_CONSUMED`，不启动优化步，只记录该批没有质量排序信号。
+- 通过条件：至少一条轨迹出现可观测的 `P>0` 或 `shadow_repair` 正修复。总奖励仍为 0.15/0.10 并不代表没有 shadow 正修复；只有 `P=0` 且 `shadow_repair` 未测到正修复时，`require_positive_signal` 才把该前缀标为 `NOOP_CONSUMED`，不启动优化步，只记录该批没有质量排序信号。`gate_fallback_validation.json` 在总奖励保持 0.15 时分别验证 shadow 正修复和无 audit 的 `P>0` 都会 reserve，只有 `P=0` 且 audit 为 false 才 NOOP。
 - 门控实现：`TrajectoryBuffer`/`TrajectoryLedger.reserve_update(require_positive_signal=True)` 在冻结 advantage 前检查 `reward_audit` 的 `positive_repair_signal`，否则回退读取 `RewardRecord.P>0`；`max_batches=1` 不再足以单独触发更新。旧 run 中没有 audit 的 buffered 轨迹只要 `P>0` 仍是正信号；只有 `P=0` 且没有 audit/shadow 修复时才按无信号处理，不静默放行。
 - 失败条件：collection failure 仍可训练但为 0.10；基础设施失败、验证不完整、baseline 不可用继续排除，不补零。
 - 产出：轨迹数、有效轨迹数、P/shadow 分布、collection failure 数、耗时和显存；不把训练题成绩称独立泛化。
