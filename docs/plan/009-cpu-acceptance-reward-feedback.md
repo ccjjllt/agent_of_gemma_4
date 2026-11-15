@@ -109,3 +109,13 @@ agent_pytest_collection_failure / agent_pytest_import_failure
 - `shadow_regression` 不是官方 `PASS_TO_PASS`，不能替换官方 `G`，也不能单独当作模型修复收益。
 - 10 份历史候选的 0.15→0.10 是 verdict 级复算；其中 3 份真实补丁已用新代码重验，其余 7 份未在本次重跑。
 - 本轮仍没有正修复候选；下一步仍是短 GPU 采样，寻找真实局部修复或最终成功，再谈扩大训练。
+
+## 5. 下一步短 GPU 采样（本轮未执行）
+
+当前实例为无卡模式，`nvidia-smi -L` 无设备；短 GPU 采样需要用户切回 GPU 模式并另行授权预算。建议的首轮条件：
+
+- 代码：本文件对应的 `91030e44` 及之后的修正；新 run 目录，沿用同一 v0 和同一公开题集。
+- 预算：单次 45–60 分钟，`max_batches=1`，`target_action_tokens=16384`，其余 Rank 128、奖励权重、8 分钟/28 工具调用不变；不再用“缩小 token 阈值制造梯度”。
+- 通过条件：至少一条轨迹出现可观测的 `P>0` 或 exact shadow 改善；若仍全部为 0.15 或 0.10，不启动优化步，只记录该批没有质量排序信号。
+- 失败条件：collection failure 仍可训练但为 0.10；基础设施失败、验证不完整、baseline 不可用继续排除，不补零。
+- 产出：轨迹数、有效轨迹数、P/shadow 分布、collection failure 数、耗时和显存；不把训练题成绩称独立泛化。
