@@ -268,6 +268,11 @@ def discard_unoptimized_update(
         if type(checkpoint_completed) is not int or checkpoint_completed < 0:
             raise RuntimeError("checkpoint has an invalid completed optimizer count")
         cursor = _checkpoint_update_cursor(checkpoint_state, update_id)
+        if cursor is None and _active_update_id(checkpoint_state) == update_id:
+            # The checkpoint claims this update but its cursor cannot be read.
+            # A destructive rollback must not guess that AdamW never ran.
+            raise RuntimeError(
+                f"refusing to discard {update_id}: its checkpoint cursor is unknown")
         if cursor == 1:
             raise RuntimeError(
                 f"refusing to discard {update_id}: its optimizer step is durable")
