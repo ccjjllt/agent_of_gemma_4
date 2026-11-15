@@ -46,6 +46,7 @@ class EmptyPatchProbeRunner:
         attempt_seq: Callable[[], int],
         workspace_root: str | Path,
         evaluation_overrides: Mapping[str, Any] | None = None,
+        extra_wheels: str | Path | None = None,
         timeout_seconds: float = 1800.0,
         emit: Callable[..., None] | None = None,
     ):
@@ -58,6 +59,7 @@ class EmptyPatchProbeRunner:
         self.attempt_seq = attempt_seq
         self.workspace_root = Path(workspace_root)
         self.evaluation_overrides = dict(evaluation_overrides or {})
+        self.extra_wheels = Path(extra_wheels) if extra_wheels is not None else None
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
             raise ValueError("probe timeout must be positive")
         self.timeout_seconds = float(timeout_seconds)
@@ -70,6 +72,8 @@ class EmptyPatchProbeRunner:
             path = getattr(self, name)
             if not path.is_file():
                 raise ValueError(f"{name} must be an existing interpreter")
+        if self.extra_wheels is not None and not self.extra_wheels.is_dir():
+            raise ValueError("extra_wheels must be an existing directory")
         if not _OFFICIAL_RUNTIME.is_file():
             raise ValueError("official runtime implementation is missing")
 
@@ -114,6 +118,7 @@ class EmptyPatchProbeRunner:
             "--judge-uid", str(judge_uid),
             "--sandbox-root", str(self.sandbox_root),
             "--sandbox-baseline-python", str(self.baseline_python),
+            *(["--extra-wheels", str(self.extra_wheels)] if self.extra_wheels else []),
             "--evaluation-overrides-json", json.dumps(
                 self.evaluation_overrides, sort_keys=True, separators=(",", ":"), allow_nan=False),
             "--rollout-id", rollout_id,
@@ -169,7 +174,7 @@ class EmptyPatchProbeRunner:
 
 def _launcher_env() -> dict[str, str]:
     allowed = {"PATH", "LANG", "LC_ALL", "TERM", "LD_LIBRARY_PATH", "HOME", "TMPDIR",
-               "PYTHONNOUSERSITE", "PYTHONSAFEPATH", "PYTHONPATH", "VIRTUAL_ENV"}
+               "PYTHONNOUSERSITE", "PYTHONSAFEPATH", "PYTHONPATH", "VIRTUAL_ENV", "GEMMA_EXTRA_WHEELS"}
     environment = {key: os.environ[key] for key in allowed if key in os.environ}
     environment.update({
         "CUDA_VISIBLE_DEVICES": "",

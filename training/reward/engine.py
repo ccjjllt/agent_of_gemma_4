@@ -193,6 +193,7 @@ class RewardEngine:
             "baseline_summary_ref": bundle.get("baseline_summary_ref"),
             "patch_sha256": bundle.get("patch_sha256"),
             "artifact_hashes": artifacts,
+            "shadow_regression": differential.get("shadow_regression"),
             "actual_metric_fields": sorted(actual_metrics),
             "metric_errors": list(metric_errors),
             "private_node_map_in_record": False,

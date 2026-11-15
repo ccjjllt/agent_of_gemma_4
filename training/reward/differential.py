@@ -107,6 +107,65 @@ def _inspect(report: object, label: str) -> dict:
     }
 
 
+def shadow_regression(candidate: Mapping[str, object],
+                      baseline: Mapping[str, object]) -> dict:
+    """Exact baseline-passed regression observation, judge-private only.
+
+    This is deliberately separate from official ``G``.  Official ``G`` uses
+    PASS_TO_PASS requirements; public tasks here do not ship them.  Shadow G
+    uses every exact ``classname::name`` node that passed in the empty-patch
+    baseline.  It never enters eligibility or the reward formula.
+    """
+    definition = "exact_baseline_passed_regression_v1"
+    base = {
+        "definition": definition, "diagnostic_only": True,
+        "official_G_replaced": False, "used_in_reward": False,
+        "visibility": "judge_private_only",
+    }
+    if not isinstance(candidate, Mapping) or not isinstance(baseline, Mapping):
+        return {**base, "status": "unavailable", "value": None, "numerator": None,
+                "denominator": None, "reason": "report_missing"}
+    if baseline.get("observed_nodes_usable") is False or candidate.get("observed_nodes_usable") is False:
+        return {**base, "status": "unavailable", "value": None, "numerator": None,
+                "denominator": None, "reason": "duplicate_or_ambiguous_exact_nodes"}
+    baseline_nodes = baseline.get("observed_nodes")
+    candidate_nodes = candidate.get("observed_nodes")
+    if not isinstance(baseline_nodes, Mapping) or not isinstance(candidate_nodes, Mapping):
+        return {**base, "status": "unavailable", "value": None, "numerator": None,
+                "denominator": None, "reason": "exact_observed_nodes_not_retained"}
+    if any(not isinstance(key, str) or not key or status not in _ALLOWED
+           for key, status in baseline_nodes.items()):
+        return {**base, "status": "unavailable", "value": None, "numerator": None,
+                "denominator": None, "reason": "invalid_baseline_node_status"}
+    if any(not isinstance(key, str) or not key or status not in _ALLOWED
+           for key, status in candidate_nodes.items()):
+        return {**base, "status": "unavailable", "value": None, "numerator": None,
+                "denominator": None, "reason": "invalid_candidate_node_status"}
+    baseline_passed = [key for key, status in baseline_nodes.items() if status == _PASSED]
+    missing = [key for key in baseline_passed if key not in candidate_nodes]
+    if missing:
+        return {**base, "status": "unavailable", "value": None, "numerator": None,
+                "denominator": None, "baseline_nodes": len(baseline_nodes),
+                "matching_nodes": len(baseline_nodes) - len(missing),
+                "candidate_only_nodes": len(set(candidate_nodes) - set(baseline_nodes)),
+                "coverage_complete": False,
+                "reason": "candidate_missing_baseline_passed_nodes"}
+    denominator = len(baseline_passed)
+    if denominator == 0:
+        return {**base, "status": "not_applicable", "value": 0.0, "numerator": 0,
+                "denominator": 0, "baseline_nodes": len(baseline_nodes),
+                "matching_nodes": len(baseline_nodes),
+                "candidate_only_nodes": len(set(candidate_nodes) - set(baseline_nodes)),
+                "coverage_complete": True, "reason": "no_baseline_passed_nodes"}
+    numerator = sum(candidate_nodes[key] != _PASSED for key in baseline_passed)
+    return {**base, "status": "measured", "value": numerator / denominator,
+            "numerator": numerator, "denominator": denominator,
+            "baseline_nodes": len(baseline_nodes),
+            "matching_nodes": len(baseline_nodes),
+            "candidate_only_nodes": len(set(candidate_nodes) - set(baseline_nodes)),
+            "coverage_complete": True, "reason": None}
+
+
 def pair_node_reports(candidate: Mapping[str, object], baseline: Mapping[str, object]) -> dict:
     """Compute official P and G without imputing unavailable observations.
 
@@ -170,6 +229,7 @@ def pair_node_reports(candidate: Mapping[str, object], baseline: Mapping[str, ob
         "eligible": not reasons,
         "exclusion_reasons": list(dict.fromkeys(reasons)),
         "artifact_hashes": {"candidate": left["artifact_hashes"], "baseline": right["artifact_hashes"]},
+        "shadow_regression": shadow_regression(candidate, baseline),
         "node_detail_visibility": "judge_private_only",
     }
 

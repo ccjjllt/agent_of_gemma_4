@@ -70,15 +70,57 @@ def _component_statuses(requirements: Sequence[str], passed: set[str],
     return result
 
 
+def parse_junit_node_statuses(xml_text: str,
+                              normalizer: Callable[[str], str] | None = None) -> tuple[dict[str, str], int, bool]:
+    """Return exact ``classname::name`` statuses, duplicate count and usability.
+
+    Parameterized node names are preserved exactly.  Duplicate keys make the
+    report unusable for shadow pairing because the status would be ambiguous.
+    Never raises on malformed XML.
+    """
+    if not isinstance(xml_text, str) or not xml_text.strip():
+        return {}, 0, False
+    if "<!DOCTYPE" in xml_text.upper() or "<!ENTITY" in xml_text.upper():
+        return {}, 0, False
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return {}, 0, False
+    cases = list(root.findall(".//testcase"))
+    if not cases:
+        return {}, 0, False
+    statuses: dict[str, str] = {}
+    duplicates = 0
+    for case in cases:
+        name, classname = case.get("name", ""), case.get("classname", "")
+        if not name:
+            return {}, 0, False
+        key = f"{classname}::{name}" if classname else name
+        if normalizer is not None:
+            key = normalizer(key)
+        status = ("failure" if case.find("failure") is not None else
+                  "error" if case.find("error") is not None else
+                  "skipped" if case.find("skipped") is not None else "passed")
+        if key in statuses:
+            duplicates += 1
+            if statuses[key] != status:
+                return {}, duplicates, False
+            continue
+        statuses[key] = status
+    return statuses, duplicates, True
+
+
 def build_node_report(fail_to_pass: Sequence[str], pass_to_pass: Sequence[str],
                       xml_text: str, node_matcher: Callable[..., bool] | None = None, *,
                       verification_complete: bool = False, verdict_valid: bool = False,
-                      infrastructure_error: str | None = None) -> dict:
+                      infrastructure_error: str | None = None,
+                      include_observed_nodes: bool = False,
+                      node_name_normalizer: Callable[[str], str] | None = None) -> dict:
     """Build a differential-compatible report from one final JUnit XML."""
     repair_reqs = list(dict.fromkeys(fail_to_pass or ()))
     regression_reqs = list(dict.fromkeys(pass_to_pass or ()))
     passed, nonpassed, usable = parse_junit_names(xml_text)
-    return {
+    report = {
         "expected_universes": {"repair": repair_reqs, "regression": regression_reqs},
         "node_statuses": {
             "repair": _component_statuses(repair_reqs, passed, nonpassed, node_matcher),
@@ -89,6 +131,12 @@ def build_node_report(fail_to_pass: Sequence[str], pass_to_pass: Sequence[str],
         "verdict_valid": verdict_valid,
         "infrastructure_error": infrastructure_error,
     }
+    if include_observed_nodes:
+        observed, duplicates, exact_usable = parse_junit_node_statuses(xml_text, node_name_normalizer)
+        report["observed_nodes"] = observed if exact_usable else {}
+        report["observed_node_duplicates"] = duplicates
+        report["observed_nodes_usable"] = exact_usable
+    return report
 
 
 def sha256_text(value: str) -> str:

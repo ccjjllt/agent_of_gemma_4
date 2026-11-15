@@ -73,7 +73,7 @@ def load_config(path: Path) -> dict:
         raise ValueError("invalid spo token budget or lag")
     if cfg["adapter"].get("allow_resident_pair") is not False:
         raise ValueError("allow_resident_pair must be false until VRAM is measured")
-    if cfg["rewards"].get("objective_version") != "official_differential_spo_v1":
+    if cfg["rewards"].get("objective_version") != "official_differential_spo_v2":
         raise ValueError("wrong rewards objective_version")
     return cfg
 
@@ -443,12 +443,15 @@ def run_spo(args: argparse.Namespace) -> int:
             "run_dir already holds training state; start fresh in an empty "
             "directory or continue explicitly with --resume")
     from .judge_identity import read_runtime_identity, bind_run_identity
+    extra_wheels = (Path(cfg["runtime"]["extra_wheels"]).expanduser().resolve()
+                    if cfg["runtime"].get("extra_wheels") else None)
     judge_environment = read_runtime_identity(
         cfg["runtime"].get("python", "/opt/gemma-runtime/bin/python"),
         data_root=data_root, submission_dir=args.submission_dir or (data_root / "sample_submission"),
         baseline_python=cfg["runtime"].get("sandbox_baseline_python", "/opt/gemma-sandbox-baseline/bin/python"),
         sandbox=cfg["runtime"].get("sandbox", "subprocess"),
-        evaluation_overrides=dict(cfg["runtime"].get("evaluation", {}) or {}))
+        evaluation_overrides=dict(cfg["runtime"].get("evaluation", {}) or {}),
+        extra_wheels=str(extra_wheels) if extra_wheels else None)
     # Reject legacy/changed judge identities before touching model records,
     # the existing ledger, the inference backend, or any GPU allocation.
     fingerprint = bind_run_identity(run_dir, judge_environment, resume=args.resume)
@@ -493,6 +496,7 @@ def run_spo(args: argparse.Namespace) -> int:
             attempt_seq=attempt_seq.take,
             workspace_root=run_dir / "probe_workspaces",
             evaluation_overrides=dict(cfg["runtime"].get("evaluation", {}) or {}),
+            extra_wheels=extra_wheels,
             emit=lambda n, **f: _emit(metrics_path, n, **f)))
     reward_engine = RewardEngine(baselines)
     trajectory_buffer = TrajectoryBuffer(
@@ -595,6 +599,7 @@ def run_spo(args: argparse.Namespace) -> int:
             baseline_python=Path(cfg["runtime"].get("sandbox_baseline_python", "/opt/gemma-sandbox-baseline/bin/python")),
             agent_uid_base=int(args.agent_uid_base or 61000),
             runtime_python=Path(cfg["runtime"].get("python", "/opt/gemma-runtime/bin/python")),
+            extra_wheels=extra_wheels,
             session_clock=cfg["runtime"].get("session_clock", "queue_excluded"),
             event_summarizer=cfg["runtime"].get("event_summarizer", "official"),
             evaluation_overrides=dict(cfg["runtime"].get("evaluation", {}) or {}))

@@ -36,6 +36,7 @@ class OfficialWorkerConfig:
     # any realistic run length (range check: base + 2*pool must fit int32).
     max_attempts: int = 1000000
     runtime_python: Path = Path("/opt/gemma-runtime/bin/python")
+    extra_wheels: Path | None = None
     session_clock: str = "queue_excluded"
     event_summarizer: str = "official"
     queue_timing_poll_seconds: float = 0.2
@@ -51,6 +52,11 @@ class OfficialWorkerConfig:
             path = getattr(self, name)
             if not isinstance(path, Path) or not path.is_absolute() or not path.is_file():
                 raise ValueError(f"{name} must be an absolute executable file")
+        if self.extra_wheels is not None:
+            if not isinstance(self.extra_wheels, Path) or not self.extra_wheels.is_absolute():
+                raise ValueError("extra_wheels must be an absolute directory")
+            if not self.extra_wheels.is_dir():
+                raise ValueError("extra_wheels must be an existing directory")
         if not _OFFICIAL_RUNTIME.is_file():
             raise ValueError("official worker implementation is missing")
         endpoint = urlsplit(self.endpoint_url)
@@ -140,6 +146,7 @@ class OfficialWorker:
             "--parent-pid", str(self.config.parent_pid or os.getpid()),
             "--sandbox-root", str(self.config.sandbox_root),
             "--sandbox-baseline-python", str(self.config.baseline_python),
+            *(["--extra-wheels", str(self.config.extra_wheels)] if self.config.extra_wheels else []),
             "--session-clock", self.config.session_clock,
             "--event-summarizer", self.config.event_summarizer,
             "--queue-timing-poll-seconds", str(self.config.queue_timing_poll_seconds),

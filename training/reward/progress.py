@@ -6,7 +6,7 @@ import statistics
 from typing import Mapping
 
 
-OBJECTIVE_VERSION = "official_differential_spo_v1"
+OBJECTIVE_VERSION = "official_differential_spo_v2"
 DEFAULT_EFFICIENCY_WEIGHT = 0.05
 DEFAULT_SCALES = {"gpu_seconds": 3600.0, "action_tokens": 32768.0, "tool_calls": 100.0}
 

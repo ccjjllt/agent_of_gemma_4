@@ -62,7 +62,8 @@ def describe_judge_environment(*, data_root: str | Path, submission_dir: str | P
                                baseline_python: str | Path, sandbox: str = "subprocess",
                                evaluation_overrides: Mapping[str, Any] | None = None,
                                settings: Mapping[str, Any] | None = None,
-                               baseline_info: Mapping[str, Any] | None = None) -> dict:
+                               baseline_info: Mapping[str, Any] | None = None,
+                               extra_wheels: str | Path | None = None) -> dict:
     """Run inside the official runtime, not the learner's Python environment."""
     if sandbox != "subprocess":
         raise ValueError("judge identity currently supports the subprocess training backend")
@@ -75,6 +76,22 @@ def describe_judge_environment(*, data_root: str | Path, submission_dir: str | P
         ], check=True, capture_output=True, text=True, timeout=15,
             env={**os.environ, "CUDA_VISIBLE_DEVICES": ""})
         baseline_info = json.loads(result.stdout)
+    dependency_setup = {
+        "adapter_sha256": hashlib.sha256(
+            (Path(__file__).with_name("task_dependency_setup.py")).read_bytes()).hexdigest(),
+    }
+    if extra_wheels is not None:
+        wheel_dir = Path(extra_wheels)
+        wheels = sorted(wheel_dir.glob("*.whl")) if wheel_dir.is_dir() else []
+        dependency_setup.update({
+            "extra_wheels_dir": str(wheel_dir),
+            "extra_wheels": [
+                {"name": wheel.name, "bytes": wheel.stat().st_size} for wheel in wheels
+            ],
+            "extra_wheels_identity_sha256": hashlib.sha256(
+                json.dumps([(wheel.name, wheel.stat().st_size) for wheel in wheels],
+                           separators=(",", ":")).encode()).hexdigest(),
+        })
     # Reuse the same cheap distribution metadata already read by the sandbox
     # manager. Do not hash site-packages, wheels or model weight trees.
     environment = {
@@ -87,6 +104,7 @@ def describe_judge_environment(*, data_root: str | Path, submission_dir: str | P
         "baseline_python": {"version": list(baseline_info["version"]),
                             "packages": dict(baseline_info["packages"])},
         "setup_sha256": hashlib.sha256((Path(data_root) / "sandbox" / "setup.py").read_bytes()).hexdigest(),
+        "dependency_setup": dependency_setup,
     }
     canonical_environment(environment)
     return environment

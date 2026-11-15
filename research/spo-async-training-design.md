@@ -450,7 +450,7 @@ max_grad_norm = 1.0
 gradient_checkpointing = true
 
 [rewards]
-objective_version = "official_differential_spo_v1"
+objective_version = "official_differential_spo_v2"
 success_efficiency_weight = 0.05
 
 [adapter]
@@ -592,3 +592,15 @@ A_i - mean_tok(A) = mean_tok(V) - V_i
 后续 GPU 研究可从同一 v0、同一批真实轨迹和同一派发 V 出发，比较旧奖励与一个候选奖励的单步更新，其他训练设置固定，再用匹配采样设置的新 rollout 比较完整官方验收。没有奖励差异时如实记录当批观测奖励未提供质量排序信号，不以制造非零更新作为成功条件。这只能给出已使用训练题上的配对效果，不能称独立泛化。GPU 实施另按会话授权与预算执行。
 
 耗时只能先用已测批次给出条件估计：双 A800 上，35,964 个 action tokens 的 learner 窗口为 29.26 分钟，从冻结新派发到新 adapter 发布为 42.65 分钟，后者包括 12.84 分钟排空等待。该批含 135 次模型调用，前缀复用前约 119 万 prompt tokens，不能仅按输出 token 数比较工作量。若未来每步工作量和等待完全相同，10 步约 7.1 小时、100 步约 71.1 小时；这未包含冻结派发前的采集时间及额外评估。当前只有一个真实更新，不能把这个线性外推当作大规模训练排期或收敛时间；吞吐与收益都需要下一轮实际测量。
+
+### 17.6 验收环境与奖励反馈修正（2026-11-15 续）
+
+在无卡实例的 2 GiB 内存限制下，针对 17.5 的三个优先项做了可复现修正。官方题面、`base_commit`、`test_patch`、参考补丁和官方验收语义均未改动；参考补丁仍只用于裁判侧正对照。
+
+**依赖与环境。** 旧 subprocess 环境把 `requirements*.txt` 中的版本约束全部剥掉，再为每个发行版选择最高 wheel。老 FastAPI 提交因此装上过新的 Starlette，表现为 `Router.__init__() got an unexpected keyword argument 'on_startup'` 的收集失败；官方 wheel 缓存又缺少 `inline-snapshot`、`dirty-equals`、`attrs` 等测试依赖，导致空补丁基线不健康。新增 `training/task_dependency_setup.py`，在官方 `sandbox/setup.py` 的 workspace 准备函数之上，按 PEP 508 约束选择离线 wheel，并只合并测试所需依赖；额外的公共 wheel 目录通过 `runtime.extra_wheels` 只读挂入任务沙箱，不修改 `official/`。版本选择、未满足约束、安装后版本不一致和跳过的发行版写入结果 provenance。
+
+**失败反馈。** 候选补丁导致的 `agent_pytest_collection_failure` / `agent_pytest_import_failure` 仍是合法、完整的官方 verdict，轨迹仍可训练，但 `validity=0`，总奖励从 0.15 降到 0.10；普通未修复候选仍为 0.15。奖励目标版本升为 `official_differential_spo_v2`，旧 `v1` 记录不重贴。官方 `resolved`、`P/G`、`eligible` 和 `verdict_valid` 不变。
+
+**回归观测。** 公开数据没有 `PASS_TO_PASS`，官方 `G` 仍为 `not_applicable`，不能当作“无回归”。新增仅裁判侧可见的 exact `(classname,name)` 观测：空补丁基线保存全部原始节点状态，候选按同一规范化身份配对；以基线 passed 节点为分母计算 `shadow_regression`，缺失、重复或状态歧义一律 `unavailable`，不补零。该值只进入 reward audit，不进入 `G`、`eligible` 或训练损失；官方目标没有被静默替换。参数化节点名中的沙箱绝对路径规范为 `<workspace>`，修复了 Requests 三对对照的身份错位。
+
+以上修正的覆盖恢复、10 份历史候选的奖励变化和 shadow 观测结果见 `results/cpu-improve-20261115/` 与 `docs/plan/009-cpu-acceptance-reward-feedback.md`。这些结果仍只说明验收与奖励反馈的可观测性，不是模型修复收益。

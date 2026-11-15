@@ -113,6 +113,21 @@ def _node_statuses(value: object) -> dict[str, dict[str, str]]:
     return result
 
 
+def _observed_nodes(value: object) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        raise ValueError("observed_nodes must be a map")
+    result: dict[str, str] = {}
+    for node, status in value.items():
+        if not isinstance(node, str) or not node:
+            raise ValueError("Observed exact node identifiers must be nonempty strings")
+        if status == "failed":
+            status = "failure"
+        if status not in _ALLOWED_STATUSES:
+            raise ValueError(f"Unsupported exact node status: {status!r}")
+        result[node] = str(status)
+    return result
+
+
 def _artifact_hashes(value: object) -> dict[str, str]:
     if not isinstance(value, Mapping):
         raise ValueError("artifact_hashes must be a map of artifact names to SHA256 digests")
@@ -159,6 +174,9 @@ def normalize_baseline(task_key: TaskKey | Mapping[str, object], report: Mapping
         "infrastructure_error": infrastructure_error,
         "status": "complete" if complete and valid and not infrastructure_error else "incomplete",
     }
+    if report.get("observed_nodes") is not None:
+        body["observed_nodes"] = _observed_nodes(report.get("observed_nodes"))
+        body["observed_nodes_usable"] = report.get("observed_nodes_usable") is not False
     body["content_sha256"] = _sha256_json({k: v for k, v in body.items() if k != "content_sha256"})
     return body
 

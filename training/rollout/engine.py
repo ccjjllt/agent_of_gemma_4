@@ -16,7 +16,11 @@ from ..trajectory.schema import RewardRecord, Trajectory
 from .request_manager import RequestManager
 
 
-OBJECTIVE_VERSION = "official_differential_spo_v1"
+OBJECTIVE_VERSION = "official_differential_spo_v2"
+_ZERO_VALIDITY_VERDICTS = frozenset({
+    "agent_pytest_collection_failure",
+    "agent_pytest_import_failure",
+})
 
 
 def _field(value: Any, name: str, default: Any = None) -> Any:
@@ -30,6 +34,17 @@ def _mapping(value: Any) -> dict[str, Any]:
 
 
 def _validity(raw: Mapping[str, Any], candidate: Mapping[str, Any]) -> Any:
+    # A complete official verdict can still be invalid model output.  A patch
+    # that makes the judge's tests uncollectable or unimportable is attributable
+    # to the candidate only after the healthy empty-patch control matched the
+    # same failure shape.  Keep the verdict valid and the trajectory eligible,
+    # but remove the validity component so the reward differs from an ordinary
+    # unresolved attempt.
+    kind = raw.get("verdict_kind")
+    if (isinstance(kind, str) and kind in _ZERO_VALIDITY_VERDICTS
+            and raw.get("verdict_valid") is True
+            and raw.get("verification_complete") is True):
+        return 0.0
     if "validity" in candidate:
         return candidate["validity"]
     if "validity" in raw:

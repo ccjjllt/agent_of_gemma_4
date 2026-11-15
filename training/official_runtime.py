@@ -174,7 +174,7 @@ def _uid_processes(uid: int) -> list[int]:
 def _make_subprocess_manager(
     uid: int, timeout: int, sandbox_root: Path,
     baseline_python: Path = Path("/opt/gemma-sandbox-baseline/bin/python"),
-    *, judge_uid: int,
+    *, judge_uid: int, extra_wheels: Path | None = None,
 ) -> Any:
     """Keep official setup, then isolate each untrusted repository under its own UID."""
     import swegemma.sandbox.subprocess as backend
@@ -210,6 +210,8 @@ def _make_subprocess_manager(
             self.restricted: set[str] = set()
             self.execution_uids: dict[str, int] = {}
             self.excluded_wheels: set[str] = set()
+            self.extra_wheels_dir = extra_wheels
+            self.dependency_diagnostics: list[dict[str, Any]] = []
             self.baseline_packages = baseline_info["packages"]
             self.baseline_identity = {"version": baseline_info["version"], "packages": self.baseline_packages}
 
@@ -435,7 +437,10 @@ def _install_subprocess_dependency_setup(manager: Any) -> Any:
     """
     import importlib
     import swegemma.harness.container_setup as setup
+    from packaging.tags import sys_tags
+    from packaging.utils import parse_wheel_filename
 
+    compatible_tags = set(sys_tags())
     original = setup.install_test_dependencies
 
     def install(docker: Any, container_id: str, repo: str = "", *, fast_path: bool = True,
@@ -453,6 +458,25 @@ def _install_subprocess_dependency_setup(manager: Any) -> Any:
             if wheel_source is None:
                 raise setup.ContainerSetupError("The original official task wheel directory is missing.")
             manager.copy_to(container_id, wheel_source, "/wheels")
+        if manager.extra_wheels_dir is not None and manager.extra_wheels_dir.is_dir():
+            # Supplemental public wheels (test-only dependencies absent from
+            # the official cache) are staged without modifying official/.
+            for wheel in sorted(manager.extra_wheels_dir.glob("*.whl")):
+                try:
+                    _name, _version, _build, wheel_tags = parse_wheel_filename(wheel.name)
+                except (ValueError, TypeError):
+                    manager.excluded_wheels.add(wheel.name)
+                    continue
+                if not (wheel_tags & compatible_tags):
+                    manager.excluded_wheels.add(wheel.name)
+                    continue
+                manager.copy_to(container_id, wheel, f"/wheels/{wheel.name}")
+        helper_source = Path(__file__).with_name("task_dependency_setup.py")
+        if not helper_source.is_file():
+            raise setup.ContainerSetupError("Version-aware dependency helper is missing.")
+        helper_staged = f"/tmp/_task_dependency_setup_{os.getpid()}.py"
+        manager.copy_to(container_id, helper_source, helper_staged)
+        helper_path = paths["tmp"] / Path(helper_staged).name
         if container_id in manager.execution_uids:
             # The original source remains under the private public-data mount.
             # Only this helper, not tasks/patches, is staged for the judge UID.
@@ -462,15 +486,21 @@ def _install_subprocess_dependency_setup(manager: Any) -> Any:
         # Load the original file unchanged. Adapt its two /wheels bindings and
         # explicit workspace argument; no global host path or shared venv is
         # modified. New venvs need its full dependency discovery, not fast-path.
+        # Dependency selection is delegated to the version-aware helper: the
+        # official collector strips specifiers and always picks the highest
+        # wheel, which breaks older commits against newer transitive releases.
         wrapper = r'''
 import importlib.util, json, subprocess, sys, types
 from pathlib import Path
-source, wheel_dir, workspace, repo = sys.argv[1:]
+source, wheel_dir, workspace, repo, helper_path = sys.argv[1:]
 spec = importlib.util.spec_from_file_location("official_task_setup", source)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 module.WHEELS_DIR = Path(wheel_dir)
 module.get_available_packages.__defaults__ = (Path(wheel_dir),)
+helper_spec = importlib.util.spec_from_file_location("task_dependency_setup", helper_path)
+helper = importlib.util.module_from_spec(helper_spec)
+helper_spec.loader.exec_module(helper)
 failures = {}
 def run(command, *args, **kwargs):
     command = list(command)
@@ -494,15 +524,35 @@ def run(command, *args, **kwargs):
         failures.pop(key, None)
     return result
 module.subprocess = types.SimpleNamespace(run=run)
-sys.argv = [source]
-module.main(repo=repo, workspace=Path(workspace), fast_path=False)
+try:
+    diagnostics = helper.install(module, Path(workspace), [Path(wheel_dir)], repo)
+except Exception as error:
+    print("GEMMA_DEPENDENCY_DIAGNOSTICS=" + json.dumps({
+        "schema": "gemma.task_dependency_selection.v1",
+        "error": f"{type(error).__name__}: {error}", "failures": failures,
+    }, sort_keys=True, default=str))
+    raise
+print("GEMMA_DEPENDENCY_DIAGNOSTICS=" + json.dumps(diagnostics, sort_keys=True))
 if failures:
     raise RuntimeError("Official task dependency setup failed: " + json.dumps(failures))
 '''
         command = " ".join(map(shlex.quote, [
             "python3", "-c", wrapper, str(source), str(paths["wheels"]), str(paths["workspace"]), repo,
+            str(helper_path),
         ]))
         result = manager.exec(container_id, command)
+        diagnostics: dict[str, Any] = {"schema": "gemma.task_dependency_selection.v1",
+                                       "container_id": container_id, "recorded": False}
+        for line in reversed((result.stdout or "").splitlines()):
+            if line.startswith("GEMMA_DEPENDENCY_DIAGNOSTICS="):
+                try:
+                    diagnostics.update(json.loads(line.split("=", 1)[1]))
+                    diagnostics["recorded"] = True
+                except (ValueError, TypeError):
+                    diagnostics["error"] = "unreadable dependency diagnostics"
+                break
+        diagnostics["setup_exit_code"] = result.exit_code
+        manager.dependency_diagnostics.append(diagnostics)
         if result.exit_code:
             raise setup.ContainerSetupError(f"Official subprocess dependency setup failed: {result.stderr or result.stdout}")
         # Match the official Dockerfile identity within this repository only.
@@ -723,7 +773,12 @@ def _capture_final_verification(task: Any, manager: Any = None, *, delivery_cloc
                     active_capture["node_report"] = build_node_report(
                         tuple(task.FAIL_TO_PASS or ()) or tuple(fallback),
                         tuple(task.PASS_TO_PASS or ()),
-                        xml_text, matcher,
+                        xml_text, matcher, include_observed_nodes=True,
+                        node_name_normalizer=(
+                            (lambda key: key.replace(str(manager.sandboxes[sandbox_id]["workspace"]),
+                                                      "<workspace>"))
+                            if manager is not None and docker is manager
+                            and sandbox_id in manager.sandboxes else None),
                     )
                 except Exception:
                     pass
@@ -902,6 +957,8 @@ def _empty_patch_probe_result(task: Any, args: argparse.Namespace, result: Any,
         "reward_features": reward_features,
         "test_exit_code": getattr(result, "test_exit_code", None),
         "duration_seconds": time.monotonic() - started,
+        "dependency_selection": getattr(
+            getattr(args, "_dependency_manager", None), "dependency_diagnostics", None),
     }
     if usable:
         report["baseline_report"] = node_report
@@ -1034,8 +1091,9 @@ async def _run_task(args: argparse.Namespace, api_key: str) -> dict[str, Any]:
         private_sandboxes = Path(tempfile.mkdtemp(prefix=args.rollout_id + "-", dir=args.sandbox_root))
         manager = _make_subprocess_manager(
             args.agent_uid, settings["timeout_seconds"], private_sandboxes, args.sandbox_baseline_python,
-            judge_uid=args.judge_uid,
+            judge_uid=args.judge_uid, extra_wheels=args.extra_wheels,
         )
+        args._dependency_manager = manager
         evaluator.sandbox = evaluator.docker = manager
 
         class AgentContext(context_class):
@@ -1055,7 +1113,8 @@ async def _run_task(args: argparse.Namespace, api_key: str) -> dict[str, Any]:
     args._judge_environment = describe_judge_environment(
         data_root=data_root, submission_dir=source_submission,
         baseline_python=args.sandbox_baseline_python, sandbox=args.sandbox, settings=settings,
-        baseline_info=getattr(evaluator.docker, "baseline_identity", None))
+        baseline_info=getattr(evaluator.docker, "baseline_identity", None),
+        extra_wheels=args.extra_wheels)
 
     context = context_class(
         docker_manager=evaluator.docker,
@@ -1228,7 +1287,10 @@ async def _run_task(args: argparse.Namespace, api_key: str) -> dict[str, Any]:
                 "baseline_packages": evaluator.docker.baseline_packages,
                 "baseline_role": "official Dockerfile tools plus explicitly provisioned missing support dependencies",
                 "setup_source_sha256": _sha256(data_root / "sandbox" / "setup.py"),
-                "mode": "official setup slow path in isolated task venv; offline wheels only",
+                "dependency_adapter_sha256": _sha256(Path(__file__).with_name("task_dependency_setup.py")),
+                "extra_wheels": str(args.extra_wheels) if args.extra_wheels else None,
+                "dependency_selection": getattr(evaluator.docker, "dependency_diagnostics", None),
+                "mode": "official setup helpers plus version-aware offline wheel selection",
                 "wheel_staging": "flat directory; interpreter-compatible tags before official version selection",
                 "excluded_incompatible_wheels": sorted(evaluator.docker.excluded_wheels),
             } if args.sandbox == "subprocess" else None,
@@ -1261,6 +1323,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--agent-uid", type=int, default=61000)
     parser.add_argument("--judge-uid", type=int, help="Distinct unused low-privilege UID for the verification repository.")
     parser.add_argument("--sandbox-baseline-python", type=Path, default=Path("/opt/gemma-sandbox-baseline/bin/python"))
+    parser.add_argument("--extra-wheels", type=Path, default=(
+        Path(os.environ["GEMMA_EXTRA_WHEELS"]) if os.environ.get("GEMMA_EXTRA_WHEELS") else None),
+        help="Optional supplemental offline wheel directory; official wheels stay unchanged.")
     parser.add_argument("--evaluation-overrides-json", dest="evaluation_overrides", type=json.loads, default={},
                         help="Explicit participant evaluation-budget overrides; leaves official files unchanged.")
     parser.add_argument("--session-clock", choices=("queue_excluded", "wall"), default="queue_excluded",
@@ -1271,6 +1336,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="Live queue-receipt polling interval, between 0.02 and 1 second.")
     parser.add_argument("--sandbox-root", type=Path, default=Path("/tmp/gemma-agent-sandboxes"))
     args = parser.parse_args(argv)
+    if args.extra_wheels is not None and not args.extra_wheels.is_dir():
+        parser.error(f"--extra-wheels is not a directory: {args.extra_wheels}")
     if args.sandbox == "subprocess" and args.judge_uid is None:
         parser.error("subprocess execution requires --judge-uid distinct from --agent-uid")
     if not args.empty_patch_probe and (not args.endpoint or args.auth_token_file is None):
