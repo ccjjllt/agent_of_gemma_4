@@ -8,7 +8,7 @@
 
 1. **依赖覆盖**：修复 subprocess 任务环境剥掉版本约束、总选最高 wheel 的问题；补充官方 wheel 缓存缺少的测试依赖。老 FastAPI 提交不再因过新 Starlette 产生 `Router.__init__()` 收集失败。
 2. **失败反馈**：候选补丁导致测试收集/导入失败时，保留完整、合法的官方 verdict 和训练资格，但把奖励的 `validity` 置 0，总奖励 0.15 → 0.10；普通未修复候选仍为 0.15。目标版本升为 `official_differential_spo_v2`。
-3. **回归观测与优化门控**：公开数据没有 `PASS_TO_PASS`，官方 `G` 仍为 `not_applicable`；新增仅裁判侧可见的 exact 节点 `shadow_regression` 与 `shadow_repair`，分母分别是空补丁基线 passed / nonpassed 节点，缺失/重复/歧义不补零，只进 reward audit，不改官方 `G`、`eligible` 或损失。正式训练路径把聚合 shadow 写入 ledger audit；没有 `P>0` 也没有 shadow repair 的前缀标为 `NOOP_CONSUMED`，不执行优化步。参数化节点名中的沙箱路径规范为 `<workspace>`。
+3. **回归观测与优化门控**：公开数据没有 `PASS_TO_PASS`，官方 `G` 仍为 `not_applicable`；新增仅裁判侧可见的 exact 节点 `shadow_regression` 与 `shadow_repair`，分母分别是空补丁基线 passed / nonpassed 节点，缺失/重复/歧义不补零，只进 reward audit，不改官方 `G`、`eligible` 或损失。正式训练路径把聚合 shadow 写入 ledger audit；没有 `P>0` 也没有 shadow 正信号（audit 缺失时按 `RewardRecord.P` 判定）的前缀标为 `NOOP_CONSUMED`，不执行优化步。参数化节点名中的沙箱路径规范为 `<workspace>`。
 
 复核后另修正 6 个实现问题：3 份候选的 baseline/candidate 改为同一奖励复核身份 `f242e208…` 重跑；正式训练路径保留 shadow audit；`-r/-c` include 与约束文件不再静默忽略；精确 pin 保留可离线满足的 extras，并记录丢弃的 extras；按 wheel `Requires-Python` 排除不兼容版本；任何重复 exact 节点（含同状态）都判 unusable，`matching_nodes` 只数实际匹配的基线 passed 节点。第二次复核又修正 3 条恢复路径问题：丢弃无信号批次不再删除已训练 trainer checkpoint；旧式 `LEARNING`+cursor 0 恢复先过正信号门；`require_positive_signal=false` 在 resume 同样生效（见 3.1）。本次复核再修正恢复后的 learner 重绑定顺序：scheduler 必须在加载 AdamW 状态之前构造（见 3.2），并把“0.15/0.10 即无信号”“缺 audit 即无信号”两处文档条件改成按 `P` 与 `shadow_repair`/`RewardRecord.P` 判断。证据见第 3、4 节和 `results/cpu-improve-20261115/`。
 
@@ -94,10 +94,10 @@ agent_pytest_collection_failure / agent_pytest_import_failure
 - `build_node_report(..., include_observed_nodes=True)`：在裁判侧报告中保存 `observed_nodes`、`observed_nodes_usable`。
 - `training/reward/baseline.py`：空补丁缓存保留 `observed_nodes` 与 `observed_node_duplicates`；旧缓存缺重复计数或计数非 0 时仍可读，但 shadow 强制 `unavailable`，防止旧解析器去重后的缓存继续配对。
 - `training/reward/differential.py:shadow_regression()`：分母 = 基线 passed 节点；候选缺任一基线 passed 节点即 `unavailable`；`matching_nodes` 只数实际匹配的基线 passed 节点，不再把基线 failed 节点算进覆盖；候选新增节点单独计数；不进入官方 `G`。
-- `training/reward/differential.py:shadow_repair()`：分母 = 基线 nonpassed 节点，分子 = 候选中转为 passed 的节点；缺失仍 `unavailable`，不补零；这是质量门控的正修复信号来源。
+- `training/reward/differential.py:shadow_repair()`：分母 = 基线 nonpassed 节点，分子 = 候选中转为 passed 的节点；缺失仍 `unavailable`，不补零；这是质量门控的正修复信号来源。只有 `status=measured` 且分子 > 0 才计入 `positive_repair_signal`；`unavailable` 与 `not_applicable` 都不算。
 - `training/reward/engine.py`：`spo_record_with_audit()` 把学习侧 `RewardRecord` 与裁判侧 audit 分开；`RewardRecord` 字段不变。
 - `training/rollout/engine.py`：正式训练路径把 `shadow_regression`、`shadow_repair`、`positive_repair_signal` 和 cache/patch 指纹写入 ledger 的 `reward_audit` 事件，不再在 `spo_reward_record()` 处静默丢弃；测试节点名不进入该事件。
-- `training/trajectory/ledger.py` 与 `buffer.py`：`require_positive_signal` 默认开启。没有 `P>0` 也没有 exact shadow repair 的 FIFO 前缀被标为 `NOOP_CONSUMED`，不产生 optimizer step、LR 推进或版本号增长。判定先看 `reward_audit.positive_repair_signal`，否则回退读取 `RewardRecord.P>0`；缺少 audit 时 `P>0` 仍是正信号。已持久化的无信号 `RESERVED` 批次在同 ID 重试或 `--resume` 时会被丢弃；恢复路径**不删除** trainer checkpoint，而是把仅属于该批次的 pre-step 快照改写为 committed base，保留 adapter/AdamW/scheduler/RNG，并在需要时先装回 trainer。旧式 `LEARNING`+cursor 0 恢复同样先过信号门，只有已运行过 optimizer 的 cursor=1 路径继续完成发布。
+- `training/trajectory/ledger.py` 与 `buffer.py`：`require_positive_signal` 默认开启。没有 `P>0` 也没有 exact shadow repair 的 FIFO 前缀被标为 `NOOP_CONSUMED`，不产生 optimizer step、LR 推进或版本号增长。判定先看 `reward_audit.positive_repair_signal`；该字段不是 true（缺失或 false）时回退读取 `RewardRecord.P>0`；缺少 audit 时 `P>0` 仍是正信号。已持久化的无信号 `RESERVED` 批次在同 ID 重试或 `--resume` 时会被丢弃；恢复路径**不删除** trainer checkpoint，而是把仅属于该批次的 pre-step 快照改写为 committed base，保留 adapter/AdamW/scheduler/RNG，并在需要时先装回 trainer。旧式 `LEARNING`+cursor 0 恢复同样先过信号门，只有已运行过 optimizer 的 cursor=1 路径继续完成发布。
 
 候选节点名中的沙箱绝对路径在 `official_runtime.py` 中规范为 `<workspace>`，使 Requests 三对参数化节点可用同一身份比较。
 
@@ -109,7 +109,7 @@ agent_pytest_collection_failure / agent_pytest_import_failure
 | `fastapi_14258` | `tests_completed` | 0.0 | 1.0 | 0.15 | not_applicable：基线 passed 分母为 0 | measured 0/1 | false |
 | `rich_4076` | `tests_completed` | 0.0 | 1.0 | 0.15 | measured 0/20（不是旧表的 0/24；`matching_nodes` 已只数基线 passed） | measured 0/4 | false |
 
-这同时验证了：官方 verdict 和 eligibility 不变；collection failure 的标量确实与普通未修复候选分开；shadow 只在 exact 覆盖完整时给数值，缺失时保持 unavailable；三份候选都没有 `P>0` 或 shadow repair，`require_positive_signal` 会把该批标为 NOOP，不会仅因 `max_batches=1` 自动更新。正式 `RolloutEngine` 路径另用真实 `RewardEngine` 和 fake request manager 跑通：轨迹进入 `BUFFERED`，`P=1.0`，`reward_audit` 事件含 `positive_repair_signal=true` 且不含测试节点名；结果在 `fix_verification.json` 的 `formal_rollout`。这里的 `P=1.0` 是 CPU 合成奖励的接线证据（fake request manager），不是模型修复收益，也不能当作训练效果。
+这同时验证了：官方 verdict 和 eligibility 不变；collection failure 的标量确实与普通未修复候选分开；shadow 只在 exact 覆盖完整时给数值，缺失时保持 unavailable；三份候选都没有 `P>0` 或 shadow repair，`require_positive_signal` 会把该批标为 NOOP，不会仅因 `max_batches=1` 自动更新。若批次只有单条轨迹，`zero_frozen_advantage` 也会独立产生 NOOP；信号门的独立证据应看 `gate_validation.json` / `gate_fallback_validation.json` 的多轨迹批次。正式 `RolloutEngine` 路径另用真实 `RewardEngine` 和 fake request manager 跑通：轨迹进入 `BUFFERED`，`P=1.0`，`reward_audit` 事件含 `positive_repair_signal=true` 且不含测试节点名；结果在 `fix_verification.json` 的 `formal_rollout`。这里的 `P=1.0` 是 CPU 合成奖励的接线证据（fake request manager），不是模型修复收益，也不能当作训练效果。
 
 ### 3.1 恢复路径修正（复核后）
 
@@ -148,7 +148,7 @@ agent_pytest_collection_failure / agent_pytest_import_failure
 
 - 代码：`7783b44e`（依赖约束、shadow audit、正信号门控修正、恢复路径保留已训练状态）；新 run 目录，沿用同一 v0 和同一公开题集。
 - 预算：单次 45–60 分钟，`max_batches=1`，`target_action_tokens=16384`，其余 Rank 128、奖励权重、8 分钟/28 工具调用不变；不再用“缩小 token 阈值制造梯度”。
-- 通过条件：至少一条轨迹出现可观测的 `P>0` 或 `shadow_repair` 正修复。总奖励仍为 0.15/0.10 并不代表没有 shadow 正修复；只有 `P=0` 且 `shadow_repair` 未测到正修复时，`require_positive_signal` 才把该前缀标为 `NOOP_CONSUMED`，不启动优化步，只记录该批没有质量排序信号。`gate_fallback_validation.json` 在总奖励保持 0.15 时分别验证 shadow 正修复和无 audit 的 `P>0` 都会 reserve，只有 `P=0` 且 audit 为 false 才 NOOP。
-- 门控实现：`TrajectoryBuffer`/`TrajectoryLedger.reserve_update(require_positive_signal=True)` 在冻结 advantage 前检查 `reward_audit` 的 `positive_repair_signal`，否则回退读取 `RewardRecord.P>0`；`max_batches=1` 不再足以单独触发更新。旧 run 中没有 audit 的 buffered 轨迹只要 `P>0` 仍是正信号；只有 `P=0` 且没有 audit/shadow 修复时才按无信号处理，不静默放行。
+- 通过条件：至少一条轨迹出现可观测的 `P>0` 或 `shadow_repair` 正修复。总奖励仍为 0.15/0.10 并不代表没有 shadow 正修复；只有没有任何轨迹 `P>0`（`P=0` 或不可用），且 audit 没有正信号（`positive_repair_signal` 为 false 或缺失）时，`require_positive_signal` 才把该前缀标为 `NOOP_CONSUMED`，不启动优化步，只记录该批没有质量排序信号；门控不读取 `total_reward`。`gate_fallback_validation.json` 在总奖励保持 0.15 时分别验证 shadow 正修复和无 audit 的 `P>0` 都会 reserve，`P=0` 且无 audit 正信号才 NOOP。
+- 门控实现：`TrajectoryBuffer`/`TrajectoryLedger.reserve_update(require_positive_signal=True)` 在冻结 advantage 前检查 `reward_audit` 的 `positive_repair_signal`，该字段不是 true（缺失或 false）时回退读取 `RewardRecord.P>0`；`max_batches=1` 不再足以单独触发更新。旧 run 没有 audit 时 shadow 证据不可补算，只能按 `RewardRecord.P` 判定：`P>0` 仍是正信号，`P=0` 按无信号处理（不是断言 shadow 一定为 0），不静默放行。
 - 失败条件：collection failure 仍可训练但为 0.10；基础设施失败、验证不完整、baseline 不可用继续排除，不补零。
 - 产出：轨迹数、有效轨迹数、P/shadow 分布、collection failure 数、耗时和显存；不把训练题成绩称独立泛化。
