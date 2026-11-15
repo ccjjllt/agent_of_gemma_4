@@ -307,37 +307,43 @@ class SPOTrainer:
             # param_groups still point at the released tensors. Preserve the
             # AdamW first/second moments by rebuilding the groups around the
             # new tensors and loading the previous state by parameter order.
-            torch = self._require_torch()
             opt_state = self.optimizer.state_dict()
             sched_state = self.scheduler.state_dict() if self.scheduler is not None else None
             self._parameters = list(current)
             self._parameter_names = list(names)
-            self.optimizer = torch.optim.AdamW(
-                self._parameters, lr=self.learning_rate,
-                weight_decay=self.weight_decay, fused=self.fused,
-            )
-            self.optimizer.load_state_dict(opt_state)
-            if sched_state is not None:
-                if self.scheduler is None:
-                    self.scheduler = make_scheduler(self.optimizer, self.schedule_contract)
-                self.scheduler.load_state_dict(sched_state)
+            self._rebuild_optimizer_binding(opt_state, sched_state)
             self._bound_generation = generation
             return
         self._parameters = list(current)
         self._parameter_names = list(names)
         self._bound_generation = generation
         if self._suspended_optimizer is not None:
-            torch = self._require_torch()
-            self.optimizer = torch.optim.AdamW(
-                self._parameters, lr=self.learning_rate,
-                weight_decay=self.weight_decay, fused=self.fused,
-            )
-            self.optimizer.load_state_dict(self._suspended_optimizer)
-            if self._suspended_scheduler is not None:
-                self.scheduler = make_scheduler(self.optimizer, self.schedule_contract)
-                self.scheduler.load_state_dict(self._suspended_scheduler)
+            self._rebuild_optimizer_binding(
+                self._suspended_optimizer, self._suspended_scheduler)
             self._suspended_optimizer = None
             self._suspended_scheduler = None
+
+    def _rebuild_optimizer_binding(self, opt_state: Mapping[str, Any],
+                                   sched_state: Mapping[str, Any] | None) -> None:
+        """Rebind AdamW (and its LambdaLR) to the current LoRA parameters.
+
+        ``make_scheduler()`` requires a fresh optimizer at the declared base
+        learning rate. Construct the scheduler first, then restore the current
+        scheduled LR from AdamW state, then restore the scheduler state. Doing
+        the optimizer load first leaves the group LR at step N and makes
+        ``make_scheduler()`` reject the rebind.
+        """
+        torch = self._require_torch()
+        self.optimizer = torch.optim.AdamW(
+            self._parameters, lr=self.learning_rate,
+            weight_decay=self.weight_decay, fused=self.fused,
+        )
+        self.scheduler = make_scheduler(self.optimizer, self.schedule_contract)
+        if opt_state.get("state") and sched_state is None:
+            raise RuntimeError("suspended optimizer state has no scheduler state")
+        self.optimizer.load_state_dict(opt_state)
+        if sched_state is not None:
+            self.scheduler.load_state_dict(sched_state)
 
     def suspend_learner_binding(self) -> None:
         """Drop GPU parameter references before policy.release_memory().
