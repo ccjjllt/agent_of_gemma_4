@@ -10,6 +10,8 @@
 2. **失败反馈**：候选补丁导致测试收集/导入失败时，保留完整、合法的官方 verdict 和训练资格，但把奖励的 `validity` 置 0，总奖励 0.15 → 0.10；普通未修复候选仍为 0.15。目标版本升为 `official_differential_spo_v2`。
 3. **回归观测与优化门控**：公开数据没有 `PASS_TO_PASS`，官方 `G` 仍为 `not_applicable`；新增仅裁判侧可见的 exact 节点 `shadow_regression` 与 `shadow_repair`，分母分别是空补丁基线 passed / nonpassed 节点，缺失/重复/歧义不补零，只进 reward audit，不改官方 `G`、`eligible` 或损失。正式训练路径把聚合 shadow 写入 ledger audit；没有 `P>0` 也没有 shadow repair 的前缀标为 `NOOP_CONSUMED`，不执行优化步。参数化节点名中的沙箱路径规范为 `<workspace>`。
 
+复核后另修正 6 个实现问题：3 份候选的 baseline/candidate 改为同一最终环境身份重跑；正式训练路径保留 shadow audit；`-r/-c` include 与约束文件不再静默忽略；精确 pin 保留可离线满足的 extras，并记录丢弃的 extras；按 wheel `Requires-Python` 排除不兼容版本；任何重复 exact 节点（含同状态）都判 unusable，`matching_nodes` 只数实际匹配的基线 passed 节点。证据见第 3、4 节和 `results/cpu-improve-20261115/`。
+
 ## 1. 依赖修复
 
 旧 `training/official_runtime.py` 在任务沙箱里调用官方 `sandbox/setup.py`；该脚本把 `pyproject.toml` / `requirements*.txt` 的版本说明符剥掉，再对每个发行版选择最高 wheel。FastAPI 老提交的 `starlette<0.51` 因此被忽略，装上 1.x 后 `Router.__init__` 与提交代码不兼容。
