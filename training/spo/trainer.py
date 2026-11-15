@@ -1027,6 +1027,15 @@ class SPOTrainer:
         tx_completed = transaction.get("completed_optimizer_steps")
         if type(tx_completed) is not int or tx_completed < 0:
             raise ValueError("transaction has an invalid completed optimizer count")
+        tx_cursor = transaction.get("optimizer_cursor")
+        if type(tx_cursor) is not int or tx_cursor not in (0, 1):
+            raise ValueError("transaction has an invalid optimizer cursor")
+        tx_offset = transaction.get("offset")
+        if type(tx_offset) is not int or tx_offset < 0:
+            raise ValueError("transaction has an invalid offset")
+        if tx_completed != tx_offset + tx_cursor:
+            raise ValueError(
+                "transaction completed optimizer steps disagree with its offset/cursor")
         if tx_completed > self.completed_optimizer_steps:
             raise ValueError("transaction is ahead of the full checkpoint")
         policy_before = transaction.get("policy_before")
