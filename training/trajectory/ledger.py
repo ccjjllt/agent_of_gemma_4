@@ -521,7 +521,7 @@ class TrajectoryLedger:
                        target_action_tokens: int, max_policy_lag: int,
                        advantage_epsilon: float = 1.0e-6,
                        force: bool = False,
-                       require_positive_signal: bool = False) -> UpdateBatch | None:
+                       require_positive_signal: bool = True) -> UpdateBatch | None:
         """Atomically reserve a FIFO prefix and freeze SPO++ advantages.
 
         The trajectory crossing the token target is included whole.  A small
