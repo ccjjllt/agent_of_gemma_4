@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+from contextlib import contextmanager
 import hashlib
 import json
 import math
@@ -295,6 +296,51 @@ def _emit(metrics_path: Path, event: str, **fields: object) -> None:
         handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
 
 
+@contextmanager
+def _training_cuda_memory(torch: Any, metrics_path: Path, update_id: str):
+    """Measure the learner allocator from model load through adapter export."""
+    started = time.time()
+    devices: list[dict[str, Any]] = []
+    if torch.cuda.is_available():
+        for index in range(torch.cuda.device_count()):
+            row: dict[str, Any] = {"device": index, "peak_reset": False}
+            try:
+                torch.cuda.synchronize(index)
+                torch.cuda.reset_peak_memory_stats(index)
+                row["peak_reset"] = True
+            except Exception as error:
+                row["reset_error"] = f"{type(error).__name__}: {error}"
+            devices.append(row)
+    _emit(metrics_path, "spo_training_memory_started", update_id=update_id,
+          devices=[row["device"] for row in devices], window_started_unix=started)
+    try:
+        yield
+    finally:
+        failure = sys.exc_info()[0]
+        for row in devices:
+            index = row["device"]
+            try:
+                torch.cuda.synchronize(index)
+            except Exception as error:
+                row["synchronize_error"] = f"{type(error).__name__}: {error}"
+            for name in ("memory_allocated", "memory_reserved",
+                         "max_memory_allocated", "max_memory_reserved"):
+                if name.startswith("max_") and not row["peak_reset"]:
+                    row[name + "_bytes"] = None
+                    continue
+                try:
+                    row[name + "_bytes"] = int(getattr(torch.cuda, name)(index))
+                except Exception as error:
+                    row[name + "_error"] = f"{type(error).__name__}: {error}"
+        _emit(metrics_path, "spo_training_cuda_memory", update_id=update_id,
+              window_started_unix=started, elapsed_seconds=time.time() - started,
+              outcome="exception" if failure is not None else "completed",
+              error_type=failure.__name__ if failure is not None else None,
+              scope="learner model load, restore, optimization, KL, checkpoint and adapter export; before learner release",
+              measurement="per-device PyTorch allocator bytes in learner process; excludes vLLM and non-PyTorch allocations",
+              devices=devices)
+
+
 def run_spo(args: argparse.Namespace) -> int:
     import torch  # noqa: F401  (GPU-only past this point, except --check-only)
     from .adapter.double_buffer import DoubleBuffer
@@ -391,22 +437,31 @@ def run_spo(args: argparse.Namespace) -> int:
     # P0-2a: a reused run_dir without --resume would silently serve an old
     # adapter while training a fresh LoRA. Fail closed before touching GPUs.
     _RUN_STATE_FILES = ("adapters/registry.json", "spo_stream.db",
-                        "spo_trainer_state.pt", "spo_trainer_tx.json", "budget.json")
+                        "spo_trainer_state.pt", "spo_trainer_tx.json", "budget.json", "judge_identity.json")
     if not args.resume and any((run_dir / name).exists() for name in _RUN_STATE_FILES):
         raise RuntimeError(
             "run_dir already holds training state; start fresh in an empty "
             "directory or continue explicitly with --resume")
+    from .judge_identity import read_runtime_identity, bind_run_identity
+    judge_environment = read_runtime_identity(
+        cfg["runtime"].get("python", "/opt/gemma-runtime/bin/python"),
+        data_root=data_root, submission_dir=args.submission_dir or (data_root / "sample_submission"),
+        baseline_python=cfg["runtime"].get("sandbox_baseline_python", "/opt/gemma-sandbox-baseline/bin/python"),
+        sandbox=cfg["runtime"].get("sandbox", "subprocess"),
+        evaluation_overrides=dict(cfg["runtime"].get("evaluation", {}) or {}))
+    # Reject legacy/changed judge identities before touching model records,
+    # the existing ledger, the inference backend, or any GPU allocation.
+    fingerprint = bind_run_identity(run_dir, judge_environment, resume=args.resume)
     identity = validate_model_dir(model_path, cfg["policy"])
     with open(run_dir / "model_identity.json", "w", encoding="utf-8") as handle:
         json.dump(identity, handle, ensure_ascii=False, indent=2, sort_keys=True)
     _emit(metrics_path, "model_identity", **identity)
 
-    fingerprint = hashlib.sha256(json.dumps({
-        "config": {k: cfg[k] for k in ("policy", "spo", "optimizer", "rewards", "adapter")},
-        "tasks_sha256": _sha256_file(tasks_path),
-    }, sort_keys=True, default=str).encode()).hexdigest()
     catalog = TaskCatalog(tasks_path, include_ids=cfg["data"].get("task_ids") or None,
                           exclude_ids=cfg["data"].get("exclude_task_ids") or ())
+    _emit(metrics_path, "public_data_identity", path=str(catalog.source),
+          sha256=catalog.source_sha256,
+          scope="official public tasks; provenance separate from judge environment identity")
     catalog.bind_task_keys(build_task_keys(
         tasks_path, fingerprint, cfg["data"].get("task_ids") or [], cfg["data"].get("exclude_task_ids") or []))
 
@@ -639,6 +694,25 @@ def run_spo(args: argparse.Namespace) -> int:
         in_flight: dict[str, tuple[object, object]] = {}
         lock = threading.RLock()
 
+        def wait_for_workers(timeout: float | None = None, *,
+                             return_when=concurrent.futures.ALL_COMPLETED) -> None:
+            with lock:
+                pending = {future for future, _ in in_flight.values()}
+            until = None if timeout is None else time.monotonic() + max(0.0, timeout)
+            while True:
+                endpoint.raise_if_failed()
+                if not pending:
+                    return
+                remaining = None if until is None else until - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    return
+                done, pending = concurrent.futures.wait(
+                    pending, timeout=1.0 if remaining is None else min(1.0, remaining),
+                    return_when=return_when)
+                endpoint.raise_if_failed()
+                if done and return_when == concurrent.futures.FIRST_COMPLETED:
+                    return
+
         def settle_done(future: concurrent.futures.Future, trajectory_id: str, assignment: object) -> None:
             try:
                 try:
@@ -654,8 +728,10 @@ def run_spo(args: argparse.Namespace) -> int:
                     _emit(metrics_path, "trajectory_failed", trajectory_id=trajectory_id,
                           error=f"{type(error).__name__}: {error}")
                     try:
-                        catalog.record_outcome(assignment.task_key, resolved=None,
-                                               infrastructure_error=f"{type(error).__name__}")
+                        # A shared serving outage is not task-specific evidence.
+                        if endpoint.fatal_error is None:
+                            catalog.record_outcome(assignment.task_key, resolved=None,
+                                                   infrastructure_error=f"{type(error).__name__}")
                     except (ValueError, KeyError, TypeError):
                         pass
                     # A trajectory sealed before the crash still blocks later
@@ -681,9 +757,10 @@ def run_spo(args: argparse.Namespace) -> int:
                 else:
                     try:
                         reward = ledger.get_reward(trajectory_id)
-                        catalog.record_outcome(
-                            assignment.task_key, resolved=reward.resolved,
-                            infrastructure_error=None if reward.eligible else reward.exclusion_reason)
+                        if reward.eligible or endpoint.fatal_error is None:
+                            catalog.record_outcome(
+                                assignment.task_key, resolved=reward.resolved,
+                                infrastructure_error=None if reward.eligible else reward.exclusion_reason)
                     except (KeyError, ValueError, TypeError):
                         pass
                     # A trajectory that will never observe (worker failed, or
@@ -907,6 +984,7 @@ def run_spo(args: argparse.Namespace) -> int:
             return stored.policy_before.version + 1
 
         def do_update(update_id: str) -> bool:
+            endpoint.raise_if_failed()
             manifest = double_buffer.rollout
             if manifest is None:
                 raise RuntimeError("no rollout adapter is available for update reservation")
@@ -916,21 +994,22 @@ def run_spo(args: argparse.Namespace) -> int:
             if batch is None:
                 return False
             with barrier.update_window():
-                concurrent.futures.wait([f for f, _ in in_flight.values()])
+                wait_for_workers()
                 with lease.training():
-                    load_started = time.monotonic()
-                    policy.ensure_loaded()
-                    _emit(metrics_path, "spo_model_loaded", phase="update",
-                          seconds=round(time.monotonic() - load_started, 3),
-                          completed_optimizer_steps=trainer.completed_optimizer_steps)
                     try:
-                        restore_learner_weights()
-                        stats = trainer.optimize_batch(batch)
-                        timing = dict(stats.get("timing") or {})
-                        timing["checkpoint_writer"] = checkpoint_writer.stats()
-                        _emit(metrics_path, "spo_update_timing", update_id=update_id,
-                              timing=timing)
-                        finalize_update(update_id, batch, stats, behavior_before)
+                        with _training_cuda_memory(torch, metrics_path, update_id):
+                            load_started = time.monotonic()
+                            policy.ensure_loaded()
+                            _emit(metrics_path, "spo_model_loaded", phase="update",
+                                  seconds=round(time.monotonic() - load_started, 3),
+                                  completed_optimizer_steps=trainer.completed_optimizer_steps)
+                            restore_learner_weights()
+                            stats = trainer.optimize_batch(batch)
+                            timing = dict(stats.get("timing") or {})
+                            timing["checkpoint_writer"] = checkpoint_writer.stats()
+                            _emit(metrics_path, "spo_update_timing", update_id=update_id,
+                                  timing=timing)
+                            finalize_update(update_id, batch, stats, behavior_before)
                     finally:
                         trainer.suspend_learner_binding()
                         policy.release_memory()
@@ -1176,11 +1255,16 @@ def run_spo(args: argparse.Namespace) -> int:
         _emit(metrics_path, "spo_training_phase", phase="online_spo_only",
               sft_wired=False, distillation_wired=False, opd_wired=False)
         while trainer.completed_optimizer_steps < global_total and time.monotonic() < stop_submit:
+            endpoint.raise_if_failed()
             with lock:
                 room = max_workers - len(in_flight)
             for _ in range(room):
                 if time.monotonic() >= stop_submit:
                     break
+                # Registration happens in a worker; without this synchronous
+                # check a dead generation thread produced hundreds of new
+                # zero-call EXCLUDED trajectories before task health ran out.
+                endpoint.raise_if_failed()
                 try:
                     assignment = scheduler.next_assignment()
                 except BarrierActive:
@@ -1216,12 +1300,12 @@ def run_spo(args: argparse.Namespace) -> int:
                 future.add_done_callback(
                     lambda fut, tid=assignment.trajectory_id, asg=assignment: (
                         settle_done(fut, tid, asg), scheduler.complete(asg)))
+            endpoint.raise_if_failed()
             if not in_flight:
                 time.sleep(min(1.0, max(0.05, deadline - time.monotonic())))
                 continue
-            concurrent.futures.wait([f for f, _ in in_flight.values()],
-                                    timeout=min(5.0, max(0.05, deadline - time.monotonic())),
-                                    return_when=concurrent.futures.FIRST_COMPLETED)
+            wait_for_workers(timeout=min(5.0, max(0.05, deadline - time.monotonic())),
+                             return_when=concurrent.futures.FIRST_COMPLETED)
             rollout_now = double_buffer.rollout
             if rollout_now is not None and trainer.completed_optimizer_steps < global_total:
                 try:
@@ -1229,12 +1313,10 @@ def run_spo(args: argparse.Namespace) -> int:
                         batches += 1
                         update_index += 1
                 except (ValueError, RuntimeError) as error:
+                    endpoint.raise_if_failed()
                     _emit(metrics_path, "spo_update_failed", error=str(error))
         with exec_manager.paused():
-            if in_flight:
-                concurrent.futures.wait(
-                    [f for f, _ in in_flight.values()],
-                    timeout=max(0.05, deadline - time.monotonic()))
+            wait_for_workers(timeout=max(0.05, deadline - time.monotonic()))
             final_done = False
             if trainer.completed_optimizer_steps < global_total and time.monotonic() < deadline:
                 try:
@@ -1243,6 +1325,7 @@ def run_spo(args: argparse.Namespace) -> int:
                         batches += 1
                         final_done = True
                 except (ValueError, RuntimeError) as error:
+                    endpoint.raise_if_failed()
                     _emit(metrics_path, "spo_update_failed", error=str(error))
             persist_budget(consumed + (time.monotonic() - start))
             _emit(metrics_path, "spo_run_stopped", batches=batches, final_update=final_done,
@@ -1250,6 +1333,12 @@ def run_spo(args: argparse.Namespace) -> int:
                   global_total_steps=global_total,
                   buffer=ledger.buffer_state())
         return 0 if trainer.completed_optimizer_steps >= global_total else 75
+    except Exception:
+        if endpoint.fatal_error is not None:
+            error = endpoint.fatal_error
+            _emit(metrics_path, "spo_generation_failed",
+                  error_type=type(error).__name__, error=str(error))
+        raise
     finally:
         try:
             if exec_manager is not None:

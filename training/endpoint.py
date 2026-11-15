@@ -233,6 +233,12 @@ class PolicyEndpoint:
         with self.condition:
             return self._fatal_error
 
+    def raise_if_failed(self):
+        """Propagate the first scheduler failure to the rollout coordinator."""
+        error = self.fatal_error
+        if error is not None:
+            raise RuntimeError(f"Generation scheduler failed: {type(error).__name__}: {error}") from error
+
     def _authenticate(self, token):
         """Resolve a private credential; public rollout names are never keys."""
         with self.condition:
@@ -885,6 +891,10 @@ class PolicyEndpoint:
                     self._storage_queue.append(("failed", (item, failure)))
                     self._pending_results += 1
             self.condition.notify_all()
+        if first:
+            print(json.dumps({"event": "generation_scheduler_failed",
+                              "policy_version": self.policy_version,
+                              "error_type": type(failure).__name__, "error": str(failure)}), flush=True)
         for item in requests:
             # Disk failure cannot strand waiters or block the owner loop.
             self._resolve(item["future"], error=failure)
@@ -1016,7 +1026,9 @@ class PolicyEndpoint:
                               "persistence_seconds": self._storage_seconds,
                               "persistence_actions": dict(self._storage_actions),
                               "max_pending_results": self._max_pending_results_observed,
-                              "failed": self._fatal_error is not None}), flush=True)
+                              "failed": self._fatal_error is not None,
+                              "error_type": type(self._fatal_error).__name__ if self._fatal_error is not None else None,
+                              "error": str(self._fatal_error) if self._fatal_error is not None else None}), flush=True)
 
     @staticmethod
     def send_response(handler, request, result, *, request_id, created_at):

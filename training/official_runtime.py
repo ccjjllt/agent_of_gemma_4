@@ -211,6 +211,7 @@ def _make_subprocess_manager(
             self.execution_uids: dict[str, int] = {}
             self.excluded_wheels: set[str] = set()
             self.baseline_packages = baseline_info["packages"]
+            self.baseline_identity = {"version": baseline_info["version"], "packages": self.baseline_packages}
 
         def start(self) -> str:
             # Setup is private; a sandbox's distinct UID receives traverse
@@ -566,34 +567,11 @@ def _check_uid_access(uid: int, data_root: Path, workspace: Path, sandbox_root: 
 
 
 def _evaluation_settings(submission: Path, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
-    import yaml
-    path = next((submission / name for name in ("eval_config.yaml", "eval_config.yml") if (submission / name).is_file()), None)
-    document = yaml.safe_load(path.read_text(encoding="utf-8")) if path else {}
-    document = document or {}
-    section = document.get("evaluation", document)
-    turns = section.get("max_turns", section.get("max_llm_calls"))
-    # Participant budgets may override the starter's short example session.
-    # Defaults match the current official Getting Started notebook.
-    settings = {
-        "timeout_seconds": int(section.get("timeout_seconds", 300)),
-        "verification_timeout_seconds": int(section.get("verification_timeout_seconds", 300)),
-        "max_tool_calls": int(section.get("max_tool_calls", 100)),
-        "max_time_minutes": float(section.get("max_time_minutes", 60.0)),
-        "max_turns": int(turns) if turns is not None else None,
-    }
-    if overrides is not None:
-        if not isinstance(overrides, dict):
-            raise ValueError("evaluation overrides must be a JSON object")
-        unknown = set(overrides) - set(settings)
-        if unknown:
-            raise ValueError(f"Unknown evaluation override keys: {sorted(unknown)}")
-        for key, value in overrides.items():
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
-                raise ValueError(f"Evaluation override {key} must be a positive finite number")
-            if key != "max_time_minutes" and int(value) != value:
-                raise ValueError(f"Evaluation override {key} must be an integer")
-            settings[key] = float(value) if key == "max_time_minutes" else int(value)
-    return settings
+    if __package__:
+        from .judge_identity import effective_evaluation_settings
+    else:
+        from judge_identity import effective_evaluation_settings
+    return effective_evaluation_settings(submission, overrides)
 
 
 class _PatchDeliveryClock:
@@ -780,7 +758,7 @@ def _capture_final_verification(task: Any, manager: Any = None, *, delivery_cloc
                     "junit_sha256": control_capture.get("reward_features", {}).get("junit_sha256"),
                 })
                 if isinstance(control_capture.get("node_report"), dict):
-                    control["baseline_node_report"] = control_capture["node_report"]
+                    control["baseline_node_report"] = _empty_patch_node_report(baseline, control_capture)
             except Exception as error:
                 # A failed diagnostic cannot turn an unknown failure into zero.
                 control["error_type"] = type(error).__name__
@@ -841,6 +819,56 @@ def _training_submission(source: Path, destination: Path) -> Path:
     return destination
 
 
+def _empty_patch_node_report(result: Any, captured: Mapping[str, Any]) -> dict[str, Any]:
+    """Retain actual empty-patch execution evidence, including assertion failures.
+
+    A baseline need not resolve the task. It must execute tests normally, with
+    no collection/setup fault or rejected JUnit; an XML file alone is not a
+    complete verdict. This applies equally to dedicated probes and controls.
+    """
+    if __package__:
+        from .verification_outcome import healthy_control
+    else:
+        from verification_outcome import healthy_control
+    features = dict(captured.get("reward_features") or {})
+    healthy = healthy_control(result, captured)
+    report = dict(captured.get("node_report") or {})
+    report.update({
+        "baseline_kind": "empty_patch",
+        "verification_complete": healthy,
+        "verdict_valid": healthy,
+        "junit_available": features.get("junit_available") is True,
+        "infrastructure_error": None if healthy else (
+            getattr(result, "error", None)
+            or f"empty_patch_verification_incomplete (exit={getattr(result, 'test_exit_code', None)})"
+        ),
+    })
+    artifacts = dict(report.get("artifact_hashes") or {})
+    junit_sha256 = features.get("junit_sha256")
+    if isinstance(junit_sha256, str) and re.fullmatch(r"[0-9a-f]{64}", junit_sha256):
+        artifacts["junit"] = junit_sha256
+    report["artifact_hashes"] = artifacts
+    return report
+
+
+def _task_identity(task: Any, args: argparse.Namespace, settings: Mapping[str, Any]) -> dict[str, str]:
+    if __package__:
+        from .judge_identity import canonical_environment, describe_judge_environment
+        from .reward.junit_bridge import task_key_for
+    else:
+        from judge_identity import canonical_environment, describe_judge_environment
+        from reward.junit_bridge import task_key_for
+    environment = getattr(args, "_judge_environment", None)
+    if environment is None:
+        environment = describe_judge_environment(
+            data_root=args.data_root, submission_dir=args.submission_dir,
+            baseline_python=args.sandbox_baseline_python, sandbox=args.sandbox, settings=settings)
+    return task_key_for(
+        task.instance_id, getattr(task, "repo", ""),
+        getattr(task, "base_commit", "") or getattr(task, "baseCommit", ""),
+        getattr(task, "test_patch", "") or "", canonical_environment(environment))
+
+
 def _empty_patch_probe_result(task: Any, args: argparse.Namespace, result: Any,
                               captured: Mapping[str, Any], settings: Mapping[str, Any]) -> dict[str, Any]:
     """Package the pristine-snapshot verification as a judge-side baseline.
@@ -849,45 +877,39 @@ def _empty_patch_probe_result(task: Any, args: argparse.Namespace, result: Any,
     captured node report describes the empty patch. Only complete, valid
     reports with declared expected universes are usable baselines.
     """
-    if __package__:
-        from .reward.junit_bridge import task_key_for
-    else:
-        from reward.junit_bridge import task_key_for
     started = time.monotonic()
-    fingerprint = json.dumps({
-        "packages": {name: importlib.metadata.version(name) for name in ("swegemma", "adk-eval-core", "adk-submission", "google-adk", "litellm")},
-        "evaluation": dict(settings),
-        "sandbox": args.sandbox,
-    }, sort_keys=True, default=str)
-    node_report = dict(captured.get("node_report") or {})
-    junit_available = bool((captured.get("reward_features") or {}).get("junit_available"))
-    node_report.update({
-        "verification_complete": True,
-        "verdict_valid": True,
-        "junit_available": junit_available,
-    })
-    task_key = task_key_for(
-        task.instance_id, getattr(task, "repo", ""), getattr(task, "base_commit", "") or getattr(task, "baseCommit", ""),
-        getattr(task, "test_patch", "") or "", fingerprint)
+    node_report = _empty_patch_node_report(result, captured)
+    junit_available = node_report["junit_available"]
+    task_key = _task_identity(task, args, settings)
+    node_report["task_key"] = task_key
     reward_features = dict(captured.get("reward_features") or {"junit_available": junit_available})
+    usable = (node_report["verdict_valid"] is True
+              and isinstance(node_report.get("expected_universes"), dict)
+              and bool(node_report["expected_universes"]))
+    # main() uses the top-level verdict to choose its process exit status.
+    # An unresolved but normally executed baseline is usable and must exit 0.
+    infrastructure_error = None if usable else (
+        node_report.get("infrastructure_error") or "empty_patch_probe_missing_node_report"
+    )
     report: dict[str, Any] = {
         "task_id": task.instance_id,
         "rollout_id": args.rollout_id,
         "probe": "empty_patch_baseline",
         "task_key": task_key,
+        "verification_complete": usable,
+        "verdict_valid": usable,
+        "infrastructure_error": infrastructure_error,
         "reward_features": reward_features,
         "test_exit_code": getattr(result, "test_exit_code", None),
         "duration_seconds": time.monotonic() - started,
     }
-    if isinstance(node_report.get("expected_universes"), dict) and node_report["expected_universes"]:
+    if usable:
         report["baseline_report"] = node_report
-    else:
-        report["infrastructure_error"] = "empty_patch_probe_missing_node_report"
     return report
 
 
 async def run_task(args: argparse.Namespace) -> dict[str, Any]:
-    if bool(getattr(args, "empty_patch_probe", False)) and args.auth_token_file is None:
+    if bool(getattr(args, "empty_patch_probe", False)):
         # No model calls happen in probe mode; the endpoint credential is unused.
         api_key = ""
     else:
@@ -911,16 +933,20 @@ async def _run_task(args: argparse.Namespace, api_key: str) -> dict[str, Any]:
     if args.sandbox == "subprocess":
         _check_uid_access(args.agent_uid, data_root, workspace, args.sandbox_root, judge_uid=args.judge_uid)
     submission = _training_submission(source_submission, workspace / "runtime_submission")
-    endpoint = urlsplit(args.endpoint)
-    if endpoint.scheme not in {"http", "https"} or not endpoint.netloc or endpoint.username or endpoint.password:
-        raise ValueError("endpoint must be an HTTP(S) API base without embedded credentials.")
+    # The SDK still builds a lazy model registry for the official evaluator.
+    # A probe never runs the agent or uses the caller's model endpoint/key.
+    model_endpoint = "http://127.0.0.1:9/v1" if probe else args.endpoint
+    if not probe:
+        endpoint = urlsplit(model_endpoint)
+        if endpoint.scheme not in {"http", "https"} or not endpoint.netloc or endpoint.username or endpoint.password:
+            raise ValueError("endpoint must be an HTTP(S) API base without embedded credentials.")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", args.rollout_id):
         raise ValueError("rollout_id must be a safe unique identifier.")
 
     os.environ.update({
-        "OPENAI_BASE_URL": args.endpoint.rstrip("/"),
-        "LOCAL_INFERENCE_URL": args.endpoint.rstrip("/"),
-        "LITELLM_API_BASE": args.endpoint.rstrip("/"),
+        "OPENAI_BASE_URL": model_endpoint.rstrip("/"),
+        "LOCAL_INFERENCE_URL": model_endpoint.rstrip("/"),
+        "LITELLM_API_BASE": model_endpoint.rstrip("/"),
         "OPENAI_API_KEY": api_key,
         "LOCAL_API_KEY": api_key,
         "LITELLM_API_KEY": api_key,
@@ -997,9 +1023,10 @@ async def _run_task(args: argparse.Namespace, api_key: str) -> dict[str, Any]:
             return original_task
 
     evaluator = PublicOnlyEvaluator(config)
-    session_clock = SessionClock(args.endpoint, args.rollout_id, mode=args.session_clock,
-                                 poll_seconds=args.queue_timing_poll_seconds, api_key=api_key)
-    context_class = timed_context_class(SwegemmaContext, session_clock)
+    session_clock = None if probe else SessionClock(
+        args.endpoint, args.rollout_id, mode=args.session_clock,
+        poll_seconds=args.queue_timing_poll_seconds, api_key=api_key)
+    context_class = SwegemmaContext if probe else timed_context_class(SwegemmaContext, session_clock)
     manager = None
     if args.sandbox == "subprocess":
         # Rollout IDs repeat across fresh learner runs; allocate a private
@@ -1021,6 +1048,15 @@ async def _run_task(args: argparse.Namespace, api_key: str) -> dict[str, Any]:
 
         context_class = AgentContext
 
+    if __package__:
+        from .judge_identity import describe_judge_environment
+    else:
+        from judge_identity import describe_judge_environment
+    args._judge_environment = describe_judge_environment(
+        data_root=data_root, submission_dir=source_submission,
+        baseline_python=args.sandbox_baseline_python, sandbox=args.sandbox, settings=settings,
+        baseline_info=getattr(evaluator.docker, "baseline_identity", None))
+
     context = context_class(
         docker_manager=evaluator.docker,
         container_id="",
@@ -1033,14 +1069,15 @@ async def _run_task(args: argparse.Namespace, api_key: str) -> dict[str, Any]:
         budget=config.budget,
         harness=config.harness,
     )
-    summarizer_factory = None
-    if args.event_summarizer == "tool_aware":
-        if __package__:
-            from .tool_state_summary import ToolStateSummarizer
-        else:
-            from tool_state_summary import ToolStateSummarizer
-        summarizer_factory = ToolStateSummarizer
-    bind_timed_runner(evaluator, context, session_clock, summarizer_factory=summarizer_factory)
+    if not probe:
+        summarizer_factory = None
+        if args.event_summarizer == "tool_aware":
+            if __package__:
+                from .tool_state_summary import ToolStateSummarizer
+            else:
+                from tool_state_summary import ToolStateSummarizer
+            summarizer_factory = ToolStateSummarizer
+        bind_timed_runner(evaluator, context, session_clock, summarizer_factory=summarizer_factory)
     # Probe mode verifies the pristine snapshot: no model calls, no delivery
     # or timing assertions. The node report is still captured for the baseline.
     delivery = None if probe else install_delivery_tracking(
@@ -1075,7 +1112,8 @@ async def _run_task(args: argparse.Namespace, api_key: str) -> dict[str, Any]:
     finally:
         if delivery is not None:
             delivery.restore()
-        await session_clock.close()
+        if session_clock is not None:
+            await session_clock.close()
         restore_verification()
         cleanup = getattr(evaluator.docker, "cleanup_all", None)
         if cleanup:
@@ -1110,21 +1148,10 @@ async def _run_task(args: argparse.Namespace, api_key: str) -> dict[str, Any]:
     })
     spo_bundle: dict[str, Any] = {}
     try:
-        if __package__:
-            from .reward.junit_bridge import sha256_text, task_key_for
-        else:
-            from reward.junit_bridge import sha256_text, task_key_for
-        fingerprint = json.dumps({
-            "packages": {name: importlib.metadata.version(name) for name in ("swegemma", "adk-eval-core", "adk-submission", "google-adk", "litellm")},
-            "evaluation": settings,
-            "sandbox": args.sandbox,
-        }, sort_keys=True, default=str)
-        spo_bundle["task_key"] = task_key_for(
-            task.instance_id, getattr(task, "repo", ""), getattr(task, "base_commit", "") or getattr(task, "baseCommit", ""),
-            getattr(task, "test_patch", "") or "", fingerprint,
-        )
+        spo_bundle["task_key"] = _task_identity(task, args, settings)
         candidate_report = dict(captured.get("node_report") or {})
         candidate_report.update({
+            "task_key": spo_bundle["task_key"],
             "verification_complete": verdict.get("verification_complete"),
             "verdict_valid": verdict.get("verdict_valid"),
             "infrastructure_error": verdict.get("infrastructure_error"),
@@ -1134,14 +1161,13 @@ async def _run_task(args: argparse.Namespace, api_key: str) -> dict[str, Any]:
             spo_bundle["candidate_report"] = candidate_report
         control = captured.get("failure_control") or {}
         baseline_nodes = control.get("baseline_node_report")
-        if isinstance(baseline_nodes, dict) and baseline_nodes.get("expected_universes"):
-            baseline_report = dict(baseline_nodes)
-            baseline_report.update({
-                "verification_complete": True,
-                "verdict_valid": True,
-                "junit_available": True,
-            })
-            spo_bundle["baseline_report"] = baseline_report
+        if (control.get("healthy") is True and isinstance(baseline_nodes, dict)
+                and baseline_nodes.get("expected_universes")
+                and baseline_nodes.get("verification_complete") is True
+                and baseline_nodes.get("verdict_valid") is True
+                and baseline_nodes.get("junit_available") is True
+                and not baseline_nodes.get("infrastructure_error")):
+            spo_bundle["baseline_report"] = {**baseline_nodes, "task_key": spo_bundle["task_key"]}
         tool_calls = getattr(result, "tool_calls", 0)
         if type(tool_calls) is int and tool_calls >= 0:
             spo_bundle["resource_metrics"] = {"tool_calls": tool_calls}

@@ -183,14 +183,20 @@ class RolloutScheduler:
             # This is a soft coverage multiplier, not an eligibility filter.
             coverage = 1.0 / (1.0 + self._recent_repos.get(repo, 0))
             repo_overrides[repo] = self.sampler.repo_overrides.get(repo, 1.0) * coverage
-        selected = self.sampler.sample(
-            available,
-            rng=self._rng,
-            repo_overrides=repo_overrides,
-            task_types=self.task_types,
-            recent_exposure=dict(self._recent_tasks),
-            health=self.health,
-        )
+        try:
+            selected = self.sampler.sample(
+                available,
+                rng=self._rng,
+                repo_overrides=repo_overrides,
+                task_types=self.task_types,
+                recent_exposure=dict(self._recent_tasks),
+                health=self.health,
+            )
+        except IndexError:
+            # All otherwise available tasks may be in a temporary health
+            # cooldown. Let queue selection report NoDispatchableTask so the
+            # coordinator waits, rather than leaking the sampler's IndexError.
+            return
         self._sequence += 1
         queue_name = self._queue_for(selected)
         self._queues[queue_name].append(_QueuedTask(selected, queue_name, self._sequence, now))

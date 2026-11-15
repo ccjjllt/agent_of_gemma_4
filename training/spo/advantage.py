@@ -32,6 +32,12 @@ def action_token_statistics(raw_advantages: Mapping[str, float],
             raise ValueError("raw advantages must be finite")
         total += count
         weighted.append((count, float(raw)))
+    first = weighted[0][1]
+    if all(raw == first for _, raw in weighted):
+        # Multiplying a constant by unequal token counts can round its weighted
+        # mean away from that constant. Preserve the exact zero-variance case
+        # so a signal-free batch remains a NOOP, rather than a tiny fake update.
+        return TokenStatistics(mean=first, std=0.0, total_action_tokens=total)
     mean = math.fsum(count * raw for count, raw in weighted) / total
     variance = math.fsum(count * (raw - mean) ** 2 for count, raw in weighted) / total
     return TokenStatistics(mean=mean, std=math.sqrt(max(0.0, variance)),

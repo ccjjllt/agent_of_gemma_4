@@ -100,7 +100,10 @@ class RemoteServingEngine:
     @property
     def active_count(self) -> int:
         with self._lock:
-            return len(self._pending)
+            # A running HTTP future cannot be cancelled by Future.cancel().
+            # Keep it for cleanup, but the endpoint has already removed its
+            # cancelled request from the logical in-flight set.
+            return sum(request_id not in self._cancelled for request_id in self._pending)
 
     def _check_abort(self) -> None:
         if getattr(self.policy, "abort_generation", None) is not None \
@@ -167,6 +170,16 @@ class RemoteServingEngine:
         for item in incoming:
             if not self.can_admit(item["prepared"]):
                 raise ValueError("Scheduler exceeded the reserved serving capacity")
+        if not incoming:
+            with self._lock:
+                waiting = [future for request_id, future in self._pending.items()
+                           if request_id not in self._cancelled]
+            if waiting:
+                # Whole completions make no progress in this owner thread.
+                # Bound the wait so new requests/cancellations are still picked
+                # up promptly, instead of spinning millions of empty steps.
+                concurrent.futures.wait(waiting, timeout=0.05,
+                                        return_when=concurrent.futures.FIRST_COMPLETED)
         with self._lock:
             for item in incoming:
                 request_id = item["request_id"]
@@ -179,7 +192,8 @@ class RemoteServingEngine:
                 self._started_at[request_id] = time.perf_counter()
                 self._queued_at[request_id] = item["queued_at"]
                 self.max_observed_inflight = max(
-                    self.max_observed_inflight, len(self._pending))
+                    self.max_observed_inflight,
+                    sum(key not in self._cancelled for key in self._pending))
                 if self.on_request_started is not None:
                     self.on_request_started(request_id, self._started_at[request_id])
             done_ids = [request_id for request_id, future in self._pending.items()
@@ -217,7 +231,7 @@ class RemoteServingEngine:
         with self._lock:
             for request_id in identities:
                 future = self._pending.get(request_id)
-                if future is None:
+                if future is None or request_id in self._cancelled:
                     continue
                 removed.append(request_id)
                 self._cancelled.add(request_id)

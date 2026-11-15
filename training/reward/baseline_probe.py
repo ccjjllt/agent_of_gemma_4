@@ -83,9 +83,13 @@ class EmptyPatchProbeRunner:
         key = task_key if isinstance(task_key, TaskKey) else TaskKey.from_dict(task_key)
         seq = int(self.attempt_seq())
         agent_uid, judge_uid = self.uid_allocator.allocate(seq)
-        folder = self.workspace_root / f"probe-{key.cache_key}"
-        folder.mkdir(parents=True, exist_ok=True, mode=0o700)
-        rollout_id = f"probe-{key.cache_key[:56]}"
+        # The cache identity is stable, but a probe execution is not: failed
+        # probes leave their runtime submission and result behind. Reusing that
+        # workspace makes every retry fail before verification, and overwrites
+        # the original failure. Keep each attempt's evidence in a fresh folder.
+        rollout_id = f"probe-{key.cache_key}-a{seq:06d}-{secrets.token_hex(6)}"
+        folder = self.workspace_root / rollout_id
+        folder.mkdir(parents=True, exist_ok=False, mode=0o700)
         result_path = folder / "result.json"
         credential_path = folder / "probe_token"
         descriptor = os.open(credential_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -142,11 +146,15 @@ class EmptyPatchProbeRunner:
                 raise OSError(f"empty-patch probe result unreadable: {error}") from error
             if not isinstance(document, dict):
                 raise ValueError("empty-patch probe result is not a verdict object")
+            if TaskKey.from_dict(document.get("task_key")) != key:
+                raise ValueError("empty-patch probe TaskKey differs from the requested task/judge identity")
             report = document.get("baseline_report")
             if not isinstance(report, Mapping) or not report.get("expected_universes"):
                 raise ValueError(
                     "empty-patch probe produced no usable baseline report: "
                     f"{document.get('infrastructure_error')}")
+            if TaskKey.from_dict(report.get("task_key")) != key:
+                raise ValueError("baseline report TaskKey differs from its probe verdict")
             self._event("baseline_probe_completed", task_id=key.task_id,
                         elapsed_seconds=time.monotonic() - started)
             return dict(report)

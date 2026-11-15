@@ -16,7 +16,7 @@ from typing import Callable, Mapping
 import uuid
 
 
-BASELINE_SCHEMA_VERSION = "empty_patch_baseline_v1"
+BASELINE_SCHEMA_VERSION = "empty_patch_baseline_v2"
 _COMPONENTS = ("repair", "regression")
 _ALLOWED_STATUSES = {"passed", "failure", "error", "skipped", "nonpassed", "missing"}
 
@@ -131,6 +131,10 @@ def normalize_baseline(task_key: TaskKey | Mapping[str, object], report: Mapping
     key = TaskKey.from_dict(task_key)
     if not isinstance(report, Mapping):
         raise TypeError("Empty-patch baseline runner must return a mapping")
+    if report.get("baseline_kind") != "empty_patch":
+        raise ValueError("Training baselines require empty-patch evidence, not candidate or reference-patch results")
+    if TaskKey.from_dict(report.get("task_key")) != key:
+        raise ValueError("Baseline source TaskKey differs from the requested task/judge identity")
     expected = _universes(report.get("expected_universes"))
     nodes = _node_statuses(report.get("node_statuses", report.get("nodes")))
     complete = report.get("verification_complete") is True
@@ -143,6 +147,7 @@ def normalize_baseline(task_key: TaskKey | Mapping[str, object], report: Mapping
         raise ValueError("junit_available must be bool when present")
     body = {
         "schema_version": BASELINE_SCHEMA_VERSION,
+        "baseline_kind": "empty_patch",
         "task_key": key.as_dict(),
         "cache_key": key.cache_key,
         "expected_universes": expected,

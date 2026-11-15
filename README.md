@@ -2,7 +2,7 @@
 
 单一路线：Gemma 4 31B BF16 + LoRA Rank 128 / Alpha 256 + Single-stream SPO + 异步 Agent RL。推理走 vLLM，同机双 A800 模型并行；vLLM 使用独立 Python 环境，不并入 Unsloth learner。不做算法对比，不降 Rank。
 
-实施入口：[双 A800 训练与运行说明](training/README.md)。首轮只跑在线 SPO；SFT 冷启动、教师蒸馏、OPD 已实现（`training/data/`）但明确后置，待首次真实 SPO 更新证明循环成立后再接入。数据与模型在服务器手动获取。
+实施入口：[双 A800 训练与运行说明](training/README.md)。首轮只跑在线 SPO；SFT 冷启动、教师蒸馏、OPD 已实现（`training/data/`）但明确后置，仍未接入正式训练入口。数据与模型在服务器手动获取。
 
 方案细节：[SPO 异步训练设计](research/spo-async-training-design.md)、[vLLM 迁移记录](docs/plan/008-vllm-backend-migration.md)。当前配置：[configs/spo_a800_2x80.toml](configs/spo_a800_2x80.toml)；推理环境：[requirements/inference-vllm.lock.txt](requirements/inference-vllm.lock.txt)。
 
@@ -18,6 +18,8 @@
 - `.venv/`：保留的本地 Python 环境。
 - `.git/`：保留现有 Git 历史；已提交的旧内容仍可从历史中查阅。
 
-训练数据在运行时直接挂载比赛官方公开集，不在本地下载、复制或另建训练数据包。GPU 实验按新的具体授权与预算执行；没有启动训练或评测，也没有操作远程资源。
+训练数据在运行时直接挂载比赛官方公开集，不在本地下载、复制或另建训练数据包。2026-11-15已按授权完成首次真实SPO更新、v1发布及生成核对；实验进程已停止。尚无修复收益证据，非零adapter的logprob重复性有小幅波动，详见[实验记录](docs/plan/008-vllm-backend-migration.md#10-首次真实-spo-更新2026-11-15)。后续GPU工作仍按具体授权与预算执行。
+
+同日 CPU 学习信号研究已完成 129 道公开题的空补丁/参考补丁对照，以及 10 份历史模型补丁重验。健康空基线仅 63 题；P 有粒度遗漏，当前 G 不可测。真实候选未提供可用的正修复信号，部分验收破坏也未被标量奖励区分；首次更新的同奖励优势差异来自价值历史。下一步先完善 CPU 环境与失败反馈，再进行短 GPU 采样，暂不直接扩大训练。关键结论和条件耗时估计见[学习信号研究](research/spo-async-training-design.md#17-cpu-学习信号研究2026-11-15)。
 
 比赛入口：[Gemma 4 Developer Agent Competition](https://www.kaggle.com/competitions/gemma-4-developer-agent)。

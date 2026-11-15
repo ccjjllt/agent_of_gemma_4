@@ -8,6 +8,7 @@ from typing import Any, Mapping
 
 from ..request_store import RequestConflict, RequestUnavailable
 from ..reward.engine import RewardEngine
+from ..reward.baseline import TaskKey as JudgeTaskKey
 from ..spo.value_tracker import FrozenBaseline, ValueTracker
 from ..trajectory.buffer import TrajectoryBuffer
 from ..trajectory.ledger import TrajectoryLedger, canonical_json
@@ -136,6 +137,15 @@ class RolloutEngine:
         verification_ref: str,
         seal_error: str | None,
     ) -> dict[str, Any]:
+        expected_key = JudgeTaskKey.from_dict(trajectory.task_key.to_dict())
+        if JudgeTaskKey.from_dict(raw.get("task_key")) != expected_key:
+            raise ValueError("candidate verdict TaskKey differs from the dispatched task/judge identity")
+        for name in ("candidate_report", "baseline_report", "baseline"):
+            report = extra.get(name)
+            if isinstance(report, Mapping) and JudgeTaskKey.from_dict(report.get("task_key")) != expected_key:
+                raise ValueError(f"{name} TaskKey differs from the dispatched task/judge identity")
+            if name != "candidate_report" and isinstance(report, Mapping) and report.get("baseline_kind") != "empty_patch":
+                raise ValueError("Training baseline must be a judge-side empty-patch result")
         candidate = _mapping(extra.get("candidate_report"))
         features = _mapping(raw.get("reward_features"))
         # Raw official lifecycle fields are authoritative even if an adapter also
@@ -257,8 +267,8 @@ class RolloutEngine:
 
         reward = stored_reward
         if reward is None:
-            bundle = self._bundle(trajectory, raw, extra, verification_ref, seal_error)
             try:
+                bundle = self._bundle(trajectory, raw, extra, verification_ref, seal_error)
                 record = self.reward_engine.spo_record(
                     bundle,
                     task_key=trajectory.task_key.to_dict(),
