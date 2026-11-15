@@ -32,7 +32,7 @@ from packaging.version import Version
 
 _SKIP_PARTS = {".git", ".hg", ".svn", "docker", "node_modules", "build", "dist", "vendor"}
 _REQUIREMENT_GLOBS = ("requirements*.txt", "test-requirements*.txt")
-_CONSTRAINT_GLOBS = ("constraints*.txt", "constraint*.txt")
+_CONSTRAINT_GLOBS = ("constraint*.txt",)
 _SKIP_FILE_TOKENS = ("docs", "doc-", "translations", "github-actions", "lint", "typing")
 _SKIP_GROUP_TOKENS = ("docs", "doc", "translation", "lint", "typing")
 _COMPATIBLE_TAGS = set(sys_tags())
@@ -452,8 +452,30 @@ def install(
     selected, diagnostics = select_requirements(raw, wheel_dirs, raw_constraints)
     diagnostics.update(source_diagnostics)
     if selected:
-        command = [sys.executable, "-m", "pip", "install", "--no-build-isolation", *selected]
-        result = module.subprocess.run(command, capture_output=True, text=True, check=False)
+        # Constraints must also reach pip, not only the explicit-name selector:
+        # a repository may pin a transitive dependency (for example Starlette)
+        # without naming it in its own requirements.
+        import tempfile
+        constraint_path: Path | None = None
+        command = [sys.executable, "-m", "pip", "install", "--no-build-isolation"]
+        if raw_constraints:
+            handle = tempfile.NamedTemporaryFile(
+                "w", encoding="utf-8", prefix="gemma-constraints-", suffix=".txt",
+                delete=False,
+            )
+            try:
+                handle.write("\n".join(raw_constraints) + "\n")
+            finally:
+                handle.close()
+            constraint_path = Path(handle.name)
+            command.extend(["-c", str(constraint_path)])
+            diagnostics["constraints_passed_to_pip"] = len(raw_constraints)
+        command.extend(selected)
+        try:
+            result = module.subprocess.run(command, capture_output=True, text=True, check=False)
+        finally:
+            if constraint_path is not None:
+                constraint_path.unlink(missing_ok=True)
         if getattr(result, "returncode", 1):
             raise RuntimeError(
                 "Version-aware task dependency installation failed: "

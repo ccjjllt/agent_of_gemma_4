@@ -175,8 +175,18 @@ def normalize_baseline(task_key: TaskKey | Mapping[str, object], report: Mapping
         "status": "complete" if complete and valid and not infrastructure_error else "incomplete",
     }
     if report.get("observed_nodes") is not None:
+        duplicates = report.get("observed_node_duplicates")
+        if duplicates is not None and (type(duplicates) is not int or duplicates < 0):
+            raise ValueError("observed_node_duplicates must be a non-negative integer")
         body["observed_nodes"] = _observed_nodes(report.get("observed_nodes"))
-        body["observed_nodes_usable"] = report.get("observed_nodes_usable") is not False
+        body["observed_node_duplicates"] = duplicates
+        # Old caches written before duplicate counting cannot prove that no
+        # same-state duplicate inflated the denominator. Keep them readable for
+        # P/G but make shadow unavailable rather than pairable.
+        body["observed_nodes_usable"] = (
+            report.get("observed_nodes_usable") is not False
+            and duplicates == 0
+        )
     body["content_sha256"] = _sha256_json({k: v for k, v in body.items() if k != "content_sha256"})
     return body
 

@@ -1112,6 +1112,20 @@ def run_spo(args: argparse.Namespace) -> int:
                                                     batch.policy_before)
                             finished += 1
                             continue
+                    if not ledger.update_has_positive_signal(update_id):
+                        # A RESERVED batch from an older run (or one reserved
+                        # just before a crash) must not bypass the signal gate.
+                        # No optimizer step has run on this path: the cursor==1
+                        # recovery above has already continued.
+                        ledger.discard_reserved_update(
+                            update_id, "no_positive_repair_signal_on_resume")
+                        if (checkpoint_state is not None
+                                and _active_update_id(checkpoint_state) == update_id):
+                            trainer_state.unlink(missing_ok=True)
+                            trainer_tx_path.unlink(missing_ok=True)
+                        _emit(metrics_path, "spo_reserved_discarded", update_id=update_id,
+                              reason="no_positive_repair_signal_on_resume")
+                        continue
                     behavior_before = record.policy_before
                     batch = ledger.get_update(update_id)
                     if batch.phase != "RESERVED":

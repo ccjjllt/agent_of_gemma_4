@@ -367,7 +367,11 @@ class TrajectoryLedger:
         payload = dict(audit)
         encoded = canonical_json(payload)
         with self.transaction() as conn:
-            self._get_trajectory(conn, trajectory_id)
+            # The audit can be written before the trajectory row exists: the
+            # formal RolloutEngine computes reward and audit from the sealed
+            # in-memory trajectory, then persists both. audit_events has no
+            # foreign key, and a missing later trajectory only leaves an
+            # orphan diagnostic row, never a fabricated eligibility.
             row = conn.execute(
                 "SELECT payload FROM audit_events WHERE event_type='reward_audit' "
                 "AND subject_id=? ORDER BY event_id DESC LIMIT 1", (trajectory_id,)
@@ -385,6 +389,41 @@ class TrajectoryLedger:
         if row is None:
             raise KeyError(f"unknown reward audit: {trajectory_id}")
         return json.loads(row[0])
+
+    @staticmethod
+    def _discard_reserved_update(conn: sqlite3.Connection, batch: UpdateBatch,
+                                 reason: str) -> None:
+        if batch.phase != "RESERVED" or batch.optimizer_cursor != 0:
+            raise RuntimeError("only an unoptimized RESERVED update can be discarded")
+        trajectories = [TrajectoryLedger._get_trajectory(conn, trajectory_id)
+                        for trajectory_id in batch.trajectory_ids]
+        conn.execute("DELETE FROM update_trajectories WHERE update_id=?", (batch.update_id,))
+        conn.execute("DELETE FROM updates WHERE update_id=?", (batch.update_id,))
+        for trajectory in trajectories:
+            conn.execute(
+                "UPDATE buffer_entries SET state='NOOP_CONSUMED',update_id=NULL,"
+                "transitioned_at=? WHERE trajectory_id=? AND state='RESERVED'",
+                (time.time(), trajectory.trajectory_id),
+            )
+            TrajectoryLedger._put_trajectory(
+                conn, replace(trajectory, status="NOOP_CONSUMED"))
+            TrajectoryLedger._event(
+                conn, "buffer_noop", trajectory.trajectory_id, {"reason": reason})
+        TrajectoryLedger._event(conn, "update_discarded", batch.update_id, {
+            "reason": reason, "trajectories": list(batch.trajectory_ids),
+        })
+
+    def update_has_positive_signal(self, update_id: str) -> bool:
+        with self._lock:
+            batch = self._get_update(self._conn, update_id)
+            return any(self._reward_has_positive_signal(self._conn, trajectory_id)
+                       for trajectory_id in batch.trajectory_ids)
+
+    def discard_reserved_update(self, update_id: str, reason: str) -> None:
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("a discard reason is required")
+        with self.transaction() as conn:
+            self._discard_reserved_update(conn, self._get_update(conn, update_id), reason)
 
     def offer_trajectory(self, trajectory_id: str) -> str:
         """Offer one complete rewarded trajectory; never splits or reorders calls."""
@@ -455,13 +494,28 @@ class TrajectoryLedger:
             "SELECT payload FROM audit_events WHERE event_type='reward_audit' "
             "AND subject_id=? ORDER BY event_id DESC LIMIT 1", (trajectory_id,)
         ).fetchone()
+        if row is not None:
+            try:
+                payload = json.loads(row[0])
+            except (TypeError, ValueError):
+                payload = None
+            if isinstance(payload, Mapping) and payload.get("positive_repair_signal") is True:
+                return True
+        # Crash-window compatibility: an eligible reward may already carry
+        # official P>0 while its aggregate audit was not persisted. Never
+        # discard that known positive signal just because the audit is absent.
+        row = conn.execute(
+            "SELECT payload FROM rewards WHERE trajectory_id=?", (trajectory_id,)
+        ).fetchone()
         if row is None:
             return False
         try:
-            payload = json.loads(row[0])
+            reward = json.loads(row[0])
         except (TypeError, ValueError):
             return False
-        return isinstance(payload, Mapping) and payload.get("positive_repair_signal") is True
+        value = reward.get("P") if isinstance(reward, Mapping) else None
+        return (isinstance(value, (int, float)) and not isinstance(value, bool)
+                and math.isfinite(float(value)) and float(value) > 0)
 
     def reserve_update(self, update_id: str, *, policy_before: BehaviorAdapter,
                        target_action_tokens: int, max_policy_lag: int,
@@ -492,7 +546,15 @@ class TrajectoryLedger:
                 "SELECT payload FROM updates WHERE update_id=?", (update_id,)
             ).fetchone()
             if existing is not None:
-                return UpdateBatch.from_dict(json.loads(existing[0]))
+                batch = UpdateBatch.from_dict(json.loads(existing[0]))
+                if (require_positive_signal and batch.phase == "RESERVED"
+                        and batch.optimizer_cursor == 0
+                        and not any(self._reward_has_positive_signal(
+                            conn, trajectory_id) for trajectory_id in batch.trajectory_ids)):
+                    self._discard_reserved_update(
+                        conn, batch, "no_positive_repair_signal_on_retry")
+                    return None
+                return batch
             rows = conn.execute(
                 "SELECT trajectory_id FROM buffer_entries "
                 "WHERE state='BUFFERED' ORDER BY offer_order"

@@ -18,7 +18,7 @@
 
 新实现：
 
-- `training/task_dependency_setup.py`：解析 `project.dependencies`、非 docs/lint 的 optional extras、`requirements-tests*.txt` 和 `dependency-groups`；递归执行 `-r/--requirement` 与 `-c/--constraint` include，约束文件只收窄版本、不新增发行版，其他 directive 记录而不静默丢弃；按 PEP 508 交集选最高满足版本的 wheel，传给 pip 时使用精确 `==` pin；保留可离线满足的 extras，缺少可选依赖的 extras 明确记录并丢弃；按 wheel 的 `Requires-Python` 排除当前解释器不兼容的版本；安装后核对 `importlib.metadata.version`，不一致写入诊断；只使用本地 wheel，不联网。
+- `training/task_dependency_setup.py`：解析 `project.dependencies`、非 docs/lint 的 optional extras、`requirements-tests*.txt` 和 `dependency-groups`；递归执行 `-r/--requirement` 与 `-c/--constraint` include，约束文件只收窄版本、不新增发行版，其他 directive 记录而不静默丢弃；选出的显式版本用精确 `==` pin，**原始约束同时以临时 `-c` 文件传给 pip**，因此只约束 transitive 依赖（例如 Starlette）也能生效；按 PEP 508 交集选最高满足版本的 wheel；保留可离线满足的 extras，缺少可选依赖的 extras 明确记录并丢弃；按 wheel 的 `Requires-Python` 排除当前解释器不兼容的版本；安装后核对 `importlib.metadata.version`，不一致写入诊断；只使用本地 wheel，不联网。
 - `training/official_runtime.py`：在官方 `sandbox/setup.py` 的 `setup_git_exclude` / `install_editable_package` / `execute_fast_path` 之上执行该选择；官方 setup 源文件不改。额外 wheel 目录通过 `runtime.extra_wheels` **复制**到任务沙箱 `/wheels`；源目录和 `official/` 都不写回，但这不是只读挂载，沙箱内的副本由任务 UID 可读。源资产本轮复核未发现写回。
 - 额外 wheel 目录只含官方缓存缺少的公共测试包：`inline_snapshot`、`dirty_equals`、`attrs`、`asttokens`、`executing`、`markdown-it-py`、`pytest-timeout`、`python-multipart`、`email-validator`、`orjson`、`ujson`、`pydantic-settings`、`passlib`、`pyjwt`、`coverage`、`flask`、`uvicorn`、`pytest-asyncio`、`trio`、`pytest-mock`、`argon2-cffi` 等；具体清单和指纹记录在 `results/cpu-improve-20261115/`。
 
@@ -90,16 +90,16 @@ agent_pytest_collection_failure / agent_pytest_import_failure
 
 - `training/reward/junit_bridge.py:parse_junit_node_statuses()`：保留 exact `(classname, name)`，参数化后缀不丢；**任何重复 exact 键都返回 unusable，即使两行状态相同**，避免去重后虚增分母。
 - `build_node_report(..., include_observed_nodes=True)`：在裁判侧报告中保存 `observed_nodes`、`observed_nodes_usable`。
-- `training/reward/baseline.py`：空补丁缓存保留 `observed_nodes`；旧缓存缺该字段仍可读，shadow 为 `unavailable`。
+- `training/reward/baseline.py`：空补丁缓存保留 `observed_nodes` 与 `observed_node_duplicates`；旧缓存缺重复计数或计数非 0 时仍可读，但 shadow 强制 `unavailable`，防止旧解析器去重后的缓存继续配对。
 - `training/reward/differential.py:shadow_regression()`：分母 = 基线 passed 节点；候选缺任一基线 passed 节点即 `unavailable`；`matching_nodes` 只数实际匹配的基线 passed 节点，不再把基线 failed 节点算进覆盖；候选新增节点单独计数；不进入官方 `G`。
 - `training/reward/differential.py:shadow_repair()`：分母 = 基线 nonpassed 节点，分子 = 候选中转为 passed 的节点；缺失仍 `unavailable`，不补零；这是质量门控的正修复信号来源。
 - `training/reward/engine.py`：`spo_record_with_audit()` 把学习侧 `RewardRecord` 与裁判侧 audit 分开；`RewardRecord` 字段不变。
 - `training/rollout/engine.py`：正式训练路径把 `shadow_regression`、`shadow_repair`、`positive_repair_signal` 和 cache/patch 指纹写入 ledger 的 `reward_audit` 事件，不再在 `spo_reward_record()` 处静默丢弃；测试节点名不进入该事件。
-- `training/trajectory/ledger.py` 与 `buffer.py`：`require_positive_signal` 默认开启。没有 `P>0` 也没有 exact shadow repair 的 FIFO 前缀被标为 `NOOP_CONSUMED`，不产生 optimizer step、LR 推进或版本号增长。
+- `training/trajectory/ledger.py` 与 `buffer.py`：`require_positive_signal` 默认开启。没有 `P>0` 也没有 exact shadow repair 的 FIFO 前缀被标为 `NOOP_CONSUMED`，不产生 optimizer step、LR 推进或版本号增长。已持久化的无信号 `RESERVED` 批次在同 ID 重试或 `--resume` 时会被丢弃并清理未执行的 trainer checkpoint；只有已运行过 optimizer 的 cursor=1 路径继续完成发布。缺失 audit 时回退读取 `RewardRecord.P`，崩溃窗口不会丢掉已知正信号。
 
 候选节点名中的沙箱绝对路径在 `official_runtime.py` 中规范为 `<workspace>`，使 Requests 三对参数化节点可用同一身份比较。
 
-3 份真实历史补丁在同一最终环境身份 `4a9f9e2b...` 下重跑（baseline 与 candidate 的完整 TaskKey 相等；旧表使用的 baseline 属于 `1296aafc...` 环境，已移到 `reward_shadow_validation.previous-cross-environment.json`，不再作为当前证据）：
+3 份真实历史补丁在同一最终环境身份 `f242e208...` 下重跑（baseline 与 candidate 的完整 TaskKey 相等；旧表使用的 baseline 属于 `1296aafc...` 环境，已移到 `reward_shadow_validation.previous-cross-environment.json`，不再作为当前证据）：
 
 | 任务 | verdict_kind | P | validity | 总奖励 | shadow regression | shadow repair | 正信号 |
 | --- | --- | ---: | ---: | ---: | --- | --- | --- |

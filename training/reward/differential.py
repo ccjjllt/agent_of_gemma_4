@@ -107,6 +107,13 @@ def _inspect(report: object, label: str) -> dict:
     }
 
 
+def _exact_duplicate_count_missing_or_nonzero(report: Mapping[str, object]) -> bool:
+    value = report.get("observed_node_duplicates")
+    if value is None:
+        return True
+    return type(value) is not int or value != 0
+
+
 def shadow_regression(candidate: Mapping[str, object],
                       baseline: Mapping[str, object]) -> dict:
     """Exact baseline-passed regression observation, judge-private only.
@@ -133,6 +140,10 @@ def shadow_regression(candidate: Mapping[str, object],
     if not isinstance(baseline_nodes, Mapping) or not isinstance(candidate_nodes, Mapping):
         return {**base, "status": "unavailable", "value": None, "numerator": None,
                 "denominator": None, "reason": "exact_observed_nodes_not_retained"}
+    if (_exact_duplicate_count_missing_or_nonzero(baseline)
+            or _exact_duplicate_count_missing_or_nonzero(candidate)):
+        return {**base, "status": "unavailable", "value": None, "numerator": None,
+                "denominator": None, "reason": "duplicate_count_not_retained_or_nonzero"}
     if any(not isinstance(key, str) or not key or status not in _ALLOWED
            for key, status in baseline_nodes.items()):
         return {**base, "status": "unavailable", "value": None, "numerator": None,
@@ -196,6 +207,10 @@ def shadow_repair(candidate: Mapping[str, object],
     if not isinstance(baseline_nodes, Mapping) or not isinstance(candidate_nodes, Mapping):
         return {**base, "status": "unavailable", "value": None, "numerator": None,
                 "denominator": None, "reason": "exact_observed_nodes_not_retained"}
+    if (_exact_duplicate_count_missing_or_nonzero(baseline)
+            or _exact_duplicate_count_missing_or_nonzero(candidate)):
+        return {**base, "status": "unavailable", "value": None, "numerator": None,
+                "denominator": None, "reason": "duplicate_count_not_retained_or_nonzero"}
     if any(not isinstance(key, str) or not key or status not in _ALLOWED
            for key, status in baseline_nodes.items()):
         return {**base, "status": "unavailable", "value": None, "numerator": None,
