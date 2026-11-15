@@ -1033,6 +1033,8 @@ class SPOTrainer:
         tx_offset = transaction.get("offset")
         if type(tx_offset) is not int or tx_offset < 0:
             raise ValueError("transaction has an invalid offset")
+        if tx_offset != self._active.get("offset"):
+            raise ValueError("transaction offset differs from the active batch")
         if tx_completed != tx_offset + tx_cursor:
             raise ValueError(
                 "transaction completed optimizer steps disagree with its offset/cursor")
