@@ -30,6 +30,32 @@
 | `fastapi_14964` | 快照提取失败 | 正常完成，7 passed / 2 failed，基线健康 |
 | `requests_7427` | 参数化节点路径导致 exact shadow 错位 | 基线健康；节点路径规范后 exact 配对可测 |
 
+### 1.1 覆盖复测（部分）
+
+优先复测旧分类中 `both_arms_same_missing_module` 与 `both_arms_shared_compatibility_candidate` 的 58 道题，另加 3 道 Requests 参数化题和 4 道历史候选题。2 GiB cgroup 加单题约 40–70 秒，本轮在时限内完成 23 道；未完成题不推断结果。
+
+| 指标 | 数值 |
+| --- | ---: |
+| 目标题数 | 58 |
+| 已完成 | 23 |
+| 新官方 verdict 有效 | 16 |
+| 新空补丁健康 | 16 |
+| 旧不健康 → 新健康 | 10 |
+| 旧健康 → 新不健康 | 0 |
+| 仍未健康 | 7 |
+| 旧全集健康基线 | 63 |
+| 保守估计新健康下限 | 72 |
+
+10 道 recovered：`fastapi_11355`、`12942`、`14099`、`14349`、`14463`、`14482`、`14487`、`14492`、`14786`、`14964`。`estimated_total_healthy` 只把已完成目标题的新健康数加到旧健康全集上，未完成目标题仍按不健康计，因此是下限，不是完整 129 题复测结果。
+
+仍未健康的题并非都能靠依赖修复解决。已确认至少 3 题是 `test_patch` 导入了参考修复才新增的名字：
+
+- `fastapi_15030`：`cannot import name 'EventSourceResponse' from 'fastapi.responses'`
+- `fastapi_14978`：`APIRouter.__init__() got an unexpected keyword argument 'strict_content_type'`
+- `fastapi_14609`：`cannot import name 'PydanticV1NotSupportedError' from 'fastapi.exceptions'`
+
+这些题的空补丁在定义上无法健康；不应伪造基线，也不应把参考补丁当空补丁。剩余 `fastapi_14485`、`14512`、`14962`、`15023` 仍有 collection/error，需下一轮逐个定位，本轮不归因于模型。
+
 ## 2. 失败反馈
 
 `training/rollout/engine.py` 的 `_validity()` 新增：
@@ -62,13 +88,24 @@ agent_pytest_collection_failure / agent_pytest_import_failure
 
 候选节点名中的沙箱绝对路径在 `official_runtime.py` 中规范为 `<workspace>`，使 Requests 三对参数化节点可用同一身份比较。
 
+3 份真实历史补丁的新代码重验（不是仅合成数据）：
+
+| 任务 | verdict_kind | P | G | validity | 总奖励 | shadow |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `rich_4070` | `agent_pytest_collection_failure` | 0.0 | 0.0 | 0.0 | 0.10 | unavailable：候选缺 124 个基线 passed 节点中的大部分，不补零 |
+| `fastapi_14258` | `tests_completed` | 0.0 | 0.0 | 1.0 | 0.15 | not_applicable：基线 passed 分母为 0 |
+| `rich_4076` | `tests_completed` | 0.0 | 0.0 | 1.0 | 0.15 | measured 0/20，无回归 |
+
+这同时验证了：官方 verdict 和 eligibility 不变；collection failure 的标量确实与普通未修复候选分开；shadow 只在 exact 覆盖完整时给数值，缺失时保持 unavailable。
+
 ## 4. 证据与边界
 
-结果目录：`results/cpu-improve-20261115/`。包含覆盖复测摘要、10 份候选的奖励复算、shadow 观测摘要、依赖 wheel 清单/指纹和运行来源。
+结果目录：`results/cpu-improve-20261115/`。包含 `summary.json`、覆盖复测 `coverage_recovery.json`、3 份真实候选的 `reward_shadow_validation.json` 和额外 wheel 清单/指纹 `wheels-extra-manifest.json`。
 
 边界：
 
-- 2 GiB cgroup 内存限制导致不能无限并行；失败的 probe 会记录原因，不用零奖励补。
+- 2 GiB cgroup 内存限制导致不能无限并行；本轮复测 23/58 道目标题，未完成题不推断结果，`estimated_total_healthy=72` 是下限。
 - 新环境只证明这些公开题在本机 CPU 配置下可执行；不证明官方 GPU 主机或 heldout 的覆盖率。
 - `shadow_regression` 不是官方 `PASS_TO_PASS`，不能替换官方 `G`，也不能单独当作模型修复收益。
+- 10 份历史候选的 0.15→0.10 是 verdict 级复算；其中 3 份真实补丁已用新代码重验，其余 7 份未在本次重跑。
 - 本轮仍没有正修复候选；下一步仍是短 GPU 采样，寻找真实局部修复或最终成功，再谈扩大训练。
