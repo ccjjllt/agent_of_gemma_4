@@ -213,7 +213,8 @@ def recovery_discard_reason(record: Any, checkpoint_state: Any,
     A rollback is allowed only when every source agrees that AdamW never ran:
     ledger phase RESERVED/LEARNING with cursor 0, no post-step transaction, no
     positive signal, and (for LEARNING) a cursor-0 checkpoint that owns this
-    update. ``require_positive_signal = false`` disables the rollback entirely.
+    update. ``require_positive_signal = false`` disables the rollback decision;
+    the transaction/checkpoint consistency checks still fail closed.
 
     A transaction that claims a post-step cursor without the matching cursor-1
     checkpoint is inconsistent, not durable; raise instead of replaying AdamW.
@@ -254,13 +255,22 @@ def discard_unoptimized_update(
 ) -> dict[str, Any] | None:
     """Roll back an update that provably never ran AdamW.
 
-    Returns the rebased base snapshot when the full checkpoint pointed at this
-    update, so the caller can restore it into a fresh trainer. Otherwise the
-    on-disk checkpoint already belongs to an earlier committed update and is
-    left byte-for-byte untouched. No training state is ever deleted here.
+    Every source is validated before the destructive rewrite, so a transaction
+    or ledger mismatch cannot leave a rebased checkpoint behind. Returns the
+    rebased base snapshot when the full checkpoint pointed at this update, so
+    the caller can restore it into a fresh trainer. Otherwise the on-disk
+    checkpoint already belongs to an earlier committed update and is left
+    byte-for-byte untouched. No training state is ever deleted here.
     """
     base_state = None
     checkpoint_completed = 0
+    cursor = None
+    # Validate every source before the destructive rewrite. A transaction or
+    # ledger mismatch must not leave a rebased checkpoint behind.
+    batch = ledger.get_update(update_id)
+    if batch.phase not in ("RESERVED", "LEARNING") or batch.optimizer_cursor != 0:
+        raise RuntimeError(
+            "only an unoptimized RESERVED/LEARNING update can be discarded")
     if checkpoint_state is not None:
         if not isinstance(checkpoint_state, Mapping):
             raise TypeError("checkpoint state must be a mapping")
@@ -276,11 +286,7 @@ def discard_unoptimized_update(
         if cursor == 1:
             raise RuntimeError(
                 f"refusing to discard {update_id}: its optimizer step is durable")
-        if cursor == 0:
-            base_state = _base_state_from_prestep_checkpoint(checkpoint_state, update_id)
-            if rebase_checkpoint is None:
-                raise RuntimeError("a rebase callback is required to preserve the base")
-            rebase_checkpoint(base_state)
+    drop_transaction_pending = False
     if transaction is not None and transaction.get("update_id") == update_id:
         if transaction.get("optimizer_cursor") != 0:
             raise RuntimeError(
@@ -293,6 +299,13 @@ def discard_unoptimized_update(
                 "transaction and checkpoint disagree on completed optimizer steps")
         if drop_transaction is None:
             raise RuntimeError("a transaction cleanup callback is required")
+        drop_transaction_pending = True
+    if cursor == 0:
+        base_state = _base_state_from_prestep_checkpoint(checkpoint_state, update_id)
+        if rebase_checkpoint is None:
+            raise RuntimeError("a rebase callback is required to preserve the base")
+        rebase_checkpoint(base_state)
+    if drop_transaction_pending:
         drop_transaction()
     ledger.discard_unoptimized_update(update_id, reason)
     return base_state
@@ -1356,7 +1369,11 @@ def run_spo(args: argparse.Namespace) -> int:
                             _emit(metrics_path, "spo_model_loaded", phase="resume_reserved",
                                   seconds=round(time.monotonic() - load_started, 3))
                             try:
-                                if trainer._active is None and checkpoint_state is not None:
+                                trainer_is_fresh = (
+                                    trainer._active is None
+                                    and trainer.completed_optimizer_steps == 0
+                                    and trainer.optimizer is None)
+                                if trainer_is_fresh and checkpoint_state is not None:
                                     checkpoint_active = _active_update_id(checkpoint_state)
                                     if checkpoint_active in (None, update_id):
                                         trainer.restore_base_state(checkpoint_state)
@@ -1391,6 +1408,25 @@ def run_spo(args: argparse.Namespace) -> int:
                         f"interrupted update {update_id} has no trainer checkpoint; refusing to skip it")
                 state = _torch.load(trainer_state, map_location="cpu", weights_only=False)
                 active_id = _active_update_id(state)
+                if active_id is None and record.phase == "LEARNING" \
+                        and record.optimizer_cursor == 0 \
+                        and state.get("checkpoint_phase") == "discarded_unoptimized_batch":
+                    # A previous rollback persisted the committed base but
+                    # crashed before deleting this LEARNING row. The active
+                    # batch is gone, so finish the original rollback; if its
+                    # signal status changed, fail closed instead of guessing.
+                    if require_positive_signal \
+                            and not ledger.update_has_positive_signal(update_id):
+                        discard_prestep_update(
+                            update_id, "no_positive_repair_signal_on_resume",
+                            checkpoint_state=state,
+                            transaction=transaction_for_update)
+                        _emit(metrics_path, "spo_interrupted_discard_completed",
+                              update_id=update_id)
+                        continue
+                    raise RuntimeError(
+                        f"update {update_id} has a rebased committed-base checkpoint "
+                        "but its active batch is gone; refusing to resume")
                 if active_id != update_id:
                     raise RuntimeError(
                         f"trainer checkpoint belongs to {active_id}, not pending {update_id}")
@@ -1460,12 +1496,27 @@ def run_spo(args: argparse.Namespace) -> int:
             if not isinstance(state, Mapping) or int(state.get("completed_optimizer_steps", 0)) <= 0:
                 return False
             active_id = _active_update_id(state)
+            orphaned_prestep = False
             if active_id is not None:
                 try:
                     pending_phase = ledger.get_update(active_id).phase
                 except (KeyError, ValueError):
                     pending_phase = None
-                if pending_phase != "CONSUMED":
+                if pending_phase is None:
+                    # A pre-step rollback may have removed the ledger row but
+                    # crashed before rebasing the checkpoint. Its cursor-0
+                    # snapshot is the committed base, not a resumable batch.
+                    cursor = _checkpoint_update_cursor(state, active_id)
+                    active = state.get("active_batch") or {}
+                    offset = active.get("offset")
+                    completed = state.get("completed_optimizer_steps")
+                    if cursor == 0 and type(completed) is int and completed == offset:
+                        orphaned_prestep = True
+                    else:
+                        raise RuntimeError(
+                            f"trainer checkpoint refers to unknown update {active_id}; "
+                            "refusing to resume")
+                elif pending_phase != "CONSUMED":
                     return False
             with barrier.update_window():
                 with lease.training():
@@ -1474,9 +1525,15 @@ def run_spo(args: argparse.Namespace) -> int:
                     _emit(metrics_path, "spo_model_loaded", phase="resume_base",
                           seconds=round(time.monotonic() - load_started, 3))
                     try:
-                        trainer.restore_training_state(state)
-                        _emit(metrics_path, "spo_base_restored",
-                              completed_optimizer_steps=trainer.completed_optimizer_steps)
+                        if orphaned_prestep:
+                            trainer.restore_base_state(state)
+                            _emit(metrics_path, "spo_base_restored",
+                                  completed_optimizer_steps=trainer.completed_optimizer_steps,
+                                  source="orphaned_prestep_owner", owner=active_id)
+                        else:
+                            trainer.restore_training_state(state)
+                            _emit(metrics_path, "spo_base_restored",
+                                  completed_optimizer_steps=trainer.completed_optimizer_steps)
                         return True
                     finally:
                         trainer.suspend_learner_binding()

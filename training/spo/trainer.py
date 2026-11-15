@@ -132,6 +132,23 @@ def _same_frozen_batch(left: UpdateBatch, right: UpdateBatch) -> bool:
     return all(getattr(left, name) == getattr(right, name) for name in fields)
 
 
+def _trainer_identity_config(config: Any) -> Any:
+    """Normalize the declared trainer config for checkpoint identity checks.
+
+    ``spo.require_positive_signal`` gates which trajectories become updates; it
+    does not change the model layout, optimizer, schedule or tensor semantics.
+    Excluding it lets an operator switch the gate off on an existing run
+    instead of failing with a spurious "trainer configuration differs".
+    """
+    if not isinstance(config, Mapping):
+        return config
+    normalized = copy.deepcopy(dict(config))
+    spo = normalized.get("spo")
+    if isinstance(spo, dict):
+        spo.pop("require_positive_signal", None)
+    return normalized
+
+
 class SPOTrainer:
     """Apply one PPO epoch to a frozen, complete-trajectory ``UpdateBatch``.
 
@@ -1119,7 +1136,8 @@ class SPOTrainer:
         if not isinstance(state, Mapping) or state.get("schema_version") != TRAINER_STATE_VERSION \
                 or state.get("algorithm") != "single_stream_spo":
             raise ValueError("unsupported SPO trainer checkpoint")
-        if state.get("trainer_config") != self._declared_config:
+        if _trainer_identity_config(state.get("trainer_config")) \
+                != _trainer_identity_config(self._declared_config):
             raise ValueError("checkpoint trainer configuration differs")
         if state.get("lr_schedule") != self.schedule_contract:
             raise ValueError("checkpoint LR schedule differs")
@@ -1184,7 +1202,8 @@ class SPOTrainer:
         if not isinstance(state, Mapping) or state.get("schema_version") != TRAINER_STATE_VERSION \
                 or state.get("algorithm") != "single_stream_spo":
             raise ValueError("unsupported SPO trainer checkpoint")
-        if state.get("trainer_config") != self._declared_config:
+        if _trainer_identity_config(state.get("trainer_config")) \
+                != _trainer_identity_config(self._declared_config):
             raise ValueError("checkpoint trainer configuration differs")
         if state.get("lr_schedule") != self.schedule_contract:
             raise ValueError("checkpoint LR schedule differs")

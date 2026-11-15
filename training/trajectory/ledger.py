@@ -438,8 +438,14 @@ class TrajectoryLedger:
             self._discard_unoptimized_update(conn, self._get_update(conn, update_id), reason)
 
     def discard_reserved_update(self, update_id: str, reason: str) -> None:
-        """Retained name for callers of the original RESERVED-only rollback."""
-        self.discard_unoptimized_update(update_id, reason)
+        """Retained RESERVED-only name; LEARNING needs the explicit method."""
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("a discard reason is required")
+        with self.transaction() as conn:
+            batch = self._get_update(conn, update_id)
+            if batch.phase != "RESERVED":
+                raise RuntimeError("discard_reserved_update only accepts RESERVED updates")
+            self._discard_unoptimized_update(conn, batch, reason)
 
     def offer_trajectory(self, trajectory_id: str) -> str:
         """Offer one complete rewarded trajectory; never splits or reorders calls."""
