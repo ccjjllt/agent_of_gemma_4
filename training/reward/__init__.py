@@ -2,7 +2,7 @@
 
 from .baseline import BASELINE_SCHEMA_VERSION, EmptyPatchBaselineStore, TaskKey
 from .critic import ProcessCritic, build_process_evidence
-from .differential import compute_differential, pair_node_reports
+from .differential import compute_differential, pair_node_reports, shadow_regression, shadow_repair
 from .engine import REWARD_RECORD_FIELDS, RewardEngine, compute_reward_record, spo_reward_record
 from .progress import (
     DEFAULT_EFFICIENCY_WEIGHT,
@@ -29,4 +29,6 @@ __all__ = [
     "compute_reward_record",
     "efficiency_evidence",
     "pair_node_reports",
+    "shadow_regression",
+    "shadow_repair",
 ]

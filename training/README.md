@@ -16,7 +16,7 @@
 | vLLM OpenAI 服务 | `http://127.0.0.1:8000`（另行部署，本程序只做 health/部署探测） |
 | 运行输出 | `/root/autodl-tmp/gemma4/runs` |
 | 沙箱、临时目录 | `/root/autodl-tmp/gemma4/sandboxes`、`/root/autodl-tmp/gemma4/tmp` |
-| 补充离线测试 wheel | `/root/autodl-tmp/gemma4/wheels-extra`（由 `runtime.extra_wheels` 只读挂入任务沙箱） |
+| 补充离线测试 wheel | `/root/autodl-tmp/gemma4/wheels-extra`（由 `runtime.extra_wheels` 复制到任务沙箱，源目录不写回） |
 
 数据和模型在服务器手动获取，程序直接读取官方原目录；不维护下载脚本，不在本地下载、复制或打包训练题。共享盘仅放模型权重与官方题目，环境、日志、checkpoint 放系统盘或数据盘。
 
@@ -26,7 +26,7 @@ subprocess 后端需 root 启动，再由不同低权限 UID 运行 agent 工具
 
 以官方验收为绝对核心：候选补丁与空补丁基线在同一需求、同一环境下做节点级配对（P=修复进展，G=回归），基线缓存带内容哈希校验，不一致直接判 ineligible。基础奖励为有界复合奖励，效率项只在成功任务中启用小权重。过程评价只认执行证据，不认模型自述。价值跟踪按任务持久化（连续奖励 EMA＋独立成功概率），派发时冻结基线，共享更新按派发序号有序应用。
 
-2026-11-15 CPU研究确认：当前公开文件未提供显式 F2P/P2P，P 使用官方函数提取 fallback，G 的 `not_applicable` 表示未测回归。精确 JUnit 节点的旁路诊断仍是研究观测，未替换生产奖励或官方验收；已发现的遗漏及价值历史效应见[学习信号研究](../research/spo-async-training-design.md#17-cpu-学习信号研究2026-11-15)。同日续作把候选导致的测试收集/导入失败记为 `validity=0`（官方 verdict 与 eligibility 不变，总奖励 0.15→0.10），并把目标版本升为 `official_differential_spo_v2`；exact 节点 `shadow_regression` 只写入裁判侧 audit，不替换官方 G。优先复测 58 道旧不健康题，完成 58 道中 32 道恢复健康、0 道退化，全集健康基线估计 63→95。详见[验收环境与奖励反馈修正](../docs/plan/009-cpu-acceptance-reward-feedback.md)。
+2026-11-15 CPU研究确认：当前公开文件未提供显式 F2P/P2P，P 使用官方函数提取 fallback，G 的 `not_applicable` 表示未测回归。精确 JUnit 节点的旁路诊断仍是研究观测，未替换生产奖励或官方验收；已发现的遗漏及价值历史效应见[学习信号研究](../research/spo-async-training-design.md#17-cpu-学习信号研究2026-11-15)。同日续作把候选导致的测试收集/导入失败记为 `validity=0`（官方 verdict 与 eligibility 不变，总奖励 0.15→0.10），并把目标版本升为 `official_differential_spo_v2`；exact 节点 `shadow_regression`/`shadow_repair` 只写入裁判侧 audit，正式路径落到 ledger audit event，不替换官方 G。目标集为 51 道旧不健康题 + 7 道旧健康对照；58/58 完成但跨 3 个环境身份，最终身份直接验证 46 道（27 健康、26 恢复、19 不健康）。全集健康估计 63→95 是跨阶段估计。训练前新增 `require_positive_signal`：无 P>0 且无 shadow repair 的前缀标为 NOOP，不执行优化步。详见[验收环境与奖励反馈修正](../docs/plan/009-cpu-acceptance-reward-feedback.md)。
 
 ## 启动与续跑
 

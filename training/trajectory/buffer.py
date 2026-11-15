@@ -12,7 +12,8 @@ class TrajectoryBuffer:
     """Session/trainer interface; it owns no second database or in-memory queue."""
 
     def __init__(self, ledger: TrajectoryLedger, *, target_action_tokens: int = 32768,
-                 max_policy_lag: int = 2, advantage_epsilon: float = 1.0e-6):
+                 max_policy_lag: int = 2, advantage_epsilon: float = 1.0e-6,
+                 require_positive_signal: bool = True):
         if isinstance(target_action_tokens, bool) or not isinstance(target_action_tokens, int) \
                 or target_action_tokens <= 0:
             raise ValueError("target_action_tokens must be positive")
@@ -21,10 +22,13 @@ class TrajectoryBuffer:
             raise ValueError("max_policy_lag must be non-negative")
         if not isinstance(advantage_epsilon, (int, float)) or advantage_epsilon <= 0:
             raise ValueError("advantage_epsilon must be positive")
+        if type(require_positive_signal) is not bool:
+            raise ValueError("require_positive_signal must be bool")
         self.ledger = ledger
         self.target_action_tokens = target_action_tokens
         self.max_policy_lag = max_policy_lag
         self.advantage_epsilon = float(advantage_epsilon)
+        self.require_positive_signal = require_positive_signal
 
     def offer(self, trajectory_id: str) -> str:
         return self.ledger.offer_trajectory(trajectory_id)
@@ -36,6 +40,7 @@ class TrajectoryBuffer:
             target_action_tokens=self.target_action_tokens,
             max_policy_lag=self.max_policy_lag,
             advantage_epsilon=self.advantage_epsilon, force=force,
+            require_positive_signal=self.require_positive_signal,
         )
 
     def consume(self, update_id: str, *, policy_after: BehaviorAdapter,

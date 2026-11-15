@@ -23,6 +23,6 @@
 
 同日 CPU 学习信号研究已完成 129 道公开题的空补丁/参考补丁对照，以及 10 份历史模型补丁重验。健康空基线仅 63 题；P 有粒度遗漏，当前 G 不可测。真实候选未提供可用的正修复信号，部分验收破坏也未被标量奖励区分；首次更新的同奖励优势差异来自价值历史。下一步先完善 CPU 环境与失败反馈，再进行短 GPU 采样，暂不直接扩大训练。关键结论和条件耗时估计见[学习信号研究](research/spo-async-training-design.md#17-cpu-学习信号研究2026-11-15)。
 
-2026-11-15 续：CPU 验收环境已改为按仓库版本约束选择离线 wheel，并补充测试依赖；候选导致的测试收集/导入失败现在 `validity=0`（0.15→0.10，仍 eligible），奖励版本升为 `official_differential_spo_v2`；exact 节点 `shadow_regression` 只进裁判侧 audit，不替换官方 `G`。优先复测 58 道旧不健康题，完成 58 道中 32 道恢复健康、0 道退化，全集健康基线估计 63→95；3 份真实候选重验支持新奖励语义。详见[验收环境与奖励反馈修正](docs/plan/009-cpu-acceptance-reward-feedback.md)。仍未取得模型修复收益证据。
+2026-11-15 续：CPU 验收环境已改为按仓库版本约束选择离线 wheel、执行 `-r/-c` include、按 `Requires-Python` 过滤并补充可离线满足的 extras/测试依赖；候选导致的测试收集/导入失败现在 `validity=0`（0.15→0.10，仍 eligible），奖励版本升为 `official_differential_spo_v2`；exact 节点 `shadow_regression`/`shadow_repair` 只进裁判侧 audit（正式训练写入 ledger audit event），不替换官方 `G`。目标集为 51 道旧不健康题 + 7 道旧健康对照；58/58 完成但跨 3 个环境身份，最终身份直接验证 46 道（27 健康、26 恢复、19 不健康），全集健康估计 63→95 是跨阶段估计。3 份真实候选已在同一最终环境下重验；新增 `require_positive_signal`，无 P>0 且无 shadow repair 时不执行优化步。详见[验收环境与奖励反馈修正](docs/plan/009-cpu-acceptance-reward-feedback.md)。仍未取得模型修复收益证据。
 
 比赛入口：[Gemma 4 Developer Agent Competition](https://www.kaggle.com/competitions/gemma-4-developer-agent)。

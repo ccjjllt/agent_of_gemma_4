@@ -71,6 +71,8 @@ def load_config(path: Path) -> dict:
     spo = cfg["spo"]
     if int(spo.get("target_action_tokens", 0)) <= 0 or int(spo.get("max_policy_lag", -1)) < 0:
         raise ValueError("invalid spo token budget or lag")
+    if type(spo.get("require_positive_signal", True)) is not bool:
+        raise ValueError("spo.require_positive_signal must be bool")
     if cfg["adapter"].get("allow_resident_pair") is not False:
         raise ValueError("allow_resident_pair must be false until VRAM is measured")
     if cfg["rewards"].get("objective_version") != "official_differential_spo_v2":
@@ -502,7 +504,8 @@ def run_spo(args: argparse.Namespace) -> int:
     trajectory_buffer = TrajectoryBuffer(
         ledger, target_action_tokens=int(cfg["spo"]["target_action_tokens"]),
         max_policy_lag=int(cfg["spo"]["max_policy_lag"]),
-        advantage_epsilon=float(cfg["spo"].get("advantage_epsilon", 1.0e-6)))
+        advantage_epsilon=float(cfg["spo"].get("advantage_epsilon", 1.0e-6)),
+        require_positive_signal=bool(cfg["spo"].get("require_positive_signal", True)))
     rollout_engine = RolloutEngine(requests, reward_engine, ledger, tracker, trajectory_buffer)
 
     backend_url = args.backend_url or cfg["inference"].get("base_url")

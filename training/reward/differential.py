@@ -144,9 +144,11 @@ def shadow_regression(candidate: Mapping[str, object],
     baseline_passed = [key for key, status in baseline_nodes.items() if status == _PASSED]
     missing = [key for key in baseline_passed if key not in candidate_nodes]
     if missing:
+        matched = len(baseline_passed) - len(missing)
         return {**base, "status": "unavailable", "value": None, "numerator": None,
                 "denominator": None, "baseline_nodes": len(baseline_nodes),
-                "matching_nodes": len(baseline_nodes) - len(missing),
+                "baseline_passed_nodes": len(baseline_passed),
+                "matching_nodes": matched,
                 "candidate_only_nodes": len(set(candidate_nodes) - set(baseline_nodes)),
                 "coverage_complete": False,
                 "reason": "candidate_missing_baseline_passed_nodes"}
@@ -154,14 +156,78 @@ def shadow_regression(candidate: Mapping[str, object],
     if denominator == 0:
         return {**base, "status": "not_applicable", "value": 0.0, "numerator": 0,
                 "denominator": 0, "baseline_nodes": len(baseline_nodes),
-                "matching_nodes": len(baseline_nodes),
+                "baseline_passed_nodes": 0, "matching_nodes": 0,
                 "candidate_only_nodes": len(set(candidate_nodes) - set(baseline_nodes)),
                 "coverage_complete": True, "reason": "no_baseline_passed_nodes"}
     numerator = sum(candidate_nodes[key] != _PASSED for key in baseline_passed)
     return {**base, "status": "measured", "value": numerator / denominator,
             "numerator": numerator, "denominator": denominator,
             "baseline_nodes": len(baseline_nodes),
-            "matching_nodes": len(baseline_nodes),
+            "baseline_passed_nodes": denominator,
+            "matching_nodes": denominator,
+            "candidate_only_nodes": len(set(candidate_nodes) - set(baseline_nodes)),
+            "coverage_complete": True, "reason": None}
+
+
+def shadow_repair(candidate: Mapping[str, object],
+                  baseline: Mapping[str, object]) -> dict:
+    """Exact baseline-nonpassed repair observation, judge-private only.
+
+    Symmetric to :func:`shadow_regression`, but the denominator is every exact
+    node that did not pass in the empty-patch baseline.  A candidate that
+    repairs at least one such node has a real positive signal even when the
+    official repair universe is unavailable.  Missing candidate nodes keep the
+    result unavailable rather than imputing a repair.
+    """
+    definition = "exact_baseline_nonpassed_repair_v1"
+    base = {
+        "definition": definition, "diagnostic_only": True,
+        "official_P_replaced": False, "used_in_reward": False,
+        "visibility": "judge_private_only",
+    }
+    if not isinstance(candidate, Mapping) or not isinstance(baseline, Mapping):
+        return {**base, "status": "unavailable", "value": None, "numerator": None,
+                "denominator": None, "reason": "report_missing"}
+    if baseline.get("observed_nodes_usable") is False or candidate.get("observed_nodes_usable") is False:
+        return {**base, "status": "unavailable", "value": None, "numerator": None,
+                "denominator": None, "reason": "duplicate_or_ambiguous_exact_nodes"}
+    baseline_nodes = baseline.get("observed_nodes")
+    candidate_nodes = candidate.get("observed_nodes")
+    if not isinstance(baseline_nodes, Mapping) or not isinstance(candidate_nodes, Mapping):
+        return {**base, "status": "unavailable", "value": None, "numerator": None,
+                "denominator": None, "reason": "exact_observed_nodes_not_retained"}
+    if any(not isinstance(key, str) or not key or status not in _ALLOWED
+           for key, status in baseline_nodes.items()):
+        return {**base, "status": "unavailable", "value": None, "numerator": None,
+                "denominator": None, "reason": "invalid_baseline_node_status"}
+    if any(not isinstance(key, str) or not key or status not in _ALLOWED
+           for key, status in candidate_nodes.items()):
+        return {**base, "status": "unavailable", "value": None, "numerator": None,
+                "denominator": None, "reason": "invalid_candidate_node_status"}
+    baseline_nonpassed = [key for key, status in baseline_nodes.items() if status != _PASSED]
+    missing = [key for key in baseline_nonpassed if key not in candidate_nodes]
+    if missing:
+        matched = len(baseline_nonpassed) - len(missing)
+        return {**base, "status": "unavailable", "value": None, "numerator": None,
+                "denominator": None, "baseline_nodes": len(baseline_nodes),
+                "baseline_nonpassed_nodes": len(baseline_nonpassed),
+                "matching_nodes": matched,
+                "candidate_only_nodes": len(set(candidate_nodes) - set(baseline_nodes)),
+                "coverage_complete": False,
+                "reason": "candidate_missing_baseline_nonpassed_nodes"}
+    denominator = len(baseline_nonpassed)
+    if denominator == 0:
+        return {**base, "status": "not_applicable", "value": 0.0, "numerator": 0,
+                "denominator": 0, "baseline_nodes": len(baseline_nodes),
+                "baseline_nonpassed_nodes": 0, "matching_nodes": 0,
+                "candidate_only_nodes": len(set(candidate_nodes) - set(baseline_nodes)),
+                "coverage_complete": True, "reason": "no_baseline_nonpassed_nodes"}
+    numerator = sum(candidate_nodes[key] == _PASSED for key in baseline_nonpassed)
+    return {**base, "status": "measured", "value": numerator / denominator,
+            "numerator": numerator, "denominator": denominator,
+            "baseline_nodes": len(baseline_nodes),
+            "baseline_nonpassed_nodes": denominator,
+            "matching_nodes": denominator,
             "candidate_only_nodes": len(set(candidate_nodes) - set(baseline_nodes)),
             "coverage_complete": True, "reason": None}
 
@@ -220,6 +286,12 @@ def pair_node_reports(candidate: Mapping[str, object], baseline: Mapping[str, ob
             "baseline": baseline_coverage,
             "complete": bool(candidate_coverage.get("complete") and baseline_coverage.get("complete") and universes_match),
         }
+    regression = shadow_regression(candidate, baseline)
+    repair = shadow_repair(candidate, baseline)
+    positive_signal = (
+        (components["P"]["value"] is not None and components["P"]["value"] > 0)
+        or (repair["status"] == "measured" and (repair["value"] or 0) > 0)
+    )
     return {
         "P": components["P"]["value"],
         "G": components["G"]["value"],
@@ -229,7 +301,9 @@ def pair_node_reports(candidate: Mapping[str, object], baseline: Mapping[str, ob
         "eligible": not reasons,
         "exclusion_reasons": list(dict.fromkeys(reasons)),
         "artifact_hashes": {"candidate": left["artifact_hashes"], "baseline": right["artifact_hashes"]},
-        "shadow_regression": shadow_regression(candidate, baseline),
+        "shadow_regression": regression,
+        "shadow_repair": repair,
+        "positive_repair_signal": positive_signal,
         "node_detail_visibility": "judge_private_only",
     }
 

@@ -102,10 +102,12 @@ def parse_junit_node_statuses(xml_text: str,
                   "error" if case.find("error") is not None else
                   "skipped" if case.find("skipped") is not None else "passed")
         if key in statuses:
+            # A repeated exact node is not one pairable observation even when
+            # both rows agree: deduplicating it would silently inflate the
+            # shadow denominator. Keep the duplicate count and mark the whole
+            # report unusable instead.
             duplicates += 1
-            if statuses[key] != status:
-                return {}, duplicates, False
-            continue
+            return {}, duplicates, False
         statuses[key] = status
     return statuses, duplicates, True
 

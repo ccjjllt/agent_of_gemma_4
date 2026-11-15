@@ -144,6 +144,20 @@ class RolloutEngine:
                 return str(value)
         return f"official-verdict:{trajectory_id}"
 
+    @staticmethod
+    def _aggregate_audit(audit: Mapping[str, Any]) -> dict[str, Any]:
+        """Keep only aggregate shadow evidence; never persist test node names."""
+        return {
+            "schema": "gemma.reward_audit.v1",
+            "objective_version": OBJECTIVE_VERSION,
+            "task_key_hash": audit.get("task_key_hash"),
+            "baseline_cache_key": audit.get("baseline_cache_key"),
+            "patch_sha256": audit.get("patch_sha256"),
+            "shadow_regression": audit.get("shadow_regression"),
+            "shadow_repair": audit.get("shadow_repair"),
+            "positive_repair_signal": audit.get("positive_repair_signal") is True,
+        }
+
     def _bundle(
         self,
         trajectory: Trajectory,
@@ -284,12 +298,15 @@ class RolloutEngine:
         if reward is None:
             try:
                 bundle = self._bundle(trajectory, raw, extra, verification_ref, seal_error)
-                record = self.reward_engine.spo_record(
+                record, audit = self.reward_engine.spo_record_with_audit(
                     bundle,
                     task_key=trajectory.task_key.to_dict(),
                     metrics=bundle["resource_metrics"],
                 )
                 reward = RewardRecord.from_dict(record)
+                if audit is not None and reward.eligible and seal_error is None:
+                    self.ledger.record_reward_audit(
+                        trajectory.trajectory_id, self._aggregate_audit(audit))
                 if seal_error is not None and reward.eligible:
                     reward = replace(
                         reward, total_reward=None, eligible=False, exclusion_reason=seal_error,

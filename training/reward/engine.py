@@ -194,6 +194,8 @@ class RewardEngine:
             "patch_sha256": bundle.get("patch_sha256"),
             "artifact_hashes": artifacts,
             "shadow_regression": differential.get("shadow_regression"),
+            "shadow_repair": differential.get("shadow_repair"),
+            "positive_repair_signal": differential.get("positive_repair_signal") is True,
             "actual_metric_fields": sorted(actual_metrics),
             "metric_errors": list(metric_errors),
             "private_node_map_in_record": False,
@@ -205,6 +207,19 @@ class RewardEngine:
 
     def spo_record(self, verification_bundle: Mapping[str, object], **kwargs: object) -> dict:
         return spo_reward_record(self.evaluate(verification_bundle, **kwargs))
+
+    def spo_record_with_audit(
+        self, verification_bundle: Mapping[str, object], **kwargs: object,
+    ) -> tuple[dict, dict | None]:
+        """Return the learner record and its judge-private audit separately.
+
+        ``RewardRecord`` stays unchanged; the caller persists the aggregate
+        shadow audit in the ledger's audit table instead of dropping it with
+        the other audit-only fields.
+        """
+        record = self.evaluate(verification_bundle, **kwargs)
+        audit = record.get("audit")
+        return spo_reward_record(record), dict(audit) if isinstance(audit, Mapping) else None
 
 
 def spo_reward_record(record: Mapping[str, object]) -> dict:

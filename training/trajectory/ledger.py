@@ -355,6 +355,37 @@ class TrajectoryLedger:
             raise KeyError(f"unknown reward: {trajectory_id}")
         return RewardRecord.from_dict(json.loads(row[0]))
 
+    def record_reward_audit(self, trajectory_id: str, audit: Mapping[str, Any]) -> None:
+        """Persist aggregate judge-private shadow evidence outside RewardRecord.
+
+        Only aggregate counts and fingerprints are accepted by the caller; the
+        private expected universes and node map never enter this learner-side
+        record. Replaying the same audit is idempotent.
+        """
+        if not isinstance(audit, Mapping):
+            raise TypeError("reward audit must be a mapping")
+        payload = dict(audit)
+        encoded = canonical_json(payload)
+        with self.transaction() as conn:
+            self._get_trajectory(conn, trajectory_id)
+            row = conn.execute(
+                "SELECT payload FROM audit_events WHERE event_type='reward_audit' "
+                "AND subject_id=? ORDER BY event_id DESC LIMIT 1", (trajectory_id,)
+            ).fetchone()
+            if row is not None and row[0] == encoded:
+                return
+            self._event(conn, "reward_audit", trajectory_id, payload)
+
+    def get_reward_audit(self, trajectory_id: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT payload FROM audit_events WHERE event_type='reward_audit' "
+                "AND subject_id=? ORDER BY event_id DESC LIMIT 1", (trajectory_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"unknown reward audit: {trajectory_id}")
+        return json.loads(row[0])
+
     def offer_trajectory(self, trajectory_id: str) -> str:
         """Offer one complete rewarded trajectory; never splits or reorders calls."""
         with self.transaction() as conn:
@@ -405,15 +436,46 @@ class TrajectoryLedger:
                 raise RuntimeError("only a buffered trajectory can be marked stale directly")
             self._transition_stale(conn, trajectory, reason)
 
+    @staticmethod
+    def _consume_buffer_noop(conn: sqlite3.Connection, trajectories: Sequence[Trajectory],
+                             reason: str) -> None:
+        for trajectory in trajectories:
+            conn.execute(
+                "UPDATE buffer_entries SET state='NOOP_CONSUMED',transitioned_at=? "
+                "WHERE trajectory_id=?", (time.time(), trajectory.trajectory_id)
+            )
+            TrajectoryLedger._put_trajectory(
+                conn, replace(trajectory, status="NOOP_CONSUMED"))
+            TrajectoryLedger._event(
+                conn, "buffer_noop", trajectory.trajectory_id, {"reason": reason})
+
+    @staticmethod
+    def _reward_has_positive_signal(conn: sqlite3.Connection, trajectory_id: str) -> bool:
+        row = conn.execute(
+            "SELECT payload FROM audit_events WHERE event_type='reward_audit' "
+            "AND subject_id=? ORDER BY event_id DESC LIMIT 1", (trajectory_id,)
+        ).fetchone()
+        if row is None:
+            return False
+        try:
+            payload = json.loads(row[0])
+        except (TypeError, ValueError):
+            return False
+        return isinstance(payload, Mapping) and payload.get("positive_repair_signal") is True
+
     def reserve_update(self, update_id: str, *, policy_before: BehaviorAdapter,
                        target_action_tokens: int, max_policy_lag: int,
                        advantage_epsilon: float = 1.0e-6,
-                       force: bool = False) -> UpdateBatch | None:
+                       force: bool = False,
+                       require_positive_signal: bool = False) -> UpdateBatch | None:
         """Atomically reserve a FIFO prefix and freeze SPO++ advantages.
 
         The trajectory crossing the token target is included whole.  A small
         prefix can be forced or selected when its oldest call approaches max lag.
         Existing update IDs return their persisted frozen batch on recovery.
+        When ``require_positive_signal`` is set, a prefix with no official P>0
+        or exact shadow repair is consumed as NOOP instead of spending an
+        optimizer step on a signal-free batch.
         """
         if isinstance(target_action_tokens, bool) or not isinstance(target_action_tokens, int) \
                 or target_action_tokens <= 0:
@@ -481,6 +543,23 @@ class TrajectoryLedger:
                 tokens += trajectory.action_token_count
                 if tokens >= target_action_tokens:
                     break
+            if require_positive_signal:
+                # Extend only far enough to include a real repair signal. If
+                # the whole FIFO has none, consume it explicitly; otherwise
+                # the launcher would retry the same signal-free prefix until
+                # the wall clock expires, or worse, take an optimizer step.
+                index = len(selected)
+                while (index < len(candidates)
+                       and not any(self._reward_has_positive_signal(
+                           conn, item.trajectory_id) for item in selected)):
+                    selected.append(candidates[index])
+                    tokens += candidates[index].action_token_count
+                    index += 1
+                if not any(self._reward_has_positive_signal(
+                        conn, item.trajectory_id) for item in selected):
+                    self._consume_buffer_noop(
+                        conn, selected, "no_positive_repair_signal")
+                    return None
             batch = freeze_advantages(
                 selected, update_id=update_id, policy_before=policy_before,
                 max_policy_lag=max_policy_lag, epsilon=advantage_epsilon,
@@ -499,14 +578,7 @@ class TrajectoryLedger:
                     max_policy_lag=max_policy_lag, epsilon=advantage_epsilon,
                 )
             if all(value == 0.0 for value in batch.frozen_advantages.values()):
-                for trajectory in selected:
-                    conn.execute(
-                        "UPDATE buffer_entries SET state='NOOP_CONSUMED',transitioned_at=? "
-                        "WHERE trajectory_id=?", (time.time(), trajectory.trajectory_id)
-                    )
-                    self._put_trajectory(conn, replace(trajectory, status="NOOP_CONSUMED"))
-                    self._event(conn, "buffer_noop", trajectory.trajectory_id,
-                                {"reason": "zero_frozen_advantage"})
+                self._consume_buffer_noop(conn, selected, "zero_frozen_advantage")
                 return None
             now = time.time()
             conn.execute(
