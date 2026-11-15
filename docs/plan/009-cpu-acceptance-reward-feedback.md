@@ -10,7 +10,7 @@
 2. **失败反馈**：候选补丁导致测试收集/导入失败时，保留完整、合法的官方 verdict 和训练资格，但把奖励的 `validity` 置 0，总奖励 0.15 → 0.10；普通未修复候选仍为 0.15。目标版本升为 `official_differential_spo_v2`。
 3. **回归观测与优化门控**：公开数据没有 `PASS_TO_PASS`，官方 `G` 仍为 `not_applicable`；新增仅裁判侧可见的 exact 节点 `shadow_regression` 与 `shadow_repair`，分母分别是空补丁基线 passed / nonpassed 节点，缺失/重复/歧义不补零，只进 reward audit，不改官方 `G`、`eligible` 或损失。正式训练路径把聚合 shadow 写入 ledger audit；没有 `P>0` 也没有 shadow repair 的前缀标为 `NOOP_CONSUMED`，不执行优化步。参数化节点名中的沙箱路径规范为 `<workspace>`。
 
-复核后另修正 6 个实现问题：3 份候选的 baseline/candidate 改为同一最终环境身份重跑；正式训练路径保留 shadow audit；`-r/-c` include 与约束文件不再静默忽略；精确 pin 保留可离线满足的 extras，并记录丢弃的 extras；按 wheel `Requires-Python` 排除不兼容版本；任何重复 exact 节点（含同状态）都判 unusable，`matching_nodes` 只数实际匹配的基线 passed 节点。第二次复核又修正 3 条恢复路径问题：丢弃无信号批次不再删除已训练 trainer checkpoint；旧式 `LEARNING`+cursor 0 恢复先过正信号门；`require_positive_signal=false` 在 resume 同样生效（见 3.1）。证据见第 3、4 节和 `results/cpu-improve-20261115/`。
+复核后另修正 6 个实现问题：3 份候选的 baseline/candidate 改为同一奖励复核身份 `f242e208…` 重跑；正式训练路径保留 shadow audit；`-r/-c` include 与约束文件不再静默忽略；精确 pin 保留可离线满足的 extras，并记录丢弃的 extras；按 wheel `Requires-Python` 排除不兼容版本；任何重复 exact 节点（含同状态）都判 unusable，`matching_nodes` 只数实际匹配的基线 passed 节点。第二次复核又修正 3 条恢复路径问题：丢弃无信号批次不再删除已训练 trainer checkpoint；旧式 `LEARNING`+cursor 0 恢复先过正信号门；`require_positive_signal=false` 在 resume 同样生效（见 3.1）。证据见第 3、4 节和 `results/cpu-improve-20261115/`。
 
 ## 1. 依赖修复
 
@@ -36,7 +36,7 @@
 
 目标集是 51 道旧不健康题加 7 道旧健康对照，共 58 道；不是 58 道全部旧不健康，也不是另加 11 道。2 GiB cgroup 加单题约 40–70 秒，58 道全部完成，但这些结果跨 3 个 judge environment hash，不能把 58 份都当作同一环境测量。
 
-下表的“最终身份”只指**覆盖复测阶段**的最终身份 `690819fb…`；它不是本轮奖励/同环境复核使用的 `f242e208…`。46/27/26 是覆盖阶段在 `690819fb…` 下直接测到的数字，不能称为 `f242e208…` 的覆盖结果，也不能把两者相加或互相替代。
+下表的“最终身份”只指**覆盖复测阶段**的最终身份 `690819fb…`；它不是本轮奖励/同环境复核使用的 `f242e208…`。46/27/26 是覆盖阶段在 `690819fb…` 下直接测到的数字，不能称为 `f242e208…` 的覆盖结果，也不能把覆盖阶段与奖励复核阶段的数字相加或互相替代。这里的“健康”指空补丁测试可完整收集并产出合法 verdict（允许 failure），不要求全部通过。
 
 | 指标 | 数值 |
 | --- | ---: |
@@ -48,7 +48,7 @@
 | 上述身份旧不健康 → 新健康 | 26 |
 | 上述身份旧健康对照仍健康 | 1 |
 | 上述身份仍未健康 | 19 |
-| 仍使用更早身份的结果 | 12（12 健康；其中 6 恢复、6 旧健康对照；身份为 `13dd119d…`/`1296aafc…`） |
+| 仍使用更早身份的结果 | 12（12 健康；`1296aafc…` 11 题 = 5 恢复 + 6 对照；`13dd119d…` 1 题 = 1 恢复） |
 | 新健康目标题合计 | 39（27 `690819fb…` + 12 更早身份） |
 | 旧不健康 → 新健康合计 | 32（26 `690819fb…` + 6 更早身份） |
 | 旧健康 → 新不健康 | 0 |
@@ -64,7 +64,7 @@
 - `fastapi_14978`：`APIRouter.__init__() got an unexpected keyword argument 'strict_content_type'`
 - `fastapi_14609`：`cannot import name 'PydanticV1NotSupportedError' from 'fastapi.exceptions'`
 
-这些题的空补丁在定义上无法健康；不应伪造基线，也不应把参考补丁当空补丁。剩余 `fastapi_14485`、`14512`、`14962`、`15023` 仍有 collection/error，需下一轮逐个定位，本轮不归因于模型。
+这些题的空补丁在定义上无法健康；不应伪造基线，也不应把参考补丁当空补丁。其中 `fastapi_14485`、`14512`、`14962`、`15023` 仍有 collection/error，需下一轮逐个定位，本轮不归因于模型。另有 `fastapi_14186`、`14262`、`14605`、`15745`、`rich_3472` 在本轮仍为 0 passed，同样不能归因于模型。
 
 ## 2. 失败反馈
 
@@ -101,7 +101,7 @@ agent_pytest_collection_failure / agent_pytest_import_failure
 
 候选节点名中的沙箱绝对路径在 `official_runtime.py` 中规范为 `<workspace>`，使 Requests 三对参数化节点可用同一身份比较。
 
-3 份真实历史补丁在同一最终环境身份 `f242e208...` 下重跑（baseline 与 candidate 的完整 TaskKey 相等；旧表使用的 baseline 属于 `1296aafc...` 环境，已移到 `reward_shadow_validation.previous-cross-environment.json`，不再作为当前证据）：
+3 份真实历史补丁在同一奖励复核身份 `f242e208...` 下重跑（baseline 与 candidate 的完整 TaskKey 相等；旧表 baseline 与 `f242e208…` 不是同一身份，且旧表未记录 `environment_hash`，已移到 `reward_shadow_validation.previous-cross-environment.json`，不再作为当前证据）：
 
 | 任务 | verdict_kind | P | validity | 总奖励 | shadow regression | shadow repair | 正信号 |
 | --- | --- | ---: | ---: | ---: | --- | --- | --- |
@@ -115,11 +115,11 @@ agent_pytest_collection_failure / agent_pytest_import_failure
 
 复核指出三条恢复路径问题，已按“任何路径都不得用无信号批次推进 optimizer，也不得删除已训练状态”修正：
 
-1. **丢弃批次不再删除训练状态**：旧代码在 `--resume` 丢弃无信号 `RESERVED` 批次时，只要完整 checkpoint 的 active batch 指向该批次就 unlink `spo_trainer_state.pt`；该文件同时保存此前已训练的 adapter、AdamW moments、scheduler 和 RNG。现在改为把 pre-step 快照改写为 committed base（`active_batch=None`，`completed_optimizer_steps` 不变），原子写入成功后才删除 ledger 行；若 base 含已训练状态，先在 training lease 内 `restore_base_state()` 装回 fresh trainer。checkpoint 属于更早 committed update 时保持字节不变。
-2. **旧式 `LEARNING`+cursor 0 恢复先过信号门**：恢复不再直接 `resume_batch()` 跑完整个 optimizer step；`recovery_discard_reason()` 要求 ledger cursor 0、事务 cursor 0、checkpoint cursor 0 且无 `P>0`/shadow repair，才回滚。事务还要满足 `completed_optimizer_steps == offset + optimizer_cursor`，且 offset 等于 checkpoint 的 batch offset；不一致的记录在合并前直接拒绝。若事务声称 cursor 1 但 checkpoint 不能证明该 cursor，也按不一致拒绝，而不是从旧 base 重跑 AdamW；checkpoint 声称拥有该 update 但 cursor 字段不可读时同样拒绝回滚。cursor 1 或任何 post-step 证据继续走完成发布路径，绝不被丢弃。
-3. **显式关闭选项在 resume 也生效**：`spo.require_positive_signal=false` 现在同时关闭 reserve 与 resume 的回滚；只有显式开启时才执行上述丢弃。
+1. **丢弃批次不再删除训练状态**：旧代码在 `--resume` 丢弃无信号 `RESERVED` 批次时，只要完整 checkpoint 的 active batch 指向该批次就 unlink `spo_trainer_state.pt`；该文件同时保存此前已训练的 adapter、AdamW moments、scheduler 和 RNG。现在改为把 pre-step 快照改写为 committed base（`active_batch=None`，`completed_optimizer_steps` 不变），原子写入成功后才删除 ledger 行；删除 ledger 行后，若 base 含已训练状态，在 training lease 内 `restore_base_state()` 装回 fresh trainer。checkpoint 属于更早 committed update 时保持字节不变。
+2. **旧式 `LEARNING`+cursor 0 恢复先过信号门**：恢复不再直接 `resume_batch()` 跑完整个 optimizer step；`recovery_discard_reason()` 要求 ledger phase 为 RESERVED/LEARNING、ledger cursor 0、无 post-step 事务、无 `P>0`/shadow repair；对 LEARNING 还要求 checkpoint cursor 0。事务声称 cursor 1 但 checkpoint 不能证明时 fail closed；checkpoint 声称拥有该 update 但 cursor 不可读时也拒绝回滚。只有 cursor-1 checkpoint 佐证的 post-step 状态才继续走完成发布路径。事务的 `completed_optimizer_steps == offset + optimizer_cursor` 和 batch offset 一致性由非回滚的 `SPOTrainer._merge_transaction()` 在合并前校验，不满足直接拒绝。
+3. **显式关闭选项在 resume 也生效**：`spo.require_positive_signal=false` 现在同时关闭 reserve 与 resume 的回滚；该丢弃在开关为 true（默认，当前配置显式设为 true）时执行，显式设为 false 时 reserve 与 resume 都不回滚。注意全零 frozen advantage 的 NOOP 路径不依赖该开关。
 
-一次性核对（`results/cpu-improve-20261115/recovery_path_validation.json`）：pre-step checkpoint 被改写后 adapter/AdamW 逐张量相等，fresh trainer 恢复 `completed_optimizer_steps=3`、`last_epoch=3` 且 `exp_avg` 非零；`LEARNING`+cursor 0 经真实 ledger 回滚成功；cursor 1 checkpoint 被拒绝且 ledger 行保留；属于更早 committed update 的 checkpoint SHA256 不变。该核对使用 CPU fake policy 和真实 ledger/trainer 代码，不调用模型，也不构成训练效果证据。
+一次性核对（`results/cpu-improve-20261115/recovery_path_validation.json`）：pre-step checkpoint 被改写后 adapter/AdamW 逐张量相等，fresh trainer 恢复 `completed_optimizer_steps=3`、`last_epoch=3` 且 `exp_avg` 非零；`LEARNING`+cursor 0 经真实 ledger 回滚成功；cursor 1 checkpoint 被拒绝且当时 ledger 行保留（`cursor1_row_preserved=true`，随后清理）；属于更早 committed update 的 checkpoint SHA256 不变。该核对使用 CPU fake policy 和真实 ledger/trainer 代码，不调用模型，也不构成训练效果证据。
 
 ## 4. 证据与边界
 
@@ -127,11 +127,11 @@ agent_pytest_collection_failure / agent_pytest_import_failure
 
 边界：
 
-- 2 GiB cgroup 内存限制导致不能无限并行；58/58 道目标题完成，但只有覆盖阶段最终身份 `690819fb…` 的 46 道是同环境测量：27 健康、26 恢复、1 道旧健康对照、19 仍不健康。另 12 道结果来自更早身份（`13dd119d…`/`1296aafc…`），全部健康（6 恢复、6 旧健康对照）。这些数字不是 `f242e208…` 的覆盖结果。
-- `estimated_total_healthy=95` 是跨阶段估计（目标集外旧健康 56 + 目标集内新健康 39；39 中 27 来自 `690819fb…`、12 来自更早身份），不是任一单一身份下完整 129 题重跑；不能称最终环境覆盖率。
+- 2 GiB cgroup 内存限制导致不能无限并行；58/58 道目标题完成，但只有覆盖阶段最终身份 `690819fb…` 的 46 道是同环境测量：27 健康、26 恢复、1 道旧健康对照、19 仍不健康。另 12 道结果来自更早身份（`1296aafc…` 11 题 = 5 恢复 + 6 对照；`13dd119d…` 1 题 = 1 恢复），全部健康。这些数字不是 `f242e208…` 的覆盖结果；`f242e208…` 另有这 3 道候选的空补丁 baseline，但不是目标集覆盖扫测。
+- `estimated_total_healthy=95` 是跨阶段估计（目标集外旧健康 56 + 目标集内新健康 39；39 中 27 来自 `690819fb…`、12 来自更早身份，并假设目标集外 56 道旧健康题未回归），不是任一单一身份下完整 129 题重跑；不能称最终环境覆盖率。
 - 新环境只证明这些公开题在本机 CPU 配置下可执行；不证明官方 GPU 主机或 heldout 的覆盖率。
 - `shadow_regression`/`shadow_repair` 不是官方 `PASS_TO_PASS`，不能替换官方 `G`，也不能单独当作模型修复收益。
-- 10 份历史候选的 0.15→0.10 是 verdict 级复算；其中 3 份真实补丁已在同一最终环境 `f242e208…` 下重跑，其余 7 份未在本次重跑。
+- 10 份历史候选的 0.15→0.10 是 verdict 级复算；其中 3 份真实补丁已在同一奖励复核身份 `f242e208…` 下重跑，其余 7 份未在本次重跑。
 - 本轮仍没有正修复候选；下一步仍是短 GPU 采样，寻找真实局部修复或最终成功，再谈扩大训练。`require_positive_signal` 已把“无信号不优化”从文档计划变成代码路径。
 
 ## 5. 下一步短 GPU 采样（本轮未执行）
