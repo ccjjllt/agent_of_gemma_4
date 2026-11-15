@@ -30,23 +30,23 @@
 | `fastapi_14964` | 快照提取失败 | 正常完成，7 passed / 2 failed，基线健康 |
 | `requests_7427` | 参数化节点路径导致 exact shadow 错位 | 基线健康；节点路径规范后 exact 配对可测 |
 
-### 1.1 覆盖复测（部分）
+### 1.1 覆盖复测（目标集）
 
-优先复测旧分类中 `both_arms_same_missing_module` 与 `both_arms_shared_compatibility_candidate` 的 58 道题，另加 3 道 Requests 参数化题和 4 道历史候选题。2 GiB cgroup 加单题约 40–70 秒，本轮在时限内完成 23 道；未完成题不推断结果。
+优先复测旧分类中 `both_arms_same_missing_module` 与 `both_arms_shared_compatibility_candidate` 的 58 道题，另加 3 道 Requests 参数化题和 4 道历史候选题。2 GiB cgroup 加单题约 40–70 秒，本轮 58 道全部完成。
 
 | 指标 | 数值 |
 | --- | ---: |
 | 目标题数 | 58 |
-| 已完成 | 23 |
-| 新官方 verdict 有效 | 16 |
-| 新空补丁健康 | 16 |
-| 旧不健康 → 新健康 | 10 |
+| 已完成 | 58 |
+| 新官方 verdict 有效 | 39 |
+| 新空补丁健康 | 39 |
+| 旧不健康 → 新健康 | 32 |
 | 旧健康 → 新不健康 | 0 |
-| 仍未健康 | 7 |
+| 仍未健康 | 19 |
 | 旧全集健康基线 | 63 |
-| 保守估计新健康下限 | 72 |
+| 全集健康估计 | 95 |
 
-10 道 recovered：`fastapi_11355`、`12942`、`14099`、`14349`、`14463`、`14482`、`14487`、`14492`、`14786`、`14964`。`estimated_total_healthy` 只把已完成目标题的新健康数加到旧健康全集上，未完成目标题仍按不健康计，因此是下限，不是完整 129 题复测结果。
+32 道 recovered 覆盖 `both_arms_shared_compatibility_candidate` 16 道和 `both_arms_same_missing_module` 16 道；`estimated_total_healthy` 把新健康目标题加到旧健康全集上，不是完整 129 题逐题重跑后的最终计数。
 
 仍未健康的题并非都能靠依赖修复解决。已确认至少 3 题是 `test_patch` 导入了参考修复才新增的名字：
 
@@ -104,7 +104,7 @@ agent_pytest_collection_failure / agent_pytest_import_failure
 
 边界：
 
-- 2 GiB cgroup 内存限制导致不能无限并行；本轮复测 23/58 道目标题，未完成题不推断结果，`estimated_total_healthy=72` 是下限。
+- 2 GiB cgroup 内存限制导致不能无限并行；本轮复测 58/58 道目标题，32 道恢复健康、0 道退化、19 道仍不健康，`estimated_total_healthy=95`。
 - 新环境只证明这些公开题在本机 CPU 配置下可执行；不证明官方 GPU 主机或 heldout 的覆盖率。
 - `shadow_regression` 不是官方 `PASS_TO_PASS`，不能替换官方 `G`，也不能单独当作模型修复收益。
 - 10 份历史候选的 0.15→0.10 是 verdict 级复算；其中 3 份真实补丁已用新代码重验，其余 7 份未在本次重跑。

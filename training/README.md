@@ -26,7 +26,7 @@ subprocess 后端需 root 启动，再由不同低权限 UID 运行 agent 工具
 
 以官方验收为绝对核心：候选补丁与空补丁基线在同一需求、同一环境下做节点级配对（P=修复进展，G=回归），基线缓存带内容哈希校验，不一致直接判 ineligible。基础奖励为有界复合奖励，效率项只在成功任务中启用小权重。过程评价只认执行证据，不认模型自述。价值跟踪按任务持久化（连续奖励 EMA＋独立成功概率），派发时冻结基线，共享更新按派发序号有序应用。
 
-2026-11-15 CPU研究确认：当前公开文件未提供显式 F2P/P2P，P 使用官方函数提取 fallback，G 的 `not_applicable` 表示未测回归。精确 JUnit 节点的旁路诊断仍是研究观测，未替换生产奖励或官方验收；已发现的遗漏及价值历史效应见[学习信号研究](../research/spo-async-training-design.md#17-cpu-学习信号研究2026-11-15)。同日续作把候选导致的测试收集/导入失败记为 `validity=0`（官方 verdict 与 eligibility 不变，总奖励 0.15→0.10），并把目标版本升为 `official_differential_spo_v2`；exact 节点 `shadow_regression` 只写入裁判侧 audit，不替换官方 G。优先复测 58 道旧不健康题，完成 23 道中 10 道恢复健康、0 道退化，全集健康基线下限 63→72。详见[验收环境与奖励反馈修正](../docs/plan/009-cpu-acceptance-reward-feedback.md)。
+2026-11-15 CPU研究确认：当前公开文件未提供显式 F2P/P2P，P 使用官方函数提取 fallback，G 的 `not_applicable` 表示未测回归。精确 JUnit 节点的旁路诊断仍是研究观测，未替换生产奖励或官方验收；已发现的遗漏及价值历史效应见[学习信号研究](../research/spo-async-training-design.md#17-cpu-学习信号研究2026-11-15)。同日续作把候选导致的测试收集/导入失败记为 `validity=0`（官方 verdict 与 eligibility 不变，总奖励 0.15→0.10），并把目标版本升为 `official_differential_spo_v2`；exact 节点 `shadow_regression` 只写入裁判侧 audit，不替换官方 G。优先复测 58 道旧不健康题，完成 58 道中 32 道恢复健康、0 道退化，全集健康基线估计 63→95。详见[验收环境与奖励反馈修正](../docs/plan/009-cpu-acceptance-reward-feedback.md)。
 
 ## 启动与续跑
 
