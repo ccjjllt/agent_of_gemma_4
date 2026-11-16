@@ -180,4 +180,5 @@ agent_pytest_collection_failure / agent_pytest_import_failure
 
 - 学习信号存在但不是普遍现象：6 条有效轨迹中 1 条 `P>0`、1 条最终成功；`P=0` 的 4 条总奖励仍为 0.15。不能把单条正修复称为泛化收益。
 - 60 分钟预算下，排空 24.7 分钟 + 更新约 15 分钟使“采样—更新—保存”无法同时完成；下一轮应先修依赖选择、压缩排空（预留前先让在途轨迹收敛或限制 drain），再给更新留足时间，而不是扩大训练。
+- `budget.json` 的 `consumed_seconds` 在 SIGTERM 后仍为 0，因为持久化只在正常收尾执行；续跑不能据此重新授予整份额度，需先修周期持久化或显式扣除。
 - 证据：`results/gpu-short-20261116/summary.json`（逐轨迹 P/G/validity、audit、updates、buffer、adapter、耗时与显存），原始 run 目录在服务器 `/root/autodl-tmp/gemma4/runs/spo-short-20261116`。
