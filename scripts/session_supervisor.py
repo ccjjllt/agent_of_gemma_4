@@ -317,7 +317,8 @@ def _cgroup_pids(cgroup_path: str | None, version: str | None) -> list[int]:
 
 
 def _cgroup_signal(cgroup_path: str | None, version: str | None,
-                   sig: signal.Signals) -> int:
+                   sig: signal.Signals,
+                   skip: frozenset[int] = frozenset()) -> int:
     """Best-effort signal of every cgroup member.  Returns count signalled."""
     if not cgroup_path or version not in ("v1", "v2"):
         return 0
@@ -333,6 +334,8 @@ def _cgroup_signal(cgroup_path: str | None, version: str | None,
                 pass
     count = 0
     for pid in _cgroup_pids(cgroup_path, version):
+        if pid in skip:
+            continue
         try:
             os.kill(pid, sig)
             count += 1
@@ -839,17 +842,23 @@ def _supervise(
     def tree_empty() -> bool:
         return len(tree_pids()) == 0
 
-    def sweep_tree(sig: signal.Signals) -> None:
-        """Best-effort signal of the whole tree (group + cgroup + known)."""
+    def sweep_tree(sig: signal.Signals,
+                   skip: frozenset[int] = frozenset()) -> None:
+        """Best-effort signal of the whole tree (group + cgroup + known).
+
+        Pids in ``skip`` already received this round's signal (e.g. via the
+        group killpg) and are not signalled again: a soft stop delivers
+        exactly one TERM per process, while a hard stop keeps full overlap.
+        """
         deliver(sig)
         if cgroup_enabled():
             try:
-                _cgroup_signal(cgroup_path(), cgroup_version(), sig)
+                _cgroup_signal(cgroup_path(), cgroup_version(), sig, skip)
             except OSError:
                 pass
         try:
             for pid in tree_pids():
-                if pid == supervisor_pid or pid <= 1:
+                if pid == supervisor_pid or pid <= 1 or pid in skip:
                     continue
                 try:
                     os.kill(pid, sig)
@@ -1047,8 +1056,20 @@ def _supervise(
 
     def soft_stop(trigger: str | None) -> int:
         record["soft_stop_sent_unix"] = round(now_unix(), 3)
+        # One TERM per process: snapshot the group first, killpg it once via
+        # deliver(), then sweep only the pids the group kill could not cover.
+        # The leader is always in the covered set: deliver() falls back to a
+        # direct leader signal when the group is already gone.  (A pid forked
+        # into the group between the snapshot and the killpg may still get a
+        # second TERM from the fresh sweep; that window is microseconds.)
+        try:
+            covered: set[int] = set(group_members())
+        except OSError:
+            covered = set()
+        covered.add(proc.pid)
         record["soft_stop_delivery"] = deliver(signal.SIGTERM)
-        sweep_tree(signal.SIGTERM)
+        sweep_tree(signal.SIGTERM, skip=frozenset(covered))
+        record["soft_stop_term_once"] = True
         record["state"] = "soft_stopped"
         if trigger is not None:
             record["interrupted_by"] = trigger
