@@ -44,11 +44,13 @@ never as a success.  On Linux the tree is contained in a dedicated
 cgroup (spo-sup-<supervisorpid>) so descendants that call setsid(2) are
 still swept; without a writable cgroup the supervisor falls back to a
 group kill plus a best-effort ppid-chain sweep and records that the gap
-is explicit.  Known residual on cgroup-less platforms: a descendant that
-is forked, re-sessioned AND orphaned (leader reaped) inside a single
-50 ms poll interval is never snapshotted and cannot be linked back
-afterwards; production workloads (servers, trainers, probes) live far
-longer than that window.
+is explicit.  On Linux the supervisor also sets PR_SET_CHILD_SUBREAPER
+once on itself, so reparented orphans get ppid == supervisor pid and are
+found deterministically even when fork+setsid+leader-exit all happen
+inside a single 50 ms poll interval (the snapshot alone would miss that
+pattern).  Known residual on non-Linux platforms without subreaper: a
+descendant that is forked, re-sessioned AND orphaned inside a single
+poll interval is never snapshotted and cannot be linked back afterwards.
 
 Files
 -----
@@ -97,6 +99,11 @@ start, at each signal, and after the child exits).  Keys:
                         first observed reaped while the tree was still
                         non-empty; proves the supervisor did not finish at
                         leader exit but waited for the drain / hard kill.
+    subreaper           true when PR_SET_CHILD_SUBREAPER is active (Linux).
+    subreaper_reason    null when active, otherwise why it is off
+                        (e.g. "non-linux platform").
+    adopted_pids_seen   sorted pids observed with ppid == supervisor pid
+                        (reparented orphans caught via subreaper).
 
 The log is opened in append mode ("ab"), so reusing a path preserves earlier
 output; use a fresh path per session if that is not wanted.  The supervisor
@@ -135,11 +142,12 @@ transition, and its pid/pgid identify the group an external cleanup must kill.
 
 The supervisor is a safety net, not a replacement for a workload that handles
 SIGTERM.  It guarantees that the supervised tree (process group plus, on
-Linux, a dedicated cgroup) is signalled at the deadline; it cannot guarantee
-that the workload has flushed its last checkpoint.  A deliberately detached
-daemon that escapes both the process group (setsid) and the cgroup sweep
-(only possible when no writable cgroup was available, recorded explicitly
-as "unsupported-platform" / "unavailable: ...") is best-effort only.
+Linux, a dedicated cgroup and the subreaper adoption scan) is signalled at
+the deadline; it cannot guarantee that the workload has flushed its last
+checkpoint.  A deliberately detached daemon that escapes the process group
+(setsid) is still swept via the cgroup when writable, and via the
+subreaper adoption scan on Linux even when no writable cgroup exists
+(recorded explicitly as "unsupported-platform" / "unavailable: ...").
 Anything that must die at the deadline must stay in the group, and on
 Linux the cgroup keeps even setsid escapees killable.
 """
@@ -433,6 +441,49 @@ def _cleanup_cgroup(cgroup_path: str | None) -> None:
         pass
 
 
+def _setup_subreaper() -> dict[str, Any]:
+    """Mark this supervisor as a child subreaper (Linux only, best effort).
+
+    Nearest-subreaper-ancestor semantics cover the whole tree, so setting
+    it once on the supervisor itself is enough; there is no need to set it
+    in children.  When active, orphans reparented away from the dead leader
+    get ppid == supervisor pid and stay findable deterministically.
+    """
+    if sys.platform != "linux":
+        return {"subreaper": False, "reason": "non-linux platform"}
+    try:
+        import ctypes
+    except Exception as exc:  # pragma: no cover - defensive
+        return {"subreaper": False, "reason": f"ctypes unavailable: {exc}"}
+    try:
+        try:
+            libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        except OSError:
+            libc = ctypes.CDLL(None, use_errno=True)
+        libc.prctl.restype = ctypes.c_int
+        try:
+            libc.prctl.argtypes = [ctypes.c_int, ctypes.c_ulong,
+                                   ctypes.c_ulong, ctypes.c_ulong,
+                                   ctypes.c_ulong]
+        except AttributeError:
+            pass
+        ret = libc.prctl(36, 1, 0, 0, 0)
+    except OSError as exc:
+        return {"subreaper": False, "reason": f"prctl OSError: {exc}"}
+    except Exception as exc:  # pragma: no cover - defensive
+        return {"subreaper": False, "reason": f"prctl failed: {exc}"}
+    if ret != 0:
+        try:
+            import ctypes as _ctypes
+
+            err = _ctypes.get_errno()
+        except Exception:
+            err = -1
+        return {"subreaper": False,
+                "reason": f"prctl returned {ret} errno {err}"}
+    return {"subreaper": True, "reason": None}
+
+
 class UsageError(ValueError):
     """Invalid command line; reported on stderr with exit status 2."""
 
@@ -565,7 +616,8 @@ def _kill_now(proc: subprocess.Popen[bytes],
             pass
     _cgroup_signal(cgroup_path, cgroup_version, signal.SIGKILL)
     # Best-effort descendant sweep (covers group members that already left
-    # the group when no cgroup is active).
+    # the group when no cgroup is active, plus subreaper-adopted orphans
+    # whose ppid is now the supervisor).
     try:
         for pid in _group_pids(proc.pid, exclude=(os.getpid(),)):
             try:
@@ -573,6 +625,13 @@ def _kill_now(proc: subprocess.Popen[bytes],
             except (ProcessLookupError, PermissionError, OSError):
                 continue
         for pid in _descendant_pids(proc.pid):
+            if pid <= 1 or pid == os.getpid():
+                continue
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                continue
+        for pid in _descendant_pids(os.getpid()):
             if pid <= 1 or pid == os.getpid():
                 continue
             try:
@@ -647,6 +706,13 @@ def _supervise(
         known_pids.add(int(proc.pid))
     except (TypeError, ValueError):
         pass
+    adopted_seen: set[int] = set()
+    try:
+        for value in record.get("adopted_pids_seen") or []:
+            adopted_seen.add(int(value))
+    except (TypeError, ValueError):
+        pass
+    subreaper_active = bool(record.get("subreaper"))
 
     def cgroup_path() -> str | None:
         value = record.get("cgroup_path")
@@ -664,8 +730,35 @@ def _supervise(
     def group_members() -> list[int]:
         return _group_pids(pgid, exclude=(supervisor_pid,))
 
+    def _reap_adopted() -> None:
+        """Reap reparented (adopted) children without touching Popen's own.
+
+        Only call after proc.poll() is not None: Popen has already reaped
+        the direct child, so waitpid(-1, WNOHANG) can only return adopted
+        orphans.  A zombie answers kill(pid, 0), so without this the tree
+        would never drain.
+        """
+        if proc.poll() is None:
+            return
+        try:
+            while True:
+                try:
+                    pid, _status = os.waitpid(-1, os.WNOHANG)
+                except ChildProcessError:
+                    break
+                except OSError:
+                    break
+                if pid == 0:
+                    break
+                if pid > 0:
+                    known_pids.discard(pid)
+                else:
+                    break
+        except OSError:
+            pass
+
     def tree_pids() -> list[int]:
-        """Union of group members, cgroup members, and known descendants."""
+        """Union of group/cgroup members, snapshots, and adopted orphans."""
         members: set[int] = set()
         try:
             members.update(group_members())
@@ -677,11 +770,14 @@ def _supervise(
             except OSError:
                 pass
         child_alive = proc.poll() is None
+        if not child_alive and subreaper_active and sys.platform == "linux":
+            _reap_adopted()
         if child_alive:
             # Snapshot while the child lives: after it is reaped, orphans
-            # reparent (ppid 1) so a fresh ppid walk from the dead root finds
-            # nothing.  The snapshot preserves setsid escapees observed
-            # before the exit for the post-exit sweep.
+            # reparent (ppid 1, or ppid == supervisor with subreaper) so a
+            # fresh ppid walk from the dead root finds nothing.  The
+            # snapshot preserves setsid escapees observed before the exit
+            # for the post-exit sweep.
             try:
                 for pid in _descendant_pids(proc.pid):
                     known_pids.add(pid)
@@ -692,6 +788,36 @@ def _supervise(
                     known_pids.add(pid)
             except OSError:
                 pass
+        if subreaper_active and sys.platform == "linux":
+            # Deterministic adoption scan: with PR_SET_CHILD_SUBREAPER on
+            # the supervisor, reparented orphans get ppid == supervisor pid
+            # no matter how fast fork+setsid+leader-exit happened.  No
+            # snapshot timing is involved.  Walk the ppid table once from
+            # the supervisor to cover adopted orphans plus their children.
+            try:
+                table = _ppid_map()
+            except OSError:
+                table = {}
+            if table:
+                offspring: dict[int, list[int]] = {}
+                for child_pid, parent_pid in table.items():
+                    offspring.setdefault(parent_pid, []).append(child_pid)
+                seen: set[int] = set()
+                queue = list(offspring.get(supervisor_pid, []))
+                while queue:
+                    desc = queue.pop()
+                    if desc in seen or desc <= 1 or desc == supervisor_pid:
+                        continue
+                    seen.add(desc)
+                    queue.extend(offspring.get(desc, []))
+                for desc in seen:
+                    if desc == supervisor_pid or desc <= 1:
+                        continue
+                    known_pids.add(desc)
+                    if table.get(desc) == supervisor_pid and desc != proc.pid:
+                        adopted_seen.add(desc)
+                if adopted_seen:
+                    record["adopted_pids_seen"] = sorted(adopted_seen)
         survivors: set[int] = set(members)
         for pid in list(known_pids):
             if pid == supervisor_pid or pid <= 1:
@@ -1063,6 +1189,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     # is turned into a soft stop instead of killing only the supervisor.
     _install_stop_handlers()
 
+    # Subreaper first: nearest-subreaper-ancestor semantics cover the whole
+    # tree, so setting PR_SET_CHILD_SUBREAPER on the supervisor itself (no
+    # need to set it in children) makes fast fork+setsid+leader-exit orphans
+    # reparent to this pid deterministically.  Best effort; any failure is
+    # recorded and the supervisor continues with the snapshot sweep.
+    subreaper_info = _setup_subreaper()
+
     # The authorized clock starts here, before the child (vLLM, trainer, ...)
     # is spawned.  Wall-clock deadlines are derived from the monotonic clock.
     start_unix = time.time()
@@ -1085,6 +1218,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "exit_code": None,
         "elapsed_seconds": None,
         "escalated": False,
+        "subreaper": bool(subreaper_info.get("subreaper")),
+        "subreaper_reason": subreaper_info.get("reason"),
+        "adopted_pids_seen": [],
     }
 
     try:

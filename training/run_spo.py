@@ -501,9 +501,10 @@ class _BudgetWriter:
 
     Callers submit the current consumed value; the writer persists
     max(last_written, submitted), so a delayed older submission can never roll
-    the durable record back. ``submit`` never blocks and is safe from the
-    SIGTERM handler; ``flush`` waits (bounded) until every submitted value is
-    on disk.
+    the durable record back. Normal ``submit`` waits briefly on the writer
+    lock (held only for micro-ops, never across disk IO); the ``from_signal``
+    variant never takes the lock and is safe from the SIGTERM handler;
+    ``flush`` waits (bounded) until every submitted value is on disk.
     """
 
     def __init__(self, path: Path, allowance_seconds: float) -> None:
@@ -536,36 +537,29 @@ class _BudgetWriter:
         self._signal_slot = (seq + 1, merged)  # single atomic store
 
     def submit(self, consumed_seconds: float, *, from_signal: bool = False) -> None:
-        """Offer a value without blocking; the writer keeps the largest one."""
+        """Offer a value; the writer keeps the largest one.
+
+        Normal submits wait briefly on the writer lock (held only for
+        micro-ops; disk IO happens outside it) and merge into ``_pending``.
+        The ``from_signal`` variant never takes the lock and stays the sole
+        producer of the signal slot, so a handler firing on the main thread
+        while it is blocked in a normal submit cannot deadlock with it.
+        """
         value = max(0.0, float(consumed_seconds))
-        if self._condition.acquire(blocking=False):
-            try:
-                if self._closed:
-                    return
-                self._pending = self._higher(self._pending, value)
-                self._condition.notify()
-            finally:
-                self._condition.release()
-            return
         if from_signal:
-            # A heartbeat/main-thread submit holds the lock for a few
-            # instructions; record the value without waiting for it.
+            # Signal-handler context only: single atomic tuple store, no lock.
             self._store_signal(value)
             return
-        # Brief bounded wait: the holder only keeps the lock for a few
-        # instructions, so a normal caller almost always joins _pending
-        # instead of falling back to the signal slot. Never blocks beyond
-        # the timeout; the fallback below stays non-blocking.
-        if self._condition.acquire(blocking=True, timeout=0.05):
-            try:
-                if self._closed:
-                    return
-                self._pending = self._higher(self._pending, value)
-                self._condition.notify()
-            finally:
-                self._condition.release()
+        # Cheap pre-check so a post-close() submit usually returns without
+        # touching the lock; rechecked under the lock (close() joins the
+        # writer outside the lock, so the acquire below always terminates).
+        if self._closed:
             return
-        self._store_signal(value)
+        with self._condition:
+            if self._closed:
+                return
+            self._pending = self._higher(self._pending, value)
+            self._condition.notify()
 
     def _drained(self) -> bool:
         return (self._closed
