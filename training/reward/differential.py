@@ -22,17 +22,25 @@ def _sequence(value: object) -> list[str] | None:
     return list(value)
 
 
-def _inspect(report: object, label: str) -> dict:
+def _verification_reasons(report: object, label: str) -> list[str]:
+    """Judge validity is independent of optional node-pairing evidence."""
     reasons: list[str] = []
     if not isinstance(report, Mapping):
-        return {"reasons": [f"{label}_report_missing"], "expected": None, "nodes": None,
-                "coverage": None, "artifact_hashes": {}}
+        return [f"{label}_report_missing"]
     if report.get("verification_complete") is not True:
         reasons.append(f"{label}_verification_incomplete")
     if report.get("verdict_valid") is not True:
         reasons.append(f"{label}_verdict_invalid")
     if report.get("infrastructure_error"):
         reasons.append(f"{label}_infrastructure_error")
+    return reasons
+
+
+def _inspect(report: object, label: str) -> dict:
+    reasons = _verification_reasons(report, label)
+    if not isinstance(report, Mapping):
+        return {"reasons": reasons, "expected": None, "nodes": None,
+                "coverage": None, "artifact_hashes": {}}
     if report.get("junit_available") is False:
         reasons.append(f"{label}_junit_missing")
 
@@ -315,6 +323,10 @@ def pair_node_reports(candidate: Mapping[str, object], baseline: Mapping[str, ob
         "coverage": coverage,
         "eligible": not reasons,
         "exclusion_reasons": list(dict.fromkeys(reasons)),
+        # Missing baseline/JUnit pairing does not invalidate the candidate's
+        # completed official verdict. v3 can use that verdict without P/G.
+        "candidate_eligible": not _verification_reasons(candidate, "candidate"),
+        "candidate_exclusion_reasons": _verification_reasons(candidate, "candidate"),
         "artifact_hashes": {"candidate": left["artifact_hashes"], "baseline": right["artifact_hashes"]},
         "shadow_regression": regression,
         "shadow_repair": repair,

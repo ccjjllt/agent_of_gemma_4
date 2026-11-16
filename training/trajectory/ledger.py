@@ -420,6 +420,7 @@ class TrajectoryLedger:
         })
 
     def update_has_positive_signal(self, update_id: str) -> bool:
+        """Read repair-signal diagnostics without changing update eligibility."""
         with self._lock:
             batch = self._get_update(self._conn, update_id)
             return any(self._reward_has_positive_signal(self._conn, trajectory_id)
@@ -542,16 +543,14 @@ class TrajectoryLedger:
     def reserve_update(self, update_id: str, *, policy_before: BehaviorAdapter,
                        target_action_tokens: int, max_policy_lag: int,
                        advantage_epsilon: float = 1.0e-6,
-                       force: bool = False,
-                       require_positive_signal: bool = True) -> UpdateBatch | None:
+                       force: bool = False) -> UpdateBatch | None:
         """Atomically reserve a FIFO prefix and freeze SPO++ advantages.
 
         The trajectory crossing the token target is included whole.  A small
         prefix can be forced or selected when its oldest call approaches max lag.
         Existing update IDs return their persisted frozen batch on recovery.
-        When ``require_positive_signal`` is set, a prefix with no official P>0
-        or exact shadow repair is consumed as NOOP instead of spending an
-        optimizer step on a signal-free batch.
+        Repair-signal diagnostics do not affect reservation; all-zero frozen
+        advantages are consumed as NOOP because they carry no policy gradient.
         """
         if isinstance(target_action_tokens, bool) or not isinstance(target_action_tokens, int) \
                 or target_action_tokens <= 0:
@@ -568,15 +567,7 @@ class TrajectoryLedger:
                 "SELECT payload FROM updates WHERE update_id=?", (update_id,)
             ).fetchone()
             if existing is not None:
-                batch = UpdateBatch.from_dict(json.loads(existing[0]))
-                if (require_positive_signal and batch.phase == "RESERVED"
-                        and batch.optimizer_cursor == 0
-                        and not any(self._reward_has_positive_signal(
-                            conn, trajectory_id) for trajectory_id in batch.trajectory_ids)):
-                    self._discard_unoptimized_update(
-                        conn, batch, "no_positive_repair_signal_on_retry")
-                    return None
-                return batch
+                return UpdateBatch.from_dict(json.loads(existing[0]))
             rows = conn.execute(
                 "SELECT trajectory_id FROM buffer_entries "
                 "WHERE state='BUFFERED' ORDER BY offer_order"
@@ -627,23 +618,6 @@ class TrajectoryLedger:
                 tokens += trajectory.action_token_count
                 if tokens >= target_action_tokens:
                     break
-            if require_positive_signal:
-                # Extend only far enough to include a real repair signal. If
-                # the whole FIFO has none, consume it explicitly; otherwise
-                # the launcher would retry the same signal-free prefix until
-                # the wall clock expires, or worse, take an optimizer step.
-                index = len(selected)
-                while (index < len(candidates)
-                       and not any(self._reward_has_positive_signal(
-                           conn, item.trajectory_id) for item in selected)):
-                    selected.append(candidates[index])
-                    tokens += candidates[index].action_token_count
-                    index += 1
-                if not any(self._reward_has_positive_signal(
-                        conn, item.trajectory_id) for item in selected):
-                    self._consume_buffer_noop(
-                        conn, selected, "no_positive_repair_signal")
-                    return None
             batch = freeze_advantages(
                 selected, update_id=update_id, policy_before=policy_before,
                 max_policy_lag=max_policy_lag, epsilon=advantage_epsilon,

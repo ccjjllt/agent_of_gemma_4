@@ -6,7 +6,9 @@ import statistics
 from typing import Mapping
 
 
-OBJECTIVE_VERSION = "official_differential_spo_v2"
+LEGACY_OBJECTIVE_VERSION = "official_differential_spo_v2"
+OBJECTIVE_VERSION = "official_differential_spo_v3"
+SUPPORTED_OBJECTIVE_VERSIONS = (LEGACY_OBJECTIVE_VERSION, OBJECTIVE_VERSION)
 DEFAULT_EFFICIENCY_WEIGHT = 0.05
 DEFAULT_SCALES = {"gpu_seconds": 3600.0, "action_tokens": 32768.0, "tool_calls": 100.0}
 
@@ -73,36 +75,70 @@ def composite_reward(
     metrics: Mapping[str, object] | None = None,
     efficiency_weight: float = DEFAULT_EFFICIENCY_WEIGHT,
     scales: Mapping[str, float] | None = None,
+    objective_version: str = OBJECTIVE_VERSION,
 ) -> dict:
-    """Build the design RewardRecord fields, excluding incomplete evidence."""
+    """Use complete differentials or, in v3, a valid sparse official verdict.
+
+    v2 keeps its original strict differential eligibility and formula. In v3,
+    unavailable P/G stay unknown; the sparse branch uses only resolved and
+    validity, with the same utility weights and bounded base offset.
+    """
+    if objective_version not in SUPPORTED_OBJECTIVE_VERSIONS:
+        raise ValueError(f"unsupported reward objective_version: {objective_version}")
     weight = _number(efficiency_weight)
     if weight is None or not 0 <= weight <= 1:
         raise ValueError("efficiency_weight must be finite and in [0, 1]")
-    reasons = list(differential.get("exclusion_reasons") or []) if isinstance(differential, Mapping) else ["differential_missing"]
+    differential_reasons = list(differential.get("exclusion_reasons") or []) if isinstance(differential, Mapping) else ["differential_missing"]
     if not isinstance(differential, Mapping) or differential.get("eligible") is not True:
-        if not reasons:
-            reasons = ["differential_ineligible"]
+        if not differential_reasons:
+            differential_reasons = ["differential_ineligible"]
+    verdict_reasons: list[str] = []
     if type(resolved) is not bool:
-        reasons.append("resolved_verdict_missing")
+        verdict_reasons.append("resolved_verdict_missing")
     validity_value = _number(validity)
     if validity_value is None or not 0 <= validity_value <= 1:
-        reasons.append("validity_evidence_missing_or_invalid")
+        verdict_reasons.append("validity_evidence_missing_or_invalid")
 
     p = _number(differential.get("P")) if isinstance(differential, Mapping) else None
     g = _number(differential.get("G")) if isinstance(differential, Mapping) else None
+    component_reasons: list[str] = []
     if p is None or not 0 <= p <= 1:
-        reasons.append("P_unavailable")
+        component_reasons.append("P_unavailable")
     if g is None or not 0 <= g <= 1:
-        reasons.append("G_unavailable")
+        component_reasons.append("G_unavailable")
+    differential_available = not differential_reasons and not component_reasons
+    if objective_version == LEGACY_OBJECTIVE_VERSION:
+        reasons = differential_reasons + verdict_reasons + component_reasons
+    else:
+        candidate_reasons = list(differential.get("candidate_exclusion_reasons") or []) if isinstance(differential, Mapping) else []
+        candidate_eligible = (
+            isinstance(differential, Mapping)
+            and differential.get("candidate_eligible", differential.get("eligible")) is True
+        )
+        if not candidate_eligible and not candidate_reasons:
+            candidate_reasons.append("candidate_verification_evidence_missing")
+        reasons = candidate_reasons + verdict_reasons
     reasons = list(dict.fromkeys(reasons))
+    sparse = objective_version == OBJECTIVE_VERSION and not differential_available
+    if sparse:
+        # Keep any partial observations in the private differential audit;
+        # the learner record must not imply that missing components were zero.
+        p = g = None
 
     base = utility = progress = efficiency = total = None
     efficiency_info = efficiency_evidence(metrics, scales)
     if not reasons:
-        progress = max(0.0, p - g)
-        utility = 0.60 * float(resolved) + 0.25 * progress - 0.10 * g + 0.05 * validity_value
+        if sparse:
+            utility = 0.60 * float(resolved) + 0.05 * validity_value
+        else:
+            progress = max(0.0, p - g)
+            utility = 0.60 * float(resolved) + 0.25 * progress - 0.10 * g + 0.05 * validity_value
         base = min(1.0, max(0.0, utility + 0.10))
-        if not resolved:
+        if sparse:
+            total = base
+            efficiency_info = {**efficiency_info,
+                               "auxiliary_status": "disabled_for_sparse_official_reward"}
+        elif not resolved:
             # A failure's reward is completely independent of all cost fields.
             efficiency_info = {
                 "status": "not_applicable", "efficiency": None, "components": {},
@@ -136,6 +172,8 @@ def composite_reward(
         "total_reward": total,
         "eligible": eligible,
         "exclusion_reason": ";".join(reasons) if reasons else None,
-        "objective_version": OBJECTIVE_VERSION,
+        "objective_version": objective_version,
         "efficiency_evidence": efficiency_info,
+        "reward_branch": "excluded" if reasons else "sparse_official" if sparse else "differential",
+        "sparse_reasons": list(dict.fromkeys(differential_reasons + component_reasons)) if sparse and not reasons else [],
     }

@@ -144,13 +144,11 @@ class AdapterManifest:
         _hash(self.adapter_sha256, "adapter_sha256")
         if not isinstance(self.base_revision, str) or not self.base_revision.strip():
             raise ValueError("base_revision must be a non-empty string")
-        if type(self.rank) is not int or self.rank != RANK:
-            raise ValueError("adapter rank must be exactly 128")
-        if type(self.alpha) is not int or self.alpha != ALPHA:
-            raise ValueError("adapter alpha must be exactly 256")
+        _integer(self.rank, "adapter rank", 1)
+        _integer(self.alpha, "adapter alpha", 1)
         if isinstance(self.dropout, bool) or not isinstance(self.dropout, (int, float)) \
                 or float(self.dropout) != DROPOUT:
-            raise ValueError("adapter dropout must be exactly 0")
+            raise ValueError("adapter dropout must be 0 for the current prefix-sharing implementation")
         _integer(self.optimizer_step, "optimizer_step")
         _hash(self.config_hash, "config_hash")
 

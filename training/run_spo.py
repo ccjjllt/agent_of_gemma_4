@@ -43,8 +43,6 @@ from .rollout.vllm_backend import VLLMBackend
 
 
 REQUIRED_SECTIONS = ("policy", "run", "inference", "spo", "optimizer", "rewards", "adapter")
-FORBIDDEN_KEYS = ("num_generations", "groups_per_batch", "max_candidate_groups_per_batch",
-                  "num_iterations", "loss_type", "scale_rewards", "advantage_std_floor")
 
 
 def load_config(path: Path) -> dict:
@@ -55,28 +53,26 @@ def load_config(path: Path) -> dict:
     for section in REQUIRED_SECTIONS:
         if section not in cfg or not isinstance(cfg[section], dict):
             raise ValueError(f"missing config section: {section}")
-    text = Path(path).read_text()
-    for key in FORBIDDEN_KEYS:
-        if key in text:
-            raise ValueError(f"legacy GRPO key must not appear in SPO config: {key}")
     for section in ("sft", "distillation", "opd", "teacher"):
         if section in cfg:
             raise ValueError(
-                f"[{section}] is a post-first-update phase and is not wired into "
-                "the online-SPO launcher; first round runs online SPO only")
+                f"[{section}] is not implemented by this online-SPO launcher")
     policy = cfg["policy"]
-    if (policy.get("lora_rank"), policy.get("lora_alpha")) != (128, 256):
-        raise ValueError("SPO requires lora_rank=128, lora_alpha=256")
+    for name in ("lora_rank", "lora_alpha"):
+        if type(policy.get(name)) is not int or policy[name] <= 0:
+            raise ValueError(f"policy.{name} must be a positive integer")
     if float(policy.get("lora_dropout", 0.0)) != 0.0:
-        raise ValueError("SPO requires lora_dropout=0")
+        raise ValueError("the current shared-prefix learner implements dropout=0")
     spo = cfg["spo"]
     if int(spo.get("target_action_tokens", 0)) <= 0 or int(spo.get("max_policy_lag", -1)) < 0:
         raise ValueError("invalid spo token budget or lag")
-    if type(spo.get("require_positive_signal", True)) is not bool:
-        raise ValueError("spo.require_positive_signal must be bool")
-    if cfg["adapter"].get("allow_resident_pair") is not False:
-        raise ValueError("allow_resident_pair must be false until VRAM is measured")
-    if cfg["rewards"].get("objective_version") != "official_differential_spo_v2":
+    # Old configs remain readable; this retired sampling gate no longer
+    # discards valid negative trajectories or changes pending updates.
+    spo.pop("require_positive_signal", None)
+    if type(cfg["adapter"].get("allow_resident_pair", False)) is not bool:
+        raise ValueError("adapter.allow_resident_pair must be bool")
+    from .reward.progress import SUPPORTED_OBJECTIVE_VERSIONS
+    if cfg["rewards"].get("objective_version") not in SUPPORTED_OBJECTIVE_VERSIONS:
         raise ValueError("wrong rewards objective_version")
     return cfg
 
@@ -132,6 +128,7 @@ def _make_inference_backend(cfg: Mapping[str, Any], backend_url: str):
         return VLLMBackend(
             backend_url,
             expected_base_model=served,
+            expected_lora_rank=cfg["policy"]["lora_rank"],
             max_resident_adapters=int(inference.get("max_loras", 2)),
             lora_name_prefix=str(inference.get("lora_name_prefix", "spo")),
             require_sleep_mode=bool(inference.get("require_sleep_mode", True)),
@@ -206,19 +203,11 @@ def _base_state_from_prestep_checkpoint(
     return base
 
 
-def recovery_discard_reason(record: Any, checkpoint_state: Any,
-                            transaction: Any, *, require_positive_signal: bool,
-                            ledger: Any) -> str | None:
-    """Decide whether startup recovery must roll a batch back as signal-free.
+def validate_pending_transaction(record: Any, checkpoint_state: Any,
+                                 transaction: Any) -> None:
+    """Prevent replay of a claimed optimizer step without its saved state.
 
-    A rollback is allowed only when every source agrees that AdamW never ran:
-    ledger phase RESERVED/LEARNING with cursor 0, no post-step transaction, no
-    positive signal, and (for LEARNING) a cursor-0 checkpoint that owns this
-    update. ``require_positive_signal = false`` disables the rollback decision;
-    the transaction/checkpoint consistency checks still fail closed.
-
-    A transaction that claims a post-step cursor without the matching cursor-1
-    checkpoint is inconsistent, not durable; raise instead of replaying AdamW.
+    Recovery does not reconsider the batch's reward or positive-signal status.
     """
     if record.phase not in ("RESERVED", "LEARNING") or record.optimizer_cursor != 0:
         return None
@@ -234,17 +223,6 @@ def recovery_discard_reason(record: Any, checkpoint_state: Any,
                     f"update {record.update_id} has a post-step transaction but "
                     "no matching cursor-1 checkpoint")
             return None
-    if not require_positive_signal:
-        return None
-    if ledger.update_has_positive_signal(record.update_id):
-        return None
-    if cursor == 1:
-        return None
-    if record.phase == "LEARNING" and cursor != 0:
-        # Without a pre-step checkpoint this update cannot be proven harmless;
-        # the existing missing/foreign checkpoint guards report it instead.
-        return None
-    return "no_positive_repair_signal_on_resume"
 
 
 def discard_unoptimized_update(
@@ -984,16 +962,13 @@ def run_spo(args: argparse.Namespace) -> int:
             evaluation_overrides=dict(cfg["runtime"].get("evaluation", {}) or {}),
             extra_wheels=extra_wheels,
             emit=lambda n, **f: _emit(metrics_path, n, **f)))
-    reward_engine = RewardEngine(baselines)
-    # One explicit switch drives both the reserve-time gate and startup
-    # recovery: an operator who sets spo.require_positive_signal=false must not
-    # have --resume silently discard a pending signal-free batch.
-    require_positive_signal = bool(cfg["spo"].get("require_positive_signal", True))
+    reward_engine = RewardEngine(
+        baselines, objective_version=cfg["rewards"]["objective_version"],
+        efficiency_weight=float(cfg["rewards"].get("success_efficiency_weight", 0.05)))
     trajectory_buffer = TrajectoryBuffer(
         ledger, target_action_tokens=int(cfg["spo"]["target_action_tokens"]),
         max_policy_lag=int(cfg["spo"]["max_policy_lag"]),
-        advantage_epsilon=float(cfg["spo"].get("advantage_epsilon", 1.0e-6)),
-        require_positive_signal=require_positive_signal)
+        advantage_epsilon=float(cfg["spo"].get("advantage_epsilon", 1.0e-6)))
     rollout_engine = RolloutEngine(requests, reward_engine, ledger, tracker, trajectory_buffer)
 
     backend_url = args.backend_url or cfg["inference"].get("base_url")
@@ -1006,12 +981,6 @@ def run_spo(args: argparse.Namespace) -> int:
         raise RuntimeError(
             f"inference backend handshake failed at {backend_url}: "
             f"{type(error).__name__}: {error}") from error
-    from .rollout.gateway import InferenceGateway
-    try:
-        deployment = InferenceGateway(backend).probe_deployment()
-    except (ValueError, RuntimeError, OSError) as error:
-        deployment = {"reachable": False, "error": f"{type(error).__name__}: {error}"}
-    handshake = {**handshake, "deployment_probe": deployment}
     lease = GpuLease(backend)
     adapters = AdapterManager(run_dir / "adapters")
     if isinstance(backend, VLLMBackend):
@@ -1053,7 +1022,9 @@ def run_spo(args: argparse.Namespace) -> int:
               lora_name=binding["lora_name"])
     else:
         _emit(metrics_path, "adapter_resumed", version=adapters.active.version)
-    double_buffer = DoubleBuffer(adapters, backend, gpu_lease=lease, allow_resident_pair=False)
+    double_buffer = DoubleBuffer(
+        adapters, backend, gpu_lease=lease,
+        allow_resident_pair=cfg["adapter"].get("allow_resident_pair", False))
     # The inference server starts empty: make the single valid rollout version
     # resident before the scheduler or any trajectory can observe it.
     genesis_rollout = double_buffer.rollout
@@ -1635,12 +1606,9 @@ def run_spo(args: argparse.Namespace) -> int:
             optimizer step: their remaining publish stages replay idempotently
             without another gradient step.
 
-            When require_positive_signal is on, a pre-step RESERVED/LEARNING
-            batch with no official P>0 or exact shadow repair is consumed as
-            NOOP. Its full checkpoint is rebased to the committed base, never
-            unlinked: the file also carries every previously trained adapter
-            and AdamW moment. An explicit `require_positive_signal = false`
-            opts out of this startup rollback as well as the reserve gate.
+            Pending batches keep their frozen rewards and advantages. Only
+            a legacy discard that already saved a rebased checkpoint is
+            completed; no new batch is discarded for lacking a positive repair.
             """
             pending = list(ledger.list_updates(("RESERVED", "LEARNING", "OPTIMIZED",
                                                 "EXPORTED", "REGISTERED", "ACTIVATED")))
@@ -1713,23 +1681,8 @@ def run_spo(args: argparse.Namespace) -> int:
                                                         batch.policy_before)
                             finished += 1
                             continue
-                    discard_reason = recovery_discard_reason(
-                        record, checkpoint_state, transaction_for_update,
-                        require_positive_signal=require_positive_signal, ledger=ledger)
-                    if discard_reason is not None:
-                        # A RESERVED batch from an older run (or one reserved
-                        # just before a crash) must not bypass the signal gate.
-                        # The durable cursor==1 path above already continued, so
-                        # this update never ran AdamW. Rebase the checkpoint to
-                        # its committed base instead of deleting the only copy
-                        # of previously trained adapter/AdamW state.
-                        rebased = discard_prestep_update(
-                            update_id, discard_reason,
-                            checkpoint_state=checkpoint_state,
-                            transaction=transaction_for_update)
-                        _emit(metrics_path, "spo_reserved_discarded", update_id=update_id,
-                              reason=discard_reason, rebased_checkpoint=rebased)
-                        continue
+                    validate_pending_transaction(
+                        record, checkpoint_state, transaction_for_update)
                     behavior_before = record.policy_before
                     batch = ledger.get_update(update_id)
                     if batch.phase != "RESERVED":
@@ -1785,41 +1738,19 @@ def run_spo(args: argparse.Namespace) -> int:
                 if active_id is None and record.phase == "LEARNING" \
                         and record.optimizer_cursor == 0 \
                         and state.get("checkpoint_phase") == "discarded_unoptimized_batch":
-                    # A previous rollback persisted the committed base but
-                    # crashed before deleting this LEARNING row. The active
-                    # batch is gone, so finish the original rollback; if its
-                    # signal status changed, fail closed instead of guessing.
-                    if require_positive_signal \
-                            and not ledger.update_has_positive_signal(update_id):
-                        discard_prestep_update(
-                            update_id, "no_positive_repair_signal_on_resume",
-                            checkpoint_state=state,
-                            transaction=transaction_for_update)
-                        _emit(metrics_path, "spo_interrupted_discard_completed",
-                              update_id=update_id)
-                        continue
-                    raise RuntimeError(
-                        f"update {update_id} has a rebased committed-base checkpoint "
-                        "but its active batch is gone; refusing to resume")
+                    # Finish a discard already persisted by an older launcher.
+                    # This is checkpoint recovery, not a new reward filter.
+                    discard_prestep_update(
+                        update_id, "finish_legacy_discard",
+                        checkpoint_state=state,
+                        transaction=transaction_for_update)
+                    _emit(metrics_path, "spo_interrupted_discard_completed",
+                          update_id=update_id)
+                    continue
                 if active_id != update_id:
                     raise RuntimeError(
                         f"trainer checkpoint belongs to {active_id}, not pending {update_id}")
-                discard_reason = recovery_discard_reason(
-                    record, state, transaction_for_update,
-                    require_positive_signal=require_positive_signal, ledger=ledger)
-                if discard_reason is not None:
-                    # Legacy LEARNING/0 recovery used to call resume_batch() and
-                    # run the whole optimizer step, bypassing the signal gate.
-                    # A cursor-0 checkpoint proves AdamW never ran, so roll the
-                    # batch back and keep the committed base it still carries.
-                    rebased = discard_prestep_update(
-                        update_id, discard_reason,
-                        checkpoint_state=state,
-                        transaction=transaction_for_update)
-                    _emit(metrics_path, "spo_unoptimized_discarded", update_id=update_id,
-                          phase=record.phase, reason=discard_reason,
-                          rebased_checkpoint=rebased)
-                    continue
+                validate_pending_transaction(record, state, transaction_for_update)
                 with barrier.update_window():
                     require_update_drain(update_id, "resume_learning")
                     with update_transaction():
@@ -1937,9 +1868,8 @@ def run_spo(args: argparse.Namespace) -> int:
               inference={"engine": backend.name, "base_url": backend_url},
               backend_handshake=handshake,
               model_revision=identity["model_revision"], model_path=identity["model_path"])
-        # Phase declaration: first round is online SPO only. SFT cold-start,
-        # teacher distillation and OPD (training/data/*) are implemented but
-        # staged after the first real SPO update proves the loop.
+        # Report what this launcher actually runs. Other objectives need their
+        # own execution path; no preceding GPU result is required to build it.
         _emit(metrics_path, "spo_training_phase", phase="online_spo_only",
               sft_wired=False, distillation_wired=False, opd_wired=False)
         while trainer.completed_optimizer_steps < global_total and time.monotonic() < stop_submit:

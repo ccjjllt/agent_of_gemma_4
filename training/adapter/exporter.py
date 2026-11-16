@@ -87,10 +87,12 @@ class AdapterExporter:
         config = getattr(policy, "config", {})
         if not isinstance(config, dict):
             raise TypeError("policy.config must be a dictionary")
-        if config.get("lora_rank", 128) != 128 or config.get("lora_alpha", 256) != 256 \
-                or isinstance(config.get("lora_dropout"), bool) \
+        rank, alpha = config.get("lora_rank", 128), config.get("lora_alpha", 256)
+        if type(rank) is not int or rank < 1 or type(alpha) is not int or alpha < 1:
+            raise ValueError("lora_rank and lora_alpha must be positive integers")
+        if isinstance(config.get("lora_dropout"), bool) \
                 or float(config.get("lora_dropout", 0.0)) != 0.0:
-            raise ValueError("export requires the fixed rank 128, alpha 256, dropout 0 adapter")
+            raise ValueError("current prefix-sharing implementation requires lora_dropout=0")
         if config.get("adapter_export_dtype", "bfloat16") != "bfloat16":
             raise ValueError("adapter_export_dtype must be bfloat16 for candidate export")
         revision = base_revision if base_revision is not None else config.get("model_revision")
@@ -110,11 +112,11 @@ class AdapterExporter:
             validate_bf16_safetensors(weights)
             adapter_config = json.loads(adapter_config_path.read_text(encoding="utf-8"))
             if not isinstance(adapter_config, dict) or type(adapter_config.get("r")) is not int \
-                    or adapter_config["r"] != 128 or type(adapter_config.get("lora_alpha")) is not int \
-                    or adapter_config["lora_alpha"] != 256 \
+                    or adapter_config["r"] != rank or type(adapter_config.get("lora_alpha")) is not int \
+                    or adapter_config["lora_alpha"] != alpha \
                     or isinstance(adapter_config.get("lora_dropout"), bool) \
                     or float(adapter_config.get("lora_dropout", -1)) != 0.0:
-                raise ValueError("serialized PEFT config is not rank 128, alpha 256, dropout 0")
+                raise ValueError("serialized PEFT rank/alpha/dropout differ from the policy configuration")
             digest = sha256_file(weights)
             training_config_hash = canonical_hash(adapter_config) if config_hash is None else config_hash
             manifest = AdapterManifest(
@@ -122,8 +124,8 @@ class AdapterExporter:
                 parent_version=parent_version,
                 adapter_sha256=digest,
                 base_revision=revision,
-                rank=128,
-                alpha=256,
+                rank=rank,
+                alpha=alpha,
                 dropout=0.0,
                 optimizer_step=optimizer_step,
                 config_hash=training_config_hash,

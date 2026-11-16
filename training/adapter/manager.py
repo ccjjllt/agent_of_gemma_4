@@ -120,11 +120,11 @@ class AdapterManager:
         if sha256_file(weights) != manifest.adapter_sha256:
             raise ValueError("adapter SHA256 does not match adapter_model.safetensors")
         config = json.loads(config_path.read_text(encoding="utf-8"))
-        if not isinstance(config, dict) or config.get("r") != 128 or config.get("lora_alpha") != 256 \
-                or isinstance(config.get("r"), bool) or isinstance(config.get("lora_alpha"), bool) \
+        if not isinstance(config, dict) or config.get("r") != manifest.rank or config.get("lora_alpha") != manifest.alpha \
+                or type(config.get("r")) is not int or type(config.get("lora_alpha")) is not int \
                 or isinstance(config.get("lora_dropout"), bool) \
-                or float(config.get("lora_dropout", -1)) != 0.0:
-            raise ValueError("PEFT config must contain rank 128, alpha 256 and dropout 0")
+                or float(config.get("lora_dropout", -1)) != manifest.dropout:
+            raise ValueError("PEFT rank/alpha/dropout must match the adapter manifest")
         disk_manifest_path = directory / MANIFEST_NAME
         if disk_manifest_path.exists() and AdapterManifest.read(disk_manifest_path) != manifest:
             raise ValueError("on-disk manifest differs from the candidate manifest")
@@ -206,8 +206,10 @@ class AdapterManager:
             raise ValueError(f"adapter_config.json is unreadable: {exc}") from exc
         if not isinstance(config, dict) or config.get("peft_type") != "LORA":
             raise ValueError("adapter_config.json is not a PEFT LORA adapter")
+        manifest = adapter if isinstance(adapter, AdapterManifest) else self.get(adapter)
         reasons: list[str] = []
-        if config.get("r") != 128 or config.get("lora_alpha") != 256:
+        if type(config.get("r")) is not int or config.get("r") != manifest.rank \
+                or type(config.get("lora_alpha")) is not int or config.get("lora_alpha") != manifest.alpha:
             reasons.append("rank_or_alpha_mismatch")
         try:
             dropout = float(config.get("lora_dropout", -1))

@@ -16,7 +16,6 @@ from ..trajectory.schema import RewardRecord, Trajectory
 from .request_manager import RequestManager
 
 
-OBJECTIVE_VERSION = "official_differential_spo_v2"
 _ZERO_VALIDITY_VERDICTS = frozenset({
     "agent_pytest_collection_failure",
     "agent_pytest_import_failure",
@@ -144,12 +143,13 @@ class RolloutEngine:
                 return str(value)
         return f"official-verdict:{trajectory_id}"
 
-    @staticmethod
-    def _aggregate_audit(audit: Mapping[str, Any]) -> dict[str, Any]:
+    def _aggregate_audit(self, audit: Mapping[str, Any]) -> dict[str, Any]:
         """Keep only aggregate shadow evidence; never persist test node names."""
         return {
             "schema": "gemma.reward_audit.v1",
-            "objective_version": OBJECTIVE_VERSION,
+            "objective_version": self.reward_engine.objective_version,
+            "reward_branch": audit.get("reward_branch"),
+            "sparse_reasons": audit.get("sparse_reasons"),
             "task_key_hash": audit.get("task_key_hash"),
             "baseline_cache_key": audit.get("baseline_cache_key"),
             "patch_sha256": audit.get("patch_sha256"),
@@ -279,7 +279,7 @@ class RolloutEngine:
             validity=None, base_reward=None, efficiency=None,
             efficiency_weight=float(getattr(self.reward_engine, "efficiency_weight", 0.05)),
             total_reward=None, eligible=False, exclusion_reason=reason,
-            objective_version=OBJECTIVE_VERSION,
+            objective_version=self.reward_engine.objective_version,
         )
 
     def _record_reward(self, trajectory: Trajectory, reward: RewardRecord) -> None:

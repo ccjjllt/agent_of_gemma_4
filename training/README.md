@@ -1,6 +1,6 @@
 # 双 A800 训练与运行（Single-stream SPO）
 
-固定路线：Gemma 4 31B IT QAT BF16 基座＋LoRA Rank 128 / Alpha 256 / Dropout 0＋单流 SPO＋异步多 worker。vLLM 负责生成，同机双 A800 同时承担推理与训练（分时租约，非双引擎并行）。首轮只跑在线 SPO。vLLM 使用独立 Python 环境；learner 的 Unsloth/PyTorch 2.9.1 环境不安装 vLLM。
+当前默认：Gemma 4 31B IT QAT BF16 基座＋LoRA Rank 128 / Alpha 256 / Dropout 0＋单流 SPO＋异步多 worker。Rank、Alpha 与梯度裁剪范数可配置；服务端容量须覆盖实际 Rank，Dropout 0 是当前共享前缀实现的要求。vLLM 负责生成，同机双 A800 同时承担推理与训练（分时租约，非双引擎并行）。此入口执行在线 SPO。vLLM 使用独立 Python 环境；learner 的 Unsloth/PyTorch 2.9.1 环境不安装 vLLM。
 
 训练基座为 `google/gemma-4-31B-it-qat-q4_0-unquantized`，固定 revision 与参数见[主配置](../configs/spo_a800_2x80.toml)。目标是在官方 `gemma-4-31b-it-qat-w4a16-ct` 上挂 PEFT adapter；基座与格式有官方依据，非零 adapter 的 CT 兼容与收益仍待验证。
 
@@ -24,13 +24,17 @@ subprocess 后端需 root 启动，再由不同低权限 UID 运行 agent 工具
 
 ## 奖励与价值
 
-以官方验收为绝对核心：候选补丁与空补丁基线在同一需求、同一环境下做节点级配对（P=修复进展，G=回归），基线缓存带内容哈希校验，不一致直接判 ineligible。基础奖励为有界复合奖励，效率项只在成功任务中启用小权重。过程评价只认执行证据，不认模型自述。价值跟踪按任务持久化（连续奖励 EMA＋独立成功概率），派发时冻结基线，共享更新按派发序号有序应用。
+新实验默认使用 `official_differential_spo_v3`：候选官方验收完整、有效时可以训练；不再因为缺少空补丁基线或差分节点配对而整条排除。有完整同身份差分时，沿用原复合奖励公式；差分不可用时，采用 `0.10 + 0.60 × resolved + 0.05 × validity`，P/G/progress/regression 保持 `None`，不加效率奖励，audit 记录 `sparse_official` 与缺失原因。候选本身验证不完整、身份不符或基础设施失败仍不可评分。
 
-2026-11-15 CPU研究确认：当前公开文件未提供显式 F2P/P2P，P 使用官方函数提取 fallback，G 的 `not_applicable` 表示未测回归。精确 JUnit 节点的旁路诊断仍是研究观测，未替换生产奖励或官方验收；已发现的遗漏及价值历史效应见[学习信号研究](../research/spo-async-training-design.md#17-cpu-学习信号研究2026-11-15)。同日续作把候选导致的测试收集/导入失败记为 `validity=0`（官方 verdict 与 eligibility 不变，总奖励 0.15→0.10），并把目标版本升为 `official_differential_spo_v2`；exact 节点 `shadow_regression`/`shadow_repair` 只写入裁判侧 audit，正式路径落到 ledger audit event，不替换官方 G。目标集为 51 道旧不健康题 + 7 道旧健康对照；58/58 完成但跨 3 个环境身份，最终身份直接验证 46 道（27 健康、26 恢复、19 不健康）。全集健康估计 63→95 是跨阶段估计。训练前新增 `require_positive_signal`：无 P>0 且无 shadow repair 的前缀标为 NOOP，不执行优化步。详见[验收环境与奖励反馈修正](../docs/plan/009-cpu-acceptance-reward-feedback.md)。
+正修复信号只用于研究观测，不再控制批次预留或恢复。有效的失败轨迹也进入训练；只有冻结优势全零时执行数学意义上的 NOOP。完整模型调用、行为策略 logprob、token 对齐与策略滞后约束保留。价值跟踪仍在派发时冻结，并按派发序号应用观测。
+
+`official_differential_spo_v2` 显式保留用于旧实验的严格差分奖励。服务器的 `spo-short-20261116` 冻结批次仍沿用已部署 v2 配置、旧 helper/wheels 和原奖励，不用本地 v3 配置替换或重算旧账本。两个本地主配置已切到 v3，供新 run 使用。
+
+公开数据未提供显式 F2P/P2P，正式 P 使用官方需求 fallback；G 的 `not_applicable` 不能当作实测无回归。精确节点 shadow 仍仅作裁判侧观测，不进入模型输入。已有实测与历史方案见[验收与奖励研究记录](../docs/plan/009-cpu-acceptance-reward-feedback.md)。
 
 ## 启动与续跑
 
-以下命令只在已授权的 Linux GPU 服务器执行。vLLM 须先用基座模型、双卡并行、动态 LoRA 和 Level-2 sleep 部署好；本程序不拉起服务端，只做启动握手与部署探针。vLLM 与 learner 使用两个独立环境，安装入口见 `requirements/inference-vllm.lock.txt`。
+以下命令只在已授权的 Linux GPU 服务器执行。vLLM 须先用基座模型、双卡并行、动态 LoRA 和 Level-2 sleep 部署好；本程序不拉起服务端，只做一次必要的后端能力握手。vLLM 与 learner 使用两个独立环境，安装入口见 `requirements/inference-vllm.lock.txt`。
 
 服务端启动示例（CUDA 13 wheel 线；`--served-model-name` 必须与配置一致）：
 
@@ -71,7 +75,7 @@ export TMPDIR=/root/autodl-tmp/gemma4/tmp
   --backend-url http://127.0.0.1:8000
 ```
 
-启动前只有纯 CPU 预检（`--check-only`）：配置、模型目录结构、tokenizer、vLLM 可达性，以及 `/server_info` 中的 `max_lora_rank>=128`、`max_loras>=2`、`VLLM_ALLOW_RUNTIME_LORA_UPDATING=True`、`enable_sleep_mode=True` 和 `/is_sleeping` 端点。预检只读，不提交、不加载、不 sleep。非空 run_dir 直接拒绝启动；继续训练必须用 `--resume`，且恢复时校验 serving 版本、adapter SHA、trainer checkpoint 步数与 ledger（含 ACTIVATED 中断态的来源证明），对不上就停。trainer checkpoint schema 为 2，旧 schema 明确拒绝。`--resume` 必须沿用首次启动的 `max_batches`（全局累计上限，LR 计划总量）；改动即停，不静默重置计划。
+`--check-only` 是可选诊断，不是实验前置步骤。正式启动保留一次必要握手，确认配置、模型目录结构、tokenizer、vLLM 可达性，以及 `/server_info` 中的 `max_lora_rank>=配置的 lora_rank`、`max_loras>=2`、`VLLM_ALLOW_RUNTIME_LORA_UPDATING=True`、`enable_sleep_mode=True` 和 `/is_sleeping` 端点。该可选诊断只读，不提交、不加载、不 sleep；正式启动不再追加重复 deployment probe。非空 run_dir 直接拒绝启动；继续训练必须用 `--resume`，且恢复时校验 serving 版本、adapter SHA、trainer checkpoint 步数与 ledger（含 ACTIVATED 中断态的来源证明），对不上就停。trainer checkpoint schema 为 2，旧 schema 明确拒绝。`--resume` 必须沿用首次启动的 `max_batches`（全局累计上限，LR 计划总量）；改动即停，不静默重置计划。
 
 正常启动用实际裁判 Python 收集廉价环境元数据，派发、验收报告与 v2 空补丁缓存共享同一 TaskKey；公开数据 SHA 另记 `public_data_identity` 事件。续跑要求已有 `judge_identity.json` 且身份相同。此前没有该身份文件的 run 保持只读，新版使用独立 run，不自动重标旧轨迹、价值或缓存；已有 adapter 仍保留。
 

@@ -135,10 +135,9 @@ def _same_frozen_batch(left: UpdateBatch, right: UpdateBatch) -> bool:
 def _trainer_identity_config(config: Any) -> Any:
     """Normalize the declared trainer config for checkpoint identity checks.
 
-    ``spo.require_positive_signal`` gates which trajectories become updates; it
-    does not change the model layout, optimizer, schedule or tensor semantics.
-    Excluding it lets an operator switch the gate off on an existing run
-    instead of failing with a spurious "trainer configuration differs".
+    ``require_positive_signal`` is a removed historical sampling gate. Ignore
+    the old flat/nested key when reading checkpoints; it never changed model,
+    optimizer, schedule or tensor semantics.
     """
     if not isinstance(config, Mapping):
         return config
@@ -188,10 +187,11 @@ class SPOTrainer:
         policy_config = getattr(policy, "config", {})
         if not isinstance(policy_config, Mapping):
             raise TypeError("policy.config must be a mapping")
-        if (policy_config.get("lora_rank", 128) != 128
-                or policy_config.get("lora_alpha", 256) != 256
-                or float(policy_config.get("lora_dropout", 0.0)) != 0.0):
-            raise ValueError("SPO requires the fixed rank 128, alpha 256, dropout 0 adapter")
+        self.lora_rank = _integer(policy_config.get("lora_rank", 128), "lora_rank", 1)
+        _integer(policy_config.get("lora_alpha", 256), "lora_alpha", 1)
+        if isinstance(policy_config.get("lora_dropout"), bool) \
+                or float(policy_config.get("lora_dropout", 0.0)) != 0.0:
+            raise ValueError("current prefix-sharing implementation requires lora_dropout=0")
         if not cfg.get("gradient_checkpointing", True) or not bool(
                 getattr(policy, "gradient_checkpointing", None)):
             raise ValueError("SPO requires Policy-owned gradient checkpointing")
@@ -204,8 +204,8 @@ class SPOTrainer:
                 or not math.isfinite(self.clip_epsilon_high) or self.clip_epsilon_high < 0.0):
             raise ValueError("invalid PPO clipping configuration")
         self.max_grad_norm = float(optimizer.get("max_grad_norm", cfg.get("max_grad_norm", 1.0)))
-        if not math.isfinite(self.max_grad_norm) or self.max_grad_norm != 1.0:
-            raise ValueError("SPO uses global max_grad_norm=1.0")
+        if not math.isfinite(self.max_grad_norm) or self.max_grad_norm <= 0.0:
+            raise ValueError("max_grad_norm must be finite and positive")
         self.learning_rate = float(optimizer.get(
             "learning_rate", cfg.get("learning_rate", 5.0e-6)))
         if not math.isfinite(self.learning_rate) or self.learning_rate <= 0.0:
@@ -293,10 +293,10 @@ class SPOTrainer:
                 raise ValueError("trainable LoRA parameters cannot be meta tensors")
             if parameter.device.type == "cuda" and not self.fused:
                 raise ValueError("CUDA training requires fused=True")
-            if ".lora_A." in name and parameter.ndim == 2 and parameter.shape[0] != 128:
-                raise ValueError(f"LoRA A rank is not 128: {name}")
-            if ".lora_B." in name and parameter.ndim == 2 and parameter.shape[1] != 128:
-                raise ValueError(f"LoRA B rank is not 128: {name}")
+            if ".lora_A." in name and parameter.ndim == 2 and parameter.shape[0] != self.lora_rank:
+                raise ValueError(f"LoRA A rank differs from configured rank {self.lora_rank}: {name}")
+            if ".lora_B." in name and parameter.ndim == 2 and parameter.shape[1] != self.lora_rank:
+                raise ValueError(f"LoRA B rank differs from configured rank {self.lora_rank}: {name}")
             names.append(name)
         if self._parameter_names and names != self._parameter_names:
             raise ValueError("LoRA layout changed across a learner reload")

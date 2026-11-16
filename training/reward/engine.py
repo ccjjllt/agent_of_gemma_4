@@ -10,7 +10,10 @@ from collections.abc import Mapping
 from .baseline import EmptyPatchBaselineStore, TaskKey
 from .critic import ProcessCritic
 from .differential import pair_node_reports
-from .progress import DEFAULT_EFFICIENCY_WEIGHT, DEFAULT_SCALES, composite_reward
+from .progress import (
+    DEFAULT_EFFICIENCY_WEIGHT, DEFAULT_SCALES, OBJECTIVE_VERSION,
+    SUPPORTED_OBJECTIVE_VERSIONS, composite_reward,
+)
 
 
 REWARD_RECORD_FIELDS = (
@@ -101,7 +104,11 @@ class RewardEngine:
         efficiency_weight: float = DEFAULT_EFFICIENCY_WEIGHT,
         scales: Mapping[str, float] | None = None,
         critic: ProcessCritic | None = None,
+        objective_version: str = OBJECTIVE_VERSION,
     ):
+        if objective_version not in SUPPORTED_OBJECTIVE_VERSIONS:
+            raise ValueError(f"unsupported reward objective_version: {objective_version}")
+        self.objective_version = objective_version
         self.baseline_store = baseline_store
         self.efficiency_weight = efficiency_weight
         self.scales = dict(DEFAULT_SCALES if scales is None else scales)
@@ -159,6 +166,12 @@ class RewardEngine:
             differential["exclusion_reasons"] = list(dict.fromkeys(
                 differential["exclusion_reasons"] + extra_reasons,
             ))
+        if key_error:
+            # A malformed dispatch identity is not an optional baseline gap.
+            differential["candidate_eligible"] = False
+            differential["candidate_exclusion_reasons"] = list(dict.fromkeys(
+                differential["candidate_exclusion_reasons"] + ["task_key_invalid"],
+            ))
 
         actual_metrics, metric_errors = _metrics(bundle, metrics)
         validity = candidate.get("validity", bundle.get("validity"))
@@ -171,6 +184,7 @@ class RewardEngine:
             metrics=actual_metrics,
             efficiency_weight=self.efficiency_weight,
             scales=self.scales,
+            objective_version=self.objective_version,
         )
         # Metric gaps only disable the efficiency auxiliary (handled inside
         # composite_reward); they never overturn official differential eligibility.
@@ -184,6 +198,8 @@ class RewardEngine:
         )
         artifacts = differential.get("artifact_hashes", {})
         record["audit"] = {
+            "reward_branch": record["reward_branch"],
+            "sparse_reasons": record["sparse_reasons"],
             "differential": differential,
             "efficiency_evidence": record["efficiency_evidence"],
             "process_evidence": process,
@@ -236,7 +252,9 @@ def compute_reward_record(
     metrics: Mapping[str, object] | None = None,
     efficiency_weight: float = DEFAULT_EFFICIENCY_WEIGHT,
     scales: Mapping[str, float] | None = None,
+    objective_version: str = OBJECTIVE_VERSION,
 ) -> dict:
     """Functional entry point suitable for ``official_runtime`` judge code."""
-    engine = RewardEngine(baseline_store, efficiency_weight=efficiency_weight, scales=scales)
+    engine = RewardEngine(baseline_store, efficiency_weight=efficiency_weight, scales=scales,
+                          objective_version=objective_version)
     return engine.evaluate(verification_bundle, task_key=task_key, baseline=baseline, metrics=metrics)

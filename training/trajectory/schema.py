@@ -363,8 +363,13 @@ class RewardRecord:
         if self.eligible:
             if type(self.resolved) is not bool:
                 raise ValueError("eligible rewards require an official resolved verdict")
-            for name in ("P", "G", "progress", "regression", "validity",
-                         "base_reward", "total_reward"):
+            differential_fields = ("P", "G", "progress", "regression")
+            sparse = (self.objective_version == "official_differential_spo_v3"
+                      and all(getattr(self, name) is None for name in differential_fields))
+            required = ("validity", "base_reward", "total_reward")
+            if not sparse:
+                required = differential_fields + required
+            for name in required:
                 if getattr(self, name) is None:
                     raise ValueError(f"eligible rewards require {name}")
             if self.exclusion_reason is not None:

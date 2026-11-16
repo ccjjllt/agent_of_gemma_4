@@ -100,6 +100,7 @@ class VLLMBackend(HTTPInferenceBackend):
         control_timeout: float = 600.0,
         api_key: str | None = None,
         expected_base_model: str | None = None,
+        expected_lora_rank: int = 128,
         max_resident_adapters: int = 2,
         lora_name_prefix: str = "spo",
         require_sleep_mode: bool = True,
@@ -112,6 +113,8 @@ class VLLMBackend(HTTPInferenceBackend):
         self.control_timeout = _positive_number(control_timeout, "control_timeout")
         if expected_base_model is not None and not isinstance(expected_base_model, str):
             raise TypeError("expected_base_model must be a string or None")
+        if type(expected_lora_rank) is not int or expected_lora_rank < 1:
+            raise ValueError("expected_lora_rank must be a positive integer")
         if type(max_resident_adapters) is not int or max_resident_adapters < 1:
             raise ValueError("max_resident_adapters must be a positive integer")
         if not isinstance(lora_name_prefix, str) or not _LORA_NAME.fullmatch(lora_name_prefix):
@@ -121,6 +124,7 @@ class VLLMBackend(HTTPInferenceBackend):
         if adapter_validator is not None and not callable(adapter_validator):
             raise TypeError("adapter_validator must be callable or None")
         self.expected_base_model = expected_base_model
+        self.expected_lora_rank = expected_lora_rank
         self.max_resident_adapters = max_resident_adapters
         self.lora_name_prefix = lora_name_prefix
         self.require_sleep_mode = bool(require_sleep_mode)
@@ -194,9 +198,10 @@ class VLLMBackend(HTTPInferenceBackend):
             raise BackendCapabilityError(
                 "vLLM dynamic LoRA is not enabled; launch with "
                 "VLLM_ALLOW_RUNTIME_LORA_UPDATING=True")
-        if type(max_rank) is not int or max_rank < 128:
+        if type(max_rank) is not int or max_rank < self.expected_lora_rank:
             raise BackendCapabilityError(
-                f"vLLM --max-lora-rank must be at least 128, got {max_rank!r}")
+                f"vLLM --max-lora-rank must cover configured rank "
+                f"{self.expected_lora_rank}, got {max_rank!r}")
         if type(max_loras) is not int or max_loras < max(2, self.max_resident_adapters):
             raise BackendCapabilityError(
                 f"vLLM --max-loras must be at least {max(2, self.max_resident_adapters)}, "
@@ -296,21 +301,31 @@ class VLLMBackend(HTTPInferenceBackend):
             raise ValueError(f"adapter_config.json is unreadable: {exc}") from exc
         if not isinstance(config, dict) or config.get("peft_type") != "LORA":
             raise ValueError("adapter_config.json is not a PEFT LORA adapter")
-        if config.get("r") != 128 or config.get("lora_alpha") != 256:
-            raise ValueError("vLLM adapter must be rank 128 / alpha 256")
+        rank, alpha = config.get("r"), config.get("lora_alpha")
+        if type(rank) is not int or rank < 1 or type(alpha) is not int or alpha < 1:
+            raise ValueError("vLLM adapter rank and alpha must be positive integers")
         try:
             dropout = float(config.get("lora_dropout", -1))
         except (TypeError, ValueError):
             dropout = -1.0
-        if dropout != 0.0:
-            raise ValueError("vLLM adapter must use dropout 0")
+        if isinstance(config.get("lora_dropout"), bool) or dropout != 0.0:
+            raise ValueError("current prefix-sharing implementation requires lora_dropout=0")
         if config.get("use_dora") or config.get("use_rslora") or config.get("modules_to_save"):
             raise ValueError("vLLM adapter uses an unsupported PEFT variant")
         if config.get("bias") not in (None, "none"):
             raise ValueError("vLLM adapter must not train biases")
-        return {"compatible": True, "r": 128, "lora_alpha": 256}
+        return {"compatible": True, "r": rank, "lora_alpha": alpha, "lora_dropout": dropout}
 
     def _audit_adapter(self, manifest: AdapterManifest, directory: Path) -> dict[str, Any]:
+        basic = self._default_adapter_check(directory)
+        if (basic["r"], basic["lora_alpha"], basic["lora_dropout"]) \
+                != (manifest.rank, manifest.alpha, manifest.dropout):
+            raise ValueError("PEFT rank/alpha/dropout differ from the adapter manifest")
+        if manifest.rank != self.expected_lora_rank:
+            raise ValueError("adapter rank differs from the configured learner rank")
+        max_rank = self.deployment.get("max_lora_rank")
+        if type(max_rank) is not int or manifest.rank > max_rank:
+            raise BackendCapabilityError("adapter rank exceeds the vLLM server capacity")
         if self.adapter_validator is not None:
             report = self.adapter_validator(manifest, directory)
             if not isinstance(report, Mapping):
@@ -319,7 +334,7 @@ class VLLMBackend(HTTPInferenceBackend):
                 reasons = report.get("reasons") or ["adapter_target_audit_failed"]
                 raise ValueError("vLLM adapter target audit failed: " + "; ".join(map(str, reasons)))
             return dict(report)
-        return self._default_adapter_check(directory)
+        return basic
 
     def load_adapter(self, manifest: AdapterManifest, path: str | Path) -> Mapping[str, Any]:
         self._require_started()
