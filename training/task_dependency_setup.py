@@ -6,7 +6,9 @@ offline wheels by honouring the repository's version specifiers instead of
 always choosing the highest version for every distribution.  The latter turns
 old FastAPI commits into ``Router.__init__() got an unexpected keyword
 argument 'on_startup'`` collection failures because the newest Starlette is
-installed.
+installed.  A joint pass also checks the chosen wheels' declared
+``Requires-Dist`` entries so mutually incompatible selections are not passed
+to pip.
 
 Only public repository metadata and the local wheel directory are read.  No
 network access, task patch, reference patch or held-out content is used.
@@ -336,6 +338,434 @@ def _wheel_index(
     return index
 
 
+def _requirement_applies(requirement: Requirement, extra: str | None = None) -> bool:
+    """Evaluate a ``Requires-Dist`` marker, with an empty extra by default."""
+    marker = requirement.marker
+    if marker is None:
+        return True
+    try:
+        if extra is None:
+            return bool(marker.evaluate())
+        return bool(marker.evaluate({"extra": extra}))
+    except Exception:
+        return False
+
+
+def _dependency_edges(
+    path: Path, extras: Iterable[str],
+) -> list[tuple[Requirement, str | None]] | None:
+    """Return applicable ``Requires-Dist`` entries and their enabling extra.
+
+    ``None`` means the wheel metadata could not be read; callers must not treat
+    that wheel as verified.  A requirement that applies without an extra is
+    recorded once with ``None`` because its specifier always applies.
+    """
+    requirements = _wheel_requirements(path)
+    if requirements is None:
+        return None
+    edges: list[tuple[Requirement, str | None]] = []
+    seen: set[tuple[str, str | None]] = set()
+    selected_extras = sorted(extras)
+    for requirement in requirements:
+        if _requirement_applies(requirement):
+            edges.append((requirement, None))
+            continue
+        for extra in selected_extras:
+            if not _requirement_applies(requirement, extra):
+                continue
+            key = (str(requirement), extra)
+            if key in seen:
+                continue
+            seen.add(key)
+            edges.append((requirement, extra))
+    return edges
+
+
+class _JointResolution:
+    """Resolve cross-distribution ``Requires-Dist`` conflicts on chosen wheels.
+
+    Per-distribution selection cannot see that ``fastapi-cli`` needs a newer
+    Typer than the repository pins.  This pass keeps the repository specifiers
+    authoritative and changes a second distribution only inside them.  Every
+    action is recorded in ``joint_resolution``; an incompatible pair is never
+    kept silently.
+    """
+
+    def __init__(
+        self,
+        index: Mapping[str, list[tuple[Any, Path]]],
+        constraints: Mapping[str, SpecifierSet],
+        versions: dict[str, Version],
+        paths: dict[str, Path],
+        extras: dict[str, list[str]],
+        dropped_extras: dict[str, dict[str, list[str]]],
+    ) -> None:
+        self.index = index
+        self.constraints = constraints
+        self.versions = versions
+        self.paths = paths
+        self.extras = extras
+        self.dropped_extras = dropped_extras
+        self.conflicts: list[dict[str, Any]] = []
+        self.changes: list[dict[str, Any]] = []
+        self.missing: dict[str, str] = {}
+        self.unreadable: list[str] = []
+        self.residual: list[dict[str, Any]] = []
+        self._edge_cache: dict[
+            tuple[str, str, tuple[str, ...]],
+            list[tuple[Requirement, str | None]],
+        ] = {}
+
+    def _edges_for(self, name: str) -> list[tuple[Requirement, str | None]]:
+        version = str(self.versions[name])
+        extra_key = tuple(sorted(self.extras.get(name, ())))
+        key = (name, version, extra_key)
+        cached = self._edge_cache.get(key)
+        if cached is not None:
+            return cached
+        edges = _dependency_edges(self.paths[name], extra_key)
+        if edges is None:
+            self.unreadable.append(f"{name}=={version}")
+            edges = []
+        self._edge_cache[key] = edges
+        return edges
+
+    def _all_edges(self) -> list[tuple[str, Requirement, str | None]]:
+        edges: list[tuple[str, Requirement, str | None]] = []
+        for name in sorted(self.versions):
+            for requirement, via in self._edges_for(name):
+                edges.append((name, requirement, via))
+        edges.sort(key=lambda item: (item[0], str(item[1]), item[2] or ""))
+        return edges
+
+    def _conflicts(self) -> list[tuple[str, Requirement, str | None, str]]:
+        found: list[tuple[str, Requirement, str | None, str]] = []
+        for source, requirement, via in self._all_edges():
+            target = canonicalize_name(requirement.name)
+            if target not in self.versions:
+                continue
+            if requirement.specifier.contains(
+                self.versions[target], prereleases=True
+            ):
+                continue
+            found.append((source, requirement, via, target))
+        return found
+
+    def _candidates(self, name: str) -> list[Version]:
+        """Versions that satisfy the repository pin and every selected dependent."""
+        specifier = self.constraints.get(name, SpecifierSet())
+        incoming = [
+            requirement
+            for _source, requirement, _via in self._all_edges()
+            if canonicalize_name(requirement.name) == name
+        ]
+        candidates: list[Version] = []
+        for version, _path in self.index.get(name, []):
+            if not specifier.contains(version, prereleases=True):
+                continue
+            if all(
+                requirement.specifier.contains(version, prereleases=True)
+                for requirement in incoming
+            ):
+                candidates.append(version)
+        return sorted(set(candidates))
+
+    def _requirement_available(self, requirement: Requirement) -> bool:
+        target = canonicalize_name(requirement.name)
+        if any(
+            requirement.specifier.contains(version, prereleases=True)
+            for version, _path in self.index.get(target, [])
+        ):
+            return True
+        installed = _installed_version(target)
+        return installed is not None and requirement.specifier.contains(
+            installed, prereleases=True
+        )
+
+    def _requires_dist_satisfiable(
+        self, name: str, version: Version, path: Path, extras: Iterable[str],
+    ) -> bool | None:
+        edges = _dependency_edges(path, extras)
+        if edges is None:
+            return None
+        for requirement, _via in edges:
+            target = canonicalize_name(requirement.name)
+            if target == name:
+                satisfied = requirement.specifier.contains(version, prereleases=True)
+            elif target in self.versions:
+                satisfied = requirement.specifier.contains(
+                    self.versions[target], prereleases=True
+                )
+            else:
+                satisfied = self._requirement_available(requirement)
+            if not satisfied:
+                return False
+        return True
+
+    def _path_for(self, name: str, version: Version) -> Path:
+        return next(path for candidate, path in self.index[name]
+                    if candidate == version)
+
+    def _record_change(self, name: str, previous: Version, chosen: Version) -> None:
+        self.changes.append({
+            "distribution": name,
+            "previous": str(previous),
+            "chosen": str(chosen),
+        })
+
+    def _handle(
+        self, source: str, requirement: Requirement, via: str | None, target: str,
+    ) -> None:
+        source_version = self.versions[source]
+        target_version = self.versions[target]
+        repository = self.constraints.get(target)
+        target_candidates = self._candidates(target)
+        satisfiable_targets: list[Version] = []
+        for version in target_candidates:
+            if self._requires_dist_satisfiable(
+                target, version, self._path_for(target, version),
+                self.extras.get(target, ()),
+            ):
+                satisfiable_targets.append(version)
+        entry: dict[str, Any] = {
+            "dependent": source,
+            "dependent_version": str(source_version),
+            "requirement": str(requirement),
+            "via_extra": via,
+            "selected": f"{target}=={target_version}",
+            "repository_specifier": str(repository) if repository else "<any>",
+            "available_versions": [
+                str(version) for version, _path in self.index.get(target, [])
+            ],
+            "candidates_considered": [str(version) for version in target_candidates],
+            "satisfiable_candidates": [str(version) for version in satisfiable_targets],
+        }
+        if satisfiable_targets and satisfiable_targets[-1] != target_version:
+            chosen = satisfiable_targets[-1]
+            self.versions[target] = chosen
+            self.paths[target] = self._path_for(target, chosen)
+            entry.update({
+                "action": "changed_version",
+                "chosen_version": str(chosen),
+                "previous_version": str(target_version),
+                "reason": (
+                    f"{target} {target_version} does not satisfy {requirement} "
+                    f"from {source} {source_version}"
+                ),
+            })
+            self._record_change(target, target_version, chosen)
+            self.conflicts.append(entry)
+            return
+
+        source_candidates = self._candidates(source)
+        satisfiable: list[Version] = []
+        for version in reversed(source_candidates):
+            if self._requires_dist_satisfiable(
+                source, version, self._path_for(source, version),
+                self.extras.get(source, ()),
+            ):
+                satisfiable.append(version)
+        if satisfiable:
+            chosen = max(satisfiable)
+            previous = self.versions[source]
+            self.versions[source] = chosen
+            self.paths[source] = self._path_for(source, chosen)
+            entry.update({
+                "action": "downgraded_dependent",
+                "chosen_version": str(chosen),
+                "previous_version": str(previous),
+                "source_candidates_considered": [
+                    str(version) for version in source_candidates
+                ],
+                "source_satisfiable_candidates": [
+                    str(version) for version in satisfiable
+                ],
+                "reason": (
+                    f"no {target} version satisfies {requirement} and the "
+                    f"repository specifier {repository or '<any>'}; downgraded "
+                    f"{source} from {previous} to {chosen}"
+                ),
+            })
+            self._record_change(source, previous, chosen)
+            self.conflicts.append(entry)
+            return
+
+        if via is not None and via in self.extras.get(source, ()):
+            base_conflict = any(
+                edge_via is None
+                and canonicalize_name(edge_requirement.name) == target
+                and not edge_requirement.specifier.contains(
+                    target_version, prereleases=True
+                )
+                for edge_requirement, edge_via in self._edges_for(source)
+            )
+            if not base_conflict:
+                self.extras[source].remove(via)
+                if not self.extras[source]:
+                    self.extras.pop(source, None)
+                self.dropped_extras.setdefault(source, {}).setdefault(via, []).append(
+                    f"joint conflict: {source}=={source_version} extra {via} "
+                    f"requires {requirement} but selected {target}=={target_version}"
+                )
+                entry.update({
+                    "action": "dropped_extra",
+                    "chosen_version": str(source_version),
+                    "source_candidates_considered": [
+                        str(version) for version in source_candidates
+                    ],
+                    "source_satisfiable_candidates": [],
+                    "reason": (
+                        f"no {source} version has a satisfiable Requires-Dist; "
+                        f"dropped extra {source}[{via}] that pulled {target}"
+                    ),
+                })
+                self.conflicts.append(entry)
+                return
+
+        incoming = [
+            (dependent, dependent_requirement, dependent_via)
+            for dependent, dependent_requirement, dependent_via in self._all_edges()
+            if canonicalize_name(dependent_requirement.name) == source
+            and dependent != source
+        ]
+        base_incoming = [
+            item for item in incoming if item[2] is None
+        ]
+        extra_incoming = [
+            item for item in incoming if item[2] is not None
+        ]
+        dropped_extra_records: list[dict[str, str]] = []
+        if not base_incoming:
+            for dependent, _dependent_requirement, dependent_via in extra_incoming:
+                if dependent_via not in self.extras.get(dependent, ()):
+                    continue
+                self.extras[dependent].remove(dependent_via)
+                if not self.extras[dependent]:
+                    self.extras.pop(dependent, None)
+                self.dropped_extras.setdefault(
+                    dependent, {}
+                ).setdefault(dependent_via, []).append(
+                    f"joint conflict: {source}=={source_version} dropped; "
+                    f"{dependent} extra {dependent_via} depended on it"
+                )
+                dropped_extra_records.append({
+                    "package": dependent, "extra": dependent_via,
+                })
+        self.versions.pop(source, None)
+        self.paths.pop(source, None)
+        self.extras.pop(source, None)
+        entry.update({
+            "action": "dropped_distribution",
+            "dropped_version": str(source_version),
+            "repository_pin": str(self.constraints.get(source, "")) or "<any>",
+            "dropped_extras": dropped_extra_records,
+            "source_candidates_considered": [
+                str(version) for version in source_candidates
+            ],
+            "source_satisfiable_candidates": [],
+            "transitively_required_by": [
+                {
+                    "package": dependent,
+                    "requirement": str(dependent_requirement),
+                    "via_extra": dependent_via,
+                }
+                for dependent, dependent_requirement, dependent_via in incoming
+            ],
+            "reason": (
+                f"no {source} version has a satisfiable Requires-Dist and "
+                f"{target} cannot change: {requirement} conflicts with "
+                f"repository specifier {repository or '<any>'}; "
+                f"dropped {source}=={source_version}"
+            ),
+        })
+        self.conflicts.append(entry)
+
+    def _handle_unselected(self) -> None:
+        """Name transitively required distributions that no wheel can provide.
+
+        The runner can add those wheels to ``extra_wheels``.  If the missing
+        dependency was pulled only by an extra, dropping the extra is enough
+        and is recorded through ``dropped_extras``.
+        """
+        for _ in range(200):
+            changed = False
+            for source, requirement, via in self._all_edges():
+                target = canonicalize_name(requirement.name)
+                if target in self.versions:
+                    continue
+                if self._requirement_available(requirement):
+                    continue
+                if via is not None and via in self.extras.get(source, ()):
+                    self.extras[source].remove(via)
+                    if not self.extras[source]:
+                        self.extras.pop(source, None)
+                    self.dropped_extras.setdefault(
+                        source, {}
+                    ).setdefault(via, []).append(
+                        f"joint conflict: no wheel or installed distribution "
+                        f"satisfies {requirement} required by {source} extra {via}"
+                    )
+                    self.conflicts.append({
+                        "dependent": source,
+                        "dependent_version": str(self.versions[source]),
+                        "requirement": str(requirement),
+                        "via_extra": via,
+                        "selected": None,
+                        "action": "dropped_extra",
+                        "reason": (
+                            f"no wheel or installed distribution satisfies "
+                            f"{requirement} required by {source} extra {via}"
+                        ),
+                    })
+                    changed = True
+                    break
+                if target not in self.missing:
+                    self.missing[target] = (
+                        f"{source}=={self.versions[source]} requires {requirement}"
+                    )
+            if not changed:
+                return
+
+    def _describe_conflict(
+        self, item: tuple[str, Requirement, str | None, str],
+    ) -> dict[str, Any]:
+        source, requirement, via, target = item
+        return {
+            "dependent": source,
+            "dependent_version": str(self.versions[source]),
+            "requirement": str(requirement),
+            "via_extra": via,
+            "selected": f"{target}=={self.versions[target]}",
+            "action": "unresolved",
+            "reason": "joint compatibility conflict remains after resolution",
+        }
+
+    def run(self) -> None:
+        for _ in range(200):
+            conflicts = self._conflicts()
+            if not conflicts:
+                break
+            self._handle(*conflicts[0])
+        else:
+            self.residual = [
+                self._describe_conflict(item) for item in self._conflicts()
+            ]
+        self._handle_unselected()
+        if not self.residual:
+            self.residual = [
+                self._describe_conflict(item) for item in self._conflicts()
+            ]
+
+    def diagnostics(self) -> dict[str, Any]:
+        return {
+            "conflicts": self.conflicts,
+            "changes": self.changes,
+            "residual_conflicts": self.residual,
+            "unreadable_metadata": self.unreadable,
+            "resolved": not self.residual and not self.unreadable,
+        }
+
+
 def select_requirements(
     raw_requirements: Iterable[str], wheel_dirs: Iterable[Path],
     raw_constraints: Iterable[str] = (),
@@ -347,6 +777,13 @@ def select_requirements(
     An unsatisfiable intersection is also reported instead of silently
     selecting an incompatible highest version.  ``-c`` constraints narrow
     versions but never add a distribution that no requirement requested.
+
+    A joint pass then checks the selected wheels' declared ``Requires-Dist``
+    entries.  A dependency version may change only inside the repository's own
+    specifier, and a dependent may be downgraded or dropped instead; every
+    cross-package action is recorded in ``joint_resolution``.  Distributions
+    that pip would need transitively but no wheel provides are listed in
+    ``missing_transitive_distributions`` rather than being fabricated.
     """
     python_skipped: Counter[str] = Counter()
     index = _wheel_index(wheel_dirs, python_skipped)
@@ -392,8 +829,8 @@ def select_requirements(
             constraints[name] = constraints[name] & specifier
             applied_constraints[name] = str(specifier)
 
-    selected: list[str] = []
-    versions: dict[str, str] = {}
+    versions: dict[str, Version] = {}
+    paths: dict[str, Path] = {}
     selected_extras: dict[str, list[str]] = {}
     dropped_extras: dict[str, dict[str, list[str]]] = {}
     unsatisfied: dict[str, str] = {}
@@ -405,19 +842,30 @@ def select_requirements(
             continue
         version = max(candidates)
         selected_path = next(path for candidate, path in index[name] if candidate == version)
-        versions[name] = str(version)
+        versions[name] = version
+        paths[name] = selected_path
         extras = sorted(extras_by_name.get(name, ()))
         supported, dropped = _supported_extras(selected_path, extras, index)
         if supported:
             selected_extras[name] = supported
         if dropped:
             dropped_extras[name] = dropped
-        suffix = f"[{','.join(supported)}]" if supported else ""
+
+    resolver = _JointResolution(
+        index, constraints, versions, paths, selected_extras, dropped_extras,
+    )
+    resolver.run()
+
+    selected: list[str] = []
+    for name in sorted(versions):
+        version = str(versions[name])
+        extras = sorted(selected_extras.get(name, ()))
+        suffix = f"[{','.join(extras)}]" if extras else ""
         selected.append(f"{name}{suffix}=={version}")
     diagnostics = {
         "schema": "gemma.task_dependency_selection.v1",
         "wheel_dirs": [str(path) for path in wheel_dirs],
-        "selected_versions": versions,
+        "selected_versions": {name: str(version) for name, version in versions.items()},
         "selected_count": len(selected),
         "selected_extras": selected_extras,
         "dropped_extras": dropped_extras,
@@ -429,6 +877,8 @@ def select_requirements(
         "invalid_constraints": invalid_constraints,
         "constraint_marker_skipped": dict(sorted(constraint_marker_skipped.items())),
         "requires_python_skipped": dict(sorted(python_skipped.items())),
+        "joint_resolution": resolver.diagnostics(),
+        "missing_transitive_distributions": dict(sorted(resolver.missing.items())),
     }
     return selected, diagnostics
 
@@ -483,6 +933,12 @@ def install(
                     "returncode": result.returncode,
                     "stdout": (result.stdout or "")[-4000:],
                     "stderr": (result.stderr or "")[-4000:],
+                    # The wrapper prints this exception instead of the returned
+                    # diagnostics when pip fails, so keep the joint and missing
+                    # wheel evidence on the failure path too.
+                    "missing_transitive_distributions":
+                        diagnostics.get("missing_transitive_distributions", {}),
+                    "joint_resolution": diagnostics.get("joint_resolution", {}),
                 }, ensure_ascii=False)
             )
     import importlib.metadata

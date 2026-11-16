@@ -157,29 +157,102 @@ agent_pytest_collection_failure / agent_pytest_import_failure
 
 环境：2×A800 80GB；vLLM 0.32.0，TP=2、`max-model-len 32768`、LoRA rank 128、2 slot、sleep level 2、prefix cache。新配置 `configs/spo_gpu_short_60m.toml`（`max_batches=1`、`target_action_tokens=16384`、`walltime_seconds=2400`、`update_reserve_seconds=840`，其余与主配置一致），新 run `spo-short-20261116`，从 v0 开始，直接读官方公开题。代码内容为 `7783b44e`。
 
-时间线（服务器时间）：13:47:28 首次启动 vLLM，因 venv 的 `ninja` 不在 PATH 于 13:54:09 失败；13:55:08 修正 PATH 后重启，13:59:23 就绪。14:00:18 启动训练；14:08:31 预留 `upd-0000`；14:33:13 才进入训练租约；14:47:29 被外部 60 分钟截止（`timeout --signal=TERM 2850`，exit 124）终止，当时仍在优化步内。
+时间线（服务器时间，按 `metrics.jsonl` 的 `unix` 差）：13:47:28 首次启动 vLLM，因 venv 的 `ninja` 不在 PATH 于 13:54:09 失败；13:55:08 修正 PATH 后重启，13:59:23 就绪。14:00:18 启动训练；14:08:10 预留 `upd-0000`（`version_barrier_hold`，t+493）；**14:32:53 才进入训练租约**（`spo_training_memory_started`，t+1975），`spo_transaction_persisted` 在 14:33:21；14:47:29 被外部 60 分钟截止（`timeout --signal=TERM 2850`，exit 124）终止，训练租约内约 **876 秒**。
 
 轨迹与奖励（17 条）：
 
-- 状态：3 `RESERVED` + 3 `BUFFERED` + 11 `EXCLUDED`；有效（eligible）6 条，无效 11 条，collection failure 0 条。
-- 信号：`P>0` 1 条（`requests_7205`，P=1.0、G=0.0、total 0.9926，shadow repair measured 1/14，`positive_repair_signal=true`）；`P=0` 5 条；`P` 缺失 11 条。另有 `requests_7315` 最终成功（P=0、total 0.7548），仍停在 `BUFFERED`，未进入该批。
-- 第三条成功轨迹被 baseline 丢掉：`rich_3480` 的候选验证完整且 `success=True`、`test_exit_code=0`，但空补丁 baseline 不可用，按规则 `eligible=0`、奖励为空。即 17 条中有 3 条模型成功（2 条可训练），这条只差 baseline 证据。
+- 状态：3 `RESERVED` + 3 `BUFFERED` + 11 `EXCLUDED`；有效（eligible）6 条，无效 11 条，collection failure（eligible 且 validity=0）0 条。
+- 信号：`P>0` 1 条（`requests_7205`，P=1.0、total 0.9926，shadow repair measured **1/14**，`positive_repair_signal=true`）；`P=0` 5 条；`P` 缺失 11 条。
+- `requests_7205` 的正式 `G=0` **不是“无回归”**：该任务 `expected_universes.regression=0`，分母为零、不可适用；`shadow_regression` 也因 `candidate_missing_baseline_passed_nodes`（204/205 匹配、candidate_only 1）为 `unavailable`。因此只能声明“修复”，不能声明“没有回归”。
+- 三条候选通过要分开看（3/17 是候选通过比例，不是修复率）：
+
+| 任务 | 原始对照 | 可得出的结论 |
+| --- | --- | --- |
+| `requests_7205` | 基线 1 个失败节点，候选转为通过 | 明确新增修复（P=1.0，shadow repair 1/14） |
+| `requests_7315` | 空补丁本来就通过（`baseline_nonpassed_nodes=0`） | 保持通过，没有新增修复证据 |
+| `rich_3480` | 候选通过（`success=True`、`test_exit_code=0`，109 个用例 0.33 秒）；空补丁在原始代码上因任务自身的无限循环耗尽 2 GiB cgroup 被 OOM（原批次为 300 秒包装超时）、无 JUnit | 候选验收成功，修复增量未知；空补丁不可执行，按规则不计奖励 |
+
 - 门控：`upd-0000` 以 19,093 action tokens 预留，成员 advantage 为 `requests_7205 +1.6157`、`rich_4076 -0.6189`、`rich_4070 -0.6189`。这是首个带真实正修复信号的 GPU 批次，门控没有把 0.15 的总奖励当成无信号。
-- 更新：训练确实启动（learner 载入、vLLM sleep、`spo_training_memory_started`），但 876 秒后被杀；无 `spo_trainer_state.pt`、无 EXPORTED/REGISTERED/ACTIVATED、registry `active_version=0`。即本轮没有更新成功保存或发布 adapter。
+- 更新：训练确实启动（learner 载入、vLLM sleep），但租约内 876 秒后被杀；无 `spo_trainer_state.pt`、无 EXPORTED/REGISTERED/ACTIVATED、registry `active_version=0`。即本轮没有更新成功保存或发布 adapter。
 
-失败分类（11 条无效）：
+失败分类（11 条无效，不能统一算作环境故障）：
 
-- 6 条沙箱依赖安装失败：5 道 fastapi（`typer==0.16.0` 与 `fastapi-cli 0.0.34` 要求 `typer>=0.26.1` 冲突）、1 道 requests（`pytest==6.2.5` 需要 `py>=1.8.2`，wheelhouse 无该 wheel）。链路为 `ContainerSetupError` → agent 未产生 model call → `trajectory_seal_RequestUnavailable` → 奖励路径 `task_key` 异常覆盖了真实原因。
-- 3 条 baseline 不可用（`fastapi_15023`、`requests_7433`、`rich_3480`）；其中 `rich_3480` 的候选本身通过，属于被 baseline 失败丢弃的真实成功。
-- 2 条候选验证不完整（`rich_3472`、`fastapi_15745`）。
+- 6 条沙箱依赖安装失败（明确证据）：5 道 fastapi（`typer==0.16.0` 与 `fastapi-cli 0.0.34` 要求 `typer>=0.26.1` 冲突）、1 道 requests（`pytest==6.2.5` 需要 `py>=1.8.2`，wheelhouse 无该 wheel）。链路为 `ContainerSetupError` → agent 未产生 model call → `trajectory_seal_RequestUnavailable` → 奖励路径 `task_key` 异常覆盖了真实原因。
+- 2 条候选验证不完整：`rich_3472` 的 pytest 退出码 2、无可归因 verdict；`fastapi_15745` agent 超过 8 分钟会话上限后 pytest 退出码 2。属于测试/收集错误与会话超时，不是依赖安装问题。
+- 3 条 baseline 不可用：`fastapi_15023`、`requests_7433` 的候选测试已完成（exit 1），但空补丁 baseline 报告不完整；`rich_3480` 在 **同身份 `f242e208…`、单独无并行负载**下重跑空补丁，pytest 打印 108/109 个通过点后约 **29.7 秒被 SIGKILL（exit -9）**、无 JUnit。根因已查明：任务自带的 `test_append_loop_regression` 在原始代码上触发 `text._spans.extend(...)` 自引用无限循环，持续分配内存直至 2 GiB cgroup OOM；原批次那次是 300 秒包装超时（exit 124）。两种死法都说明**空补丁在这道题的原始代码上不可执行**，不是暂态超时。因此“统一增加 baseline 重试”没有充分依据；应按稳定测试错误/不可执行与暂态超时分类，再决定是否重试。
 
-本轮同时修复了一个归因缺陷：官方 worker 在验证前失败时结果不含 `task_key`，`training/rollout/engine.py` 的 `_bundle` 直接 `JudgeTaskKey.from_dict(None)` 抛 `TypeError`，把基础设施失败记成奖励错误；现改为缺字段时回退比对 `task_id`，字段存在时仍做严格 TaskKey 相等校验。
+本轮同时修复了一个归因缺陷：官方 worker 在验证前失败时结果不含 `task_key`，`training/rollout/engine.py` 的 `_bundle` 直接 `JudgeTaskKey.from_dict(None)` 抛 `TypeError`，把基础设施失败记成奖励错误。修复后的回退只允许验证前失败记录缺 `task_key`；完整可训练报告仍必须携带完整身份（见第 7 节）。
 
-资源与耗时：rollout 阶段显存峰值 76,811/76,767 MiB（94%），训练阶段峰值 62,483/65,923 MiB；预留到训练开始之间排空 1,482 秒（24.7 分钟），是长尾 rollout 与一次 `rich_3480` 空补丁 probe 造成的。上一轮 35,964 token 的更新实测 forward 431 秒 + backward 1,243 秒，本轮 19,093 token 在 876 秒内未完成，和该量级一致。
+资源与耗时：rollout 阶段显存峰值 76,811/76,767 MiB（94%），训练阶段峰值 62,483/65,923 MiB。预留到训练开始之间等待 **1,482 秒（24.7 分钟）**，包含长尾 rollout、重试、验收和最后一次约 5 分钟的 baseline probe；训练前等待（`run_spo.py` 的 `wait_for_workers()`）当时**没有超时约束**，现有 600 秒 barrier 限制不覆盖它。上一轮 35,964 token 的更新实测 forward 431 秒 + backward 1,243 秒，本轮 19,093 token 在 876 秒内未完成，和该量级一致。
 
 结论与边界：
 
-- 学习信号存在但不是普遍现象：6 条有效轨迹中 1 条 `P>0`、1 条最终成功；`P=0` 的 4 条总奖励仍为 0.15。加上被 baseline 丢弃的 `rich_3480`，17 条里共有 3 条模型成功（17.6%）。不能把单条正修复称为泛化收益。
-- 60 分钟预算下，排空 24.7 分钟 + 更新约 15 分钟使“采样—更新—保存”无法同时完成；下一轮应先修依赖选择、压缩排空（预留前先让在途轨迹收敛或限制 drain），再给更新留足时间，而不是扩大训练。
-- `budget.json` 的 `consumed_seconds` 在 SIGTERM 后仍为 0，因为持久化只在正常收尾执行；续跑不能据此重新授予整份额度，需先修周期持久化或显式扣除。
-- 证据：`results/gpu-short-20261116/summary.json`（逐轨迹 P/G/validity、audit、updates、buffer、adapter、耗时与显存），原始 run 目录在服务器 `/root/autodl-tmp/gemma4/runs/spo-short-20261116`。
+- 学习信号存在但不是普遍现象：6 条有效轨迹中 1 条明确修复、1 条保持通过；`P=0` 的 4 条总奖励仍为 0.15。不能把单条正修复称为泛化收益。
+- 60 分钟预算下，24.7 分钟等待 + 未完成的更新使“采样—更新—保存”无法同时完成。更新应按上一轮实测的约 29 分钟加保存余量规划，而不是只留 15 分钟。
+- `budget.json` 的 `consumed_seconds` 在 SIGTERM 后仍为 0，因为持久化只在正常收尾执行；续跑不能据此重新授予整份额度。
+- 证据：`results/gpu-short-20261116/summary.json`（逐轨迹 P/G/validity、audit、updates、buffer、adapter、耗时与显存）和 `rich3480-probe/`（同身份空补丁重跑结果），原始 run 目录在服务器 `/root/autodl-tmp/gemma4/runs/spo-short-20261116`。
+
+## 7. 2026-11-16 无卡修链与下次 GPU 顺序
+
+### 7.1 依赖联合选择
+
+`training/task_dependency_setup.py` 在原有“逐包选最高版本”之后增加联合兼容 pass：读取已选 wheel 的 `Requires-Dist`，只允许在仓库 specifier 内调整被依赖包的版本，或降级/丢弃依赖方；每次动作写入 `joint_resolution`，无法由离线 wheel 满足的传递依赖写入 `missing_transitive_distributions`。仓库约束始终优先，不会为了消除冲突而放宽官方 pin。
+
+真实任务验证（沙箱解释器 Python 3.13，真实快照与 wheelhouse）：
+
+- `fastapi_14512`：原选择 `fastapi-cli 0.0.34 + typer 0.16.0` 冲突；把 `fastapi-cli 0.0.32`（要求 `typer>=0.16.0`）放入 staging 后，联合选择为 `fastapi-cli[standard-no-fastapi-cloud-cli]==0.0.32` + `typer==0.16.0`，无 residual/missing；`pip install --dry-run --no-index` 在 Python 3.13 下通过。
+- `requests_6589`：`pytest==6.2.5` 需要 `py>=1.8.2` 与 `toml`；两者都不在原 wheelhouse。放入 staging 的 `py-1.11.0`、`toml-0.10.2` 后，dry-run 通过（Would install attrs/py/pytest 6.2.5/toml）。
+- staging 目录：`/root/autodl-tmp/gemma4/wheels-staging-20261116`（`py-1.11.0`、`toml-0.10.2`、`fastapi_cli-0.0.32`）。**尚未并入 `wheels-extra`**，因为 extra_wheels 清单进入 judge 身份；并入会改变新 run 的环境身份。
+
+`fastapi-cli` 0.0.33 起要求 `typer>=0.26.1`，0.0.32 是与 `typer==0.16.0` 兼容的最高版本；`rich-toolkit 0.20.6`、`rich 15.0.0` 已在 wheelhouse。若某题仍无法兼容，联合 pass 会记录丢弃原因而不是静默安装冲突组合。
+
+### 7.2 身份回退收紧
+
+`training/rollout/engine.py` 的 `task_key` 回退现在只允许**验证前失败**的记录：完整 verdict（`verification_complete=True`、`verdict_valid=True`、无 `infrastructure_error`、`success` 为 bool）缺 TaskKey 直接失败；`candidate_report`/`baseline_report`/`baseline` 缺 TaskKey 一律失败。一次性核对覆盖 6 种情况（完整缺键、完整缺键+匹配 id、报告缺键、验证前失败+匹配 id、验证前失败+错误 id、匹配/不匹配 TaskKey），并确认生产者（`official_runtime.py` 的 `spo_bundle` 与空补丁 probe）都带 TaskKey。
+
+### 7.3 预算与排空控制
+
+- 新增 `[run] update_min_seconds`（默认 1800，两个配置均显式写入）。`_drain_update_window()` 只允许在 `deadline - now - update_min_seconds` 内等待在途 worker；超时则把批次留在 `RESERVED`、发 `spo_update_deferred`、不启动优化步。`do_update`、resume 的 `resume_post_step`/`resume_reserved`/`resume_learning` 和 final 更新都走同一约束；resume 路径预算不足时明确报错，提示用 `--additional-walltime-seconds` 续跑。
+- `budget.json` 改为每 30 秒心跳持久化，并在 SIGTERM 处理器中先写盘；优化步进行中（`in_update`）只记录停止请求、不打断耐久事务，空闲时抛 `KeyboardInterrupt` 正常收尾。一次性核对：SIGTERM 在 +1200 秒时记录 `consumed≈1200`，resume 读到同一剩余量；缺失/损坏记录仍拒绝。
+- 正常路径语义不变：等待在预算内、批次正常 settle 时仍照常训练。
+
+### 7.4 rich_3480 空补丁的根因
+
+同身份 `f242e208…`、单独无并行负载重跑已确认：任务自带的 `tests/test_text.py::test_append_loop_regression` 在原始代码上触发 `rich/text.py` 的 `self._spans.extend(...)` 自引用无限循环，持续分配直至 2 GiB cgroup OOM（exit -9，29.7 秒，108/109 通过，无 JUnit）；原批次那次是 300 秒包装超时（exit 124）。候选补丁把 `_spans` 复制后 109 个用例 0.33 秒全过。结论：**空补丁在该题原始代码上不可执行**，这是任务性质，不是暂态超时；不做统一 baseline 重试，也不为此改代码（提高内存只会延长循环）。
+
+### 7.5 下一次 GPU 的顺序
+
+1. 先用**原身份**完成冻结批次：保持服务器上的旧 `task_dependency_setup.py` 与旧 `extra_wheels` 不变，`--resume` 运行 `spo-short-20261116`。已用真实账本验证 `recovery_discard_reason(upd-0000, checkpoint=None, tx, require_positive_signal=True) == None`，即会从 v0 重做整步而不是丢弃。预算需显式处理：旧 `budget.json` 的 `consumed=0` 是 SIGTERM 遗留，续跑前写入实测的 2851 秒；此时原 allowance 2400 已不足，需再用 `--additional-walltime-seconds 3000` 之类显式追加（allowance 5400、remaining 2549，覆盖约 29 分钟更新加保存余量）。
+2. 旧批次保存/发布后，再同步新 helper，并把 `py`、`toml`、`fastapi-cli 0.0.32` 并入 `extra_wheels`。这会产生新的 judge 身份，旧 run 的 3 条 `BUFFERED` 轨迹不能混入新环境。
+3. 新身份下做同口径 v0/v1 对照（同一批题、同一验收身份），有稳定更新与修复改善证据后再扩大训练。
+
+续跑命令（旧身份，未执行）：
+
+```bash
+# 先把 SIGTERM 遗留的预算改成实测值（示例：consumed=2851）
+python - <<'PY'
+import json, pathlib, time
+p = pathlib.Path("/root/autodl-tmp/gemma4/runs/spo-short-20261116/budget.json")
+d = json.loads(p.read_text())
+d.update({"consumed_seconds": 2851.0, "remaining_seconds": max(0.0, d["allowance_seconds"] - 2851.0),
+          "updated_unix": time.time()})
+p.write_text(json.dumps(d) + "\n")
+PY
+
+cd /root/gemma4/project
+export CUDA_VISIBLE_DEVICES=0,1 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+       TMPDIR=/root/autodl-tmp/gemma4/tmp
+/root/gemma4/envs/learner/bin/python -m training.run_spo \
+  --config configs/spo_gpu_short_60m.toml \
+  --data-root /root/gemma4/official/competition \
+  --model-path /autodl-fs/data \
+  --run-dir /root/autodl-tmp/gemma4/runs/spo-short-20261116 \
+  --backend-url http://127.0.0.1:8000 \
+  --resume --additional-walltime-seconds 3000
+```
+
+`--additional-walltime-seconds 3000` 只是示例：allowance 变为 5400 秒、扣除 2851 秒后 remaining 2549 秒，覆盖约 29 分钟更新加保存；实际额度由用户授权决定。续跑前 vLLM 必须已按主配置部署并处于 v0（run 的 genesis adapter 会重新载入）。
+
+### 7.6 边界
+
+以上均为 CPU 侧代码与选择验证，尚未在 GPU 上重跑，也没有新的能力提升结论。依赖修复的有效性目前只到“选择与 pip dry-run 通过”，真实沙箱安装与验收仍需下一次 GPU 会话确认。

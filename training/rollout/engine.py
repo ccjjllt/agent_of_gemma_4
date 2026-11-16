@@ -165,16 +165,21 @@ class RolloutEngine:
         label: str,
         *,
         fallback_task_id: object = None,
+        fallback_allowed: bool = False,
     ) -> None:
-        """Reject mismatched verdicts without masking setup failures.
+        """Require the exact TaskKey on every trainable verdict or report.
 
-        The official worker omits ``task_key`` on results that fail before a
-        verdict exists (for example a sandbox dependency-setup error). Treating
-        the missing field as a TypeError replaced the real infrastructure
-        failure with a bogus reward error; compare the ``task_id`` fallback in
-        that case and keep the strict TaskKey equality whenever it is present.
+        A missing ``task_key`` is accepted only for a record that failed before
+        a verdict -- no ``candidate_report``, ``verification_complete`` not True,
+        ``verdict_valid`` not True, an ``infrastructure_error``, or ``success``
+        absent -- and only when ``fallback_allowed`` says so; a present
+        ``task_id`` must then still match the dispatched task.  A complete
+        verdict and every candidate/baseline report must carry the exact
+        TaskKey: no ``task_id`` fallback applies to them.
         """
         if value is None:
+            if not fallback_allowed:
+                raise ValueError(f"{label} TaskKey missing; the dispatched task/judge identity is required")
             if fallback_task_id is not None and fallback_task_id != expected.task_id:
                 raise ValueError(f"{label} task_id differs from the dispatched task/judge identity")
             return
@@ -190,9 +195,19 @@ class RolloutEngine:
         seal_error: str | None,
     ) -> dict[str, Any]:
         expected_key = JudgeTaskKey.from_dict(trajectory.task_key.to_dict())
+        # Only a record without a complete verdict may fall back to task_id.  A
+        # complete verdict (including a complete patch rejection) always names
+        # its task, so a missing key there stays a hard error.
+        complete_verdict = (
+            raw.get("verification_complete") is True
+            and raw.get("verdict_valid") is True
+            and raw.get("infrastructure_error") is None
+            and type(raw.get("success")) is bool
+        )
         self._assert_task_identity(
             expected_key, raw.get("task_key"), "candidate verdict",
             fallback_task_id=raw.get("task_id"),
+            fallback_allowed=not complete_verdict,
         )
         for name in ("candidate_report", "baseline_report", "baseline"):
             report = extra.get(name)

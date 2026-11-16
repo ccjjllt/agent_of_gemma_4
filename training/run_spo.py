@@ -30,12 +30,13 @@ import hashlib
 import json
 import math
 import os
+import signal
 import sys
 import threading
 import time
 import tomllib
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from .rollout.backend import SGLangBackend
 from .rollout.vllm_backend import VLLMBackend
@@ -450,6 +451,99 @@ def _emit(metrics_path: Path, event: str, **fields: object) -> None:
         handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
 
 
+def _read_budget(path: Path, allowance_seconds: float, *, resume: bool) -> dict[str, float]:
+    """Read the durable budget; a resume never re-grants a fresh allowance."""
+    default = {"allowance_seconds": allowance_seconds, "consumed_seconds": 0.0}
+    try:
+        raw = path.read_text()
+    except FileNotFoundError as exc:
+        if resume:
+            raise RuntimeError(
+                "resume requires the persisted budget record; refusing to "
+                "re-grant a fresh allowance") from exc
+        return default
+    except OSError as exc:
+        raise RuntimeError(f"budget record unreadable, refusing to run blind: {exc}") from exc
+    try:
+        document = json.loads(raw)
+        allowance = float(document["allowance_seconds"])
+        consumed = float(document.get("consumed_seconds", 0.0))
+        if (not math.isfinite(allowance) or allowance < 0
+                or not math.isfinite(consumed) or consumed < 0):
+            raise ValueError("invalid budget record")
+        return {"allowance_seconds": allowance, "consumed_seconds": consumed}
+    except (ValueError, KeyError, TypeError) as exc:
+        if resume:
+            raise RuntimeError(
+                "budget record is corrupt; refusing to reset consumed GPU "
+                "time (restore budget.json manually)") from exc
+        return default
+
+
+def _write_budget(path: Path, allowance_seconds: float, consumed_seconds: float) -> None:
+    """Atomically checkpoint wall-clock consumption.
+
+    The heartbeat, the signal handler and the main path can overlap. A unique
+    temporary name per call keeps each writer's bytes private; os.replace makes
+    the visible record always one complete JSON document.
+    """
+    record = {"allowance_seconds": allowance_seconds,
+              "consumed_seconds": max(0.0, float(consumed_seconds)),
+              "remaining_seconds": max(0.0, allowance_seconds - float(consumed_seconds)),
+              "updated_unix": time.time()}
+    temporary = path.with_name(f"{path.name}.tmp-{os.getpid()}-{time.monotonic_ns()}")
+    temporary.write_text(json.dumps(record) + "\n")
+    os.replace(temporary, path)
+
+
+def _drain_update_window(wait_for_workers: Callable[[float], int], metrics_path: Path, *,
+                         update_id: str, phase: str, deadline: float,
+                         update_min_seconds: float) -> bool:
+    """Drain in-flight trajectories without spending the step's budget.
+
+    True only when every worker settled before deadline - update_min_seconds.
+    Otherwise the update is emitted as deferred and the caller must leave it
+    RESERVED: an optimizer step started now would be killed mid-transaction by
+    the external walltime cap (the 2026-11-16 failure).
+    """
+    remaining = max(0.0, deadline - time.monotonic())
+    timeout = max(0.0, remaining - update_min_seconds)
+    started = time.monotonic()
+    pending = int(wait_for_workers(timeout))
+    waited = time.monotonic() - started
+    left = max(0.0, deadline - time.monotonic())
+    # Settling early is not enough: a step still needs update_min_seconds of
+    # walltime after the drain, whether or not anything was in flight.
+    if pending <= 0 and left >= update_min_seconds:
+        return True
+    _emit(metrics_path, "spo_update_deferred", update_id=update_id, phase=phase,
+          waited_seconds=round(waited, 3),
+          remaining_seconds=round(left, 3),
+          pending_workers=pending,
+          update_min_seconds=round(update_min_seconds, 3))
+    return False
+
+
+def _make_sigterm_handler(persist: Callable[[], object],
+                          stop_state: dict[str, bool]) -> Callable[[int, object], None]:
+    """Persist the budget immediately, then unwind only at a safe boundary."""
+    def handler(signum: int, frame: object) -> None:
+        already_requested = stop_state["requested"]
+        stop_state["requested"] = True
+        try:
+            persist()
+        except (OSError, RuntimeError, ValueError):
+            # At minimum the periodic heartbeat has the last realistic value.
+            pass
+        if stop_state.get("in_update") or already_requested:
+            # A durable trainer transaction is mid-step (or cleanup is already
+            # unwinding): let it finish and observe the request at a boundary.
+            return
+        raise KeyboardInterrupt(f"received signal {signum}")
+
+    return handler
+
+
 @contextmanager
 def _training_cuda_memory(torch: Any, metrics_path: Path, update_id: str):
     """Measure the learner allocator from model load through adapter export."""
@@ -536,6 +630,15 @@ def run_spo(args: argparse.Namespace) -> int:
     reserve = float(run.get("update_reserve_seconds", 900))
     if not walltime > reserve > 0:
         raise ValueError("walltime must exceed the positive update reserve")
+    # [run] update_min_seconds (default 1800): walltime that must remain after
+    # the pre-update drain before a step may start. 1800 s is the conservative
+    # 2xA800 31B update budget (learner load + one SPO step + export/commit).
+    # update_reserve_seconds still only decides when new rollouts stop; this is
+    # an additional admission bound, not a replacement for it. A smaller value
+    # starts steps that the external 60-minute cap can kill mid-transaction.
+    update_min = float(run.get("update_min_seconds", 1800))
+    if not math.isfinite(update_min) or update_min < 0:
+        raise ValueError("run.update_min_seconds must be a finite non-negative number")
     max_batches = int(args.max_batches or run.get("max_batches", 32))
     max_workers = int(run.get("max_cpu_workers", 8))
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -543,39 +646,10 @@ def run_spo(args: argparse.Namespace) -> int:
     budget_path = run_dir / "budget.json"
 
     def read_budget() -> dict[str, float]:
-        default = {"allowance_seconds": walltime, "consumed_seconds": 0.0}
-        try:
-            raw = budget_path.read_text()
-        except FileNotFoundError as exc:
-            if args.resume:
-                raise RuntimeError(
-                    "resume requires the persisted budget record; refusing to "
-                    "re-grant a fresh allowance") from exc
-            return default
-        except OSError as exc:
-            raise RuntimeError(f"budget record unreadable, refusing to run blind: {exc}") from exc
-        try:
-            document = json.loads(raw)
-            allowance = float(document["allowance_seconds"])
-            consumed = float(document.get("consumed_seconds", 0.0))
-            if (not math.isfinite(allowance) or allowance < 0
-                    or not math.isfinite(consumed) or consumed < 0):
-                raise ValueError("invalid budget record")
-            return {"allowance_seconds": allowance, "consumed_seconds": consumed}
-        except (ValueError, KeyError, TypeError) as exc:
-            if args.resume:
-                raise RuntimeError(
-                    "budget record is corrupt; refusing to reset consumed GPU "
-                    "time (restore budget.json manually)") from exc
-            return default
+        return _read_budget(budget_path, walltime, resume=bool(args.resume))
 
-    def persist_budget(consumed: float) -> None:
-        record = {"allowance_seconds": allowance, "consumed_seconds": max(0.0, float(consumed)),
-                  "remaining_seconds": max(0.0, allowance - float(consumed)),
-                  "updated_unix": time.time()}
-        temporary = budget_path.with_name(budget_path.name + f".tmp-{os.getpid()}")
-        temporary.write_text(json.dumps(record) + "\n")
-        os.replace(temporary, budget_path)
+    def persist_budget(consumed_seconds: float) -> None:
+        _write_budget(budget_path, allowance, consumed_seconds)
 
     # Resume never renews the allowance: only explicit additional seconds
     # extend the persisted remainder. On resume a missing/corrupt record is a
@@ -588,6 +662,30 @@ def run_spo(args: argparse.Namespace) -> int:
     # backend handshake and trainer construction: the clock starts here, not
     # at the first rollout.
     start = time.monotonic()
+    stop_state: dict[str, bool] = {"requested": False, "in_update": False}
+    budget_stop = threading.Event()
+
+    def persist_consumed(now: float | None = None) -> float:
+        """Persist wall-clock consumption, not only finished optimizer steps."""
+        stamp = time.monotonic() if now is None else now
+        value = max(0.0, consumed + (stamp - start))
+        persist_budget(value)
+        return value
+
+    def budget_heartbeat() -> None:
+        # A 30 s tick keeps budget.json realistic through a long drain or a
+        # long optimizer step, where the main loop cannot reach a checkpoint.
+        while not budget_stop.wait(30.0):
+            try:
+                persist_consumed()
+            except (OSError, RuntimeError, ValueError):
+                continue
+
+    request_stop = _make_sigterm_handler(lambda: persist_consumed(), stop_state)
+    previous_sigterm = signal.signal(signal.SIGTERM, request_stop)
+    heartbeat = threading.Thread(target=budget_heartbeat, name="spo-budget-heartbeat",
+                                 daemon=True)
+    heartbeat.start()
     # P0-2a: a reused run_dir without --resume would silently serve an old
     # adapter while training a fresh LoRA. Fail closed before touching GPUs.
     _RUN_STATE_FILES = ("adapters/registry.json", "spo_stream.db",
@@ -853,29 +951,55 @@ def run_spo(args: argparse.Namespace) -> int:
         _emit(metrics_path, "spo_budget_window",
               allowance_seconds=allowance, consumed_seconds=consumed,
               init_seconds=round(time.monotonic() - start, 3))
-        persist_budget(consumed)
+        persist_consumed()
         batches = 0
         in_flight: dict[str, tuple[object, object]] = {}
         lock = threading.RLock()
 
         def wait_for_workers(timeout: float | None = None, *,
-                             return_when=concurrent.futures.ALL_COMPLETED) -> None:
+                             return_when=concurrent.futures.ALL_COMPLETED) -> int:
             with lock:
                 pending = {future for future, _ in in_flight.values()}
             until = None if timeout is None else time.monotonic() + max(0.0, timeout)
             while True:
                 endpoint.raise_if_failed()
                 if not pending:
-                    return
+                    return 0
                 remaining = None if until is None else until - time.monotonic()
                 if remaining is not None and remaining <= 0:
-                    return
+                    return len(pending)
                 done, pending = concurrent.futures.wait(
                     pending, timeout=1.0 if remaining is None else min(1.0, remaining),
                     return_when=return_when)
                 endpoint.raise_if_failed()
                 if done and return_when == concurrent.futures.FIRST_COMPLETED:
-                    return
+                    return len(pending)
+
+        @contextmanager
+        def update_transaction():
+            """Mark the durable update; SIGTERM lets it finish before stopping."""
+            stop_state["in_update"] = True
+            try:
+                yield
+            finally:
+                stop_state["in_update"] = False
+
+        deferred: dict[str, str | None] = {"update_id": None}
+
+        def bounded_drain(update_id: str, phase: str) -> bool:
+            return _drain_update_window(
+                lambda timeout: wait_for_workers(timeout=timeout), metrics_path,
+                update_id=update_id, phase=phase, deadline=deadline,
+                update_min_seconds=update_min)
+
+        def require_update_drain(update_id: str, phase: str) -> None:
+            """Resume must not start a step that cannot finish; keep it pending."""
+            if bounded_drain(update_id, phase):
+                return
+            raise RuntimeError(
+                f"insufficient remaining budget to finish pending update {update_id} "
+                f"({phase}); it stays pending for --resume with more walltime "
+                f"(update_min_seconds={update_min:g})")
 
         def settle_done(future: concurrent.futures.Future, trajectory_id: str, assignment: object) -> None:
             try:
@@ -1149,6 +1273,7 @@ def run_spo(args: argparse.Namespace) -> int:
 
         def do_update(update_id: str) -> bool:
             endpoint.raise_if_failed()
+            deferred["update_id"] = None
             manifest = double_buffer.rollout
             if manifest is None:
                 raise RuntimeError("no rollout adapter is available for update reservation")
@@ -1158,37 +1283,46 @@ def run_spo(args: argparse.Namespace) -> int:
             if batch is None:
                 return False
             with barrier.update_window():
-                wait_for_workers()
-                with lease.training():
-                    try:
-                        with _training_cuda_memory(torch, metrics_path, update_id):
-                            load_started = time.monotonic()
-                            policy.ensure_loaded()
-                            _emit(metrics_path, "spo_model_loaded", phase="update",
-                                  seconds=round(time.monotonic() - load_started, 3),
-                                  completed_optimizer_steps=trainer.completed_optimizer_steps)
-                            restore_learner_weights()
-                            stats = trainer.optimize_batch(batch)
-                            timing = dict(stats.get("timing") or {})
-                            timing["checkpoint_writer"] = checkpoint_writer.stats()
-                            _emit(metrics_path, "spo_update_timing", update_id=update_id,
-                                  timing=timing)
-                            finalize_update(update_id, batch, stats, behavior_before)
-                    finally:
-                        trainer.suspend_learner_binding()
-                        policy.release_memory()
-                # Training lease is released (vLLM resumed) before any
-                # inference-lease work: publish would deadlock inside it.
-                version = activate_and_commit(update_id, batch, stats, behavior_before)
-                _emit(metrics_path, "spo_update_activated", update_id=update_id, version=version)
-                return True
+                if stop_state["requested"]:
+                    raise KeyboardInterrupt("stop requested before optimizer step")
+                if not bounded_drain(update_id, "reserve"):
+                    # The batch stays RESERVED for a later resume; starting
+                    # AdamW now could not finish inside the external cap.
+                    deferred["update_id"] = update_id
+                    return False
+                if stop_state["requested"]:
+                    raise KeyboardInterrupt("stop requested before optimizer step")
+                with update_transaction():
+                    with lease.training():
+                        try:
+                            with _training_cuda_memory(torch, metrics_path, update_id):
+                                load_started = time.monotonic()
+                                policy.ensure_loaded()
+                                _emit(metrics_path, "spo_model_loaded", phase="update",
+                                      seconds=round(time.monotonic() - load_started, 3),
+                                      completed_optimizer_steps=trainer.completed_optimizer_steps)
+                                restore_learner_weights()
+                                stats = trainer.optimize_batch(batch)
+                                timing = dict(stats.get("timing") or {})
+                                timing["checkpoint_writer"] = checkpoint_writer.stats()
+                                _emit(metrics_path, "spo_update_timing", update_id=update_id,
+                                      timing=timing)
+                                finalize_update(update_id, batch, stats, behavior_before)
+                        finally:
+                            trainer.suspend_learner_binding()
+                            policy.release_memory()
+                    # Training lease is released (vLLM resumed) before any
+                    # inference-lease work: publish would deadlock inside it.
+                    version = activate_and_commit(update_id, batch, stats, behavior_before)
+                    _emit(metrics_path, "spo_update_activated", update_id=update_id, version=version)
+                    return True
 
         update_index = len(ledger.list_updates()) if args.resume else 0
         if args.resume:
             _emit(metrics_path, "spo_budget_resumed", allowance_seconds=allowance,
                   consumed_seconds=consumed)
         else:
-            persist_budget(consumed)
+            persist_consumed()
 
         def rebase_trainer_checkpoint(base_state: Mapping[str, Any]) -> None:
             """Durably replace a pre-step batch snapshot with the committed base.
@@ -1280,6 +1414,8 @@ def run_spo(args: argparse.Namespace) -> int:
             transaction = load_transaction_state()
             finished = 0
             for record in pending:
+                if stop_state["requested"]:
+                    raise KeyboardInterrupt("stop requested during resume")
                 update_id = record.update_id
                 transaction_for_update = transaction \
                     if transaction is not None and transaction.get("update_id") == update_id else None
@@ -1309,35 +1445,36 @@ def run_spo(args: argparse.Namespace) -> int:
                         if _active_update_id(checkpoint_state) == update_id \
                                 and active_update.get("optimizer_cursor") == 1:
                             with barrier.update_window():
-                                concurrent.futures.wait([f for f, _ in in_flight.values()])
-                                with lease.training():
-                                    load_started = time.monotonic()
-                                    policy.ensure_loaded()
-                                    _emit(metrics_path, "spo_model_loaded",
-                                          phase="resume_post_step",
-                                          seconds=round(time.monotonic() - load_started, 3))
-                                    try:
-                                        trainer.restore_training_state(
-                                            checkpoint_state,
-                                            transaction=transaction_for_update)
-                                        stats = trainer.resume_batch()
-                                        batch = ledger.get_update(update_id)
-                                        finalize_update(update_id, batch, stats,
-                                                        batch.policy_before)
-                                        stats = dict(trainer._active["stats"]) \
-                                            if trainer._active else {}
-                                    finally:
-                                        trainer.suspend_learner_binding()
-                                        policy.release_memory()
-                                batch = ledger.get_update(update_id)
-                                if batch.phase in ("EXPORTED", "REGISTERED"):
-                                    manifest = restore_training_candidate(update_id)
+                                require_update_drain(update_id, "resume_post_step")
+                                with update_transaction():
+                                    with lease.training():
+                                        load_started = time.monotonic()
+                                        policy.ensure_loaded()
+                                        _emit(metrics_path, "spo_model_loaded",
+                                              phase="resume_post_step",
+                                              seconds=round(time.monotonic() - load_started, 3))
+                                        try:
+                                            trainer.restore_training_state(
+                                                checkpoint_state,
+                                                transaction=transaction_for_update)
+                                            stats = trainer.resume_batch()
+                                            batch = ledger.get_update(update_id)
+                                            finalize_update(update_id, batch, stats,
+                                                            batch.policy_before)
+                                            stats = dict(trainer._active["stats"]) \
+                                                if trainer._active else {}
+                                        finally:
+                                            trainer.suspend_learner_binding()
+                                            policy.release_memory()
                                     batch = ledger.get_update(update_id)
-                                    persist_transaction_state(
-                                        trainer.export_transaction_state(phase=batch.phase),
-                                        adapter=manifest)
-                                activate_and_commit(update_id, batch, stats,
-                                                    batch.policy_before)
+                                    if batch.phase in ("EXPORTED", "REGISTERED"):
+                                        manifest = restore_training_candidate(update_id)
+                                        batch = ledger.get_update(update_id)
+                                        persist_transaction_state(
+                                            trainer.export_transaction_state(phase=batch.phase),
+                                            adapter=manifest)
+                                    activate_and_commit(update_id, batch, stats,
+                                                        batch.policy_before)
                             finished += 1
                             continue
                     discard_reason = recovery_discard_reason(
@@ -1362,45 +1499,46 @@ def run_spo(args: argparse.Namespace) -> int:
                     if batch.phase != "RESERVED":
                         raise RuntimeError(f"reserved update {update_id} changed phase during resume")
                     with barrier.update_window():
-                        concurrent.futures.wait([f for f, _ in in_flight.values()])
-                        with lease.training():
-                            load_started = time.monotonic()
-                            policy.ensure_loaded()
-                            _emit(metrics_path, "spo_model_loaded", phase="resume_reserved",
-                                  seconds=round(time.monotonic() - load_started, 3))
-                            try:
-                                trainer_is_fresh = (
-                                    trainer._active is None
-                                    and trainer.completed_optimizer_steps == 0
-                                    and trainer.optimizer is None)
-                                if trainer_is_fresh and checkpoint_state is not None:
-                                    checkpoint_active = _active_update_id(checkpoint_state)
-                                    if checkpoint_active in (None, update_id):
-                                        trainer.restore_base_state(checkpoint_state)
+                        require_update_drain(update_id, "resume_reserved")
+                        with update_transaction():
+                            with lease.training():
+                                load_started = time.monotonic()
+                                policy.ensure_loaded()
+                                _emit(metrics_path, "spo_model_loaded", phase="resume_reserved",
+                                      seconds=round(time.monotonic() - load_started, 3))
+                                try:
+                                    trainer_is_fresh = (
+                                        trainer._active is None
+                                        and trainer.completed_optimizer_steps == 0
+                                        and trainer.optimizer is None)
+                                    if trainer_is_fresh and checkpoint_state is not None:
+                                        checkpoint_active = _active_update_id(checkpoint_state)
+                                        if checkpoint_active in (None, update_id):
+                                            trainer.restore_base_state(checkpoint_state)
+                                        else:
+                                            try:
+                                                previous_phase = ledger.get_update(checkpoint_active).phase
+                                            except (KeyError, ValueError):
+                                                previous_phase = None
+                                            if previous_phase != "CONSUMED":
+                                                raise RuntimeError(
+                                                    f"trainer checkpoint belongs to non-consumed "
+                                                    f"update {checkpoint_active}, not pending {update_id}")
+                                            trainer.restore_base_state(checkpoint_state)
                                     else:
-                                        try:
-                                            previous_phase = ledger.get_update(checkpoint_active).phase
-                                        except (KeyError, ValueError):
-                                            previous_phase = None
-                                        if previous_phase != "CONSUMED":
-                                            raise RuntimeError(
-                                                f"trainer checkpoint belongs to non-consumed "
-                                                f"update {checkpoint_active}, not pending {update_id}")
-                                        trainer.restore_base_state(checkpoint_state)
-                                else:
-                                    restore_learner_weights()
-                                stats = trainer.optimize_batch(batch)
-                                timing = dict(stats.get("timing") or {})
-                                timing["checkpoint_writer"] = checkpoint_writer.stats()
-                                _emit(metrics_path, "spo_update_timing", update_id=update_id,
-                                      timing=timing)
-                                finalize_update(update_id, batch, stats, behavior_before)
-                            finally:
-                                trainer.suspend_learner_binding()
-                                policy.release_memory()
-                        batch = ledger.get_update(update_id)
-                        stored_stats = dict(trainer._active["stats"]) if trainer._active else {}
-                        activate_and_commit(update_id, batch, stored_stats, behavior_before)
+                                        restore_learner_weights()
+                                    stats = trainer.optimize_batch(batch)
+                                    timing = dict(stats.get("timing") or {})
+                                    timing["checkpoint_writer"] = checkpoint_writer.stats()
+                                    _emit(metrics_path, "spo_update_timing", update_id=update_id,
+                                          timing=timing)
+                                    finalize_update(update_id, batch, stats, behavior_before)
+                                finally:
+                                    trainer.suspend_learner_binding()
+                                    policy.release_memory()
+                            batch = ledger.get_update(update_id)
+                            stored_stats = dict(trainer._active["stats"]) if trainer._active else {}
+                            activate_and_commit(update_id, batch, stored_stats, behavior_before)
                     finished += 1
                     continue
                 if not trainer_state.is_file():
@@ -1447,35 +1585,36 @@ def run_spo(args: argparse.Namespace) -> int:
                           rebased_checkpoint=rebased)
                     continue
                 with barrier.update_window():
-                    concurrent.futures.wait([f for f, _ in in_flight.values()])
-                    with lease.training():
-                        policy.ensure_loaded()
-                        try:
-                            trainer.restore_training_state(
-                                state, transaction=transaction_for_update)
-                            fresh = ledger.get_update(update_id)
-                            if fresh.phase in ("LEARNING", "OPTIMIZED", "RESERVED"):
-                                stats = trainer.resume_batch()
-                                batch = ledger.get_update(update_id)
-                                finalize_update(update_id, batch, stats, batch.policy_before)
-                                stats = dict(trainer._active["stats"]) if trainer._active else {}
-                            else:
-                                # EXPORTED/REGISTERED/ACTIVATED already ran AdamW.
-                                # Spend only a KL probe if the transaction record
-                                # did not carry valid KL evidence.
-                                stats = trainer.ensure_kl_ready()
-                                batch = fresh
-                        finally:
-                            trainer.suspend_learner_binding()
-                            policy.release_memory()
-                    batch = ledger.get_update(update_id)
-                    if batch.phase in ("EXPORTED", "REGISTERED"):
-                        manifest = restore_training_candidate(update_id)
+                    require_update_drain(update_id, "resume_learning")
+                    with update_transaction():
+                        with lease.training():
+                            policy.ensure_loaded()
+                            try:
+                                trainer.restore_training_state(
+                                    state, transaction=transaction_for_update)
+                                fresh = ledger.get_update(update_id)
+                                if fresh.phase in ("LEARNING", "OPTIMIZED", "RESERVED"):
+                                    stats = trainer.resume_batch()
+                                    batch = ledger.get_update(update_id)
+                                    finalize_update(update_id, batch, stats, batch.policy_before)
+                                    stats = dict(trainer._active["stats"]) if trainer._active else {}
+                                else:
+                                    # EXPORTED/REGISTERED/ACTIVATED already ran AdamW.
+                                    # Spend only a KL probe if the transaction record
+                                    # did not carry valid KL evidence.
+                                    stats = trainer.ensure_kl_ready()
+                                    batch = fresh
+                            finally:
+                                trainer.suspend_learner_binding()
+                                policy.release_memory()
                         batch = ledger.get_update(update_id)
-                        persist_transaction_state(
-                            trainer.export_transaction_state(phase=batch.phase),
-                            adapter=manifest)
-                    activate_and_commit(update_id, batch, stats, batch.policy_before)
+                        if batch.phase in ("EXPORTED", "REGISTERED"):
+                            manifest = restore_training_candidate(update_id)
+                            batch = ledger.get_update(update_id)
+                            persist_transaction_state(
+                                trainer.export_transaction_state(phase=batch.phase),
+                                adapter=manifest)
+                        activate_and_commit(update_id, batch, stats, batch.policy_before)
                 finished += 1
             return finished
 
@@ -1568,6 +1707,8 @@ def run_spo(args: argparse.Namespace) -> int:
         _emit(metrics_path, "spo_training_phase", phase="online_spo_only",
               sft_wired=False, distillation_wired=False, opd_wired=False)
         while trainer.completed_optimizer_steps < global_total and time.monotonic() < stop_submit:
+            if stop_state["requested"]:
+                raise KeyboardInterrupt("stop requested")
             endpoint.raise_if_failed()
             with lock:
                 room = max_workers - len(in_flight)
@@ -1625,13 +1766,17 @@ def run_spo(args: argparse.Namespace) -> int:
                     if do_update(f"upd-{update_index:04d}"):
                         batches += 1
                         update_index += 1
+                    elif deferred["update_id"] is not None:
+                        break
                 except (ValueError, RuntimeError) as error:
                     endpoint.raise_if_failed()
                     _emit(metrics_path, "spo_update_failed", error=str(error))
         with exec_manager.paused():
-            wait_for_workers(timeout=max(0.05, deadline - time.monotonic()))
+            final_drained = deferred["update_id"] is None and bounded_drain(
+                f"upd-{update_index:04d}", "final")
             final_done = False
-            if trainer.completed_optimizer_steps < global_total and time.monotonic() < deadline:
+            if final_drained and trainer.completed_optimizer_steps < global_total \
+                    and time.monotonic() < deadline:
                 try:
                     rollout_now = double_buffer.rollout
                     if rollout_now is not None and do_update(f"upd-{update_index:04d}"):
@@ -1640,7 +1785,7 @@ def run_spo(args: argparse.Namespace) -> int:
                 except (ValueError, RuntimeError) as error:
                     endpoint.raise_if_failed()
                     _emit(metrics_path, "spo_update_failed", error=str(error))
-            persist_budget(consumed + (time.monotonic() - start))
+            persist_consumed()
             _emit(metrics_path, "spo_run_stopped", batches=batches, final_update=final_done,
                   completed_optimizer_steps=trainer.completed_optimizer_steps,
                   global_total_steps=global_total,
@@ -1653,6 +1798,18 @@ def run_spo(args: argparse.Namespace) -> int:
                   error_type=type(error).__name__, error=str(error))
         raise
     finally:
+        try:
+            budget_stop.set()
+            heartbeat.join(timeout=5.0)
+        except (RuntimeError, ValueError):
+            pass
+        if stop_state["requested"]:
+            try:
+                _emit(metrics_path, "spo_stop_requested",
+                      consumed_seconds=round(consumed + (time.monotonic() - start), 3),
+                      in_update=stop_state["in_update"])
+            except OSError:
+                pass
         try:
             if exec_manager is not None:
                 exec_manager.shutdown(cancel_pending=True)
@@ -1667,8 +1824,12 @@ def run_spo(args: argparse.Namespace) -> int:
             except OSError:
                 pass
         try:
-            persist_budget(consumed + (time.monotonic() - start))
+            persist_consumed()
         except (RuntimeError, OSError, ValueError):
+            pass
+        try:
+            signal.signal(signal.SIGTERM, previous_sigterm)
+        except (ValueError, OSError, RuntimeError):
             pass
         try:
             endpoint.close()
