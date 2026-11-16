@@ -158,6 +158,29 @@ class RolloutEngine:
             "positive_repair_signal": audit.get("positive_repair_signal") is True,
         }
 
+    @staticmethod
+    def _assert_task_identity(
+        expected: JudgeTaskKey,
+        value: object,
+        label: str,
+        *,
+        fallback_task_id: object = None,
+    ) -> None:
+        """Reject mismatched verdicts without masking setup failures.
+
+        The official worker omits ``task_key`` on results that fail before a
+        verdict exists (for example a sandbox dependency-setup error). Treating
+        the missing field as a TypeError replaced the real infrastructure
+        failure with a bogus reward error; compare the ``task_id`` fallback in
+        that case and keep the strict TaskKey equality whenever it is present.
+        """
+        if value is None:
+            if fallback_task_id is not None and fallback_task_id != expected.task_id:
+                raise ValueError(f"{label} task_id differs from the dispatched task/judge identity")
+            return
+        if JudgeTaskKey.from_dict(value) != expected:
+            raise ValueError(f"{label} TaskKey differs from the dispatched task/judge identity")
+
     def _bundle(
         self,
         trajectory: Trajectory,
@@ -167,12 +190,14 @@ class RolloutEngine:
         seal_error: str | None,
     ) -> dict[str, Any]:
         expected_key = JudgeTaskKey.from_dict(trajectory.task_key.to_dict())
-        if JudgeTaskKey.from_dict(raw.get("task_key")) != expected_key:
-            raise ValueError("candidate verdict TaskKey differs from the dispatched task/judge identity")
+        self._assert_task_identity(
+            expected_key, raw.get("task_key"), "candidate verdict",
+            fallback_task_id=raw.get("task_id"),
+        )
         for name in ("candidate_report", "baseline_report", "baseline"):
             report = extra.get(name)
-            if isinstance(report, Mapping) and JudgeTaskKey.from_dict(report.get("task_key")) != expected_key:
-                raise ValueError(f"{name} TaskKey differs from the dispatched task/judge identity")
+            if isinstance(report, Mapping):
+                self._assert_task_identity(expected_key, report.get("task_key"), name)
             if name != "candidate_report" and isinstance(report, Mapping) and report.get("baseline_kind") != "empty_patch":
                 raise ValueError("Training baseline must be a judge-side empty-patch result")
         candidate = _mapping(extra.get("candidate_report"))

@@ -142,9 +142,9 @@ agent_pytest_collection_failure / agent_pytest_import_failure
 - 10 份历史候选的 0.15→0.10 是 verdict 级复算；其中 3 份真实补丁已在同一奖励复核身份 `f242e208…` 下重跑，其余 7 份未在本次重跑。
 - 本轮仍没有正修复候选；下一步仍是短 GPU 采样，寻找真实局部修复或最终成功，再谈扩大训练。`require_positive_signal` 已把“无信号不优化”从文档计划变成代码路径。
 
-## 5. 下一步短 GPU 采样（本轮未执行）
+## 5. 短 GPU 采样方案（2026-11-16 已按此执行，结果见第 6 节）
 
-当前实例为无卡模式，`nvidia-smi -L` 无设备；短 GPU 采样需要用户切回 GPU 模式并另行授权预算。建议的首轮条件：
+首轮条件：
 
 - 代码：`7783b44e`（依赖约束、shadow audit、正信号门控修正、恢复路径保留已训练状态）；新 run 目录，沿用同一 v0 和同一公开题集。
 - 预算：单次 45–60 分钟，`max_batches=1`，`target_action_tokens=16384`，其余 Rank 128、奖励权重、8 分钟/28 工具调用不变；不再用“缩小 token 阈值制造梯度”。
@@ -152,3 +152,32 @@ agent_pytest_collection_failure / agent_pytest_import_failure
 - 门控实现：`TrajectoryBuffer`/`TrajectoryLedger.reserve_update(require_positive_signal=True)` 在冻结 advantage 前检查 `reward_audit` 的 `positive_repair_signal`，该字段不是 true（缺失或 false）时回退读取 `RewardRecord.P>0`；`max_batches=1` 不再足以单独触发更新。旧 run 没有 audit 时 shadow 证据不可补算，只能按 `RewardRecord.P` 判定：`P>0` 仍是正信号，`P=0` 按无信号处理（不是断言 shadow 一定为 0），不静默放行。
 - 失败条件：collection failure 仍可训练但为 0.10；基础设施失败、验证不完整、baseline 不可用继续排除，不补零。
 - 产出：轨迹数、有效轨迹数、P/shadow 分布、collection failure 数、耗时和显存；不把训练题成绩称独立泛化。
+
+## 6. 2026-11-16 短 GPU 采样实测（60 分钟，exit 124）
+
+环境：2×A800 80GB；vLLM 0.32.0，TP=2、`max-model-len 32768`、LoRA rank 128、2 slot、sleep level 2、prefix cache。新配置 `configs/spo_gpu_short_60m.toml`（`max_batches=1`、`target_action_tokens=16384`、`walltime_seconds=2400`、`update_reserve_seconds=840`，其余与主配置一致），新 run `spo-short-20261116`，从 v0 开始，直接读官方公开题。代码内容为 `7783b44e`。
+
+时间线（服务器时间）：13:47:28 首次启动 vLLM，因 venv 的 `ninja` 不在 PATH 于 13:54:09 失败；13:55:08 修正 PATH 后重启，13:59:23 就绪。14:00:18 启动训练；14:08:31 预留 `upd-0000`；14:33:13 才进入训练租约；14:47:29 被外部 60 分钟截止（`timeout --signal=TERM 2850`，exit 124）终止，当时仍在优化步内。
+
+轨迹与奖励（17 条）：
+
+- 状态：3 `RESERVED` + 3 `BUFFERED` + 11 `EXCLUDED`；有效（eligible）6 条，无效 11 条，collection failure 0 条。
+- 信号：`P>0` 1 条（`requests_7205`，P=1.0、G=0.0、total 0.9926，shadow repair measured 1/14，`positive_repair_signal=true`）；`P=0` 5 条；`P` 缺失 11 条。另有 `requests_7315` 最终成功（P=0、total 0.7548），仍停在 `BUFFERED`，未进入该批。
+- 门控：`upd-0000` 以 19,093 action tokens 预留，成员 advantage 为 `requests_7205 +1.6157`、`rich_4076 -0.6189`、`rich_4070 -0.6189`。这是首个带真实正修复信号的 GPU 批次，门控没有把 0.15 的总奖励当成无信号。
+- 更新：训练确实启动（learner 载入、vLLM sleep、`spo_training_memory_started`），但 876 秒后被杀；无 `spo_trainer_state.pt`、无 EXPORTED/REGISTERED/ACTIVATED、registry `active_version=0`。即本轮没有更新成功保存或发布 adapter。
+
+失败分类（11 条无效）：
+
+- 6 条沙箱依赖安装失败：5 道 fastapi（`typer==0.16.0` 与 `fastapi-cli 0.0.34` 要求 `typer>=0.26.1` 冲突）、1 道 requests（`pytest==6.2.5` 需要 `py>=1.8.2`，wheelhouse 无该 wheel）。链路为 `ContainerSetupError` → agent 未产生 model call → `trajectory_seal_RequestUnavailable` → 奖励路径 `task_key` 异常覆盖了真实原因。
+- 3 条 baseline 不可用（`fastapi_15023`、`requests_7433`、`rich_3480`）。
+- 2 条候选验证不完整（`rich_3472`、`fastapi_15745`）。
+
+本轮同时修复了一个归因缺陷：官方 worker 在验证前失败时结果不含 `task_key`，`training/rollout/engine.py` 的 `_bundle` 直接 `JudgeTaskKey.from_dict(None)` 抛 `TypeError`，把基础设施失败记成奖励错误；现改为缺字段时回退比对 `task_id`，字段存在时仍做严格 TaskKey 相等校验。
+
+资源与耗时：rollout 阶段显存峰值 76,811/76,767 MiB（94%），训练阶段峰值 62,483/65,923 MiB；预留到训练开始之间排空 1,482 秒（24.7 分钟），是长尾 rollout 与一次 `rich_3480` 空补丁 probe 造成的。上一轮 35,964 token 的更新实测 forward 431 秒 + backward 1,243 秒，本轮 19,093 token 在 876 秒内未完成，和该量级一致。
+
+结论与边界：
+
+- 学习信号存在但不是普遍现象：6 条有效轨迹中 1 条 `P>0`、1 条最终成功；`P=0` 的 4 条总奖励仍为 0.15。不能把单条正修复称为泛化收益。
+- 60 分钟预算下，排空 24.7 分钟 + 更新约 15 分钟使“采样—更新—保存”无法同时完成；下一轮应先修依赖选择、压缩排空（预留前先让在途轨迹收敛或限制 drain），再给更新留足时间，而不是扩大训练。
+- 证据：`results/gpu-short-20261116/summary.json`（逐轨迹 P/G/validity、audit、updates、buffer、adapter、耗时与显存），原始 run 目录在服务器 `/root/autodl-tmp/gemma4/runs/spo-short-20261116`。
