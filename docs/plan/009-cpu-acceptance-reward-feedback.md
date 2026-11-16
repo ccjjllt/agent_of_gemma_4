@@ -289,7 +289,7 @@ export CUDA_VISIBLE_DEVICES=0,1 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
 - 只有仅由 optional extra 拉入的包才可删除，且先移除该 extra 并记录。
 - `run()` 在无法推进时停止并按最终选择重建 residual，不再空转 200 次。
 
-合成用例复核：`req-a→dep-b>=2` 与 `req-c→dep-b<2` 同时必需时，旧代码删除 `req-c` 并 `resolved=true`；新代码保留 `req-c`、`resolved=false`、residual 指明 `dep-b<2`。可行 extra 场景仍只删 extra 并 `resolved=true`；`changed_version` 场景仍正常降级。真实 wheelhouse 的 129 题复测因实例停机（SSH 拒绝）暂未重跑；该 129 题没有任何一题走 `dropped_distribution` 路径，且 `changed_version`/`dropped_extra` 路径未改，按构造不改变此前结果。
+合成用例复核：`req-a→dep-b>=2` 与 `req-c→dep-b<2` 同时必需时，旧代码删除 `req-c` 并 `resolved=true`；新代码保留 `req-c`、`resolved=false`、residual 指明 `dep-b<2`。可行 extra 场景仍只删 extra 并 `resolved=true`；`changed_version` 场景仍正常降级。真实 wheelhouse 复测已在实例恢复后完成：129/129 题、0 错误。fixed helper + 旧 wheels 与旧 helper 的 pin 完全一致（0 差异），但 43 道 fastapi 题各带一条 `action=unresolved` 的 residual（冲突被点名，不再静默）；fixed helper + staging wheels 则把这 43 题降到 `fastapi-cli 0.0.32`、`resolved=true`、0 residual。12 条 unsatisfied 与旧 helper 完全相同（既有缺口）。`fastapi_14512` → 0.0.32 + `typer 0.16.0`；`requests_6589` → `pytest 6.2.5`（`py`/`toml` 走 staging）。
 
 ### 8.4 外部会话监督器
 
