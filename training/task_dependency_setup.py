@@ -388,7 +388,9 @@ class _JointResolution:
     Typer than the repository pins.  This pass keeps the repository specifiers
     authoritative and changes a second distribution only inside them.  Every
     action is recorded in ``joint_resolution``; an incompatible pair is never
-    kept silently.
+    kept silently.  A distribution that a repository requirement or a base
+    (non-extra) ``Requires-Dist`` needs is never dropped: when no compatible
+    selection exists, the conflict stays in ``residual_conflicts``.
     """
 
     def __init__(
@@ -411,6 +413,10 @@ class _JointResolution:
         self.missing: dict[str, str] = {}
         self.unreadable: list[str] = []
         self.residual: list[dict[str, Any]] = []
+        self._residual_keys: set[tuple[str, str, str | None, str]] = set()
+        self._residual_entries: dict[
+            tuple[str, str, str | None, str], dict[str, Any]
+        ] = {}
         self._edge_cache: dict[
             tuple[str, str, tuple[str, ...]],
             list[tuple[Requirement, str | None]],
@@ -513,9 +519,46 @@ class _JointResolution:
             "chosen": str(chosen),
         })
 
+    @staticmethod
+    def _residual_key(
+        source: str, requirement: Requirement, via: str | None, target: str,
+    ) -> tuple[str, str, str | None, str]:
+        return (source, str(requirement), via, target)
+
+    def _append_residual(
+        self,
+        item: tuple[str, Requirement, str | None, str],
+        entry: dict[str, Any],
+    ) -> None:
+        """Record one unresolved conflict once, keeping its first evidence."""
+        key = self._residual_key(*item)
+        self._residual_entries.setdefault(key, entry)
+        if key in self._residual_keys:
+            return
+        self._residual_keys.add(key)
+        self.residual.append(entry)
+
+    def _rebuild_residual(self) -> None:
+        """Report exactly the conflicts that remain in the final selection."""
+        self.residual = []
+        self._residual_keys = set()
+        for item in self._conflicts():
+            key = self._residual_key(*item)
+            entry = self._residual_entries.get(key)
+            if entry is None:
+                entry = self._describe_conflict(item)
+                self._residual_entries[key] = entry
+            self._append_residual(item, entry)
+
     def _handle(
         self, source: str, requirement: Requirement, via: str | None, target: str,
-    ) -> None:
+    ) -> bool:
+        """Apply at most one repair for one conflict and report progress.
+
+        ``False`` means no action can repair the conflict while keeping every
+        repository-required distribution, so the caller must stop and surface
+        the remaining conflicts instead of dropping a requirement.
+        """
         source_version = self.versions[source]
         target_version = self.versions[target]
         repository = self.constraints.get(target)
@@ -555,7 +598,7 @@ class _JointResolution:
             })
             self._record_change(target, target_version, chosen)
             self.conflicts.append(entry)
-            return
+            return True
 
         source_candidates = self._candidates(source)
         satisfiable: list[Version] = []
@@ -588,7 +631,7 @@ class _JointResolution:
             })
             self._record_change(source, previous, chosen)
             self.conflicts.append(entry)
-            return
+            return True
 
         if via is not None and via in self.extras.get(source, ()):
             base_conflict = any(
@@ -620,7 +663,7 @@ class _JointResolution:
                     ),
                 })
                 self.conflicts.append(entry)
-                return
+                return True
 
         incoming = [
             (dependent, dependent_requirement, dependent_via)
@@ -634,23 +677,69 @@ class _JointResolution:
         extra_incoming = [
             item for item in incoming if item[2] is not None
         ]
+        direct_pin = self.constraints.get(source)
+        target_pin = self.constraints.get(target)
+        if source in self.constraints or base_incoming:
+            keep_reason = (
+                f"{source} is directly required by the repository "
+                f"(specifier {str(direct_pin) if direct_pin else '<any>'})"
+                if source in self.constraints
+                else f"{source} is required by the base Requires-Dist of "
+                     + ", ".join(
+                         f"{dependent} {dependent_requirement}"
+                         for dependent, dependent_requirement, _via in base_incoming
+                     )
+            )
+            entry.update({
+                "action": "unresolved",
+                "repository_pin": str(direct_pin) if direct_pin else "<any>",
+                "target_repository_specifier": (
+                    str(target_pin) if target_pin else "<any>"
+                ),
+                "transitively_required_by": [
+                    {
+                        "package": dependent,
+                        "requirement": str(dependent_requirement),
+                        "via_extra": dependent_via,
+                    }
+                    for dependent, dependent_requirement, dependent_via in incoming
+                ],
+                "source_candidates_considered": [
+                    str(version) for version in source_candidates
+                ],
+                "source_satisfiable_candidates": [],
+                "reason": (
+                    f"cannot drop {source}=={source_version}: {requirement} "
+                    f"conflicts with selected {target}=={target_version} and "
+                    f"no {target} version satisfies it within the repository "
+                    f"pin {str(target_pin) if target_pin else '<any>'}; "
+                    f"{keep_reason}"
+                ),
+            })
+            self._append_residual((source, requirement, via, target), entry)
+            self.conflicts.append(entry)
+            return False
+
+        # Only a distribution that no repository requirement and no base
+        # Requires-Dist needs may be dropped, and only after removing the
+        # extras that pulled it.  Keeping a selection pip cannot satisfy is
+        # not an option; the caller surfaces it as an unresolved conflict.
         dropped_extra_records: list[dict[str, str]] = []
-        if not base_incoming:
-            for dependent, _dependent_requirement, dependent_via in extra_incoming:
-                if dependent_via not in self.extras.get(dependent, ()):
-                    continue
-                self.extras[dependent].remove(dependent_via)
-                if not self.extras[dependent]:
-                    self.extras.pop(dependent, None)
-                self.dropped_extras.setdefault(
-                    dependent, {}
-                ).setdefault(dependent_via, []).append(
-                    f"joint conflict: {source}=={source_version} dropped; "
-                    f"{dependent} extra {dependent_via} depended on it"
-                )
-                dropped_extra_records.append({
-                    "package": dependent, "extra": dependent_via,
-                })
+        for dependent, _dependent_requirement, dependent_via in extra_incoming:
+            if dependent_via not in self.extras.get(dependent, ()):
+                continue
+            self.extras[dependent].remove(dependent_via)
+            if not self.extras[dependent]:
+                self.extras.pop(dependent, None)
+            self.dropped_extras.setdefault(
+                dependent, {}
+            ).setdefault(dependent_via, []).append(
+                f"joint conflict: {source}=={source_version} dropped; "
+                f"{dependent} extra {dependent_via} depended on it"
+            )
+            dropped_extra_records.append({
+                "package": dependent, "extra": dependent_via,
+            })
         self.versions.pop(source, None)
         self.paths.pop(source, None)
         self.extras.pop(source, None)
@@ -679,6 +768,7 @@ class _JointResolution:
             ),
         })
         self.conflicts.append(entry)
+        return True
 
     def _handle_unselected(self) -> None:
         """Name transitively required distributions that no wheel can provide.
@@ -730,14 +820,22 @@ class _JointResolution:
         self, item: tuple[str, Requirement, str | None, str],
     ) -> dict[str, Any]:
         source, requirement, via, target = item
+        repository = self.constraints.get(target)
         return {
             "dependent": source,
             "dependent_version": str(self.versions[source]),
             "requirement": str(requirement),
             "via_extra": via,
             "selected": f"{target}=={self.versions[target]}",
+            "repository_specifier": str(repository) if repository else "<any>",
             "action": "unresolved",
-            "reason": "joint compatibility conflict remains after resolution",
+            "reason": (
+                f"{requirement} from {source} {self.versions[source]} remains "
+                f"unsatisfied by {target}=={self.versions[target]}; the "
+                f"repository pin for {target} is "
+                f"{str(repository) if repository else '<any>'} and no required "
+                f"distribution may be dropped"
+            ),
         }
 
     def run(self) -> None:
@@ -745,16 +843,13 @@ class _JointResolution:
             conflicts = self._conflicts()
             if not conflicts:
                 break
-            self._handle(*conflicts[0])
-        else:
-            self.residual = [
-                self._describe_conflict(item) for item in self._conflicts()
-            ]
+            if not self._handle(*conflicts[0]):
+                # No allowed action repairs this conflict.  Stop the greedy
+                # pass and surface what remains instead of looping or dropping
+                # a distribution the repository still requires.
+                break
         self._handle_unselected()
-        if not self.residual:
-            self.residual = [
-                self._describe_conflict(item) for item in self._conflicts()
-            ]
+        self._rebuild_residual()
 
     def diagnostics(self) -> dict[str, Any]:
         return {
@@ -780,9 +875,12 @@ def select_requirements(
 
     A joint pass then checks the selected wheels' declared ``Requires-Dist``
     entries.  A dependency version may change only inside the repository's own
-    specifier, and a dependent may be downgraded or dropped instead; every
-    cross-package action is recorded in ``joint_resolution``.  Distributions
-    that pip would need transitively but no wheel provides are listed in
+    specifier, and a dependent may be downgraded; only optional extras may be
+    dropped, never a distribution the repository or a selected package's base
+    ``Requires-Dist`` needs.  Every cross-package action is recorded in
+    ``joint_resolution``, and a conflict the pass cannot repair is reported in
+    ``residual_conflicts`` with ``resolved`` false.  Distributions that pip
+    would need transitively but no wheel provides are listed in
     ``missing_transitive_distributions`` rather than being fabricated.
     """
     python_skipped: Counter[str] = Counter()

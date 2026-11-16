@@ -18,8 +18,8 @@ Usage (server, authorized session only):
 The vLLM OpenAI server itself is deployed separately; this launcher speaks the
 native vLLM contract in training/rollout/vllm_backend.py
 (OpenAI /v1/completions, dynamic LoRA, /pause + /resume, Level-2 sleep/wake).
-Exit codes: 0 finished all batches, 75 budget exhausted / continue with
---resume, 2 configuration/run failure.
+Exit codes: 0 finished all batches, 75 budget exhausted / SIGTERM grace
+expired or repeated (continue with --resume), 2 configuration/run failure.
 """
 from __future__ import annotations
 
@@ -481,11 +481,11 @@ def _read_budget(path: Path, allowance_seconds: float, *, resume: bool) -> dict[
 
 
 def _write_budget(path: Path, allowance_seconds: float, consumed_seconds: float) -> None:
-    """Atomically checkpoint wall-clock consumption.
+    """Atomically write one budget checkpoint (called only by _BudgetWriter).
 
-    The heartbeat, the signal handler and the main path can overlap. A unique
-    temporary name per call keeps each writer's bytes private; os.replace makes
-    the visible record always one complete JSON document.
+    The writer serializes calls, so a slower older caller can no longer replace
+    a newer record. A unique temporary name per write keeps the bytes private;
+    os.replace makes the visible file always one complete JSON document.
     """
     record = {"allowance_seconds": allowance_seconds,
               "consumed_seconds": max(0.0, float(consumed_seconds)),
@@ -494,6 +494,124 @@ def _write_budget(path: Path, allowance_seconds: float, consumed_seconds: float)
     temporary = path.with_name(f"{path.name}.tmp-{os.getpid()}-{time.monotonic_ns()}")
     temporary.write_text(json.dumps(record) + "\n")
     os.replace(temporary, path)
+
+
+class _BudgetWriter:
+    """Own every budget.json write on one thread, keeping consumption monotonic.
+
+    Callers submit the current consumed value; the writer persists
+    max(last_written, submitted), so a delayed older submission can never roll
+    the durable record back. ``submit`` never blocks and is safe from the
+    SIGTERM handler; ``flush`` waits (bounded) until every submitted value is
+    on disk.
+    """
+
+    def __init__(self, path: Path, allowance_seconds: float) -> None:
+        self._path = path
+        self._allowance = float(allowance_seconds)
+        self._condition = threading.Condition(threading.RLock())
+        self._pending: float | None = None
+        self._inflight: float | None = None
+        # Signal-handler fallback: set value first, then bump the sequence, so
+        # a writer that observes the new sequence also sees the new value.
+        self._signal_value: float | None = None
+        self._signal_seq = 0
+        self._signal_seen = 0
+        self._last_written: float | None = None
+        self._closed = False
+        self._thread = threading.Thread(
+            target=self._run, name="spo-budget-writer", daemon=True)
+        self._thread.start()
+
+    @staticmethod
+    def _higher(current: float | None, value: float) -> float:
+        return value if current is None else max(current, value)
+
+    def submit(self, consumed_seconds: float, *, from_signal: bool = False) -> None:
+        """Offer a value without blocking; the writer keeps the largest one."""
+        value = max(0.0, float(consumed_seconds))
+        if self._condition.acquire(blocking=False):
+            try:
+                if self._closed:
+                    return
+                self._pending = self._higher(self._pending, value)
+                self._condition.notify()
+            finally:
+                self._condition.release()
+            return
+        if from_signal:
+            # A heartbeat/main-thread submit holds the lock for a few
+            # instructions; record the value without waiting for it.
+            self._signal_value = value
+            self._signal_seq += 1
+            return
+        with self._condition:
+            if self._closed:
+                return
+            self._pending = self._higher(self._pending, value)
+            self._condition.notify()
+
+    def _drained(self) -> bool:
+        return (self._closed
+                or (self._pending is None and self._inflight is None
+                    and self._signal_seen == self._signal_seq))
+
+    def flush(self, timeout: float = 5.0) -> bool:
+        """Wait until all submitted values are on disk; never unbounded."""
+        deadline = time.monotonic() + max(0.0, timeout)
+        with self._condition:
+            while not self._drained():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._condition.wait(min(0.02, remaining))
+            return True
+
+    def close(self, final_seconds: float | None = None,
+              timeout: float = 5.0) -> bool:
+        """Submit the final value, flush it, then stop the writer thread."""
+        if final_seconds is not None:
+            self.submit(final_seconds)
+        written = self.flush(timeout)
+        with self._condition:
+            self._closed = True
+            self._condition.notify_all()
+        self._thread.join(timeout=max(0.0, timeout))
+        return written and not self._thread.is_alive()
+
+    def _run(self) -> None:
+        while True:
+            with self._condition:
+                while (not self._closed and self._pending is None
+                       and self._signal_seen == self._signal_seq):
+                    self._condition.wait()
+                if self._closed:
+                    return
+                value = self._pending
+                self._pending = None
+                if self._signal_seen != self._signal_seq:
+                    signal_value = self._signal_value
+                    self._signal_seen = self._signal_seq
+                    if signal_value is not None:
+                        value = self._higher(value, signal_value)
+                if value is None:
+                    continue
+                if self._last_written is not None:
+                    value = max(value, self._last_written)
+                self._inflight = value
+            try:
+                _write_budget(self._path, self._allowance, value)
+            except OSError:
+                # Keep the value pending and retry; never lower last_written.
+                with self._condition:
+                    self._inflight = None
+                    self._pending = self._higher(self._pending, value)
+                    self._condition.wait(0.5)
+                continue
+            with self._condition:
+                self._inflight = None
+                self._last_written = value
+                self._condition.notify_all()
 
 
 def _drain_update_window(wait_for_workers: Callable[[float], int], metrics_path: Path, *,
@@ -524,21 +642,95 @@ def _drain_update_window(wait_for_workers: Callable[[float], int], metrics_path:
     return False
 
 
+def _cancel_stop_watchdog(stop_state: dict[str, object]) -> None:
+    """Disarm the update-time SIGTERM grace watchdog, if armed."""
+    watchdog = stop_state.get("watchdog")
+    if isinstance(watchdog, threading.Timer):
+        watchdog.cancel()
+        stop_state["watchdog"] = None
+
+
+def _finish_update_window(stop_state: dict[str, object]) -> None:
+    """Leave in_update and disarm the watchdog as one TERM-atomic step.
+
+    SIGTERM is blocked in this thread for the two stores (where supported), so
+    the handler cannot arm a fresh watchdog after this step's watchdog was
+    cancelled, nor observe in_update=True after it was cleared.
+    """
+    previous: set[int] | None = None
+    try:
+        previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
+    except (AttributeError, OSError, ValueError):
+        previous = None
+    try:
+        stop_state["in_update"] = False
+        _cancel_stop_watchdog(stop_state)
+    finally:
+        if previous is not None:
+            try:
+                signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+            except (AttributeError, OSError, ValueError):
+                pass
+
+
 def _make_sigterm_handler(persist: Callable[[], object],
-                          stop_state: dict[str, bool]) -> Callable[[int, object], None]:
-    """Persist the budget immediately, then unwind only at a safe boundary."""
+                          stop_state: dict[str, object], *,
+                          grace_seconds: float = 60.0,
+                          flush: Callable[[], object] | None = None,
+                          exit_code: int = 75) -> Callable[[int, object], None]:
+    """Persist the budget on SIGTERM, then unwind or enforce a bounded stop.
+
+    The first idle TERM persists and raises KeyboardInterrupt at a safe
+    boundary. The first TERM during an optimizer step persists, returns, and
+    arms a watchdog that hard-exits with exit_code after grace_seconds so a
+    running step cannot overrun the stop without a bound. A repeated TERM is
+    an explicit hard stop: the budget is flushed and the process exits at once,
+    even mid-step (a durable budget record matters more than the transaction).
+    """
+    def hard_exit(reason: str) -> None:
+        try:
+            if flush is not None:
+                flush()
+        finally:
+            sys.stderr.write(f"spo_sigterm: {reason}; exit={exit_code}\n")
+            sys.stderr.flush()
+            os._exit(exit_code)
+
     def handler(signum: int, frame: object) -> None:
-        already_requested = stop_state["requested"]
+        stop_state["signals"] = int(stop_state.get("signals", 0)) + 1
+        already_requested = bool(stop_state["requested"])
         stop_state["requested"] = True
         try:
             persist()
         except (OSError, RuntimeError, ValueError):
             # At minimum the periodic heartbeat has the last realistic value.
             pass
-        if stop_state.get("in_update") or already_requested:
-            # A durable trainer transaction is mid-step (or cleanup is already
-            # unwinding): let it finish and observe the request at a boundary.
+        if already_requested:
+            hard_exit(f"repeated signal {signum} during an update or cleanup")
+        if stop_state.get("in_update"):
+            if not isinstance(stop_state.get("watchdog"), threading.Timer):
+                watchdog = threading.Timer(
+                    grace_seconds,
+                    lambda: hard_exit(
+                        f"optimizer step still running {grace_seconds:g}s "
+                        f"after signal {signum}"))
+                watchdog.daemon = True
+                stop_state["watchdog"] = watchdog
+                watchdog.start()
+            # The step keeps running; give the first TERM's value a bounded
+            # chance to reach disk without making the watchdog unbounded too.
+            try:
+                if flush is not None:
+                    flush()
+            except (OSError, RuntimeError, ValueError):
+                pass
             return
+        # Idle boundary: persist synchronously before unwinding.
+        try:
+            if flush is not None:
+                flush()
+        except (OSError, RuntimeError, ValueError):
+            pass
         raise KeyboardInterrupt(f"received signal {signum}")
 
     return handler
@@ -639,6 +831,18 @@ def run_spo(args: argparse.Namespace) -> int:
     update_min = float(run.get("update_min_seconds", 1800))
     if not math.isfinite(update_min) or update_min < 0:
         raise ValueError("run.update_min_seconds must be a finite non-negative number")
+    # [run] sigterm_grace_seconds (default 60): after the first SIGTERM lands
+    # while an optimizer step is running, a watchdog hard-exits with code 75
+    # once this many seconds pass and the step is still running (0 exits at
+    # once). It is not a step admission gate like update_min_seconds: the step
+    # may still start, but it cannot outlive the stop without a bound. A second
+    # SIGTERM always hard-exits immediately after flushing the budget. 60 s is
+    # one minute of overrun inside the external supervisor's kill window while
+    # still short against a ~30-minute update.
+    sigterm_grace = float(run.get("sigterm_grace_seconds", 60))
+    if not math.isfinite(sigterm_grace) or sigterm_grace < 0:
+        raise ValueError(
+            "run.sigterm_grace_seconds must be a finite non-negative number")
     max_batches = int(args.max_batches or run.get("max_batches", 32))
     max_workers = int(run.get("max_cpu_workers", 8))
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -648,9 +852,6 @@ def run_spo(args: argparse.Namespace) -> int:
     def read_budget() -> dict[str, float]:
         return _read_budget(budget_path, walltime, resume=bool(args.resume))
 
-    def persist_budget(consumed_seconds: float) -> None:
-        _write_budget(budget_path, allowance, consumed_seconds)
-
     # Resume never renews the allowance: only explicit additional seconds
     # extend the persisted remainder. On resume a missing/corrupt record is a
     # hard stop, never a fresh grant (see read_budget).
@@ -658,11 +859,19 @@ def run_spo(args: argparse.Namespace) -> int:
         "allowance_seconds": walltime, "consumed_seconds": 0.0}
     allowance = saved_budget["allowance_seconds"] + float(args.additional_walltime_seconds or 0)
     consumed = saved_budget["consumed_seconds"]
+    # One writer thread owns budget.json: concurrent heartbeat, signal and main
+    # path values can no longer race, and the file only moves forward.
+    budget_writer = _BudgetWriter(budget_path, allowance)
+
+    def persist_budget(consumed_seconds: float) -> None:
+        budget_writer.submit(consumed_seconds)
+
     # The allowance covers the whole GPU session, including genesis load,
     # backend handshake and trainer construction: the clock starts here, not
     # at the first rollout.
     start = time.monotonic()
-    stop_state: dict[str, bool] = {"requested": False, "in_update": False}
+    stop_state: dict[str, object] = {
+        "requested": False, "in_update": False, "signals": 0, "watchdog": None}
     budget_stop = threading.Event()
 
     def persist_consumed(now: float | None = None) -> float:
@@ -681,7 +890,16 @@ def run_spo(args: argparse.Namespace) -> int:
             except (OSError, RuntimeError, ValueError):
                 continue
 
-    request_stop = _make_sigterm_handler(lambda: persist_consumed(), stop_state)
+    def persist_for_signal() -> float:
+        """Signal-context submit: never waits on the writer's lock or disk."""
+        value = max(0.0, consumed + (time.monotonic() - start))
+        budget_writer.submit(value, from_signal=True)
+        return value
+
+    request_stop = _make_sigterm_handler(
+        persist_for_signal, stop_state,
+        grace_seconds=sigterm_grace,
+        flush=lambda: budget_writer.flush(5.0))
     previous_sigterm = signal.signal(signal.SIGTERM, request_stop)
     heartbeat = threading.Thread(target=budget_heartbeat, name="spo-budget-heartbeat",
                                  daemon=True)
@@ -982,7 +1200,9 @@ def run_spo(args: argparse.Namespace) -> int:
             try:
                 yield
             finally:
-                stop_state["in_update"] = False
+                # The step finished: cancel a TERM tombstone watchdog so the
+                # process returns to the normal boundary instead of hard-exiting.
+                _finish_update_window(stop_state)
 
         deferred: dict[str, str | None] = {"update_id": None}
 
@@ -1803,11 +2023,16 @@ def run_spo(args: argparse.Namespace) -> int:
             heartbeat.join(timeout=5.0)
         except (RuntimeError, ValueError):
             pass
+        # Never let a stale TERM watchdog fire while the process is doing a
+        # normal, bounded teardown (the update window already clears it).
+        _cancel_stop_watchdog(stop_state)
         if stop_state["requested"]:
             try:
                 _emit(metrics_path, "spo_stop_requested",
                       consumed_seconds=round(consumed + (time.monotonic() - start), 3),
-                      in_update=stop_state["in_update"])
+                      in_update=stop_state["in_update"],
+                      sigterm_count=stop_state.get("signals", 0),
+                      sigterm_grace_seconds=sigterm_grace)
             except OSError:
                 pass
         try:
@@ -1824,7 +2049,9 @@ def run_spo(args: argparse.Namespace) -> int:
             except OSError:
                 pass
         try:
-            persist_consumed()
+            # Final submit + synchronous flush; the writer's max() rule makes
+            # this unable to regress a newer value already on disk.
+            budget_writer.close(max(0.0, consumed + (time.monotonic() - start)))
         except (RuntimeError, OSError, ValueError):
             pass
         try:

@@ -258,8 +258,70 @@ export CUDA_VISIBLE_DEVICES=0,1 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
   --resume --additional-walltime-seconds 3000
 ```
 
-`--additional-walltime-seconds 3000` 只是示例：allowance 变为 5400 秒、扣除 2851 秒后 remaining 2549 秒，覆盖约 29 分钟更新加保存；实际额度由用户授权决定。续跑前 vLLM 必须已按主配置部署并处于 v0（run 的 genesis adapter 会重新载入）。
+`--additional-walltime-seconds 3000` 只是示例：allowance 变为 5400 秒、扣除 2851 秒后 remaining 2549 秒，覆盖约 29 分钟更新加保存；实际额度由用户授权决定。续跑前 vLLM 必须已按主配置部署并处于 v0（run 的 genesis adapter 会重新载入）。**整个会话必须在 `scripts/session_supervisor.py` 下运行（见 8.4），预算从 vLLM 启动前开始计时。**
 
 ### 7.6 边界
 
 以上均为 CPU 侧代码与选择验证，尚未在 GPU 上重跑，也没有新的能力提升结论。依赖修复的有效性目前只到“选择与 pip dry-run 通过”，真实沙箱安装与验收仍需下一次 GPU 会话确认。
+
+## 8. 2026-11-16 硬截止与记账修复（第二轮 CPU）
+
+### 8.1 SIGTERM 现在有界
+
+原实现（`_make_sigterm_handler`）在 `in_update=True` 时对每个 SIGTERM 都直接返回，重复 TERM 也被吞掉，因此更新期间收到停止请求后仍可能跑完整步。现已改为：
+
+- 第一次 TERM：持久化预算；空闲路径抛 `KeyboardInterrupt`；更新路径保留事务并设置看门狗。
+- 看门狗在 `run.sigterm_grace_seconds`（默认 60，已写入两个配置）后仍未结束则 `exit 75`，预算先落盘。
+- 第二次 TERM：立即落盘并以 75 退出，即使优化步仍在运行。
+- 步在宽限内正常结束时原子地取消看门狗（`_finish_update_window`）。
+
+独立复核：更新中两次 TERM → 立即 75；更新中一次 TERM、grace=1 → 约 1 秒后 75；空闲 TERM → `KeyboardInterrupt` 正常收尾；预算均已持久化。
+
+### 8.2 预算写入单调
+
+原 `_write_budget` 只保证单文件原子，不能保证写入顺序：旧的 10 可以在新的 20 之后落盘。现由单一 `_BudgetWriter` 线程拥有全部写入，`submit()` 取 `max(last_written, submitted)`，`flush()` 有界等待，`close()` 提交最终值并刷盘。独立复核：racy 提交 10/20 → 20；随后 15 → 20；`close(final=15)` → 20；5 线程压力测试无回退。
+
+### 8.3 依赖解析不再“删必需包并宣称解决”
+
+`_JointResolution` 原先在无兼容版本时会删除一个被仓库直接要求（`source in constraints`）或被某个已选包的基础 `Requires-Dist` 要求的包，然后报告 `resolved=true`。现已改为：
+
+- 必需包永不删除；无解时保留当前选择，写入 `action="unresolved"` 的 `residual_conflicts`，`resolved=false`，原因包含冲突 requirement、已选版本和仓库 pin。
+- 只有仅由 optional extra 拉入的包才可删除，且先移除该 extra 并记录。
+- `run()` 在无法推进时停止并按最终选择重建 residual，不再空转 200 次。
+
+合成用例复核：`req-a→dep-b>=2` 与 `req-c→dep-b<2` 同时必需时，旧代码删除 `req-c` 并 `resolved=true`；新代码保留 `req-c`、`resolved=false`、residual 指明 `dep-b<2`。可行 extra 场景仍只删 extra 并 `resolved=true`；`changed_version` 场景仍正常降级。真实 wheelhouse 的 129 题复测因实例停机（SSH 拒绝）暂未重跑；该 129 题没有任何一题走 `dropped_distribution` 路径，且 `changed_version`/`dropped_extra` 路径未改，按构造不改变此前结果。
+
+### 8.4 外部会话监督器
+
+新增 `scripts/session_supervisor.py`：从**子进程启动前**计时（因此 vLLM 加载计入预算），在 `budget-grace` 向进程组发 SIGTERM，在 `budget` 发 SIGKILL；宽限期在预算内；会话 JSON 记录计划/实际软停与强杀时间、退出码和是否升级。
+
+独立复核：合作子进程 budget=3/grace=1 → 约 2.0 秒软停、2.06 秒退出 0、无强杀；忽略 TERM 的子进程 → 约 2.0 秒软停、3.001 秒 SIGKILL、退出 137；后台孙进程同组被杀，无残留。
+
+下次 GPU 会话必须在监督器内运行（示例，未执行）：
+
+```bash
+cat > /root/autodl-tmp/gemma4/logs/session-20261117.sh <<'SH'
+#!/bin/bash
+# vLLM 在后台启动，健康后运行续跑；退出时停止 vLLM。
+/root/autodl-tmp/gemma4/logs/start-vllm-20261116.sh &
+VLLM=$!
+for i in $(seq 1 120); do curl -sf http://127.0.0.1:8000/health >/dev/null && break; sleep 5; done
+/root/gemma4/envs/learner/bin/python -m training.run_spo \
+  --config configs/spo_gpu_short_60m.toml \
+  --data-root /root/gemma4/official/competition --model-path /autodl-fs/data \
+  --run-dir /root/autodl-tmp/gemma4/runs/spo-short-20261116 \
+  --backend-url http://127.0.0.1:8000 \
+  --resume --additional-walltime-seconds 3000
+code=$?
+kill $VLLM 2>/dev/null
+exit $code
+SH
+chmod +x /root/autodl-tmp/gemma4/logs/session-20261117.sh
+python scripts/session_supervisor.py \
+  --budget-seconds 3600 --grace-seconds 180 \
+  --session-file /root/autodl-tmp/gemma4/logs/session-20261117.json \
+  --log /root/autodl-tmp/gemma4/logs/session-20261117.log \
+  -- bash /root/autodl-tmp/gemma4/logs/session-20261117.sh
+```
+
+预算示例：supervisor 3600 秒（含 vLLM 加载与 180 秒宽限），run allowance 5400、已消费 2851，remaining 2549，run 自身在约 +2849 秒停止，早于 supervisor 的 +3420 秒软停。注意软停按进程组发送，vLLM 也会收到 TERM；若此时更新尚未完成，可能停在可续跑的 EXPORTED/REGISTERED 状态而不是发布，因此正常运行应让 run 自身先于软停结束，supervisor 只作硬截止兜底。
