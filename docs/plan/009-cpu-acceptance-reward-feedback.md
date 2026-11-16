@@ -206,6 +206,13 @@ agent_pytest_collection_failure / agent_pytest_import_failure
 
 `fastapi-cli` 0.0.33 起要求 `typer>=0.26.1`，0.0.32 是与 `typer==0.16.0` 兼容的最高版本；`rich-toolkit 0.20.6`、`rich 15.0.0` 已在 wheelhouse。若某题仍无法兼容，联合 pass 会记录丢弃原因而不是静默安装冲突组合。
 
+全量回归（129 道公开训练题，沙箱 Python 3.13，逐题解包、串行、0 错误）：
+
+- 旧 helper + 旧 wheel 目录 vs 新 helper + 新 wheel 目录：86 题选择完全一致，43 道 fastapi 题只发生 `fastapi-cli 0.0.34 -> 0.0.32` 一个 pin 变化，没有其它包或 extra 变化。
+- 同一新 helper 但**不加 staging**：那 43 题会直接丢掉 `fastapi-cli`，4 道 requests 题报告 `py`/`toml` 缺失。因此 staging wheel 是“保留 fastapi-cli 并降级”的必要条件，不是可选优化。
+- 新选择在 129 题上 `residual_conflicts`、`missing_transitive_distributions`、`unreadable_metadata` 均为空；`unsatisfied_constraints` 的 12 题与旧 helper 完全相同（既有 wheelhouse 缺口：`pytest-timeout>=2.4.0` 10 题、`pyjwt==2.8.0`、`httpx_3672` 的 `pytest==8.3.5`），不是本次引入。
+- 结论：联合选择没有改变任何无关题目的选择，可以进入续跑阶段。
+
 ### 7.2 身份回退收紧
 
 `training/rollout/engine.py` 的 `task_key` 回退现在只允许**验证前失败**的记录：完整 verdict（`verification_complete=True`、`verdict_valid=True`、无 `infrastructure_error`、`success` 为 bool）缺 TaskKey 直接失败；`candidate_report`/`baseline_report`/`baseline` 缺 TaskKey 一律失败。一次性核对覆盖 6 种情况（完整缺键、完整缺键+匹配 id、报告缺键、验证前失败+匹配 id、验证前失败+错误 id、匹配/不匹配 TaskKey），并确认生产者（`official_runtime.py` 的 `spo_bundle` 与空补丁 probe）都带 TaskKey。
