@@ -140,7 +140,7 @@ agent_pytest_collection_failure / agent_pytest_import_failure
 - 新环境只证明这些公开题在本机 CPU 配置下可执行；不证明官方 GPU 主机或 heldout 的覆盖率。
 - `shadow_regression`/`shadow_repair` 不是官方 `PASS_TO_PASS`，不能替换官方 `G`，也不能单独当作模型修复收益。
 - 10 份历史候选的 0.15→0.10 是 verdict 级复算；其中 3 份真实补丁已在同一奖励复核身份 `f242e208…` 下重跑，其余 7 份未在本次重跑。
-- 本轮仍没有正修复候选；下一步仍是短 GPU 采样，寻找真实局部修复或最终成功，再谈扩大训练。`require_positive_signal` 已把“无信号不优化”从文档计划变成代码路径。
+- 截至 CPU 复核轮没有正修复候选；2026-11-16 短 GPU 采样首次出现真实 `P=1.0`/shadow repair（见第 6 节）。`require_positive_signal` 已把“无信号不优化”从文档计划变成代码路径。
 
 ## 5. 短 GPU 采样方案（2026-11-16 已按此执行，结果见第 6 节）
 
@@ -163,13 +163,14 @@ agent_pytest_collection_failure / agent_pytest_import_failure
 
 - 状态：3 `RESERVED` + 3 `BUFFERED` + 11 `EXCLUDED`；有效（eligible）6 条，无效 11 条，collection failure 0 条。
 - 信号：`P>0` 1 条（`requests_7205`，P=1.0、G=0.0、total 0.9926，shadow repair measured 1/14，`positive_repair_signal=true`）；`P=0` 5 条；`P` 缺失 11 条。另有 `requests_7315` 最终成功（P=0、total 0.7548），仍停在 `BUFFERED`，未进入该批。
+- 第三条成功轨迹被 baseline 丢掉：`rich_3480` 的候选验证完整且 `success=True`、`test_exit_code=0`，但空补丁 baseline 不可用，按规则 `eligible=0`、奖励为空。即 17 条中有 3 条模型成功（2 条可训练），这条只差 baseline 证据。
 - 门控：`upd-0000` 以 19,093 action tokens 预留，成员 advantage 为 `requests_7205 +1.6157`、`rich_4076 -0.6189`、`rich_4070 -0.6189`。这是首个带真实正修复信号的 GPU 批次，门控没有把 0.15 的总奖励当成无信号。
 - 更新：训练确实启动（learner 载入、vLLM sleep、`spo_training_memory_started`），但 876 秒后被杀；无 `spo_trainer_state.pt`、无 EXPORTED/REGISTERED/ACTIVATED、registry `active_version=0`。即本轮没有更新成功保存或发布 adapter。
 
 失败分类（11 条无效）：
 
 - 6 条沙箱依赖安装失败：5 道 fastapi（`typer==0.16.0` 与 `fastapi-cli 0.0.34` 要求 `typer>=0.26.1` 冲突）、1 道 requests（`pytest==6.2.5` 需要 `py>=1.8.2`，wheelhouse 无该 wheel）。链路为 `ContainerSetupError` → agent 未产生 model call → `trajectory_seal_RequestUnavailable` → 奖励路径 `task_key` 异常覆盖了真实原因。
-- 3 条 baseline 不可用（`fastapi_15023`、`requests_7433`、`rich_3480`）。
+- 3 条 baseline 不可用（`fastapi_15023`、`requests_7433`、`rich_3480`）；其中 `rich_3480` 的候选本身通过，属于被 baseline 失败丢弃的真实成功。
 - 2 条候选验证不完整（`rich_3472`、`fastapi_15745`）。
 
 本轮同时修复了一个归因缺陷：官方 worker 在验证前失败时结果不含 `task_key`，`training/rollout/engine.py` 的 `_bundle` 直接 `JudgeTaskKey.from_dict(None)` 抛 `TypeError`，把基础设施失败记成奖励错误；现改为缺字段时回退比对 `task_id`，字段存在时仍做严格 TaskKey 相等校验。
@@ -178,7 +179,7 @@ agent_pytest_collection_failure / agent_pytest_import_failure
 
 结论与边界：
 
-- 学习信号存在但不是普遍现象：6 条有效轨迹中 1 条 `P>0`、1 条最终成功；`P=0` 的 4 条总奖励仍为 0.15。不能把单条正修复称为泛化收益。
+- 学习信号存在但不是普遍现象：6 条有效轨迹中 1 条 `P>0`、1 条最终成功；`P=0` 的 4 条总奖励仍为 0.15。加上被 baseline 丢弃的 `rich_3480`，17 条里共有 3 条模型成功（17.6%）。不能把单条正修复称为泛化收益。
 - 60 分钟预算下，排空 24.7 分钟 + 更新约 15 分钟使“采样—更新—保存”无法同时完成；下一轮应先修依赖选择、压缩排空（预留前先让在途轨迹收敛或限制 drain），再给更新留足时间，而不是扩大训练。
 - `budget.json` 的 `consumed_seconds` 在 SIGTERM 后仍为 0，因为持久化只在正常收尾执行；续跑不能据此重新授予整份额度，需先修周期持久化或显式扣除。
 - 证据：`results/gpu-short-20261116/summary.json`（逐轨迹 P/G/validity、audit、updates、buffer、adapter、耗时与显存），原始 run 目录在服务器 `/root/autodl-tmp/gemma4/runs/spo-short-20261116`。
