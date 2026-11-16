@@ -229,23 +229,13 @@ agent_pytest_collection_failure / agent_pytest_import_failure
 
 ### 7.5 下一次 GPU 的顺序
 
-1. 先用**原身份**完成冻结批次：保持服务器上的旧 `task_dependency_setup.py` 与旧 `extra_wheels` 不变，`--resume` 运行 `spo-short-20261116`。已用真实账本验证 `recovery_discard_reason(upd-0000, checkpoint=None, tx, require_positive_signal=True) == None`，即会从 v0 重做整步而不是丢弃。预算需显式处理：旧 `budget.json` 的 `consumed=0` 是 SIGTERM 遗留，续跑前写入实测的 2851 秒；此时原 allowance 2400 已不足，需再用 `--additional-walltime-seconds 3000` 之类显式追加（allowance 5400、remaining 2549，覆盖约 29 分钟更新加保存余量）。
+1. 先用**原身份**完成冻结批次：保持服务器上的旧 `task_dependency_setup.py` 与旧 `extra_wheels` 不变，`--resume` 运行 `spo-short-20261116`。已用真实账本验证 `recovery_discard_reason(upd-0000, checkpoint=None, tx, require_positive_signal=True) == None`，即会从 v0 重做整步而不是丢弃。预算处理：`budget.json` 已在补账中记为 `consumed=2851`（一次性操作，有 `budget.json.pre-20261116` 备份），**不要再手动重写**——续跑只用 `--additional-walltime-seconds` 显式追加额度，让单调写入者按实际消耗继续累加；此时原 allowance 2400 已不足，需再用 `--additional-walltime-seconds 3000` 之类显式追加（allowance 5400、remaining 2549，覆盖约 29 分钟更新加保存余量）。
 2. 旧批次保存/发布后，再同步新 helper，并把 `py`、`toml`、`fastapi-cli 0.0.32` 并入 `extra_wheels`。这会产生新的 judge 身份，旧 run 的 3 条 `BUFFERED` 轨迹不能混入新环境。
 3. 新身份下做同口径 v0/v1 对照（同一批题、同一验收身份），有稳定更新与修复改善证据后再扩大训练。
 
 续跑命令（旧身份，未执行）：
 
 ```bash
-# 先把 SIGTERM 遗留的预算改成实测值（示例：consumed=2851）
-python - <<'PY'
-import json, pathlib, time
-p = pathlib.Path("/root/autodl-tmp/gemma4/runs/spo-short-20261116/budget.json")
-d = json.loads(p.read_text())
-d.update({"consumed_seconds": 2851.0, "remaining_seconds": max(0.0, d["allowance_seconds"] - 2851.0),
-          "updated_unix": time.time()})
-p.write_text(json.dumps(d) + "\n")
-PY
-
 cd /root/gemma4/project
 export CUDA_VISIBLE_DEVICES=0,1 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
        TMPDIR=/root/autodl-tmp/gemma4/tmp
@@ -296,6 +286,8 @@ export CUDA_VISIBLE_DEVICES=0,1 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
 新增 `scripts/session_supervisor.py`：从**子进程启动前**计时（因此 vLLM 加载计入预算），在 `budget-grace` 向进程组发 SIGTERM，在 `budget` 发 SIGKILL；宽限期在预算内；会话 JSON 记录计划/实际软停与强杀时间、退出码和是否升级。
 
 独立复核：合作子进程 budget=3/grace=1 → 约 2.0 秒软停、2.06 秒退出 0、无强杀；忽略 TERM 的子进程 → 约 2.0 秒软停、3.001 秒 SIGKILL、退出 137；后台孙进程同组被杀，无残留。
+
+第三轮补齐（收尾条件与逃逸覆盖）：直属进程退出不再等于收尾——监督器在子进程被回收后继续监督整棵树（进程组 + cgroup 成员 + 快照后代），组内有存活者时硬截止前不返回，硬截止时走强杀路径并记 `hard_killed`（137），不再把 leader 的退出码当成功。Linux 下建独立 cgroup `spo-sup-<pid>`（v2 `cgroup.kill`，v1 逐成员杀），`setsid` 逃逸也一并清扫；无可写 cgroup 的平台（macOS、只读挂载的本机）降级为组杀 + ppid 链快照清扫并如实记录。独立复核：shell 在 TERM 后退出但后台 `sleep 60` 存活 → 监督器等到 4.0 秒强杀，exit 137，无残留；`setsid` + 忽略 TERM 的孙进程（leader 只活 1 秒）→ `tree_pids_at_child_exit` 非空而组为空，照样清扫，exit 137，无残留。已知残留：无 cgroup 平台上，在单个 50 ms 轮询内完成 fork + setsid + leader 退出的后代无法被快照关联（生产负载远超该窗口）。
 
 下次 GPU 会话必须在监督器内运行（示例，未执行）：
 

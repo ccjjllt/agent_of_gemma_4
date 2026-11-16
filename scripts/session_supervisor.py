@@ -33,11 +33,22 @@ A soft stop is only useful if the workload handles SIGTERM (for example by
 finishing the current transaction and exiting); the supervisor cannot make a
 SIGTERM-ignoring process save state.
 
-Supervision ends when the direct child exits.  Every group member already got
-the group SIGTERM, but a descendant that ignores SIGTERM and outlives its
-leader is not waited for: the exit-status rules below preserve the leader's
-status instead.  Make the leader wait for its workers (or keep a wrapper
-process alive) if that case is possible in the workload.
+Supervision ends when the direct child has been reaped AND the supervised
+tree is empty (process group empty AND cgroup member list empty when a
+cgroup is active, plus a best-effort descendant sweep when it is not).
+After the child exits the supervisor keeps monitoring until the tree
+drains or the hard deadline; survivors at the hard deadline go through
+the hard-kill path (SIGKILL the group plus a cgroup/descendant sweep and
+a bounded post-kill wait) and the run is reported as hard_killed (137),
+never as a success.  On Linux the tree is contained in a dedicated
+cgroup (spo-sup-<supervisorpid>) so descendants that call setsid(2) are
+still swept; without a writable cgroup the supervisor falls back to a
+group kill plus a best-effort ppid-chain sweep and records that the gap
+is explicit.  Known residual on cgroup-less platforms: a descendant that
+is forked, re-sessioned AND orphaned (leader reaped) inside a single
+50 ms poll interval is never snapshotted and cannot be linked back
+afterwards; production workloads (servers, trainers, probes) live far
+longer than that window.
 
 Files
 -----
@@ -70,6 +81,22 @@ start, at each signal, and after the child exits).  Keys:
     soft_stop_delivery / hard_kill_delivery
                         sent | leader_only | not_found | not_permitted |
                         refused_unsafe_pgid
+    cgroup              "v2" | "v1" on success;
+                        "unavailable: <reason>" when containment setup failed;
+                        "unsupported-platform" when there is no usable cgroup
+                        (non-Linux or unwritable) and the supervisor fell back
+                        to group-kill plus a best-effort descendant sweep.
+    cgroup_path         dedicated cgroup directory or null when disabled.
+    cgroup_drained      true when the cgroup member list (or, when disabled,
+                        the whole supervised tree) is empty at finish.
+    group_drained       true when no process-group member survives at finish.
+    remaining_pids      best-effort sorted list of tree survivors at finish
+                        (empty when drained).
+    tree_pids_at_child_exit / group_pids_at_child_exit
+                        best-effort snapshot taken when the direct child was
+                        first observed reaped while the tree was still
+                        non-empty; proves the supervisor did not finish at
+                        leader exit but waited for the drain / hard kill.
 
 The log is opened in append mode ("ab"), so reusing a path preserves earlier
 output; use a fresh path per session if that is not wanted.  The supervisor
@@ -107,10 +134,14 @@ JSON then stays in its last state, which is why it is refreshed at every
 transition, and its pid/pgid identify the group an external cleanup must kill.
 
 The supervisor is a safety net, not a replacement for a workload that handles
-SIGTERM.  It guarantees that the supervised process group is signalled at the
-deadline; it cannot guarantee that the workload has flushed its last
-checkpoint, and it cannot catch a deliberately detached daemon (setsid or a
-double fork).  Anything that must die at the deadline must stay in the group.
+SIGTERM.  It guarantees that the supervised tree (process group plus, on
+Linux, a dedicated cgroup) is signalled at the deadline; it cannot guarantee
+that the workload has flushed its last checkpoint.  A deliberately detached
+daemon that escapes both the process group (setsid) and the cgroup sweep
+(only possible when no writable cgroup was available, recorded explicitly
+as "unsupported-platform" / "unavailable: ...") is best-effort only.
+Anything that must die at the deadline must stay in the group, and on
+Linux the cgroup keeps even setsid escapees killable.
 """
 
 from __future__ import annotations
@@ -139,6 +170,267 @@ EXIT_HARD_KILL = 137
 # Stop requests delivered to the supervisor itself.  A list rather than a flag
 # so a second request during the grace period can force an immediate SIGKILL.
 _STOP_REQUESTS: list[str] = []
+
+
+def _group_pids(pgid: int, exclude: Sequence[int] = ()) -> list[int]:
+    """Best-effort list of live pids in process group pgid."""
+    excluded = set(exclude)
+    if os.path.isdir("/proc"):
+        found: list[int] = []
+        try:
+            entries = os.listdir("/proc")
+        except OSError:
+            entries = []
+        for entry in entries:
+            if not entry.isdigit():
+                continue
+            pid = int(entry)
+            if pid in excluded or pid <= 1:
+                continue
+            try:
+                if os.getpgid(pid) == pgid:
+                    found.append(pid)
+            except (ProcessLookupError, PermissionError, OSError):
+                continue
+        return found
+    try:
+        out = subprocess.run(
+            ["ps", "-e", "-o", "pid=,pgid="],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if out.returncode != 0:
+        return []
+    found = []
+    for line in out.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        try:
+            pid, pg = int(parts[0]), int(parts[1])
+        except ValueError:
+            continue
+        if pg == pgid and pid not in excluded and pid > 1:
+            found.append(pid)
+    return found
+
+
+def _ppid_map() -> dict[int, int]:
+    """Best-effort pid -> ppid table (Linux /proc, else ps)."""
+    table: dict[int, int] = {}
+    if os.path.isdir("/proc"):
+        try:
+            entries = os.listdir("/proc")
+        except OSError:
+            return table
+        for entry in entries:
+            if not entry.isdigit():
+                continue
+            pid = int(entry)
+            try:
+                with open(f"/proc/{pid}/stat") as handle:
+                    data = handle.read()
+            except (OSError, ValueError):
+                continue
+            tail = data.rfind(")")
+            if tail == -1:
+                continue
+            rest = data[tail + 1:].split()
+            if len(rest) < 2:
+                continue
+            try:
+                table[pid] = int(rest[1])
+            except ValueError:
+                continue
+        return table
+    try:
+        out = subprocess.run(
+            ["ps", "-e", "-o", "pid=,ppid="],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return table
+    if out.returncode != 0:
+        return table
+    for line in out.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        try:
+            table[int(parts[0])] = int(parts[1])
+        except ValueError:
+            continue
+    return table
+
+
+def _descendant_pids(root_pid: int) -> list[int]:
+    """Best-effort descendants of root_pid by walking ppid chains."""
+    table = _ppid_map()
+    if not table:
+        return []
+    children: dict[int, list[int]] = {}
+    for pid, ppid in table.items():
+        children.setdefault(ppid, []).append(pid)
+    visited = {root_pid}
+    queue = list(children.get(root_pid, []))
+    result: list[int] = []
+    while queue:
+        pid = queue.pop()
+        if pid in visited or pid <= 1:
+            continue
+        visited.add(pid)
+        result.append(pid)
+        queue.extend(children.get(pid, []))
+    return result
+
+
+def _cgroup_pids(cgroup_path: str | None, version: str | None) -> list[int]:
+    """Best-effort member list of the dedicated cgroup (empty when disabled)."""
+    if not cgroup_path or version not in ("v1", "v2"):
+        return []
+    names = ["cgroup.procs"] if version == "v2" else ["tasks", "cgroup.procs"]
+    for name in names:
+        try:
+            with open(os.path.join(cgroup_path, name)) as handle:
+                data = handle.read()
+        except OSError:
+            continue
+        pids: list[int] = []
+        for token in data.split():
+            try:
+                pid = int(token)
+            except ValueError:
+                continue
+            if pid > 1:
+                pids.append(pid)
+        return pids
+    return []
+
+
+def _cgroup_signal(cgroup_path: str | None, version: str | None,
+                   sig: signal.Signals) -> int:
+    """Best-effort signal of every cgroup member.  Returns count signalled."""
+    if not cgroup_path or version not in ("v1", "v2"):
+        return 0
+    # v2 fast path for SIGKILL; SIGTERM still needs per-pid signals because
+    # cgroup.kill always issues SIGKILL.
+    if version == "v2" and sig == signal.SIGKILL:
+        kill_file = os.path.join(cgroup_path, "cgroup.kill")
+        if os.path.exists(kill_file):
+            try:
+                with open(kill_file, "w") as handle:
+                    handle.write("1")
+            except OSError:
+                pass
+    count = 0
+    for pid in _cgroup_pids(cgroup_path, version):
+        try:
+            os.kill(pid, sig)
+            count += 1
+        except (ProcessLookupError, PermissionError, OSError):
+            continue
+    return count
+
+
+def _setup_cgroup(child_pid: int) -> dict[str, Any]:
+    """Create spo-sup-<supervisorpid> and enrol the child.  Best effort."""
+    if sys.platform != "linux":
+        return {"cgroup": "unsupported-platform",
+                "cgroup_path": None, "version": None}
+    if not os.path.isdir("/sys/fs/cgroup"):
+        return {"cgroup": "unsupported-platform",
+                "cgroup_path": None, "version": None}
+    # cgroup v2: single hierarchy, membership via cgroup.procs.
+    try:
+        if os.path.exists("/sys/fs/cgroup/cgroup.controllers"):
+            path = f"/sys/fs/cgroup/spo-sup-{os.getpid()}"
+            try:
+                os.mkdir(path, 0o755)
+            except FileExistsError:
+                pass
+            except OSError as exc:
+                return {"cgroup": f"unavailable: mkdir {path}: "
+                                  f"{exc.strerror or exc}",
+                        "cgroup_path": None, "version": None}
+            try:
+                with open(os.path.join(path, "cgroup.procs"), "w") as handle:
+                    handle.write(str(child_pid))
+            except OSError as exc:
+                try:
+                    os.rmdir(path)
+                except OSError:
+                    pass
+                return {"cgroup": f"unavailable: write cgroup.procs: "
+                                  f"{exc.strerror or exc}",
+                        "cgroup_path": None, "version": None}
+            return {"cgroup": "v2", "cgroup_path": path, "version": "v2"}
+    except OSError as exc:
+        return {"cgroup": f"unavailable: {exc.strerror or exc}",
+                "cgroup_path": None, "version": None}
+    # cgroup v1: per-controller hierarchy; use a writable memory controller.
+    candidates: list[str] = []
+    try:
+        mem = "/sys/fs/cgroup/memory"
+        if os.path.isdir(mem):
+            candidates.append(mem)
+        else:
+            try:
+                for entry in os.listdir("/sys/fs/cgroup"):
+                    if "memory" in entry:
+                        full = os.path.join("/sys/fs/cgroup", entry)
+                        if os.path.isdir(full):
+                            candidates.append(full)
+            except OSError:
+                pass
+        if not candidates:
+            return {"cgroup": "unavailable: no cgroup v2 marker and no v1 "
+                              "memory controller found",
+                    "cgroup_path": None, "version": None}
+        last_err: Any = "unknown error"
+        for base in candidates:
+            path = os.path.join(base, f"spo-sup-{os.getpid()}")
+            try:
+                os.mkdir(path, 0o755)
+            except OSError as exc:
+                last_err = exc.strerror or exc
+                continue
+            written = False
+            for name in ("cgroup.procs", "tasks"):
+                target = os.path.join(path, name)
+                if not os.path.exists(target):
+                    continue
+                try:
+                    with open(target, "w") as handle:
+                        handle.write(str(child_pid))
+                    written = True
+                    break
+                except OSError as exc:
+                    last_err = exc.strerror or exc
+                    continue
+            if not written:
+                try:
+                    os.rmdir(path)
+                except OSError:
+                    pass
+                continue
+            return {"cgroup": "v1", "cgroup_path": path, "version": "v1"}
+        return {"cgroup": f"unavailable: cannot create cgroup under v1 "
+                          f"memory controller ({last_err})",
+                "cgroup_path": None, "version": None}
+    except OSError as exc:
+        return {"cgroup": f"unavailable: {exc.strerror or exc}",
+                "cgroup_path": None, "version": None}
+
+
+def _cleanup_cgroup(cgroup_path: str | None) -> None:
+    """Remove the dedicated cgroup dir (best effort, after empty)."""
+    if not cgroup_path:
+        return
+    try:
+        os.rmdir(cgroup_path)
+    except OSError:
+        pass
 
 
 class UsageError(ValueError):
@@ -245,15 +537,50 @@ def _spawn(command: Sequence[str], log_path: Path) -> subprocess.Popen[bytes]:
         )
 
 
-def _kill_now(proc: subprocess.Popen[bytes]) -> None:
+def _kill_now(proc: subprocess.Popen[bytes],
+              cgroup_path: str | None = None,
+              cgroup_version: str | None = None) -> None:
     """Last-resort cleanup when supervision cannot continue (setup failure)."""
     try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
+        pgid = proc.pid
+        if pgid > 1 and pgid != os.getpgrp():
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        else:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+    except (ProcessLookupError, PermissionError, OSError):
         try:
             proc.kill()
         except OSError:
             pass
+    else:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    _cgroup_signal(cgroup_path, cgroup_version, signal.SIGKILL)
+    # Best-effort descendant sweep (covers group members that already left
+    # the group when no cgroup is active).
+    try:
+        for pid in _group_pids(proc.pid, exclude=(os.getpid(),)):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                continue
+        for pid in _descendant_pids(proc.pid):
+            if pid <= 1 or pid == os.getpid():
+                continue
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                continue
+    except OSError:
+        pass
     try:
         proc.wait(timeout=REAP_SECONDS)
     except (subprocess.TimeoutExpired, KeyboardInterrupt):
@@ -314,6 +641,134 @@ def _supervise(
     pgid = int(record["pgid"])
     soft_deadline = start_mono + (budget - grace)
     hard_deadline = start_mono + budget
+    supervisor_pid = os.getpid()
+    known_pids: set[int] = set()
+    try:
+        known_pids.add(int(proc.pid))
+    except (TypeError, ValueError):
+        pass
+
+    def cgroup_path() -> str | None:
+        value = record.get("cgroup_path")
+        return str(value) if value else None
+
+    def cgroup_version() -> str | None:
+        value = record.get("cgroup")
+        if value in ("v1", "v2"):
+            return str(value)
+        return None
+
+    def cgroup_enabled() -> bool:
+        return bool(cgroup_path() and cgroup_version() in ("v1", "v2"))
+
+    def group_members() -> list[int]:
+        return _group_pids(pgid, exclude=(supervisor_pid,))
+
+    def tree_pids() -> list[int]:
+        """Union of group members, cgroup members, and known descendants."""
+        members: set[int] = set()
+        try:
+            members.update(group_members())
+        except OSError:
+            pass
+        if cgroup_enabled():
+            try:
+                members.update(_cgroup_pids(cgroup_path(), cgroup_version()))
+            except OSError:
+                pass
+        child_alive = proc.poll() is None
+        if child_alive:
+            # Snapshot while the child lives: after it is reaped, orphans
+            # reparent (ppid 1) so a fresh ppid walk from the dead root finds
+            # nothing.  The snapshot preserves setsid escapees observed
+            # before the exit for the post-exit sweep.
+            try:
+                for pid in _descendant_pids(proc.pid):
+                    known_pids.add(pid)
+            except OSError:
+                pass
+            try:
+                for pid in group_members():
+                    known_pids.add(pid)
+            except OSError:
+                pass
+        survivors: set[int] = set(members)
+        for pid in list(known_pids):
+            if pid == supervisor_pid or pid <= 1:
+                known_pids.discard(pid)
+                continue
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                known_pids.discard(pid)
+                continue
+            except PermissionError:
+                pass
+            except OSError:
+                pass
+            survivors.add(pid)
+        survivors.discard(supervisor_pid)
+        return sorted(survivors)
+
+    def tree_empty() -> bool:
+        return len(tree_pids()) == 0
+
+    def sweep_tree(sig: signal.Signals) -> None:
+        """Best-effort signal of the whole tree (group + cgroup + known)."""
+        deliver(sig)
+        if cgroup_enabled():
+            try:
+                _cgroup_signal(cgroup_path(), cgroup_version(), sig)
+            except OSError:
+                pass
+        try:
+            for pid in tree_pids():
+                if pid == supervisor_pid or pid <= 1:
+                    continue
+                try:
+                    os.kill(pid, sig)
+                except (ProcessLookupError, PermissionError, OSError):
+                    continue
+        except OSError:
+            pass
+
+    def update_drain_records() -> None:
+        try:
+            group_now = group_members()
+        except OSError:
+            group_now = []
+        if cgroup_enabled():
+            try:
+                cgroup_now = _cgroup_pids(cgroup_path(), cgroup_version())
+            except OSError:
+                cgroup_now = []
+            record["cgroup_drained"] = len(cgroup_now) == 0
+        else:
+            try:
+                record["cgroup_drained"] = len(tree_pids()) == 0
+            except OSError:
+                record["cgroup_drained"] = False
+        try:
+            remaining = tree_pids()
+        except OSError:
+            remaining = []
+        record["group_drained"] = len(group_now) == 0
+        record["remaining_pids"] = remaining
+
+    def wait_for_drain(deadline_mono: float) -> str:
+        """Wait until the tree is empty or deadline_mono.  Returns a tag."""
+        while True:
+            if tree_empty():
+                return "drained"
+            if _STOP_REQUESTS:
+                return "stop"
+            remaining = deadline_mono - time.monotonic()
+            if remaining <= 0:
+                return "timeout"
+            try:
+                time.sleep(min(POLL_SECONDS, remaining))
+            except KeyboardInterrupt:
+                return "keyboard"
 
     def now_unix() -> float:
         # Derive wall-clock times from the monotonic clock so a system clock
@@ -364,11 +819,64 @@ def _supervise(
             if record.get("soft_stop_sent_unix") is not None
             else "exited"
         )
+        update_drain_records()
         return finish(code, state)
+
+    def finish_after_exit(wait_code: int) -> int:
+        """Drain-aware completion once the direct child has been reaped."""
+        try:
+            initial_tree = tree_pids()
+        except OSError:
+            initial_tree = []
+        try:
+            initial_group = group_members()
+        except OSError:
+            initial_group = []
+        if initial_tree:
+            # Durable proof the supervisor saw survivors instead of
+            # finishing at leader exit (P1a).
+            record["tree_pids_at_child_exit"] = list(initial_tree)
+            record["group_pids_at_child_exit"] = list(initial_group)
+            update_drain_records()
+            persist()
+        else:
+            return finish_exit(wait_code)
+        # The leader is gone but the tree is not: keep the clock.  When the
+        # soft stop has not been sent yet, an early drain still wins; at the
+        # soft deadline the survivors get SIGTERM; at the hard deadline they
+        # get SIGKILL and the run is reported as hard_killed, never success.
+        if record.get("soft_stop_sent_unix") is None:
+            now = time.monotonic()
+            if now < soft_deadline:
+                outcome = wait_for_drain(soft_deadline)
+                if outcome == "drained":
+                    return finish_exit(wait_code)
+                if outcome == "stop":
+                    return hard_kill(_STOP_REQUESTS.pop(0))
+                if outcome == "keyboard":
+                    return hard_kill("keyboard_interrupt")
+            if tree_empty():
+                return finish_exit(wait_code)
+            if _STOP_REQUESTS:
+                return hard_kill(_STOP_REQUESTS.pop(0))
+            record["soft_stop_sent_unix"] = round(now_unix(), 3)
+            record["soft_stop_delivery"] = deliver(signal.SIGTERM)
+            sweep_tree(signal.SIGTERM)
+            record["state"] = "soft_stopped"
+            persist()
+        outcome = wait_for_drain(hard_deadline)
+        if outcome == "drained":
+            return finish_exit(wait_code)
+        if outcome == "stop":
+            return hard_kill(_STOP_REQUESTS.pop(0))
+        if outcome == "keyboard":
+            return hard_kill("keyboard_interrupt")
+        return hard_kill(None)
 
     def hard_kill(forced_by: str | None) -> int:
         record["hard_kill_sent_unix"] = round(now_unix(), 3)
         record["hard_kill_delivery"] = deliver(signal.SIGKILL)
+        sweep_tree(signal.SIGKILL)
         record["escalated"] = True
         record["state"] = "hard_killed"
         record["exit_code"] = EXIT_HARD_KILL
@@ -385,13 +893,36 @@ def _supervise(
             wait_code = None
         except KeyboardInterrupt:
             wait_code = None
+        # Bounded post-kill sweep: the leader may be reaped while group or
+        # cgroup orphans (including setsid escapees) survive.  Loop the sweep
+        # until the tree is empty or the bound expires, with short sleeps.
+        post_deadline = time.monotonic() + REAP_SECONDS
+        while True:
+            if tree_empty():
+                break
+            if time.monotonic() >= post_deadline:
+                try:
+                    sweep_tree(signal.SIGKILL)
+                except OSError:
+                    pass
+                break
+            try:
+                sweep_tree(signal.SIGKILL)
+            except OSError:
+                pass
+            try:
+                time.sleep(POLL_SECONDS)
+            except KeyboardInterrupt:
+                break
         record["wait_code"] = wait_code
         record["reaped"] = wait_code is not None
+        update_drain_records()
         return finish(EXIT_HARD_KILL, "hard_killed")
 
     def soft_stop(trigger: str | None) -> int:
         record["soft_stop_sent_unix"] = round(now_unix(), 3)
         record["soft_stop_delivery"] = deliver(signal.SIGTERM)
+        sweep_tree(signal.SIGTERM)
         record["state"] = "soft_stopped"
         if trigger is not None:
             record["interrupted_by"] = trigger
@@ -403,7 +934,7 @@ def _supervise(
         while True:
             wait_code = proc.poll()
             if wait_code is not None:
-                return finish_exit(wait_code)
+                return finish_after_exit(wait_code)
             if _STOP_REQUESTS:
                 return hard_kill(_STOP_REQUESTS.pop(0))
             remaining = deadline - time.monotonic()
@@ -412,6 +943,13 @@ def _supervise(
             # Short sleeps detect an early exit promptly without busy-spinning
             # (about 20 wakeups/second while waiting).  A second Ctrl-C during
             # the grace cuts it short and forces the hard kill immediately.
+            # Snapshot descendants so post-exit orphans stay findable after
+            # they reparent.
+            try:
+                for pid in _descendant_pids(proc.pid):
+                    known_pids.add(pid)
+            except OSError:
+                pass
             try:
                 time.sleep(min(POLL_SECONDS, remaining))
             except KeyboardInterrupt:
@@ -423,7 +961,7 @@ def _supervise(
         while True:
             wait_code = proc.poll()
             if wait_code is not None:
-                return finish_exit(wait_code)
+                return finish_after_exit(wait_code)
             if _STOP_REQUESTS:
                 trigger = _STOP_REQUESTS.pop(0)
                 record["interrupted_unix"] = round(now_unix(), 3)
@@ -431,6 +969,11 @@ def _supervise(
             remaining = soft_deadline - time.monotonic()
             if remaining <= 0:
                 break
+            try:
+                for pid in _descendant_pids(proc.pid):
+                    known_pids.add(pid)
+            except OSError:
+                pass
             try:
                 time.sleep(min(POLL_SECONDS, remaining))
             except KeyboardInterrupt:
@@ -442,10 +985,11 @@ def _supervise(
                 break
 
         # Re-check: the child may have exited exactly on the soft deadline, in
-        # which case it is a normal exit and no signal is sent.
+        # which case a drained tree is a normal exit; survivors still wait
+        # for the drain / hard kill instead of finishing at leader exit.
         wait_code = proc.poll()
         if wait_code is not None:
-            return finish_exit(wait_code)
+            return finish_after_exit(wait_code)
         return soft_stop(trigger)
     except KeyboardInterrupt:
         # Fallback for an interrupt raised outside the sleep sites (e.g.
@@ -454,23 +998,17 @@ def _supervise(
         # sent, escalate immediately instead of waiting another grace.
         wait_code = proc.poll()
         if wait_code is not None:
-            return finish_exit(wait_code)
+            return finish_after_exit(wait_code)
         if record.get("soft_stop_sent_unix") is None:
             record["interrupted_unix"] = round(now_unix(), 3)
             return soft_stop("keyboard_interrupt")
         return hard_kill("keyboard_interrupt")
     except BaseException:
         # A supervisor bug must never leave the session running past its
-        # budget.  Kill the group, then let the original error propagate.
+        # budget.  Kill the tree, then let the original error propagate.
         try:
+            sweep_tree(signal.SIGKILL)
             if proc.poll() is None:
-                try:
-                    os.killpg(pgid, signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
-                    try:
-                        proc.kill()
-                    except OSError:
-                        pass
                 try:
                     proc.wait(timeout=REAP_SECONDS)
                 except (subprocess.TimeoutExpired, KeyboardInterrupt):
@@ -565,6 +1103,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     # also the process-group id.
     record["pid"] = proc.pid
     record["pgid"] = proc.pid
+    # Contain the tree in a dedicated cgroup (Linux only, best effort) so
+    # setsid escapees are still swept.  Enrol immediately: grandchildren
+    # forked after this inherit membership, including across setsid.
+    cgroup_info = _setup_cgroup(proc.pid)
+    record["cgroup"] = cgroup_info.get("cgroup")
+    record["cgroup_path"] = cgroup_info.get("cgroup_path")
+    record["cgroup_drained"] = False
+    record["group_drained"] = False
+    record["remaining_pids"] = []
     record["state"] = "running"
     try:
         _write_json_atomic(session_file, record)
@@ -575,7 +1122,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     except OSError as exc:
         print(f"session_supervisor: error: cannot write {session_file}: {exc}; "
               "killing the child", file=sys.stderr, flush=True)
-        _kill_now(proc)
+        _kill_now(proc, record.get("cgroup_path"),
+                  (record.get("cgroup")
+                   if record.get("cgroup") in ("v1", "v2") else None))
+        _cleanup_cgroup(record.get("cgroup_path"))
         record["state"] = "session_write_failed"
         record["exit_code"] = EXIT_SUPERVISOR
         record["elapsed_seconds"] = round(time.monotonic() - start_mono, 3)
@@ -588,7 +1138,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         code = _supervise(proc, record, session_file, start_unix, start_mono,
                           budget, grace)
     except KeyboardInterrupt:  # pragma: no cover - _supervise handles this
-        _kill_now(proc)
+        _kill_now(proc, record.get("cgroup_path"),
+                  (record.get("cgroup")
+                   if record.get("cgroup") in ("v1", "v2") else None))
         record["state"] = "supervisor_error"
         record["exit_code"] = EXIT_HARD_KILL
         record["escalated"] = True
@@ -600,6 +1152,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         except OSError:
             pass
         code = EXIT_HARD_KILL
+    finally:
+        # Remove the dedicated cgroup dir on clean exit (best effort, after
+        # empty — rmdir fails while members remain, which is fine).
+        _cleanup_cgroup(record.get("cgroup_path"))
 
     _print_summary(record, session_file)
     return code

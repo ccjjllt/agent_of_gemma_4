@@ -512,10 +512,10 @@ class _BudgetWriter:
         self._condition = threading.Condition(threading.RLock())
         self._pending: float | None = None
         self._inflight: float | None = None
-        # Signal-handler fallback: set value first, then bump the sequence, so
-        # a writer that observes the new sequence also sees the new value.
-        self._signal_value: float | None = None
-        self._signal_seq = 0
+        # Signal-handler fallback: one atomic slot (seq, value). The tuple
+        # reference is replaced in a single assignment and read in a single
+        # load, so a reader can never pair a stale value with a newer seq.
+        self._signal_slot: tuple[int, float | None] = (0, None)
         self._signal_seen = 0
         self._last_written: float | None = None
         self._closed = False
@@ -526,6 +526,14 @@ class _BudgetWriter:
     @staticmethod
     def _higher(current: float | None, value: float) -> float:
         return value if current is None else max(current, value)
+
+    def _store_signal(self, value: float) -> None:
+        """Record a value without taking the writer lock (never blocks)."""
+        seq, current = self._signal_slot  # single atomic load
+        if current is not None and value <= current:
+            return  # slot already covers this submission
+        merged = value if current is None else max(current, value)
+        self._signal_slot = (seq + 1, merged)  # single atomic store
 
     def submit(self, consumed_seconds: float, *, from_signal: bool = False) -> None:
         """Offer a value without blocking; the writer keeps the largest one."""
@@ -542,19 +550,27 @@ class _BudgetWriter:
         if from_signal:
             # A heartbeat/main-thread submit holds the lock for a few
             # instructions; record the value without waiting for it.
-            self._signal_value = value
-            self._signal_seq += 1
+            self._store_signal(value)
             return
-        with self._condition:
-            if self._closed:
-                return
-            self._pending = self._higher(self._pending, value)
-            self._condition.notify()
+        # Brief bounded wait: the holder only keeps the lock for a few
+        # instructions, so a normal caller almost always joins _pending
+        # instead of falling back to the signal slot. Never blocks beyond
+        # the timeout; the fallback below stays non-blocking.
+        if self._condition.acquire(blocking=True, timeout=0.05):
+            try:
+                if self._closed:
+                    return
+                self._pending = self._higher(self._pending, value)
+                self._condition.notify()
+            finally:
+                self._condition.release()
+            return
+        self._store_signal(value)
 
     def _drained(self) -> bool:
         return (self._closed
                 or (self._pending is None and self._inflight is None
-                    and self._signal_seen == self._signal_seq))
+                    and self._signal_seen == self._signal_slot[0]))
 
     def flush(self, timeout: float = 5.0) -> bool:
         """Wait until all submitted values are on disk; never unbounded."""
@@ -583,15 +599,21 @@ class _BudgetWriter:
         while True:
             with self._condition:
                 while (not self._closed and self._pending is None
-                       and self._signal_seen == self._signal_seq):
-                    self._condition.wait()
+                       and self._signal_seen == self._signal_slot[0]):
+                    # Poll: a signal-slot store cannot notify (it never holds
+                    # this lock), so wake periodically to observe it.
+                    self._condition.wait(timeout=0.05)
                 if self._closed:
                     return
                 value = self._pending
                 self._pending = None
-                if self._signal_seen != self._signal_seq:
-                    signal_value = self._signal_value
-                    self._signal_seen = self._signal_seq
+                slot = self._signal_slot  # single atomic load
+                seq_read, signal_value = slot
+                if self._signal_seen != seq_read:
+                    # Acknowledge exactly the generation that was read; a
+                    # concurrent store leaves a newer seq pending for the next
+                    # pass instead of being dropped with a stale value.
+                    self._signal_seen = seq_read
                     if signal_value is not None:
                         value = self._higher(value, signal_value)
                 if value is None:
