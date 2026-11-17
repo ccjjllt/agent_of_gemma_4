@@ -1,0 +1,209 @@
+# Long SPO run plan at rank 128 (prepared 2026-11-18, NOT yet launched).
+# Same capacity and reward family as the measured 2026-11-17 five-step run:
+# rank 128 / alpha 256, v3 reward, same vLLM/learner dependency environment and
+# the same 16,384 action-token sampling target. What changes is the public task
+# pool (12 tasks: the comparable six plus six additional public tasks), the
+# number of optimizer steps and the session budget. This broadens task coverage
+# but keeps the per-step 16,384-token budget and only ~6 updates, so it does not
+# by itself answer a "too little training" concern; a 10 h run remains a
+# separate later decision.
+# The external supervisor owns a 21600 s (6 h) budget including vLLM load;
+# walltime_seconds stops the run first with a 1200 s margin. Every task in the
+# pool is also trained on, so any comparison is in-sample, not heldout.
+algorithm = "single_stream_spo"
+
+[policy]
+model_name = "google/gemma-4-31B-it-qat-q4_0-unquantized"
+model_path = "/autodl-fs/data"
+model_revision = "1e4d8beecacb8b7590c1d8bedd7335f687bf311f"
+model_source_uri = "https://huggingface.co/google/gemma-4-31B-it-qat-q4_0-unquantized/tree/1e4d8beecacb8b7590c1d8bedd7335f687bf311f"
+response_parser = "official_vllm_gemma4_0_19_1"
+lora_rank = 128
+lora_alpha = 256
+lora_dropout = 0.0
+adapter_export_dtype = "bfloat16"
+max_context = 32768
+device_map = "balanced"
+# 64 is the memory-safe default. Profile 64/128/256 on A800 before raising;
+# _public_stats records the actual value used.
+logprob_chunk_size = 64
+seed = 3407
+
+[run]
+# Six updates is the planning maximum for one 6 h session after allowing for a
+# larger pool: measured steps at six tasks were 1,415-2,012 s (23.6-33.5 min);
+# a 1.3x planning margin for 8 concurrent distinct tasks gives ~2,615.6 s
+# (43.6 min) per step. 6 x 2,615.6 + 900 s startup + 600 s finish = 17,193.6 s,
+# below the 20,400 s walltime. A seventh step would leave < 10 min of slack.
+max_batches = 6
+walltime_seconds = 20400
+# Stop dispatching new rollouts with 15 min left: one 8 min task plus final
+# drain/finalize. Measured drain did not exceed this in the five-step run.
+update_reserve_seconds = 900
+# No new optimizer step starts unless 50 min remain: the 43.6 min planning
+# worst case plus teardown. The previous 1,800 s guard was shorter than the
+# measured 2,012 s worst step and is not safe for a broader pool.
+update_min_seconds = 3000
+# After the first SIGTERM during an optimizer step, hard-exit with code 75
+# once this grace expires; a repeated SIGTERM exits immediately. The external
+# session supervisor still owns the hard deadline.
+sigterm_grace_seconds = 60
+# The checkpoint is rewritten atomically (same-size temporary + rename), so a
+# rank-128 run needs ~21.7 GiB free in its own directory. The 50 GB data disk
+# has only ~14 GB free, so the checkpoint stays on the shared volume; the run
+# directory keeps only adapters, the ledger and events. Measured write speed
+# 147 MB/s (~75 s per 10.8 GiB checkpoint).
+checkpoint_dir = "/root/autodl-fs/spo-checkpoints/spo-v3-long-r128-20261118"
+# At normal completion keep the explicit mid-run/final versions, drop the
+# remaining adapter versions and the external checkpoint.
+prune_finished_artifacts = true
+# Bound local adapter growth during the run. Published versions are ~1.94 GB
+# each; a six-step run without pruning would hold ~13.6 GB. Keep v3 for a
+# mid-run evaluation and v6 as the final policy; the active version, the last
+# keep_recent_adapters versions and pinned versions are always retained, and
+# v0 (genesis) is kept by the conservative provenance rule. This bounds the
+# run to about four version directories plus one staging copy (~9.7 GB).
+# Workspaces are tiny on this workload (3.7 MB for 21 trajectories in the
+# 2026-11-17 run); requests/endpoint/staging are the other transient users.
+in_run_prune = true
+keep_adapter_versions = [3, 6]
+keep_recent_adapters = 1
+# Same worker count as the measured run. With 12 tasks the scheduler can now
+# keep all eight workers on distinct tasks instead of cycling six.
+max_cpu_workers = 8
+max_worker_retries = 1
+
+[inference]
+engine = "vllm"
+base_url = "http://127.0.0.1:8000"
+# The server must be launched with --served-model-name equal to this value.
+served_model_name = "google/gemma-4-31B-it-qat-q4_0-unquantized"
+# Maximum concurrent whole-completion requests; vLLM batches natively, so
+# this is an in-flight cap, not a decode batch size.
+max_inflight = 16
+# Whole-completion HTTP wait; 16K-token rollouts take far longer than the
+# 30-second health/control default. This is a client timeout, not a token cap.
+generation_timeout_seconds = 1800
+# Deployment contract (server side): vLLM OpenAI server serving
+# policy.model_path with tensor_parallel_size 2, dynamic LoRA enabled
+# (VLLM_ALLOW_RUNTIME_LORA_UPDATING=True), at least two LoRA slots with
+# --max-lora-rank 128, and Level-2 sleep enabled
+# (VLLM_SERVER_DEV_MODE=1 --enable-sleep-mode).
+# run_spo verifies /server_info, /v1/models and the sleep endpoints before any
+# rollout. The server launch command lives in training/README.md.
+tensor_parallel_size = 2
+colocated = true
+# Prefix caching is required for the agent loop: without it every turn
+# re-prefills the whole conversation (~27 s/call on 2xA800) and the 8-minute
+# official session budget is exhausted after ~20 tool calls. The backend
+# sends cache_salt=adapter_sha256, so cached blocks are namespaced per adapter
+# version; vLLM 0.32 accepts the field (verified 200 on /v1/completions).
+enable_prefix_cache = true
+return_token_ids = true
+return_logprobs = true
+require_runtime_lora = true
+require_sleep_mode = true
+sleep_level = 2
+max_loras = 2
+lora_name_prefix = "spo"
+control_timeout_seconds = 600
+
+[spo]
+# Same sampling budget as the measured run. With 12 tasks this means each
+# update covers only part of the pool; per-task coverage is intentionally
+# sparse and is not a substitute for the fixed six-task evaluation.
+target_action_tokens = 16384
+max_policy_lag = 2
+ppo_epochs = 1
+clip_epsilon = 0.2
+clip_epsilon_high = 0.28
+advantage_epsilon = 0.000001
+# All eligible trajectories can train, including negative examples.
+value_prior = 0.5
+success_prior = 0.5
+prior_strength = 1.0
+kl_half_life = 0.05
+sampling_epsilon = 0.05
+# Exact-prefix training tree. lcp_greedy keeps the exact per-call occurrences
+# but prefers the longest shared prefix within a small lookahead window.
+training_prefix_reuse = "tree"
+training_prefix_grouping = "lcp_greedy"
+training_prefix_lookahead = 8
+training_prefix_max_calls = 4
+training_prefix_min_tokens = 256
+training_prefix_query_chunk_size = 256
+# "none" exists only for a measured memory-safe pilot; keep full checkpointing
+# until the A800 profile shows activation memory headroom.
+training_tree_checkpoint_policy = "all"
+profile_training_timing = true
+
+[optimizer]
+type = "fused_adamw"
+learning_rate = 0.000005
+max_grad_norm = 1.0
+gradient_checkpointing = true
+
+[rewards]
+objective_version = "official_differential_spo_v3"
+success_efficiency_weight = 0.05
+
+[adapter]
+double_buffer = true
+allow_resident_pair = false
+
+[data]
+# Public official pool only. The first six are the measured 2026-11-17 pool
+# (all six produced complete official verdicts, 21/21 trajectories). The six
+# additions are public tasks with bounded gold/test patches from the same
+# repositories. Their independent CPU-only empty-patch baseline probes on
+# 2026-11-18 were all healthy under the current runtime (complete/valid verdict,
+# JUnit available, no infrastructure error, two expected universes; see
+# results/longpool-probe-20261118/summary.json). Baseline health does not
+# guarantee that the model can solve a task. Selection used only public
+# instance metadata, patch/test line counts, and those probe results; no task
+# text, reference patch, or heldout data. Repo split: fastapi 5, requests 3,
+# rich 4.
+task_ids = [
+  "fastapi_14258",
+  "requests_7205",
+  "requests_7315",
+  "rich_3782",
+  "rich_4070",
+  "rich_4076",
+  "fastapi_14487",
+  "fastapi_14349",
+  "fastapi_14430",
+  "fastapi_14360",
+  "requests_7427",
+  "rich_4075",
+]
+exclude_task_ids = []
+
+[runtime]
+python = "/opt/gemma-runtime/bin/python"
+sandbox_baseline_python = "/opt/gemma-sandbox-baseline/bin/python"
+# Test-only public wheels absent from the official cache (inline-snapshot,
+# dirty-equals, attrs). Copied into each task's sandbox wheel directory; the
+# official wheel cache and source directory are never modified.
+extra_wheels = "/root/autodl-tmp/gemma4/wheels-extra"
+sandbox = "subprocess"
+sandbox_root = "/root/autodl-tmp/gemma4/sandboxes"
+port = 0
+session_clock = "queue_excluded"
+event_summarizer = "official"
+queue_timing_poll_seconds = 0.2
+
+[runtime.evaluation]
+timeout_seconds = 300
+verification_timeout_seconds = 300
+max_tool_calls = 28
+max_time_minutes = 8.0
+max_turns = 50
+
+[sampling]
+temperature = 1.0
+top_p = 1.0
+top_k = 0
+# Native vLLM max_tokens per request (stock default 16 would silently truncate
+# rollouts). Matches the harness max_output_tokens generation constraint.
+max_new_tokens = 16384
