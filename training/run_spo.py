@@ -336,8 +336,17 @@ def _verify_resume_consistency(run_dir: Path, ledger: Any) -> dict[str, Any]:
             raise RuntimeError(
                 "trainer checkpoint claims completed steps but no adapter is serving")
         if active is not None and active.version == 0 and completed > 0:
-            raise RuntimeError(
-                "trainer checkpoint claims completed steps but serving is still genesis")
+            # Optimizer step finished but publish never completed (crash/OOM
+            # between checkpoint write and ACTIVATED): serving is legitimately
+            # still genesis.  Allow only a single post-step, pre-serve pending
+            # update whose id matches the checkpoint; everything else still
+            # fails closed.
+            post_step = [b for b in ledger.list_updates(
+                ("OPTIMIZED", "EXPORTED", "REGISTERED"))]
+            if (len(post_step) != 1 or _active_update_id(state) != post_step[0].update_id
+                    or completed != len(ledger.list_updates(("CONSUMED",))) + 1):
+                raise RuntimeError(
+                    "trainer checkpoint claims completed steps but serving is still genesis")
     consumed = len(ledger.list_updates(("CONSUMED",)))
     pending = ledger.list_updates(
         ("RESERVED", "LEARNING", "OPTIMIZED", "EXPORTED", "REGISTERED", "ACTIVATED"))
