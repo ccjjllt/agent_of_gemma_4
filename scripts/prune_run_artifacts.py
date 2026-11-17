@@ -52,11 +52,15 @@ def main(argv: list[str] | None = None) -> int:
     except RetentionError as error:
         print(f"error: {error}", file=sys.stderr)
         return 3
-    print(json.dumps({key: record[key] for key in ("total_bytes", "kept_checkpoint", "dry_run")}))
+    print(json.dumps({key: record[key]
+                      for key in ("total_bytes", "file_bytes", "kept_checkpoint", "dry_run")}))
     for item in record["removed"]:
         print(f"  {item['label']:28s} {item['bytes'] / 1e9:8.3f} GB  {item['path']}")
-    print(f"total: {record['total_bytes'] / 1e9:.3f} GB"
+    print(f"total: {record['total_bytes'] / 1e9:.3f} GB unique bytes"
           + (" (dry run)" if args.dry_run else " reclaimed"))
+    if record.get("file_bytes", 0) != record["total_bytes"]:
+        print("note: per-item sizes count hardlinked paths separately; total counts "
+              "each inode once and is the actual reclaim estimate")
     return 0
 
 

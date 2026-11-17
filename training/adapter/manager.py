@@ -162,6 +162,23 @@ class AdapterManager:
         return Path("versions") / self._directory_name(manifest)
 
     @staticmethod
+    def _copy_tree(source: Path, destination: Path) -> None:
+        """Install an immutable tree, preferring hardlinks on one filesystem.
+
+        The exporter writes a full staging copy and the registry then needs the
+        same bytes under ``versions/``. A byte-for-byte second copy would put
+        two full rank-128 adapters on disk during every publish. Hardlinks keep
+        one physical copy when source and destination share a filesystem and
+        fall back to a normal copy across filesystems.
+        """
+        try:
+            shutil.copytree(source, destination, copy_function=os.link)
+        except OSError:
+            if destination.exists():
+                shutil.rmtree(destination)
+            shutil.copytree(source, destination)
+
+    @staticmethod
     def _verify_directory(manifest: AdapterManifest, directory: Path) -> None:
         if not directory.is_dir():
             raise ValueError("adapter source must be a directory")
@@ -354,6 +371,59 @@ class AdapterManager:
             return matches[0]
         raise TypeError("adapter must be a version, SHA256, PolicyVersion, or AdapterManifest")
 
+    def _install(self, manifest: AdapterManifest, directory: Path, *,
+                 activate: bool, require_parent: bool) -> AdapterManifest:
+        with self._lock:
+            if str(manifest.version) in self._registry["versions"]:
+                raise FileExistsError(f"adapter version {manifest.version} is immutable and already registered")
+            if require_parent and manifest.parent_version is not None \
+                    and str(manifest.parent_version) not in self._registry["versions"]:
+                raise ValueError("adapter parent must be registered before its child")
+            self._verify_directory(manifest, directory)
+            relative = self._relative_path(manifest)
+            final = self.root / relative
+            if final.exists():
+                raise FileExistsError(f"immutable adapter destination already exists: {final}")
+            staging = self.versions_dir / f".publish-{uuid.uuid4().hex}"
+            try:
+                self._copy_tree(directory, staging)
+                _atomic_json(staging / MANIFEST_NAME, manifest.to_dict())
+                _sync_directory(staging)
+                staging.rename(final)
+                _sync_directory(self.versions_dir)
+                self._registry["versions"][str(manifest.version)] = {
+                    "manifest": manifest.to_dict(),
+                    "path": relative.as_posix(),
+                    "references": 0,
+                }
+                if activate:
+                    self._registry["active_version"] = manifest.version
+                self._write_registry()
+            except BaseException:
+                # Only temporary publish artifacts may be removed here. An
+                # already committed immutable version is never auto-deleted.
+                if staging.exists():
+                    shutil.rmtree(staging)
+                raise
+            return manifest
+
+    def import_adapter(self, manifest: AdapterManifest, source: str | Path, *,
+                       activate: bool = False) -> AdapterManifest:
+        """Register an adapter produced by an earlier run as this run's base.
+
+        The manifest keeps its published version and sha; only the parent row
+        is allowed to be absent because a new continuation run intentionally
+        starts from one version without importing its whole history. The caller
+        records the source path/version in the run metadata.
+        """
+        if not isinstance(manifest, AdapterManifest):
+            raise TypeError("import_adapter requires an AdapterManifest")
+        directory = Path(source).expanduser().resolve(strict=True)
+        if not directory.is_dir():
+            raise ValueError(f"adapter source is not a directory: {directory}")
+        return self._install(manifest, directory, activate=activate,
+                             require_parent=False)
+
     def publish(self, candidate: AdapterManifest | str | Path,
                 source: str | Path | None = None, *, activate: bool = False) -> AdapterManifest:
         """Install a candidate immutably; optionally move the active pointer.
@@ -377,33 +447,8 @@ class AdapterManager:
             if manifest.parent_version is not None \
                     and str(manifest.parent_version) not in self._registry["versions"]:
                 raise ValueError("adapter parent must be registered before its child")
-            self._verify_directory(manifest, directory)
-            relative = self._relative_path(manifest)
-            final = self.root / relative
-            if final.exists():
-                raise FileExistsError(f"immutable adapter destination already exists: {final}")
-            staging = self.versions_dir / f".publish-{uuid.uuid4().hex}"
-            try:
-                shutil.copytree(directory, staging)
-                _atomic_json(staging / MANIFEST_NAME, manifest.to_dict())
-                _sync_directory(staging)
-                staging.rename(final)
-                _sync_directory(self.versions_dir)
-                self._registry["versions"][str(manifest.version)] = {
-                    "manifest": manifest.to_dict(),
-                    "path": relative.as_posix(),
-                    "references": 0,
-                }
-                if activate:
-                    self._registry["active_version"] = manifest.version
-                self._write_registry()
-            except BaseException:
-                # Only temporary publish artifacts may be removed here. An
-                # already committed immutable version is never auto-deleted.
-                if staging.exists():
-                    shutil.rmtree(staging)
-                raise
-            return manifest
+            return self._install(manifest, directory, activate=activate,
+                                 require_parent=True)
 
     register = publish
 

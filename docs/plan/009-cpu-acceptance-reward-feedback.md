@@ -195,7 +195,7 @@ agent_pytest_collection_failure / agent_pytest_import_failure
 
 本轮同时修复了一个归因缺陷：官方 worker 在验证前失败时结果不含 `task_key`，`training/rollout/engine.py` 的 `_bundle` 直接 `JudgeTaskKey.from_dict(None)` 抛 `TypeError`，把基础设施失败记成奖励错误。修复后的回退只允许验证前失败记录缺 `task_key`；完整可训练报告仍必须携带完整身份（见第 7 节）。
 
-资源与耗时：rollout 阶段显存峰值 76,811/76,767 MiB（94%），训练阶段峰值 62,483/65,923 MiB。预留到训练开始之间等待 **1,482 秒（24.7 分钟）**，包含长尾 rollout、重试、验收和最后一次约 5 分钟的 baseline probe；训练前等待（`run_spo.py` 的 `wait_for_workers()`）当时**没有超时约束**，现有 600 秒 barrier 限制不覆盖它。2026-11-15 上一轮 35,964 token 的更新实测 forward 431.27 秒 + backward 1,242.96 秒（`docs/plan/008-vllm-backend-migration.md` 第 10.2 节）；本轮 19,093 token 在 876 秒内未完成，和该量级一致。这两个数字都不是 11-17 单步耗时。
+资源与耗时：rollout 阶段显存峰值 76,811/76,767 MiB（94%），训练阶段峰值 62,483/65,923 MiB。预留到训练开始之间等待 **1,482 秒（24.7 分钟）**，包含长尾 rollout、重试、验收和最后一次约 5 分钟的 baseline probe；训练前等待（`run_spo.py` 的 `wait_for_workers()`）当时**没有超时约束**，现有 600 秒 barrier 限制不覆盖它。2026-11-15 上一轮 35,964 token 的更新实测 forward 431.27 秒 + backward 1,242.96 秒（本文第 11.2 节）；本轮 19,093 token 在 876 秒内未完成，和该量级一致。这两个数字都不是 11-17 单步耗时。
 
 结论与边界：
 
@@ -354,7 +354,7 @@ python scripts/session_supervisor.py \
 | 含模型加载 | 1,454 秒 = **24.23 分钟** | resume 启动到 `OPTIMIZED` |
 | 最后一次续跑 | 264.85 秒 = **4.4 分钟** | **只回放发布**：`EXPORTED` → `REGISTERED` → `ACTIVATED` → `CONSUMED`，无 optimizer step |
 | 2026-11-16 采样会话 | 2,851 秒 | 60 分钟硬截止被杀，批次仍 `RESERVED`（第 6 节） |
-| 2026-11-15 pilot（不同 run） | 训练窗口 29.26 分钟；冻结到租约 12.84 分钟 | `docs/plan/008-vllm-backend-migration.md` 第 10.2 节；不能套用到 11-17 步 |
+| 2026-11-15 pilot（不同 run） | 训练窗口 29.26 分钟；冻结到租约 12.84 分钟 | 本文第 11.2 节；不能套用到 11-17 步 |
 
 264 秒不是单步耗时，4.4 分钟不能代表“更新完成”。11-17 一步的真实成本是 23.43 分钟优化（含加载 24.23 分钟）；29.26/12.84 只属 2026-11-15 的 pilot run，不能用来描述 11-17 的续跑。
 
@@ -466,8 +466,8 @@ python scripts/prune_run_artifacts.py --run-dir <run> --keep <最终版本>
 **建议先完成以下针对性 CPU 工作，再用短 GPU 会话补测最终模型，不直接原样延长六题 run 到 10 小时：**
 
 1. 补独立于训练循环的已有 adapter 评估入口。使用相同公开六题、相同预算与预先固定的重复次数/种子，对基座、v3、v5 各题先做 3 次采样（共 54 条），逐题报告 resolved 与 P，保存不一致的失败原因；评估轨迹不回流这次优化。仍是训练集诊断，不称独立泛化；3 次重复仅比当前单样本更有信息，不构成显著性保证。基座无需恢复已删的零 adapter 权重，改为直接服务无 LoRA 的已部署基座。**入口已实现并在服务器 CPU 模式完成 base/v3/v5 三次 `--plan-only` 验证（18 条/策略、judge identity 与训练 run 匹配、6/6 task key 精确一致、共享 baseline 6/6 命中）；真实 54 条 GPU 采样尚未执行。**
-2. 处理长 run 的实际磁盘增长。当前只在整场完成后裁剪，运行中 `publish` 复制 adapter，保留 staging 和版本目录；单份权重约 1.94 GB，20 个注册版本本身约 38.8 GB，尚未算 staging、checkpoint 与工作区。当前数据盘空闲 14.60 GB（13.60 GiB），因此只改时长会重新遇到空间问题。需要在已提交且无活跃引用后回收可恢复的重复 staging/旧版本，并为 checkpoint 原子替换留足空间，或扩容本地数据盘；不删仍需评估/恢复的版本。**已实现 `[run] in_run_prune` / `keep_adapter_versions` / `keep_recent_adapters`，并在真实旧 run 上只读验证 registry 可重开（active v5、pruned {0,1,2,4}）与 dry-run 不误删；尚未在新 run 上实跑。**
-3. 若选择延长，使用更广的官方公开题池、预先确定学习率日程和中间/最终评估。保留有效失败轨迹，不重新加入“有正信号才能训练”的限制。若从 v5 继续，需要显式支持已有 adapter 初始化的新 run，并新建优化器与日程、记录父版本；当前没有此入口。旧 run 已完成五步且 checkpoint 已删，不能靠 `--resume --additional-walltime-seconds` 无缝续成更多步。**12 题/6 步/6 小时的配置与计划已备好（`configs/spo_v3_long_rank128_20261118.toml`、`docs/plan/013`），未启动。**
+2. 处理长 run 的实际磁盘增长。当前只在整场完成后裁剪，运行中 `publish` 复制 adapter，保留 staging 和版本目录；单份权重约 1.94 GB，20 个注册版本本身约 38.8 GB，尚未算 staging、checkpoint 与工作区。当前数据盘空闲 14.60 GB（13.60 GiB），因此只改时长会重新遇到空间问题。需要在已提交且无活跃引用后回收可恢复的重复 staging/旧版本，并为 checkpoint 原子替换留足空间，或扩容本地数据盘；不删仍需评估/恢复的版本。**已实现 `[run] in_run_prune` / `keep_adapter_versions` / `keep_recent_adapters`，并在真实旧 run 上只读验证 registry 可重开（active v5、pruned {0,1,2,4}）与 dry-run 不误删；发布改为同文件系统硬链接，六步峰值从 11.64 GB 降到 9.70 GB（20 步 keep `[3,6]`、recent 1 为 11.64 GB，建议 recent 0）。尚未在新 run 上实跑。**
+3. 若选择延长，使用更广的官方公开题池、预先确定学习率日程和中间/最终评估。保留有效失败轨迹，不重新加入“有正信号才能训练”的限制。若从 v5 继续，需要显式支持已有 adapter 初始化的新 run，并新建优化器与日程、记录父版本；**该入口已补上 `[run] init_adapter_dir`（v5 作为初始版本 5，第一次更新产出 v6；优化器/日程全新），见 `docs/plan/013` 第 10 节与 `configs/spo_v3_continue_v5_rank128_20261118.toml`，未启动。** 旧 run 已完成五步且 checkpoint 已删，不能靠 `--resume --additional-walltime-seconds` 无缝续成更多步。**12 题/6 步/6 小时的配置与计划已备好（`configs/spo_v3_long_rank128_20261118.toml`、`docs/plan/013`），未启动。**
 
 按本轮同等工作量，**10 小时约容纳 18–20 步**，含额外评估或扩大题池后可能更少；这是吞吐估算，不是收益或收敛保证。后续即使短评估仍平坦，也不能单凭这点否决更长训练；应结合最终模型结果、真实失败类型与公开题覆盖来决定延长的实验内容。
 
@@ -475,9 +475,56 @@ python scripts/prune_run_artifacts.py --run-dir <run> --keep <最终版本>
 
 本轮只做 CPU 实现与验证，没有启动 GPU、没有跑 54 条真实采样、没有启动长训。已验证的证据：
 
-- **独立评估入口**：`training/eval_adapters.py` + `scripts/evaluate_adapters.py` + `configs/eval_adapters_20261118.toml`。基座直接使用已部署的无 LoRA 模型（`VLLMBackend.submit_base`），v3/v5 从原目录只读加载并校验权重 SHA256；不建 optimizer、不写 trainer checkpoint、不 reserve update。服务器 CPU 模式三次 `--plan-only` 均得到 18 条/策略；`judge_identity_sha256=3b73b9c7…` 与训练 run **MATCH**，6/6 task key 精确一致；v3 `10c1a80f…`、v5 `2ce46040…`；共享 baseline `cached=6/6`。详见 `docs/plan/011`。
-- **运行中磁盘裁剪**：`training/adapter/retention.py` 的 `prune_in_run` + `AdapterManager` 的 pruned-marker 兼容；配置在 `configs/spo_v3_long_rank128_20261118.toml`（不回填已完成的 5 步配置，保持其 `f18d9721…`）。在真实 `spo-v3-5step-r128-20261117` 上只读重开：`active 5`、`pruned [0,1,2,4]`、v3/v5 路径存在；dry-run 不产生删除计划。详见 `docs/plan/012`。
+- **独立评估入口**：`training/eval_adapters.py` + `scripts/evaluate_adapters.py` + `configs/eval_adapters_20261118.toml`。基座直接使用已部署的无 LoRA 模型（`VLLMBackend.submit_base`），任意已发布版本（`--policy vN` 或 `--policy adapter`）从原目录只读加载并校验权重 SHA256；不建 optimizer、不写 trainer checkpoint、不 reserve update。报告用可重复的 `--arm LABEL=RUN_DIR`，不再限制 base/v3/v5。已补上真实路径会触发的 `RolloutEngine` 导入；此前 `--plan-only` 不经过该行，漏导入未被发现。服务器 CPU 模式三次 `--plan-only` 均得到 18 条/策略；`judge_identity_sha256=3b73b9c7…` 与训练 run **MATCH**，6/6 task key 精确一致；v3 `10c1a80f…`、v5 `2ce46040…`；共享 baseline `cached=6/6`。详见 `docs/plan/011`。
+- **运行中磁盘裁剪**：`training/adapter/retention.py` 的 `prune_in_run` + `AdapterManager` 的 pruned-marker 兼容；配置在 `configs/spo_v3_long_rank128_20261118.toml`（不回填已完成的 5 步配置，保持其 `f18d9721…`）。在真实 `spo-v3-5step-r128-20261117` 上只读重开：`active 5`、`pruned [0,1,2,4]`、v3/v5 路径存在；dry-run 不产生删除计划。发布改为同文件系统硬链接，消除了旧 `publish` 的第二份 1.94 GB 副本：六步峰值从 11.64 GB 降到 9.70 GB；20 步 keep `[3,6]`、recent 1 为 11.64 GB（建议 recent 0）。`removed_bytes` 现在只计实际释放的 inode，staging 与版本共享 inode 时不会重复计数。详见 `docs/plan/013` 第 9 节。
 - **更广题池**：12 题（原 6 + fastapi 4 + requests 1 + rich 1），6 步/6 小时，rank 128/v3 奖励/每步 16,384 token 不变。新增 6 题在 2026-11-18 用当前 runtime 做了 CPU-only 空补丁探针，全部 `verification_complete=true`、`verdict_valid=true`、`junit_available=true`、`expected_universes=2`（`results/longpool-probe-20261118/summary.json`）；这只证明 baseline 健康，不证明可解。详见 `docs/plan/013`。
-- 仍未执行：base/v3/v5 × 6 题 × 3 次的真实 GPU 评估（54 条）；12 题 6 步长训。两者都需要新的 GPU 会话授权，且长训必须在评估之后决定。
+- **从已有 adapter 继续训练**：`[run] init_adapter_dir` 将已发布 v5 作为新 run 的初始版本 5；第一次更新产出 v6，AdamW/scheduler/RNG 全新，源 run 只读。`AdapterManager.import_adapter` 允许父行缺失并硬链接权重；`Policy.load_adapter_weights` 用 PEFT state-dict 映射装入 fresh LoRA；`_verify_resume_consistency` 按 `initial_version` 修正版本算术。配置 `configs/spo_v3_continue_v5_rank128_20261118.toml`（5 步 → v6…v10，未启动）。真实 v5 导入已在服务器 CPU 模式验证：active=5、父版本 4 缺失可重开、源/发布 inode 相同、`initial_adapter.json` 往返一致。
+- **文档整理**：删除已完成的 007（吞吐）/008（vLLM 迁移）/012（in-run retention 独立文档），把仍影响运行的部署契约、checkpoint/事务、retention 与 continuation 合并进 009 第 11 节和 013 第 9/10 节；README 与交叉引用已更新。
+- 仍未执行：base/v3/v5 × 6 题 × 3 次的真实 GPU 评估（54 条）；12 题 6 步长训；v5 continuation 训练。都需要新的 GPU 会话授权，且长训必须在评估之后决定。
 
 上面的 as-run 代码指纹属于 2026-11-17 五步 run；本轮修改后的 `run_spo.py`/`retention.py` 指纹已不同，不应把两者混为同一份代码。
+
+## 11. 运行时、部署与 checkpoint 契约（2026-11-18 合并 007/008）
+
+007（吞吐/checkpoint）与 008（vLLM 迁移）已作为历史计划文档删除；仍影响当前
+运行的结论合并在这里，原始实验数字保留在 `results/` 与 git 历史中。
+
+### 11.1 推理部署
+
+- 推理与学习分离：`training/rollout/vllm_backend.py` 走独立 vLLM OpenAI 协议；
+  `training/run_spo.py` 按 `inference.engine` 严格分派，未知引擎直接失败。
+- 版本与容量：vLLM 0.32.0 / torch 2.13.0 独立环境；TP=2、`max-model-len 32768`、
+  LoRA rank 128、`max_loras>=2`、`max-cpu-loras>=max-loras`、Level-2 sleep。
+- 必需服务端设置：`VLLM_SERVER_DEV_MODE=1 --enable-sleep-mode`、
+  `VLLM_ALLOW_RUNTIME_LORA_UPDATING=True`；启动脚本必须把推理环境 `bin` 放进
+  `PATH`（`ninja` 缺失会让 torch.compile 初始化失败）。
+- prefix caching 是 agent loop 必需项：关闭时每轮重算 32K 前缀，8 分钟会话
+  预算只够约 20 次调用；开启后实测命中率 88.7%。`cache_salt` 按 adapter SHA
+  隔离缓存，vLLM 0.32 接受该字段。
+- 生成等待用 `generation_timeout_seconds`（整条 completion），不能沿用 30 秒
+  健康检查默认值。`start()` 在首次 rollout 前校验 `/server_info`、
+  `/v1/models`、sleep/pause 端点和 LoRA 容量，不满足即失败，不静默降级。
+- LoRA target：当前只覆盖 400 个文本投影；full-attention 层省略 10 个
+  `k_proj`（`attention_k_eq_v` 的数值等价尚未测）。换 target 布局必须重新
+  审计 vLLM/HF 一致性。
+- 已知数值边界：非零 adapter 的生成在 sleep/wake 前后自一致，但与
+  Transformers+peft 的逐 token logprob 未达到逐位一致；不能用输出 token 相同
+  替代概率等价。该限制不影响官方验收，但影响任何“概率级”结论。
+
+### 11.2 checkpoint 与事务
+
+- 唯一完整快照是 `optimizer_step`（`sync=True`）；`learning_started` 和
+  matching transaction 只写轻量事务记录，避免每步多份 11.64 GB 权重。
+- 崩溃窗口：full 已落盘/事务未写、事务已写/ledger 未推进，都用事务 cursor 与
+  ledger 对齐恢复；`LEARNING`+cursor 0 先过信号门，cursor 1 由 checkpoint
+  佐证才继续发布。恢复后必须按“fresh AdamW → scheduler → load optimizer state
+  → load scheduler state”重绑定 LR。
+- 恢复 fail closed：checkpoint 与 CONSUMED/pending 数量不一致、ACTIVATED 不是
+  pending 的子版本、或 serving 版本与版本链不符时拒绝启动。
+- checkpoint 可以放共享盘（2026-11-18 约定）：用 `[run] checkpoint_dir` 显式
+  指定；rank-128 原子重写峰值 21.7 GiB，本地 50 GB 数据盘通常放不下。adapter、
+  sandbox、日志仍放本地；实验记录写明卷、可用空间和实测写入速度。
+- 历史实测（2026-11-15 pilot，35,964 action tokens）：冻结到训练租约
+  12.84 分钟；forward 431.27 s、backward 1,242.96 s、optimizer 0.104 s、
+  checkpoint 22.00 s、KL 11.74 s；learner 加载到导出 29.26 分钟，冻结到发布
+  约 42.65 分钟。该数字属于不同 run，不能套用到 11-17 的 19K-token 步。

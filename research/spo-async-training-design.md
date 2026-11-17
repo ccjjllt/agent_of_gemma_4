@@ -4,7 +4,7 @@
 
 本文是代码重构的直接依据。固定路线为 Gemma 4 31B IT QAT BF16、LoRA Rank 128 / Alpha 256 / Dropout 0、Single-stream Policy Optimization、异步 Agent RL、vLLM 优先、Unsloth + Fused AdamW、官方验收差分奖励、SFT + 在线 RL + 教师蒸馏/OPD、2×A800 80GB。不安排 GRPO/GSPO/SAPO 或不同 Rank 的对比实验。
 
-2026-11-12 推理后端迁移：活动路径已从 SGLang 切换到独立 vLLM OpenAI 后端；vLLM 使用单独 Python 环境，Level-2 sleep 释放 GPU 权重与 KV。迁移细节、版本约束和本地核对见 `docs/plan/008-vllm-backend-migration.md`。
+2026-11-12 推理后端迁移：活动路径已从 SGLang 切换到独立 vLLM OpenAI 后端；vLLM 使用单独 Python 环境，Level-2 sleep 释放 GPU 权重与 KV。迁移细节、版本约束和本地核对已合并到 `docs/plan/009-cpu-acceptance-reward-feedback.md` 第 11 节。
 
 设计和代码完成不等于已有训练收益。真实更新、吞吐改善、修复率提升和 CT 兼容必须由后续运行证据分别证明。
 

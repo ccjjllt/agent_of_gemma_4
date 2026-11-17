@@ -314,6 +314,40 @@ def _legacy_marker_entries(run_dir: Path) -> dict[int, dict[str, Any]]:
     return entries
 
 
+def _files_for(path: Path):
+    if path.is_dir() and not path.is_symlink():
+        for child in path.rglob("*"):
+            try:
+                if child.is_file() and not child.is_symlink():
+                    yield child
+            except OSError:
+                continue
+    elif path.is_file() and not path.is_symlink():
+        yield path
+
+
+def _reclaimable_bytes(paths: Iterable[Path]) -> int:
+    """Estimate blocks actually freed after removing these paths.
+
+    A same-filesystem hardlink shares one inode between a staged export and its
+    published version. Deleting only one link frees no data; deleting every
+    link frees it once. Count an inode only when the removal set covers all of
+    its links. This keeps ``removed_bytes`` honest after hardlinked publishes
+    instead of summing the same 1.94 GB twice.
+    """
+    inodes: dict[tuple[int, int], list[int]] = {}
+    for path in paths:
+        for file in _files_for(path):
+            try:
+                info = file.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            key = (info.st_dev, info.st_ino)
+            record = inodes.setdefault(key, [info.st_size, info.st_nlink, 0])
+            record[2] += 1
+    return sum(size for size, links, hits in inodes.values() if hits >= links)
+
+
 def _display_path(path: Path, run_dir: Path) -> str:
     """Relative to the run dir when possible, absolute when it lives outside."""
     try:
@@ -580,6 +614,8 @@ def plan_in_run_prune(
 
     adapter_bytes = sum(item["bytes"] for item in remove)
     staging_bytes = sum(item["bytes"] for item in staging)
+    reclaimable_bytes = _reclaimable_bytes(
+        [_planned_path(run_dir, item["path"]) for item in (*remove, *staging)])
     return {
         "schema": f"{IN_RUN_SCHEMA}.plan",
         "run_dir": str(run_dir),
@@ -597,6 +633,7 @@ def plan_in_run_prune(
         "adapter_bytes": adapter_bytes,
         "staging_bytes": staging_bytes,
         "total_bytes": adapter_bytes + staging_bytes,
+        "reclaimable_bytes": reclaimable_bytes,
     }
 
 
@@ -639,7 +676,9 @@ def prune_in_run(
         record.update({
             "removed_versions": [], "removed_staging": [],
             "removed_adapter_bytes": 0, "removed_staging_bytes": 0,
-            "removed_bytes": 0, "planned_bytes": plan["total_bytes"],
+            "removed_bytes": 0, "removed_file_bytes": 0,
+            "planned_bytes": plan["total_bytes"],
+            "planned_reclaimable_bytes": plan["reclaimable_bytes"],
             "failed": [], "marker": None,
         })
         return record
@@ -684,13 +723,17 @@ def prune_in_run(
 
     adapter_bytes = sum(item["bytes"] for item in removed)
     staging_bytes = sum(item["bytes"] for item in removed_staging)
+    reclaimable = _reclaimable_bytes(
+        [_planned_path(run_dir, item["path"]) for item in (*removed, *removed_staging)])
     record.update({
         "removed_versions": [item["version"] for item in removed],
         "removed_staging": [item["name"] for item in removed_staging],
         "removed_adapter_bytes": adapter_bytes,
         "removed_staging_bytes": staging_bytes,
-        "removed_bytes": adapter_bytes + staging_bytes,
+        "removed_bytes": reclaimable,
+        "removed_file_bytes": adapter_bytes + staging_bytes,
         "planned_bytes": plan["total_bytes"],
+        "planned_reclaimable_bytes": plan["reclaimable_bytes"],
         "failed": failed,
         "marker": marker,
         "pruned_unix": stamp,
@@ -785,13 +828,15 @@ def prune_finished_run(run_dir: Path, *, keep: tuple[int, ...] = (),
     run_dir = Path(run_dir)
     plan = plan_prune(run_dir, keep=keep, keep_checkpoint=keep_checkpoint,
                       keep_transients=keep_transients, checkpoint_path=checkpoint_path)
-    total = sum(item["bytes"] for item in plan)
+    plan_paths = [_planned_path(run_dir, item["path"]) for item in plan]
+    total = _reclaimable_bytes(plan_paths)
     record = {
         "schema": PRUNED_ARTIFACTS_SCHEMA,
         "run_dir": str(run_dir),
         "dry_run": bool(dry_run),
         "removed": plan,
         "total_bytes": total,
+        "file_bytes": sum(item["bytes"] for item in plan),
         "kept_checkpoint": bool(keep_checkpoint),
         "note": ("registry rows are intentionally kept; pruned versions keep their manifest "
                  "and lineage but have no weight files, and a finished run only serves the "
