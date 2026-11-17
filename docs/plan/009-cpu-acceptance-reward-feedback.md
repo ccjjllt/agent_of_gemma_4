@@ -388,6 +388,7 @@ python scripts/session_supervisor.py \
 比较方法：
 
 - 同一固定 6 题池、同一 judge 身份，在 step 3 与 step 5 各取一次逐题官方 verdict（成功/失败、resolved、validity），比较同题是否从 fail 转 pass。
+- 用 `scripts/report_repair_trend.py --run-dir <run> --compare 3,5` 生成逐题 × 逐 step 表：step 取 `trajectories.behavior_version`（采样该轨迹时使用的策略版本），update 归属另列；缺证据显示 `-` 并计入 missing，不当作 0，也不做零差推断。若 step 3/5 的同题覆盖不足，另按“早期步（1–2）对后期步（4–5）”合并比较，并明确列出缺失的题与步。
 - 这是 **in-sample trend**：题池同时参与训练，step 5 的改善不能称泛化结果；只能说明“在这 6 题上继续训练是否带来更多官方通过”。
 - 单步 run 的 v1 属于旧 judge 身份，不能与 5 步 run 的 verdict 直接合并统计；它只提供“单步之后这 6 题是什么样”的参照。
 - 6 题样本以逐题 verdict 为主，不报聚合修复率。
