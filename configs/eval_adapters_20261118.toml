@@ -1,0 +1,119 @@
+# Independent evaluation of published rank-128 adapters (2026-11-18).
+# One policy per invocation: base (served model, no LoRA), v3 or v5 (existing
+# adapter directory passed with --adapter-dir).  The six-task pool and judge
+# settings are shared with configs/spo_v3_5step_rank128_20261117.toml so the
+# evaluation uses the same official public tasks and runtime identity.
+# This config never runs an optimizer, writes a trainer checkpoint or reserves
+# an update batch.  Repeats are in-sample diagnostics, not a significance test.
+algorithm = "single_stream_spo"
+
+[eval]
+repeats = 3
+max_workers = 6
+walltime_seconds = 14400
+max_attempts = 2
+max_sample_attempts = 3
+seed = 3407
+
+[policy]
+model_name = "google/gemma-4-31B-it-qat-q4_0-unquantized"
+model_path = "/autodl-fs/data"
+model_revision = "1e4d8beecacb8b7590c1d8bedd7335f687bf311f"
+model_source_uri = "https://huggingface.co/google/gemma-4-31B-it-qat-q4_0-unquantized/tree/1e4d8beecacb8b7590c1d8bedd7335f687bf311f"
+response_parser = "official_vllm_gemma4_0_19_1"
+lora_rank = 128
+lora_alpha = 256
+lora_dropout = 0.0
+adapter_export_dtype = "bfloat16"
+max_context = 32768
+device_map = "balanced"
+logprob_chunk_size = 64
+seed = 3407
+
+[run]
+# Eval has no batch cap; this value is accepted by the shared config family and
+# ignored by training.eval_adapters.
+max_batches = 1
+max_cpu_workers = 8
+max_worker_retries = 1
+
+[inference]
+engine = "vllm"
+base_url = "http://127.0.0.1:8000"
+served_model_name = "google/gemma-4-31B-it-qat-q4_0-unquantized"
+max_inflight = 16
+generation_timeout_seconds = 1800
+tensor_parallel_size = 2
+colocated = true
+enable_prefix_cache = true
+return_token_ids = true
+return_logprobs = true
+require_runtime_lora = true
+require_sleep_mode = true
+sleep_level = 2
+max_loras = 2
+lora_name_prefix = "spo"
+control_timeout_seconds = 600
+
+[spo]
+target_action_tokens = 16384
+max_policy_lag = 2
+ppo_epochs = 1
+clip_epsilon = 0.2
+clip_epsilon_high = 0.28
+advantage_epsilon = 0.000001
+value_prior = 0.5
+success_prior = 0.5
+prior_strength = 1.0
+kl_half_life = 0.05
+sampling_epsilon = 0.05
+training_prefix_reuse = "tree"
+training_prefix_grouping = "lcp_greedy"
+training_prefix_lookahead = 8
+training_prefix_max_calls = 4
+training_prefix_min_tokens = 256
+training_prefix_query_chunk_size = 256
+training_tree_checkpoint_policy = "all"
+profile_training_timing = false
+
+[optimizer]
+type = "fused_adamw"
+learning_rate = 0.000005
+max_grad_norm = 1.0
+gradient_checkpointing = true
+
+[rewards]
+objective_version = "official_differential_spo_v3"
+success_efficiency_weight = 0.05
+
+[adapter]
+double_buffer = true
+allow_resident_pair = false
+
+[data]
+task_ids = ["fastapi_14258", "requests_7205", "requests_7315", "rich_3782", "rich_4070", "rich_4076"]
+exclude_task_ids = []
+
+[runtime]
+python = "/opt/gemma-runtime/bin/python"
+sandbox_baseline_python = "/opt/gemma-sandbox-baseline/bin/python"
+extra_wheels = "/root/autodl-tmp/gemma4/wheels-extra"
+sandbox = "subprocess"
+sandbox_root = "/root/autodl-tmp/gemma4/sandboxes"
+port = 0
+session_clock = "queue_excluded"
+event_summarizer = "official"
+queue_timing_poll_seconds = 0.2
+
+[runtime.evaluation]
+timeout_seconds = 300
+verification_timeout_seconds = 300
+max_tool_calls = 28
+max_time_minutes = 8.0
+max_turns = 50
+
+[sampling]
+temperature = 1.0
+top_p = 1.0
+top_k = 0
+max_new_tokens = 16384

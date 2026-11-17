@@ -550,6 +550,98 @@ class VLLMBackend(HTTPInferenceBackend):
             "sampling_server_echo": False,
         }
 
+    def submit_base(self, input_ids: list[int], *,
+                    request_id: str | None = None,
+                    sampling: Mapping[str, Any] | None = None,
+                    timeout: float | None = None) -> dict[str, Any]:
+        """Submit one completion to the served base model without a LoRA.
+
+        This is the read-only evaluation path for an unadopted base policy.  It
+        deliberately mirrors :meth:`submit` instead of reconstructing a zero
+        adapter: the payload is identical except ``model`` is the base model id
+        discovered by :meth:`start` from ``/v1/models``, and the prefix-cache
+        salt is the fixed ``base`` sentinel rather than an adapter SHA256.  No
+        adapter is loaded, unloaded or modified.
+        """
+        with self._state_lock:
+            self._require_inference()
+            base_model = self.base_model
+        if not isinstance(base_model, str) or not base_model:
+            raise BackendError(
+                "submit_base requires start(); the served base model id is unknown")
+        try:
+            prompt = _token_ids(input_ids, "input_ids")
+        except BackendResponseError as exc:
+            raise ValueError(str(exc)) from exc
+        if request_id is not None and (not isinstance(request_id, str) or not request_id):
+            raise ValueError("request_id must be a non-empty string")
+        rid = request_id or uuid.uuid4().hex
+        native_sampling, sampling_record = self._native_sampling(sampling or {})
+        payload = {
+            "model": base_model,
+            "prompt": prompt,
+            "max_tokens": native_sampling["max_tokens"],
+            "temperature": native_sampling["temperature"],
+            "top_p": native_sampling["top_p"],
+            "top_k": native_sampling["top_k"],
+            "logprobs": 1,
+            "return_token_ids": True,
+            "add_special_tokens": False,
+            "echo": False,
+            "n": 1,
+            "stream": False,
+            "request_id": rid,
+        }
+        if self.enable_prefix_cache:
+            # A fixed salt keeps base completions out of every adapter's cached
+            # prefix namespace without inventing an adapter identity.
+            payload["cache_salt"] = "base"
+        if "seed" in native_sampling:
+            payload["seed"] = native_sampling["seed"]
+        raw = self._object(
+            self._request("POST", self.endpoints["generate"], payload, timeout=timeout),
+            "submit_base")
+        if raw.get("object") != "text_completion":
+            raise BackendResponseError("vLLM response object is not text_completion")
+        returned_id = raw.get("id")
+        if returned_id not in (rid, f"cmpl-{rid}"):
+            raise BackendResponseError("vLLM response id does not bind the submitted request_id")
+        if raw.get("model") != base_model:
+            raise BackendResponseError(
+                "vLLM response model does not equal the served base model id")
+        choices = raw.get("choices")
+        if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], Mapping):
+            raise BackendResponseError("vLLM must return exactly one completion choice")
+        choice = choices[0]
+        returned_prompt = _token_ids(choice.get("prompt_token_ids"), "response prompt_token_ids")
+        if returned_prompt != prompt:
+            raise BackendResponseError("vLLM prompt_token_ids do not exactly match the submitted IDs")
+        output_ids = _token_ids(choice.get("token_ids"), "response token_ids", allow_empty=True)
+        logprobs_obj = choice.get("logprobs")
+        if not isinstance(logprobs_obj, Mapping):
+            raise BackendResponseError("vLLM response has no completion logprobs object")
+        logprobs = logprobs_obj.get("token_logprobs")
+        if not isinstance(logprobs, list) or len(logprobs) != len(output_ids):
+            raise BackendResponseError("vLLM token_logprobs are not one-to-one with token_ids")
+        if any(isinstance(item, bool) or not isinstance(item, (int, float))
+               or not math.isfinite(float(item)) for item in logprobs):
+            raise BackendResponseError("every sampled vLLM logprob must be a finite number")
+        finish_reason = choice.get("finish_reason")
+        if not isinstance(finish_reason, str) or not finish_reason:
+            raise BackendResponseError("vLLM finish_reason is required")
+        return {
+            "request_id": rid,
+            "input_ids": list(prompt),
+            "input_ids_server_echo": True,
+            "output_ids": output_ids,
+            "logprobs": [float(item) for item in logprobs],
+            "finish_reason": finish_reason,
+            "base_model": base_model,
+            "cache_salt": "base" if self.enable_prefix_cache else None,
+            "sampling": sampling_record,
+            "sampling_server_echo": False,
+        }
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
