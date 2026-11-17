@@ -693,6 +693,27 @@ SPO 每步发布一个不可变 adapter（rank 128 约 1.94 GB），导出器还
    `keep_adapter_versions = [5, 10]`。评估入口已支持任意版本（`--policy v10`
    或 `--policy adapter`；报告用 `--arm v10=RUN_DIR`）。
 
+启动命令（未执行；需要 GPU 授权）：
+
+```bash
+# 首次启动前：run dir 必须不存在，checkpoint 目录必须存在且可写
+mkdir -p /root/autodl-fs/spo-checkpoints/spo-v3-cont-v5-r128-20261118
+# vLLM 部署与 5 步 run 相同（dynamic LoRA、max-lora-rank 128、Level-2 sleep、
+# prefix cache、ninja 在 PATH），然后：
+cd /root/gemma4/project
+/root/gemma4/envs/learner/bin/python -m training.run_spo \
+  --config configs/spo_v3_continue_v5_rank128_20261118.toml \
+  --data-root /root/gemma4/official/competition \
+  --model-path /autodl-fs/data \
+  --run-dir /root/autodl-tmp/gemma4/runs/spo-v3-cont-v5-r128-20261118 \
+  --backend-url http://127.0.0.1:8000
+```
+
+外层仍用 `scripts/session_supervisor.py --budget-seconds 21600 --grace-seconds 180`；
+内部 `walltime_seconds=20400` 先停。若退出码 75，保留 checkpoint 并用同一配置
+`--resume` 续跑；不要改 `max_batches`（即 LR 日程总长度）。本次 5 步预算约
+3–4 h，6 h supervisor 留出 vLLM 加载与收尾余量。
+
 评估 continuation 的最终版本时，在同一入口用
 `--policy v10 --adapter-dir .../versions/00000010-<sha16>`，报告用
 `--arm v10=<eval-run-dir>`；入口不再硬编码 base/v3/v5。
