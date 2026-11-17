@@ -297,6 +297,62 @@ class Policy:
                 parameter.copy_(tensors[name].to(device=parameter.device))
         self._mode = None
 
+    def load_adapter_weights(self, directory: str | Path, *,
+                             expected_manifest=None) -> dict:
+        """Load published PEFT weights into this fresh, zero-initialized LoRA.
+
+        This is the one-time initialization path for a run that continues from
+        an earlier adapter.  The optimizer state and schedule are deliberately
+        not restored: the new run has fresh AdamW moments and its own LR plan.
+        The PEFT state-dict mapper handles the saved ``base_model.model...``
+        prefix; a layout mismatch surfaces as missing/unexpected LoRA keys
+        instead of silently training from zero.
+        """
+        if getattr(self, "_model", None) is None:
+            raise RuntimeError("call ensure_loaded() before load_adapter_weights")
+        source = Path(directory).expanduser().resolve(strict=True)
+        config_path = source / "adapter_config.json"
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"adapter_config.json is unreadable: {exc}") from exc
+        if not isinstance(config, dict) or config.get("peft_type") != "LORA":
+            raise ValueError("adapter_config.json is not a PEFT LORA adapter")
+        if (config.get("r"), config.get("lora_alpha")) != (
+                int(self.config.get("lora_rank", 128)),
+                int(self.config.get("lora_alpha", 256))):
+            raise ValueError("adapter rank/alpha differ from the learner configuration")
+        if isinstance(config.get("lora_dropout"), bool) \
+                or float(config.get("lora_dropout", -1)) != 0.0:
+            raise ValueError("adapter dropout must be 0")
+        if config.get("use_dora") or config.get("use_rslora") \
+                or config.get("modules_to_save"):
+            raise ValueError("adapter uses an unsupported PEFT variant")
+        if config.get("bias") not in (None, "none"):
+            raise ValueError("adapter must not train biases")
+        if expected_manifest is not None:
+            if (config.get("r"), config.get("lora_alpha"),
+                    float(config.get("lora_dropout", -1))) != (
+                    expected_manifest.rank, expected_manifest.alpha,
+                    expected_manifest.dropout):
+                raise ValueError("adapter rank/alpha/dropout differ from its manifest")
+        from peft import load_peft_weights, set_peft_model_state_dict
+        weights = load_peft_weights(str(source), device="cpu")
+        if not weights:
+            raise ValueError(f"adapter contains no PEFT tensors: {source}")
+        result = set_peft_model_state_dict(self.model, weights)
+        unexpected = [name for name in getattr(result, "unexpected_keys", ())
+                      if ".lora_" in name]
+        missing = [name for name in getattr(result, "missing_keys", ())
+                   if ".lora_" in name]
+        if unexpected or missing:
+            raise ValueError(
+                "adapter layout does not match the learner: "
+                f"unexpected={unexpected[:3]} missing={missing[:3]}")
+        self._mode = None
+        return {"loaded": True, "directory": str(source),
+                "tensor_count": len(weights)}
+
     def reference_matches_current(self) -> bool:
         """Prove the current ordinary zero-LoRA has the disabled-adapter reference.
 

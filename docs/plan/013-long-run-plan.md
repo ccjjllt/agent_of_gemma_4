@@ -4,7 +4,9 @@
 新配置为 `configs/spo_v3_long_rank128_20261118.toml`；`/root/gemma4/project`
 已同步该配置与 in-run retention/评估入口，checkpoint 目录
 `/root/autodl-fs/spo-checkpoints/spo-v3-long-r128-20261118` 已创建；尚未创建
-长训 run 目录，也没有提交任何 optimizer step。
+长训 run 目录，也没有提交任何 optimizer step。另新增
+`configs/spo_v3_continue_v5_rank128_20261118.toml`（从 v5 产出 v6…v10，未启动），
+见第 10 节。
 
 当前 5 步 run 的证据（`results/gpu-5step-r128-20261117/`、`docs/plan/009` 第 10 节）
 **既不能证明稳定提升，也不能证明没有提升或退化**：v5 从未被采样，v3/v4 共同 3 题
@@ -145,7 +147,7 @@ adapter 并显示 18 条计划，且不写训练账本；真实 54 条的完整�
 
 ### 2.2 A2 运行中磁盘回收
 
-本地实现已在 `docs/plan/012` 与 `training/adapter/retention.py` 固定
+本地实现已在本文第 9 节与 `training/adapter/retention.py` 固定
 `[run]` 三个键，并已同步到 `/root/gemma4/project`：
 
 ```toml
@@ -172,9 +174,13 @@ keep 列表、最近 N 个版本、DoubleBuffer 轨迹引用或 pending ledger u
 | v6 | v0, v3, v5, v6 | v4 |
 
 峰值 4 个版本（约 7.8 GB）+ 1 个 staging（约 1.9 GB）≈ 9.7 GB，比不裁剪的
-7 个版本 + staging ≈ 15.5 GB 少约 5.8 GB。A2 的验收：在真实或合成 run 上确认
-`kept_versions` 包含 active/3/最近版本，`removed_bytes` 有实际数值，且
-`AdapterManager` 在删除后仍能打开；不删除仍需评估的 v3/v6。
+7 个版本 + staging ≈ 15.5 GB 少约 5.8 GB。**2026-11-18 修正**：旧 `publish`
+还会复制一份发布副本，六步真实峰值是 11.64 GB；现在同文件系统发布用硬链接，
+不再增加整份权重，9.7 GB 才成立。20 步、keep `[3,6]`、recent 1 的峰值为
+6 份 = 11.64 GB（不是 13.58 GB）；剩余约 2.96 GB，建议 recent 0（9.7 GB）
+或启动前清理。硬链接跨卷会回退为复制，需按实际 `df` 复核。A2 的验收：在真实
+或合成 run 上确认 `kept_versions` 包含 active/3/最近版本、`removed_bytes` 有
+实际数值、`AdapterManager` 删除后仍能打开；不删除仍需评估的 v3/v6。
 
 ### 2.3 阶段 A 退出条件
 
@@ -328,9 +334,9 @@ adapter slot。vLLM 启动复用 C 的
 ```bash
 /root/gemma4/envs/learner/bin/python scripts/evaluate_adapters.py \
   --report \
-  --base-run "$EVAL/20261118-base" \
-  --v3-run "$EVAL/20261118-v3" \
-  --v5-run "$EVAL/20261118-v5" \
+  --arm base="$EVAL/20261118-base" \
+  --arm v3="$EVAL/20261118-v3" \
+  --arm v5="$EVAL/20261118-v5" \
   --reference-run-dir "$REF"
 ```
 
@@ -468,7 +474,8 @@ C 的题池全部是公开题且同时参与训练，因此任何同题结果都
 | 项 | 估算 |
 | --- | ---: |
 | 4 个保留 adapter（v0、v3、最近、active） | 7.76 GB |
-| 1 个 staging 副本（发布瞬间） | 1.94 GB |
+| 1 个 staging 副本（导出瞬间） | 1.94 GB |
+| 发布副本（同文件系统硬链接） | 0 GB（回退复制时 +1.94 GB） |
 | requests + endpoint + DB | ~0.15 GB |
 | workspaces（5 步 run 实测 21 条仅 3.7 MB） | <0.01 GB |
 | **峰值合计** | **~9.85 GB** |
@@ -477,10 +484,11 @@ C 的题池全部是公开题且同时参与训练，因此任何同题结果都
 不启用 in-run prune 时，v0…v6 共 7 个版本 + staging ≈ 15.5 GB，超过 14 GB
 可用，会在运行中 ENOSPC；因此 `in_run_prune=true` 是启动前提，不是优化项。
 共享盘 checkpoint 峰值 2 × 11.64 = 23.3 GB，140 GB 可用足够；正常收尾删除
-checkpoint，不长期占用共享盘。这是对 2026-11-02“检查点不放共享盘”约定的显式
-例外：本机数据盘只有约 14 GB 可用，rank-128 的原子重写峰值 21.7 GiB 放不下；
-只把本 run 的 `spo_trainer_state.pt` 放 `/root/autodl-fs`，adapter、环境、日志
-仍留在本地/数据盘，不把该例外推广到其他 run。
+checkpoint，不长期占用共享盘。按 2026-11-18 更新的约定，checkpoint 可以放
+共享盘：本机数据盘只有约 14 GB 可用，rank-128 的原子重写峰值 21.7 GiB 放不下，
+因此只把本 run 的 `spo_trainer_state.pt` 放 `/root/autodl-fs`；adapter、环境、
+日志仍留在本地/数据盘。配置必须用 `[run] checkpoint_dir` 显式指定，并在实验
+记录写明卷、可用空间和实测写入速度。
 
 运行中手动核对（不是自动化门控）：每步后 `df -h /root/autodl-tmp`，并查看
 `metrics.jsonl` 的 `spo_in_run_pruned` 事件；若可用空间低于 3 GB，或
@@ -590,7 +598,7 @@ grep spo_in_run_pruned /root/autodl-tmp/gemma4/runs/spo-v3-long-r128-20261118/me
 若 run 以 75 退出（预算耗尽/软停）且还有未完成步，只能在用户明确追加额度的新
 会话里 `--resume --additional-walltime-seconds N`；`max_batches=6` 不可改，
 也不能用 resume 把本轮变成 10 小时。若出现 ENOSPC、active/keep 版本被删、
-或 checkpoint 写失败，停止并按 `docs/plan/012` 的 marker/registry 规则排查，
+或 checkpoint 写失败，停止并按本文第 9 节的 marker/registry 规则排查，
 不要手工删目录。
 
 ## 7. 风险、未解问题与边界
@@ -629,13 +637,69 @@ grep spo_in_run_pruned /root/autodl-tmp/gemma4/runs/spo-v3-long-r128-20261118/me
 - 5 步 run 数值：`results/gpu-5step-r128-20261117/steps.json`、
   `learning_signal_review.json`、`report-compare-3v4.txt`、`report-compare-0v4.txt`。
 - 5 步结论与边界：`docs/plan/009-cpu-acceptance-reward-feedback.md` 第 9–10 节。
-- in-run retention 接口与验证：`docs/plan/012-in-run-retention.md`。
+- in-run retention 接口与验证：本文第 9 节（合并自 012）。
 - 独立评估入口：`docs/plan/011-adapter-evaluation.md`、`training/eval_adapters.py`、
   `scripts/evaluate_adapters.py`、`configs/eval_adapters_20261118.toml`。
 - 新增 6 题 baseline 健康：`results/longpool-probe-20261118/summary.json`
   （schema `gemma.longpool_baseline_probe.v1`，`all_healthy=true`；CPU-only、
   无模型/GPU；baseline health 不等于 solvability）。
-- 新配置：`configs/spo_v3_long_rank128_20261118.toml`。
+- 新配置：`configs/spo_v3_long_rank128_20261118.toml`；
+  continuation：`configs/spo_v3_continue_v5_rank128_20261118.toml`。
 - 官方公开池：服务器 `/root/gemma4/official/competition/tasks.jsonl`，129 行，
   SHA256 `e4b3fd60f69dbc2b9213e54eeb9636db78aefe92c1d06269d73d9f5f8f3c8ad6`。
 - 服务器磁盘：2026-11-17 只读 `df`，数据盘 14 GB 可用，共享盘 140 GB 可用。
+
+## 9. 运行中 adapter 保留（合并自 012）
+
+SPO 每步发布一个不可变 adapter（rank 128 约 1.94 GB），导出器还会写
+`adapters/staging-vN`。`prune_finished_run` 只在整场结束后运行，旧实现删除版本
+目录却不写“已删除”证据，导致 registry 行指向缺失目录、`AdapterManager` 重开
+失败。当前的 in-run retention：
+
+- 配置：`[run] in_run_prune`、`keep_adapter_versions`、`keep_recent_adapters`；
+  `load_config` 校验类型/符号，bool 不当 int，keep 不得重复。
+- hook：`run_spo.activate_and_commit()` 的 post-commit 一致性检查之后、离开训练
+  租约；只删除 ledger update 已 `CONSUMED`、无 trajectory/registry 引用、非
+  active/keep/recent、无 pending 更新的版本目录；staging 只删已发布且已
+  `CONSUMED` 的副本；初始导入版本（无 update 行）保守保留。
+- 证据：删除前原子写入 `adapters/pruned_versions.json`（version + full SHA256 +
+  bytes + unix）；`AdapterManager` 只在 marker 精确匹配时容忍缺失目录，否则仍
+  fail closed；active 目录缺失永远拒绝。旧 `pruned_artifacts.json` 可只读迁移，
+  真实 `spo-v3-5step-r128-20261117` 已能重开（active v5、pruned {0,1,2,4}）。
+- 发布副本：`AdapterManager.publish` 优先硬链接 `staging-vN` 到 `versions/`，
+  同文件系统不再复制第二份 1.94 GB；跨卷回退复制。六步峰值从 11.64 GB 降到
+  9.70 GB；20 步 keep `[3,6]`、recent 1 的峰值为 11.64 GB（建议 recent 0 或
+  启动前清理）。
+- 验证：一次性合成 run 删除 v2/v3 后 marker 写入、registry 重开 active=4、
+  无 marker 的缺失目录被拒绝；真实旧 run 只读重开成功。没有新增测试文件。
+
+## 10. 从已有 adapter 继续训练（v5 → v6…）
+
+`[run] init_adapter_dir` 指向已发布版本目录时，新 run：
+
+1. 读取该目录的 `manifest.json`，校验 version/rank/alpha/dropout/base_revision；
+   `AdapterManager.import_adapter` 以硬链接安装到新 run 的 `versions/`，允许
+   父版本行不存在（不导入整条历史），active 设为该版本（例如 5）。
+2. 写 `initial_adapter.json`（source path、version、full SHA256、parent、
+   optimizer_step、imported_unix）并把同一记录写进 `model_identity.json`；
+   不修改源 run。
+3. 第一次训练租约内 `policy.ensure_loaded()` 后调用
+   `Policy.load_adapter_weights`，用 PEFT `load_peft_weights` +
+   `set_peft_model_state_dict` 把 v5 权重装进 fresh LoRA；AdamW、scheduler、
+   RNG、KL cursor 全部从头开始，第一次 optimizer step 产出 v6。
+4. `_verify_resume_consistency` 用 `initial_version` 修正版本算术：
+   `expected = initial + consumed (+1 pending)`，不再假设 genesis 0。
+5. 保留策略必须包含初始版本和最终版本，例如 5 步 continuation 用
+   `keep_adapter_versions = [5, 10]`。评估入口已支持任意版本（`--policy v10`
+   或 `--policy adapter`；报告用 `--arm v10=RUN_DIR`）。
+
+评估 continuation 的最终版本时，在同一入口用
+`--policy v10 --adapter-dir .../versions/00000010-<sha16>`，报告用
+`--arm v10=<eval-run-dir>`；入口不再硬编码 base/v3/v5。
+
+配置：`configs/spo_v3_continue_v5_rank128_20261118.toml`（未启动）。它沿用
+12 题公开池、rank 128、v3 奖励、每步 16,384 token、5 步、6 小时预算，
+checkpoint 放共享盘，首次更新从 v5 产出 v6。导入本身是一次性 CPU/磁盘工作；
+首次训练租约内加载 1.94 GB 权重会增加启动时间，之后由 trainer checkpoint
+恢复，不再重复导入。若源 adapter 或 `initial_adapter.json` 缺失，启动失败而
+不是静默从零开始。

@@ -18,7 +18,7 @@
 | 沙箱、临时目录 | `/root/autodl-tmp/gemma4/sandboxes`、`/root/autodl-tmp/gemma4/tmp` |
 | 补充离线测试 wheel | `/root/autodl-tmp/gemma4/wheels-extra`（由 `runtime.extra_wheels` 复制到任务沙箱，源目录不写回） |
 
-数据和模型在服务器手动获取，程序直接读取官方原目录；不维护下载脚本，不在本地下载、复制或打包训练题。共享盘仅放模型权重与官方题目，环境、日志、checkpoint 放系统盘或数据盘。
+数据和模型在服务器手动获取，程序直接读取官方原目录；不维护下载脚本，不在本地下载、复制或打包训练题。共享盘主要放模型权重与官方题目；运行环境、日志、sandbox 与 adapter 放本地数据盘。checkpoint 默认本地，若本地装不下 rank-128 原子重写峰值，可用 `[run] checkpoint_dir` 显式放共享盘，并记录卷/空间/写入速度。
 
 subprocess 后端需 root 启动，再由不同低权限 UID 运行 agent 工具与裁判。官方题面、base_commit、参考补丁和 test_patch 保持原样；agent 只接收题面，参考补丁与验收资产仅供裁判侧读取。不得读取 heldout，也不得把预留评测题加入训练。启动沿用已有来源声明，记录廉价文件元数据，不重复扫描完整模型权重 SHA256。
 
@@ -77,6 +77,13 @@ export TMPDIR=/root/autodl-tmp/gemma4/tmp
 
 `--check-only` 是可选诊断，不是实验前置步骤。正式启动保留一次必要握手，确认配置、模型目录结构、tokenizer、vLLM 可达性，以及 `/server_info` 中的 `max_lora_rank>=配置的 lora_rank`、`max_loras>=2`、`VLLM_ALLOW_RUNTIME_LORA_UPDATING=True`、`enable_sleep_mode=True` 和 `/is_sleeping` 端点。该可选诊断只读，不提交、不加载、不 sleep；正式启动不再追加重复 deployment probe。非空 run_dir 直接拒绝启动；继续训练必须用 `--resume`，且恢复时校验 serving 版本、adapter SHA、trainer checkpoint 步数与 ledger（含 ACTIVATED 中断态的来源证明），对不上就停。trainer checkpoint schema 为 2，旧 schema 明确拒绝。`--resume` 必须沿用首次启动的 `max_batches`（全局累计上限，LR 计划总量）；改动即停，不静默重置计划。
 
+从已有 adapter 开始一个新 run（不是 `--resume`）：在 `[run]` 设
+`init_adapter_dir` 指向已发布版本目录，`AdapterManager.import_adapter` 以只读
+硬链接把它注册为初始版本（保留原 manifest version），第一次 optimizer step
+产出 `initial+1`（例如 v5→v6）。`initial_adapter.json` 记录来源；AdamW、
+scheduler、RNG 与 LR 日程全部新建，不复用源 run 的优化器状态。`--resume` 只
+用于同一 run 的中断恢复，不能用来延长已完成 run。
+
 正常启动用实际裁判 Python 收集廉价环境元数据，派发、验收报告与 v2 空补丁缓存共享同一 TaskKey；公开数据 SHA 另记 `public_data_identity` 事件。续跑要求已有 `judge_identity.json` 且身份相同。此前没有该身份文件的 run 保持只读，新版使用独立 run，不自动重标旧轨迹、价值或缓存；已有 adapter 仍保留。
 
 更新事务按阶段推进：RESERVED → LEARNING → OPTIMIZED → EXPORTED → REGISTERED → ACTIVATED → CONSUMED；训练租约内只做优化、导出与注册，发布与提交在训练租约之外完成，避免 GPU 租约死锁。退出码：0 跑满批次，75 预算耗尽（可续跑），2 配置或运行失败。
@@ -94,10 +101,10 @@ export TMPDIR=/root/autodl-tmp/gemma4/tmp
 - `metrics.jsonl` 中 `spo_model_loaded`、`spo_update_timing` 记录模型加载、前向、反向、优化器和 checkpoint 秒数，供首次 A800 调优。
 - 提交取所选 adapter 的 `adapter_config.json` 与 `adapter_model.safetensors`，仍需验证官方 CT 加载与修复收益。
 
-原始调用、轨迹、补丁和 JUnit 留服务器；用[日志同步入口](../scripts/sync_experiment_logs.py)经 SSH 取回数值摘要、重要日志与配置，不同步题目、权重或凭据。关机前正常停止实验，等待进程退出及 checkpoint 落盘，完成关键记录和代码同步；不擅自重启。续跑状态与有用 adapter 留服务器非共享盘，本地不保留重复初始状态和临时流水。
+原始调用、轨迹、补丁和 JUnit 留服务器；用[日志同步入口](../scripts/sync_experiment_logs.py)经 SSH 取回数值摘要、重要日志与配置，不同步题目、权重或凭据。关机前正常停止实验，等待进程退出及 checkpoint 落盘，完成关键记录和代码同步；不擅自重启。续跑状态与有用 adapter 留服务器本地数据盘（checkpoint 可按上述约定放共享盘），本地不保留重复初始状态和临时流水。
 
 ## 尚未验证
 
-2026-11-15已完成一次真实SPO更新并发布v1，400个LoRA B张量改变，随后重复生成和sleep/wake均能返回相同输出token；完整证据见[GPU实验记录](../docs/plan/008-vllm-backend-migration.md#10-首次真实-spo-更新2026-11-15)。本批最长单次序列18,003 tokens，整卡训练采样峰值53.71/57.05 GiB，不能推断32K单序列已验证。非零adapter logprob仍有最大约0.0031的重复波动；HF/vLLM等价性、CT加载与真实修复收益尚未证明。
+2026-11-15已完成一次真实SPO更新并发布v1，400个LoRA B张量改变，随后重复生成和sleep/wake均能返回相同输出token；完整证据见[实验记录](../docs/plan/009-cpu-acceptance-reward-feedback.md)。本批最长单次序列18,003 tokens，整卡训练采样峰值53.71/57.05 GiB，不能推断32K单序列已验证。非零adapter logprob仍有最大约0.0031的重复波动；HF/vLLM等价性、CT加载与真实修复收益尚未证明。
 
 vLLM 0.32.0 早于 PR #61267（2026-11-02 合并），该 PR 修复 `attention_k_eq_v` 层 K→V 的 LoRA 打包。当前 adapter 按 `policy.py` 的规则省略 10 个 full-attention 层的 `k_proj`，因此不触发该 bug；`AdapterManager.audit_lora_compatibility` 会在加载前检查 400 个目标及 k_eq_v 风险，发现 `k_proj`/`v_proj` 落在 full-attention 层就拒绝加载。若以后修改目标模块，必须换到包含 #61267 的 wheel/commit。

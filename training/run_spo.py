@@ -82,6 +82,10 @@ def load_config(path: Path) -> dict:
             raise ValueError(f"run.checkpoint_dir is not writable: {resolved}")
     if type(cfg["run"].get("prune_finished_artifacts", False)) is not bool:
         raise ValueError("run.prune_finished_artifacts must be bool")
+    init_adapter_dir = cfg["run"].get("init_adapter_dir")
+    if init_adapter_dir is not None:
+        if not isinstance(init_adapter_dir, str) or not init_adapter_dir.strip():
+            raise ValueError("run.init_adapter_dir must be a nonempty path string")
     if type(cfg["run"].get("in_run_prune", False)) is not bool:
         raise ValueError("run.in_run_prune must be bool")
     keep_versions = cfg["run"].get("keep_adapter_versions", [])
@@ -313,6 +317,40 @@ def discard_unoptimized_update(
     return base_state
 
 
+INITIAL_ADAPTER_RECORD = "initial_adapter.json"
+INITIAL_ADAPTER_SCHEMA = "gemma.spo_initial_adapter.v1"
+
+
+def _read_initial_adapter(run_dir: Path) -> dict[str, Any] | None:
+    """Read the imported-base provenance of a continuation run, if any."""
+    path = Path(run_dir) / INITIAL_ADAPTER_RECORD
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, TypeError) as exc:
+        raise RuntimeError(f"initial adapter record is unreadable: {path}: {exc}") from exc
+    if not isinstance(document, dict) or document.get("schema") != INITIAL_ADAPTER_SCHEMA:
+        raise RuntimeError(f"initial adapter record has an invalid schema: {path}")
+    version = document.get("version")
+    sha = document.get("adapter_sha256")
+    if type(version) is not int or version < 0 \
+            or not isinstance(sha, str) or len(sha) != 64:
+        raise RuntimeError(f"initial adapter record has invalid version/sha: {path}")
+    return document
+
+
+def _write_initial_adapter(run_dir: Path, record: Mapping[str, Any]) -> None:
+    path = Path(run_dir) / INITIAL_ADAPTER_RECORD
+    temporary = path.with_name(path.name + ".tmp")
+    with temporary.open("w", encoding="utf-8") as output:
+        json.dump(dict(record), output, ensure_ascii=False, sort_keys=True, indent=2)
+        output.write("\n")
+        output.flush()
+        os.fsync(output.fileno())
+    os.replace(temporary, path)
+
+
 def _checkpoint_path(run_dir: Path, run_cfg: Mapping[str, Any]) -> Path:
     """Trainer checkpoint file; may live outside the run dir.
 
@@ -326,7 +364,8 @@ def _checkpoint_path(run_dir: Path, run_cfg: Mapping[str, Any]) -> Path:
 
 
 def _verify_resume_consistency(run_dir: Path, ledger: Any, *,
-                               checkpoint_path: Path | None = None) -> dict[str, Any]:
+                               checkpoint_path: Path | None = None,
+                               initial_version: int = 0) -> dict[str, Any]:
     """Fail closed when a --resume run cannot continue the previous run.
 
     Checks the serving registry, the trainer checkpoint and the ledger
@@ -344,13 +383,19 @@ def _verify_resume_consistency(run_dir: Path, ledger: Any, *,
     """
     import torch as _torch  # noqa: F401 (resume requires torch regardless)
     from .adapter.manager import AdapterManager
+    if type(initial_version) is not int or initial_version < 0:
+        raise ValueError("initial_version must be a non-negative integer")
     adapters = AdapterManager(run_dir / "adapters")
     active = adapters.active
     state_path = Path(checkpoint_path) if checkpoint_path else run_dir / "spo_trainer_state.pt"
     if active is not None and active.version > 0 and not state_path.is_file():
-        raise RuntimeError(
-            f"serving adapter is v{active.version} but no trainer checkpoint "
-            "exists; resuming would restart LoRA from zero under a trained policy")
+        imported_zero_step = (initial_version > 0
+                              and active.version == initial_version
+                              and not ledger.list_updates())
+        if not imported_zero_step:
+            raise RuntimeError(
+                f"serving adapter is v{active.version} but no trainer checkpoint "
+                "exists; resuming would restart LoRA from zero under a trained policy")
     completed = 0
     state: Any = None
     if state_path.is_file():
@@ -371,7 +416,7 @@ def _verify_resume_consistency(run_dir: Path, ledger: Any, *,
         if active is None and completed > 0:
             raise RuntimeError(
                 "trainer checkpoint claims completed steps but no adapter is serving")
-        if active is not None and active.version == 0 and completed > 0:
+        if active is not None and active.version == initial_version and completed > 0:
             # Optimizer step finished but publish never completed (crash/OOM
             # between checkpoint write and ACTIVATED): serving is legitimately
             # still genesis.  Allow only a single post-step, pre-serve pending
@@ -382,7 +427,7 @@ def _verify_resume_consistency(run_dir: Path, ledger: Any, *,
             if (len(post_step) != 1 or _active_update_id(state) != post_step[0].update_id
                     or completed != len(ledger.list_updates(("CONSUMED",))) + 1):
                 raise RuntimeError(
-                    "trainer checkpoint claims completed steps but serving is still genesis")
+                    "trainer checkpoint claims completed steps but serving is still the initial adapter")
     consumed = len(ledger.list_updates(("CONSUMED",)))
     pending = ledger.list_updates(
         ("RESERVED", "LEARNING", "OPTIMIZED", "EXPORTED", "REGISTERED", "ACTIVATED"))
@@ -400,7 +445,7 @@ def _verify_resume_consistency(run_dir: Path, ledger: Any, *,
             "advance may be uncommitted")
     elif len(activated) == 1:
         batch = activated[0]
-        expected_version = consumed + 1
+        expected_version = initial_version + consumed + 1
         if active.version != expected_version:
             raise RuntimeError(
                 f"serving adapter v{active.version} is not the product of pending "
@@ -425,12 +470,14 @@ def _verify_resume_consistency(run_dir: Path, ledger: Any, *,
             raise RuntimeError(
                 f"ACTIVATED update {batch.update_id} requires exactly one finished "
                 f"optimizer step, not {completed} completed vs {consumed} consumed")
-    elif consumed > 0 and active.version != consumed:
+    elif consumed > 0 and active.version != initial_version + consumed:
         raise RuntimeError(
-            f"serving adapter v{active.version} disagrees with {consumed} consumed updates")
-    elif consumed == 0 and active.version != 0:
+            f"serving adapter v{active.version} disagrees with {consumed} consumed "
+            f"updates after initial v{initial_version}")
+    elif consumed == 0 and active.version != initial_version:
         raise RuntimeError(
-            f"serving adapter v{active.version} exists with no consumed update")
+            f"serving adapter v{active.version} exists with no consumed update "
+            f"(expected initial v{initial_version})")
     if completed < consumed or completed > consumed + (1 if pending else 0):
         raise RuntimeError(
             f"trainer checkpoint ({completed} steps) disagrees with ledger "
@@ -857,6 +904,7 @@ def run_spo(args: argparse.Namespace) -> int:
     if not tasks_path.is_file() or not (model_path / "config.json").is_file():
         raise ValueError("Prepare the official tasks.jsonl and model directory on the server")
     run = cfg["run"]
+    init_adapter_dir = run.get("init_adapter_dir")
     in_run_prune = bool(run.get("in_run_prune", False))
     keep_adapter_versions = tuple(run.get("keep_adapter_versions", []))
     keep_recent_adapters = int(run.get("keep_recent_adapters", 1))
@@ -1034,6 +1082,44 @@ def run_spo(args: argparse.Namespace) -> int:
             f"{type(error).__name__}: {error}") from error
     lease = GpuLease(backend)
     adapters = AdapterManager(run_dir / "adapters")
+    initial_record: dict[str, Any] | None = None
+    if args.resume:
+        initial_record = _read_initial_adapter(run_dir)
+    elif init_adapter_dir:
+        from .rollout.policy_version import AdapterManifest as _InitialManifest
+        source = Path(init_adapter_dir).expanduser().resolve(strict=True)
+        if not source.is_dir():
+            raise ValueError(f"run.init_adapter_dir is not a directory: {source}")
+        manifest = _InitialManifest.read(source / "manifest.json")
+        if manifest.rank != int(cfg["policy"]["lora_rank"]) \
+                or manifest.alpha != int(cfg["policy"]["lora_alpha"]) \
+                or manifest.dropout != float(cfg["policy"].get("lora_dropout", 0.0)) \
+                or manifest.base_revision != cfg["policy"].get("model_revision"):
+            raise ValueError(
+                "run.init_adapter_dir manifest does not match the learner rank/alpha/"
+                "dropout or model revision")
+        adapters.import_adapter(manifest, source, activate=True)
+        initial_record = {
+            "schema": INITIAL_ADAPTER_SCHEMA,
+            "version": manifest.version,
+            "adapter_sha256": manifest.adapter_sha256,
+            "source_dir": str(source),
+            "source_parent_version": manifest.parent_version,
+            "source_optimizer_step": manifest.optimizer_step,
+            "imported_unix": time.time(),
+            "note": ("optimizer state, AdamW moments and LR schedule start fresh; "
+                     "only the LoRA weights are inherited"),
+        }
+        _write_initial_adapter(run_dir, initial_record)
+        identity["initial_adapter"] = initial_record
+        with (run_dir / "model_identity.json").open("w", encoding="utf-8") as handle:
+            json.dump(identity, handle, ensure_ascii=False, indent=2, sort_keys=True)
+        _emit(metrics_path, "spo_initial_adapter_imported", **initial_record)
+    initial_version = int(initial_record["version"]) if initial_record else 0
+    try:
+        initial_adapter_manifest = adapters.get(initial_version) if initial_record else None
+    except KeyError:
+        initial_adapter_manifest = None
     if isinstance(backend, VLLMBackend):
         # The runtime validator checks the PEFT target layout against the
         # actual Gemma 4 config before vLLM is allowed to load the adapter.
@@ -1041,7 +1127,8 @@ def run_spo(args: argparse.Namespace) -> int:
             manifest, model_config=model_path / "config.json", source=directory)
     if args.resume:
         resume_summary = _verify_resume_consistency(
-            run_dir, ledger, checkpoint_path=checkpoint_path)
+            run_dir, ledger, checkpoint_path=checkpoint_path,
+            initial_version=initial_version)
         _emit(metrics_path, "spo_resume_verified", **resume_summary)
 
     policy_cfg = dict(cfg["policy"])
@@ -1073,7 +1160,11 @@ def run_spo(args: argparse.Namespace) -> int:
         _emit(metrics_path, "adapter_genesis", version=0,
               lora_name=binding["lora_name"])
     else:
-        _emit(metrics_path, "adapter_resumed", version=adapters.active.version)
+        _emit(metrics_path,
+              "adapter_initialized" if initial_record and not args.resume
+              else "adapter_resumed",
+              version=adapters.active.version,
+              initial_version=initial_version)
     double_buffer = DoubleBuffer(
         adapters, backend, gpu_lease=lease,
         allow_resident_pair=cfg["adapter"].get("allow_resident_pair", False))
@@ -1330,14 +1421,29 @@ def run_spo(args: argparse.Namespace) -> int:
                     in_flight.pop(trajectory_id, None)
 
         def restore_learner_weights() -> bool:
-            """Restore the last committed LoRA into a freshly loaded learner.
+            """Load the committed, or imported-initial, LoRA into the learner.
 
-            ensure_loaded() always builds a zero-initialized LoRA; without
-            this step the next update would train from genesis and the AdamW
-            moments would apply to the wrong weights. Skipped only when this
-            process has never completed an optimizer step.
+            ensure_loaded() always builds a zero-initialized LoRA. A normal
+            fresh run intentionally keeps that zero base; a continuation run
+            loads the imported adapter once before its first optimizer step.
+            After any committed step the trainer checkpoint is authoritative.
             """
-            if trainer.completed_optimizer_steps <= 0 or not trainer_state.is_file():
+            if trainer.completed_optimizer_steps <= 0:
+                if initial_adapter_manifest is None:
+                    if initial_record is not None:
+                        raise RuntimeError(
+                            f"initial adapter v{initial_version} is recorded but missing "
+                            "from the registry; cannot start the first optimizer step")
+                    return False
+                policy.load_adapter_weights(
+                    adapters.path(initial_adapter_manifest),
+                    expected_manifest=initial_adapter_manifest)
+                _emit(metrics_path, "spo_initial_adapter_loaded",
+                      version=initial_adapter_manifest.version,
+                      adapter_sha256=initial_adapter_manifest.adapter_sha256[:16],
+                      completed_optimizer_steps=0)
+                return True
+            if not trainer_state.is_file():
                 return False
             import torch as _torch
             state = _torch.load(trainer_state, map_location="cpu", weights_only=False)
