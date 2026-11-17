@@ -54,6 +54,14 @@ def _pending_updates(database: Path) -> list[tuple[str, str]]:
     return [(update_id, phase) for update_id, phase in rows if phase != TERMINAL_PHASE]
 
 
+def _display_path(path: Path, run_dir: Path) -> str:
+    """Relative to the run dir when possible, absolute when it lives outside."""
+    try:
+        return str(path.relative_to(run_dir))
+    except ValueError:
+        return str(path)
+
+
 def _bytes_of(path: Path) -> int:
     if not path.is_dir():
         try:
@@ -121,7 +129,7 @@ def plan_prune(run_dir: Path, *, keep: tuple[int, ...] = (),
             directory = run_dir / name
             if directory.exists():
                 targets.append((f"transient {name}", directory))
-    return [{"label": label, "path": str(path.relative_to(run_dir)),
+    return [{"label": label, "path": _display_path(path, run_dir),
              "bytes": _bytes_of(path)} for label, path in targets]
 
 
@@ -148,7 +156,8 @@ def prune_finished_run(run_dir: Path, *, keep: tuple[int, ...] = (),
     if dry_run:
         return record
     for item in plan:
-        path = run_dir / item["path"]
+        recorded = Path(item["path"])
+        path = recorded if recorded.is_absolute() else run_dir / recorded
         if path.is_dir() and not path.is_symlink():
             shutil.rmtree(path)
         else:
