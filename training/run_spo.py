@@ -82,6 +82,18 @@ def load_config(path: Path) -> dict:
             raise ValueError(f"run.checkpoint_dir is not writable: {resolved}")
     if type(cfg["run"].get("prune_finished_artifacts", False)) is not bool:
         raise ValueError("run.prune_finished_artifacts must be bool")
+    if type(cfg["run"].get("in_run_prune", False)) is not bool:
+        raise ValueError("run.in_run_prune must be bool")
+    keep_versions = cfg["run"].get("keep_adapter_versions", [])
+    if not isinstance(keep_versions, list) \
+            or any(type(value) is not int or value < 0 for value in keep_versions):
+        raise ValueError(
+            "run.keep_adapter_versions must be a list of non-negative integers")
+    if len(set(keep_versions)) != len(keep_versions):
+        raise ValueError("run.keep_adapter_versions must not repeat a version")
+    keep_recent = cfg["run"].get("keep_recent_adapters", 1)
+    if type(keep_recent) is not int or keep_recent < 0:
+        raise ValueError("run.keep_recent_adapters must be a non-negative integer")
     from .reward.progress import SUPPORTED_OBJECTIVE_VERSIONS
     if cfg["rewards"].get("objective_version") not in SUPPORTED_OBJECTIVE_VERSIONS:
         raise ValueError("wrong rewards objective_version")
@@ -845,6 +857,9 @@ def run_spo(args: argparse.Namespace) -> int:
     if not tasks_path.is_file() or not (model_path / "config.json").is_file():
         raise ValueError("Prepare the official tasks.jsonl and model directory on the server")
     run = cfg["run"]
+    in_run_prune = bool(run.get("in_run_prune", False))
+    keep_adapter_versions = tuple(run.get("keep_adapter_versions", []))
+    keep_recent_adapters = int(run.get("keep_recent_adapters", 1))
     walltime = float(run.get("walltime_seconds", 7200)) + float(args.additional_walltime_seconds or 0)
     reserve = float(run.get("update_reserve_seconds", 900))
     if not walltime > reserve > 0:
@@ -1445,6 +1460,56 @@ def run_spo(args: argparse.Namespace) -> int:
                   sha256=registered.adapter_sha256[:16])
             return registered
 
+        def pinned_adapter_versions() -> tuple[int, ...]:
+            """Versions the buffer, training slot or trajectories still pin."""
+            ownership = double_buffer.ownership()
+            versions: set[int] = set()
+            for version, count in (ownership.get("trajectory_versions") or {}).items():
+                if type(version) is int and type(count) is int and count > 0:
+                    versions.add(version)
+            for slot in ("rollout", "training"):
+                manifest = ownership.get(slot)
+                if isinstance(manifest, Mapping) and type(manifest.get("version")) is int:
+                    versions.add(int(manifest["version"]))
+            return tuple(sorted(versions))
+
+        def prune_in_run_after_commit(update_id: str, version: int) -> None:
+            """Drop superseded adapter dirs after a committed, served update.
+
+            Filesystem-only: never inside a training lease, and never allowed
+            to turn a successful update into a failure. Any doubt is reported
+            and skipped by retention itself.
+            """
+            if not in_run_prune:
+                return
+            try:
+                from .adapter.retention import prune_in_run
+                record = prune_in_run(
+                    run_dir, keep_versions=keep_adapter_versions,
+                    keep_recent=keep_recent_adapters,
+                    pinned_versions=pinned_adapter_versions(),
+                    expected_active=version)
+            except Exception as error:  # retention must never fail the run
+                try:
+                    _emit(metrics_path, "spo_in_run_pruned", update_id=update_id,
+                          outcome="skipped", active_version=version,
+                          error_type=type(error).__name__, error=str(error))
+                except OSError:
+                    pass
+                return
+            try:
+                _emit(metrics_path, "spo_in_run_pruned", update_id=update_id,
+                      outcome="failed" if record["failed"] else "completed",
+                      active_version=record["active_version"],
+                      removed_count=len(record["removed_versions"]),
+                      removed_bytes=record["removed_bytes"],
+                      removed_versions=record["removed_versions"],
+                      removed_staging=record["removed_staging"],
+                      kept_versions=record["kept_versions"],
+                      skipped=record["skipped"], failed=record["failed"])
+            except OSError:
+                pass
+
         def activate_and_commit(update_id: str, batch: object, stats: Mapping[str, Any],
                                 behavior_before: BehaviorAdapter) -> int:
             """Idempotent REGISTERED -> ACTIVATED -> CONSUMED (inference lease only).
@@ -1496,6 +1561,10 @@ def run_spo(args: argparse.Namespace) -> int:
             _emit(metrics_path, "spo_update", update_id=update_id, version=manifest.version,
                   action_tokens=batch.total_action_tokens, published=True,
                   kl_value=stats.get("kl_value"), token_count=stats.get("token_count"))
+            # The update is committed, served and verified above. Only now may
+            # superseded adapter directories be dropped; this is outside every
+            # training lease and never changes ledger/registry rows.
+            prune_in_run_after_commit(update_id, manifest.version)
             return manifest.version
 
         def finalize_update(update_id: str, batch: object, stats: Mapping[str, Any],
@@ -2064,7 +2133,9 @@ def _prune_if_configured(args: argparse.Namespace) -> None:
     checkpoint_path = _checkpoint_path(run_dir, cfg["run"])
     try:
         from .adapter.retention import prune_finished_run
-        record = prune_finished_run(run_dir, checkpoint_path=checkpoint_path)
+        record = prune_finished_run(
+            run_dir, keep=tuple(cfg["run"].get("keep_adapter_versions", [])),
+            checkpoint_path=checkpoint_path)
     except Exception as error:  # never turn a finished run into a failure
         print(f"spo_prune_skipped: {type(error).__name__}: {error}", file=sys.stderr)
         return

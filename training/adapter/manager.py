@@ -15,6 +15,8 @@ import uuid
 
 from training.rollout.policy_version import AdapterManifest, PolicyVersion, sha256_file
 
+from .retention import legacy_pruned_versions, read_pruned_versions
+
 
 MANIFEST_NAME = "manifest.json"
 REGISTRY_NAME = "registry.json"
@@ -60,6 +62,12 @@ class AdapterManager:
         self.versions_dir.mkdir(parents=True, exist_ok=True)
         self.registry_path = self.root / REGISTRY_NAME
         self._lock = threading.RLock()
+        # Deletion evidence is read before the registry so a missing version
+        # directory can be told apart from a corrupted one. The marker lives
+        # inside ``adapters/``; the legacy finished-run record lives one level
+        # up in the run directory.
+        self._pruned: dict[int, dict[str, Any]] = read_pruned_versions(self.root)
+        self._legacy_pruned = legacy_pruned_versions(self.root.parent)
         self._registry = self._read_registry()
 
     def _empty_registry(self) -> dict[str, Any]:
@@ -87,7 +95,7 @@ class AdapterManager:
             if relative != expected:
                 raise ValueError("adapter registry path does not match its immutable identity")
             directory = self.root / relative
-            if not directory.is_dir():
+            if not directory.is_dir() and not self._accept_pruned(manifest, relative):
                 raise ValueError(f"registered adapter directory is missing: {directory}")
             normalized["versions"][key] = {
                 "manifest": manifest.to_dict(), "path": row["path"], "references": row["references"],
@@ -96,8 +104,52 @@ class AdapterManager:
         if active is not None:
             if type(active) is not int or str(active) not in normalized["versions"]:
                 raise ValueError("active adapter version is not registered")
+            active_path = self.root / normalized["versions"][str(active)]["path"]
+            if not active_path.is_dir():
+                # Deletion evidence never makes the serving adapter optional.
+                raise ValueError(f"active adapter directory is missing: {active_path}")
             normalized["active_version"] = active
         return normalized
+
+    def _accept_pruned(self, manifest: AdapterManifest, relative: Path) -> bool:
+        """Tolerate a missing directory only with exact deletion evidence.
+
+        The authoritative marker must name this version and SHA256.  Runs
+        pruned by an older launcher have only ``pruned_artifacts.json``; that
+        record is accepted when its ``adapter vN`` label, immutable directory
+        name and optional SHA256 all match.  Any other missing directory still
+        raises in ``_read_registry``.
+        """
+        entry = self._pruned.get(manifest.version)
+        if entry is not None and entry["adapter_sha256"] == manifest.adapter_sha256:
+            return True
+        legacy = self._legacy_pruned.get(manifest.version)
+        if legacy is None or legacy.get("directory_name") != relative.name:
+            return False
+        recorded_sha = legacy.get("adapter_sha256")
+        if recorded_sha is not None and recorded_sha != manifest.adapter_sha256:
+            return False
+        self._pruned[manifest.version] = {
+            "version": manifest.version,
+            "adapter_sha256": manifest.adapter_sha256,
+            "bytes": int(legacy.get("bytes") or 0),
+            "pruned_unix": legacy.get("pruned_unix"),
+            "source": "legacy_pruned_artifacts",
+        }
+        return True
+
+    def is_pruned(self, version: int) -> bool:
+        """True when this version's weights were removed under the marker."""
+        if type(version) is not int or version < 0:
+            raise ValueError("adapter version must be a non-negative integer")
+        with self._lock:
+            return version in self._pruned
+
+    def pruned_versions(self) -> dict[int, dict[str, Any]]:
+        """Deletion evidence for versions whose directories are gone."""
+        with self._lock:
+            copied = json.loads(json.dumps(self._pruned))
+            return {int(version): value for version, value in copied.items()}
 
     def _write_registry(self) -> None:
         _atomic_json(self.registry_path, self._registry)
