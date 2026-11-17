@@ -430,17 +430,54 @@ python scripts/prune_run_artifacts.py --run-dir <run> --keep <最终版本>
 | task | N_L | N_R | resolved_L | resolved_R | Δresolved | P_L | P_R | ΔP |
 | --- | ---: | ---: | --- | --- | ---: | ---: | ---: | ---: |
 | `fastapi_14258` | 2 | 1 | 0/2 | 0/1 | 0 | 0.000 | 0.000 | 0 |
-| `requests_7205` | 2 | 1 | 1/2 | 1/1 | +0.5（分母效应） | 1.000 | 1.000 | 0 |
+| `requests_7205` | 2 | 1 | 1/2 | 1/1 | +0.5（样本比例差异） | 1.000 | 1.000 | 0 |
 | `requests_7315` | 2 | 1 | 2/2 | 1/1 | 0 | 0.000 | 0.000 | 0 |
 | `rich_4076` | 1 | 1 | 0/1 | 0/1 | 0 | 0.000 | 0.000 | 0 |
 
-结论：**五步训练在这 6 题上没有产生任何官方 verdict 变化**——没有一道题从 fail 转 pass 或从 pass 转 fail；`requests_7205` 的 +0.5 只是 1/2 变成 1/1 的分母变化，P 始终为 1.000。`requests_7315` 在所有采样里都是 `resolved=True` 但 `P=0.0`，属于该题既有的判定特征，不是训练带来的改变。
+结论（2026-11-17 复核修正）：**v3/v4 共同 3 题的单次样本结果相同，v0/v4 共同 4 题的 P 相同；尚无稳定修复增益证据，也不能据此断言五步训练完全无效或没有退化。** `requests_7205` 的 v0 两条轨迹中一条 `resolved=False`，1/2→1/1 是实际样本成功率差异，不能仅归为分母效应，也不足以证明训练改善。另有 `rich_3782` 的 P 从 v0 的 1/7 变为 v2 的 0（各一条、resolved 都为 False），这是真实观测差异，但不能归因于训练造成退化。`requests_7315` 在所有采样里都是 `resolved=True`、`P=0.0`，不能把这些通过数当作新增修复数。
 
 ### 10.3 边界与未测项
 
 - **v5 从未被采样**：采样发生在每步训练之前，run 在完成第 5 步后退出，因此不存在 `behavior_version=5` 的轨迹。严格的"第 3 步 vs 第 5 步"在本 run 结构上不可测，最接近的同口径对照是 v3 vs v4（3 题）与 v0 vs v4（4 题）。
-- 每步每题只有 1–2 条轨迹，所有 Δ 都是单样本；`report_repair_trend.py` 对每条比较都打印了 N<2 警告。这些结果不能当作趋势强度，只能说明"没有观察到通过/失败翻转"。
+- 同一行为版本内每题只有 1–2 条轨迹，所列对比至少一侧只有一条；`report_repair_trend.py` 对每条比较都打印了 N<2 警告。这些结果不能当作稳定趋势，也不能支持跨全部版本的“没有变化”。
 - 题池同时参与训练，属 in-sample；不构成泛化结论。
 - 若要测 v5 自身，需要额外的只做 rollout+裁判的评测入口（把 v5 adapter 加载进 vLLM 跑同一批题），本轮未实现。
 
 证据：`results/gpu-5step-r128-20261117/`（`steps.json`、`report-compare-3v4.txt`、`report-compare-0v4.txt`、`report-at-step3.txt`），服务器 run 目录与账本保留。代码指纹：`training/run_spo.py` `04c90557…`、`training/adapter/retention.py` `0994e75d…`、`task_dependency_setup.py` `9a05542a…`、`configs/spo_v3_5step_rank128_20261117.toml` `f18d9721…`、`scripts/session_supervisor.py` `1a9988cf…`。
+
+### 10.4 无卡复核与下一步（2026-11-17）
+
+只读回看服务器 `metrics.jsonl`、账本、最终事务与 adapter registry，确认 active v5、v3/v5 权重仍在，5 次发布均成功；本地/外置 checkpoint 均已删除，实例无 GPU 设备。数值摘要与来源保存在 `results/gpu-5step-r128-20261117/learning_signal_review.json`，不包含官方题面或验收补丁。
+
+实际消费 **17 条、102,875 action tokens**，来自 v0/v1/v2/v3 的条数分别为 9/3/1/4；v4 的 4 条仍为 BUFFERED。这符合 `max_policy_lag=2`，但不是五轮每轮都用最新策略完整覆盖六题。五个更新窗口累计 8,632.8 秒（2 小时 23 分 53 秒），平均 28 分 47 秒；2 小时 40 分是整个 GPU 会话口径。
+
+| update | 更新前后 K3 估计 | 探针 action tokens |
+| --- | ---: | ---: |
+| upd-0000 | 0.00130440 | 452 |
+| upd-0001 | 0.00059347 | 843 |
+| upd-0002 | 0.00021021 | 654 |
+| upd-0003 | 0.00027797 | 930 |
+| upd-0004 | 0.00031441 | 4,977 |
+
+这些量取自每步四次调用的有限行为 token 子集，非完整词表精确 KL；每步子集不同，不能把数列解释成同一探针上的收敛曲线。最终事务记录裁剪前梯度范数 13.5772、实际 LR=1e-6；配置与调度代码推导五步 LR 为 5/4/3/2/1 × 1e-6，前四步完整 stats 未保留在最终事务中，不冒称其 LR 已逐步实测。现有证据不支持“优化器根本没更新”，也不足以直接判定 LR 太小、rank 128 无效或奖励失效。
+
+本次已修复报告的一个窄问题：`resolved` 与 P 分别判断双方可比较性，sparse v3 的 P 缺失不再导致有效 `resolved` 对比被丢弃；缺失仍显示 `-`。本 run 全部 P 非空，历史数字不受此修复影响。一次性内联 Python 手动核对完整 P、双侧/单侧缺 P、完全无 verdict 的输出；没有新增测试文件。
+
+**建议先完成以下针对性 CPU 工作，再用短 GPU 会话补测最终模型，不直接原样延长六题 run 到 10 小时：**
+
+1. 补独立于训练循环的已有 adapter 评估入口。使用相同公开六题、相同预算与预先固定的重复次数/种子，对基座、v3、v5 各题先做 3 次采样（共 54 条），逐题报告 resolved 与 P，保存不一致的失败原因；评估轨迹不回流这次优化。仍是训练集诊断，不称独立泛化；3 次重复仅比当前单样本更有信息，不构成显著性保证。基座无需恢复已删的零 adapter 权重，改为直接服务无 LoRA 的已部署基座。**入口已实现并在服务器 CPU 模式完成 base/v3/v5 三次 `--plan-only` 验证（18 条/策略、judge identity 与训练 run 匹配、6/6 task key 精确一致、共享 baseline 6/6 命中）；真实 54 条 GPU 采样尚未执行。**
+2. 处理长 run 的实际磁盘增长。当前只在整场完成后裁剪，运行中 `publish` 复制 adapter，保留 staging 和版本目录；单份权重约 1.94 GB，20 个注册版本本身约 38.8 GB，尚未算 staging、checkpoint 与工作区。当前数据盘空闲 14.60 GB（13.60 GiB），因此只改时长会重新遇到空间问题。需要在已提交且无活跃引用后回收可恢复的重复 staging/旧版本，并为 checkpoint 原子替换留足空间，或扩容本地数据盘；不删仍需评估/恢复的版本。**已实现 `[run] in_run_prune` / `keep_adapter_versions` / `keep_recent_adapters`，并在真实旧 run 上只读验证 registry 可重开（active v5、pruned {0,1,2,4}）与 dry-run 不误删；尚未在新 run 上实跑。**
+3. 若选择延长，使用更广的官方公开题池、预先确定学习率日程和中间/最终评估。保留有效失败轨迹，不重新加入“有正信号才能训练”的限制。若从 v5 继续，需要显式支持已有 adapter 初始化的新 run，并新建优化器与日程、记录父版本；当前没有此入口。旧 run 已完成五步且 checkpoint 已删，不能靠 `--resume --additional-walltime-seconds` 无缝续成更多步。**12 题/6 步/6 小时的配置与计划已备好（`configs/spo_v3_long_rank128_20261118.toml`、`docs/plan/013`），未启动。**
+
+按本轮同等工作量，**10 小时约容纳 18–20 步**，含额外评估或扩大题池后可能更少；这是吞吐估算，不是收益或收敛保证。后续即使短评估仍平坦，也不能单凭这点否决更长训练；应结合最终模型结果、真实失败类型与公开题覆盖来决定延长的实验内容。
+
+### 10.5 2026-11-18 无卡能力补齐（已执行）
+
+本轮只做 CPU 实现与验证，没有启动 GPU、没有跑 54 条真实采样、没有启动长训。已验证的证据：
+
+- **独立评估入口**：`training/eval_adapters.py` + `scripts/evaluate_adapters.py` + `configs/eval_adapters_20261118.toml`。基座直接使用已部署的无 LoRA 模型（`VLLMBackend.submit_base`），v3/v5 从原目录只读加载并校验权重 SHA256；不建 optimizer、不写 trainer checkpoint、不 reserve update。服务器 CPU 模式三次 `--plan-only` 均得到 18 条/策略；`judge_identity_sha256=3b73b9c7…` 与训练 run **MATCH**，6/6 task key 精确一致；v3 `10c1a80f…`、v5 `2ce46040…`；共享 baseline `cached=6/6`。详见 `docs/plan/011`。
+- **运行中磁盘裁剪**：`training/adapter/retention.py` 的 `prune_in_run` + `AdapterManager` 的 pruned-marker 兼容；配置在 `configs/spo_v3_long_rank128_20261118.toml`（不回填已完成的 5 步配置，保持其 `f18d9721…`）。在真实 `spo-v3-5step-r128-20261117` 上只读重开：`active 5`、`pruned [0,1,2,4]`、v3/v5 路径存在；dry-run 不产生删除计划。详见 `docs/plan/012`。
+- **更广题池**：12 题（原 6 + fastapi 4 + requests 1 + rich 1），6 步/6 小时，rank 128/v3 奖励/每步 16,384 token 不变。新增 6 题在 2026-11-18 用当前 runtime 做了 CPU-only 空补丁探针，全部 `verification_complete=true`、`verdict_valid=true`、`junit_available=true`、`expected_universes=2`（`results/longpool-probe-20261118/summary.json`）；这只证明 baseline 健康，不证明可解。详见 `docs/plan/013`。
+- 仍未执行：base/v3/v5 × 6 题 × 3 次的真实 GPU 评估（54 条）；12 题 6 步长训。两者都需要新的 GPU 会话授权，且长训必须在评估之后决定。
+
+上面的 as-run 代码指纹属于 2026-11-17 五步 run；本轮修改后的 `run_spo.py`/`retention.py` 指纹已不同，不应把两者混为同一份代码。

@@ -592,9 +592,13 @@ def _print_comparison(records: Sequence[TrajectoryEvidence],
     left_tasks = set(left_by_task)
     right_tasks = set(right_by_task)
     common = sorted(left_tasks & right_tasks)
-    comparable = [task for task in common
-                  if _mean(_p_values(left_by_task[task])) is not None
-                  and _mean(_p_values(right_by_task[task])) is not None]
+    comparable_p = [task for task in common
+                    if _p_values(left_by_task[task])
+                    and _p_values(right_by_task[task])]
+    comparable_resolved = [task for task in common
+                           if _resolved_known(left_by_task[task])
+                           and _resolved_known(right_by_task[task])]
+    comparable = sorted(set(comparable_p) | set(comparable_resolved))
     non_comparable = [task for task in common if task not in comparable]
 
     overlap = {record.trajectory_id for record in left} & \
@@ -604,11 +608,12 @@ def _print_comparison(records: Sequence[TrajectoryEvidence],
             f"comparison selections overlap on {len(overlap)} trajectory(ies); "
             f"the two sides are not independent samples")
 
-    print(f"  tasks with an official P verdict at BOTH selectors: {len(comparable)}")
-    if comparable:
-        _wrap_list("    ", comparable)
-    else:
-        print("    none")
+    for metric, tasks in (("resolved", comparable_resolved), ("P", comparable_p)):
+        print(f"  tasks with an official {metric} verdict at BOTH selectors: {len(tasks)}")
+        if tasks:
+            _wrap_list("    ", tasks)
+        else:
+            print("    none")
     print()
 
     if comparable:
@@ -627,32 +632,36 @@ def _print_comparison(records: Sequence[TrajectoryEvidence],
             right_rate = _rate(right_task)
             left_p = _mean(_p_values(left_task))
             right_p = _mean(_p_values(right_task))
-            assert left_p is not None and right_p is not None
+            left_resolved_text = "-" if left_rate is None else _rate_text(left_task)
+            right_resolved_text = "-" if right_rate is None else _rate_text(right_task)
+            left_p_text = "-" if left_p is None else f"{left_p:.3f}"
+            right_p_text = "-" if right_p is None else f"{right_p:.3f}"
             single = min(len(left_task), len(right_task)) < 2
             if single:
                 thin.append(task)
             print(
                 f"  {task:<{task_width}}  {len(left_task):>3}  {len(right_task):>3}  "
-                f"{_rate_text(left_task):<11}  {_rate_text(right_task):<11}  "
+                f"{left_resolved_text:<11}  {right_resolved_text:<11}  "
                 f"{_delta_text(None if left_rate is None or right_rate is None else right_rate - left_rate):>7}  "
-                f"{left_p:>6.3f}  {right_p:>6.3f}  "
-                f"{right_p - left_p:>+7.3f}  "
+                f"{left_p_text:>6}  {right_p_text:>6}  "
+                f"{_delta_text(None if left_p is None or right_p is None else right_p - left_p):>7}  "
                 f"{'single' if single else 'ok'}")
         print()
         print("  d_res = resolved rate (right - left); d_P = mean P (right - left)")
+        print("  each delta requires that metric on both sides; '-' is missing evidence")
         if thin:
             print(f"  WARNING: {len(thin)}/{len(comparable)} compared tasks have fewer "
                   f"than 2 trajectories on at least one side; the deltas are single "
                   f"samples, not a trend.")
             _wrap_list("  tasks with N<2 on a side: ", thin)
     else:
-        print("  RESULT: no task has an official P verdict on both sides; no "
+        print("  RESULT: no task has an official resolved or P verdict on both sides; no "
               "resolved/P delta is computed. Missing evidence is not a zero delta.")
     print()
 
     if non_comparable:
-        print("  common tasks excluded from the delta table (no P verdict on at "
-              "least one side):")
+        print("  common tasks excluded from the delta table (neither resolved nor P "
+              "has evidence on both sides):")
         for task in non_comparable:
             left_task = left_by_task[task]
             right_task = right_by_task[task]
@@ -669,7 +678,8 @@ def _print_comparison(records: Sequence[TrajectoryEvidence],
                     if code not in reasons:
                         reasons.append(code)
             reason_text = ", ".join(reasons) or "-"
-            print(f"    {task}: left {left_text}; right {right_text}; reasons {reason_text}")
+            print(f"    {task}: left resolved={_rate_text(left_task)}, {left_text}; "
+                  f"right resolved={_rate_text(right_task)}, {right_text}; reasons {reason_text}")
         print()
 
     left_only = sorted(left_tasks - right_tasks)
