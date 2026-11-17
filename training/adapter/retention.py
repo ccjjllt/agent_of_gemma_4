@@ -348,6 +348,42 @@ def _reclaimable_bytes(paths: Iterable[Path]) -> int:
     return sum(size for size, links, hits in inodes.values() if hits >= links)
 
 
+def _inode_plan_snapshot(items: Iterable[tuple[Any, Path]]) -> dict[tuple[int, int], dict[str, Any]]:
+    """Snapshot inode link counts and their planned owners before deletion."""
+    snapshot: dict[tuple[int, int], dict[str, Any]] = {}
+    for owner, path in items:
+        for file in _files_for(path):
+            try:
+                info = file.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            key = (info.st_dev, info.st_ino)
+            record = snapshot.setdefault(
+                key, {"size": int(info.st_size), "links": int(info.st_nlink),
+                      "owners": {}})
+            record["owners"][owner] = record["owners"].get(owner, 0) + 1
+    return snapshot
+
+
+def _freed_bytes(snapshot: Mapping[tuple[int, int], Mapping[str, Any]],
+                 successful: Iterable[Any]) -> int:
+    """Bytes freed by the successful owners, counted once per fully removed inode.
+
+    An owner that is not in ``successful`` (a failed or partial rmtree) keeps
+    all of its links counted as remaining, so the estimate can only understate,
+    never overstate, reclaimed disk. Links outside the plan also keep the inode
+    alive and therefore contribute zero.
+    """
+    success = set(successful)
+    total = 0
+    for record in snapshot.values():
+        remaining = int(record["links"]) - sum(
+            count for owner, count in record["owners"].items() if owner in success)
+        if remaining <= 0:
+            total += int(record["size"])
+    return total
+
+
 def _display_path(path: Path, run_dir: Path) -> str:
     """Relative to the run dir when possible, absolute when it lives outside."""
     try:
@@ -696,9 +732,19 @@ def prune_in_run(
         }
         marker = str(write_pruned_versions(
             run_dir / "adapters", entries, pruned_unix=stamp))
+    targets: list[tuple[Any, Path]] = []
+    for index, item in enumerate(plan["remove"]):
+        targets.append((("remove", index), _planned_path(run_dir, item["path"])))
+    for index, item in enumerate(plan["staging"]):
+        targets.append((("staging", index), _planned_path(run_dir, item["path"])))
+    # Snapshot before the first rmtree: after deletion there is no path left
+    # from which to discover the inode's link count.
+    inode_snapshot = _inode_plan_snapshot(targets)
+
     removed: list[dict[str, Any]] = []
     failed: list[dict[str, Any]] = []
-    for item in plan["remove"]:
+    successful: set[Any] = set()
+    for index, item in enumerate(plan["remove"]):
         path = _planned_path(run_dir, item["path"])
         try:
             if path.is_dir() and not path.is_symlink():
@@ -706,11 +752,12 @@ def prune_in_run(
             elif path.exists():
                 path.unlink()
             removed.append(item)
+            successful.add(("remove", index))
         except OSError as exc:
             failed.append({**item, "error": f"{type(exc).__name__}: {exc}"})
 
     removed_staging: list[dict[str, Any]] = []
-    for item in plan["staging"]:
+    for index, item in enumerate(plan["staging"]):
         path = _planned_path(run_dir, item["path"])
         try:
             if path.is_dir() and not path.is_symlink():
@@ -718,13 +765,13 @@ def prune_in_run(
             elif path.exists():
                 path.unlink()
             removed_staging.append(item)
+            successful.add(("staging", index))
         except OSError as exc:
             failed.append({**item, "error": f"{type(exc).__name__}: {exc}"})
 
     adapter_bytes = sum(item["bytes"] for item in removed)
     staging_bytes = sum(item["bytes"] for item in removed_staging)
-    reclaimable = _reclaimable_bytes(
-        [_planned_path(run_dir, item["path"]) for item in (*removed, *removed_staging)])
+    reclaimable = _freed_bytes(inode_snapshot, successful)
     record.update({
         "removed_versions": [item["version"] for item in removed],
         "removed_staging": [item["name"] for item in removed_staging],

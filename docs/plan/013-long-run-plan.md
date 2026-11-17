@@ -666,6 +666,14 @@ SPO 每步发布一个不可变 adapter（rank 128 约 1.94 GB），导出器还
   bytes + unix）；`AdapterManager` 只在 marker 精确匹配时容忍缺失目录，否则仍
   fail closed；active 目录缺失永远拒绝。旧 `pruned_artifacts.json` 可只读迁移，
   真实 `spo-v3-5step-r128-20261117` 已能重开（active v5、pruned {0,1,2,4}）。
+- 回收记账：`prune_in_run` 在删除前对计划路径做 inode 快照，删除后只统计
+  “计划内所有链接都成功删除”的 inode；失败的 `rmtree` 保守地按仍有链接处理，
+  不会把未释放的 1.94 GB 记成收益。一次真实硬链接合成 run（v1 与 staging-v1
+  共享 8 MB inode）验证：`removed_bytes=8,388,980`、`removed_file_bytes=
+  16,777,960`（同一 inode 只计一次），`removed_versions=[1]`、
+  `removed_staging=['staging-v1']`、marker 写入、registry 重开 active=2 且
+  `is_pruned(1)=True`；模拟 staging 删除失败时 `removed_bytes=0`、`failed` 记录
+  该路径、registry 仍可重开。
 - 发布副本：`AdapterManager.publish` 优先硬链接 `staging-vN` 到 `versions/`，
   同文件系统不再复制第二份 1.94 GB；跨卷回退复制。六步峰值从 11.64 GB 降到
   9.70 GB；20 步 keep `[3,6]`、recent 1 的峰值为 11.64 GB（建议 recent 0 或
