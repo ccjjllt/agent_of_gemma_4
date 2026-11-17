@@ -1609,6 +1609,7 @@ def run_spo(args: argparse.Namespace) -> int:
                       active_version=record["active_version"],
                       removed_count=len(record["removed_versions"]),
                       removed_bytes=record["removed_bytes"],
+                      removed_file_bytes=record.get("removed_file_bytes", 0),
                       removed_versions=record["removed_versions"],
                       removed_staging=record["removed_staging"],
                       kept_versions=record["kept_versions"],
@@ -2246,8 +2247,11 @@ def _prune_if_configured(args: argparse.Namespace) -> None:
         print(f"spo_prune_skipped: {type(error).__name__}: {error}", file=sys.stderr)
         return
     removed = record.get("total_bytes", 0)
+    file_bytes = record.get("file_bytes", removed)
+    suffix = ("" if file_bytes == removed else
+              f" (file bytes {file_bytes / 1e9:.3f} GB; hardlinked duplicates count once)")
     print(f"spo_artifacts_pruned: {len(record.get('removed', []))} item(s), "
-          f"{removed / 1e9:.3f} GB reclaimed")
+          f"{removed / 1e9:.3f} GB unique bytes reclaimed{suffix}")
 
 
 def main(argv: list[str] | None = None) -> int:
