@@ -12,7 +12,7 @@
 
 继续保留授权预算/硬截止、公开数据与裁判资产隔离、来源身份、完整验收与模型调用、非有限数值拒绝、checkpoint/事务一致性。后续工作以冻结批次完成更新和 v0/v1 同口径修复对照为主，不把重复基础设施复核当作研究阶段。
 
-下方第 0–8 节保留历史实测及当时的策略；其中“无正信号即 NOOP”“baseline 不可用即整条排除”不再描述新 v3 run 的行为。旧 run 续跑仍使用已部署 v2 奖励配置；新的本地主配置只用于新实验。
+下方第 0–8 节保留历史实测及当时的策略；其中“无正信号即 NOOP”“baseline 不可用即整条排除”不再描述新 v3 run 的行为。旧 run 续跑仍使用已部署 v2 奖励配置；新的本地主配置只用于新实验。2026-11-17 冻结批次完成记录、计时口径与下一阶段设计见第 9 节。
 
 ## 0. 历史结论
 
@@ -195,14 +195,16 @@ agent_pytest_collection_failure / agent_pytest_import_failure
 
 本轮同时修复了一个归因缺陷：官方 worker 在验证前失败时结果不含 `task_key`，`training/rollout/engine.py` 的 `_bundle` 直接 `JudgeTaskKey.from_dict(None)` 抛 `TypeError`，把基础设施失败记成奖励错误。修复后的回退只允许验证前失败记录缺 `task_key`；完整可训练报告仍必须携带完整身份（见第 7 节）。
 
-资源与耗时：rollout 阶段显存峰值 76,811/76,767 MiB（94%），训练阶段峰值 62,483/65,923 MiB。预留到训练开始之间等待 **1,482 秒（24.7 分钟）**，包含长尾 rollout、重试、验收和最后一次约 5 分钟的 baseline probe；训练前等待（`run_spo.py` 的 `wait_for_workers()`）当时**没有超时约束**，现有 600 秒 barrier 限制不覆盖它。上一轮 35,964 token 的更新实测 forward 431 秒 + backward 1,243 秒，本轮 19,093 token 在 876 秒内未完成，和该量级一致。
+资源与耗时：rollout 阶段显存峰值 76,811/76,767 MiB（94%），训练阶段峰值 62,483/65,923 MiB。预留到训练开始之间等待 **1,482 秒（24.7 分钟）**，包含长尾 rollout、重试、验收和最后一次约 5 分钟的 baseline probe；训练前等待（`run_spo.py` 的 `wait_for_workers()`）当时**没有超时约束**，现有 600 秒 barrier 限制不覆盖它。2026-11-15 上一轮 35,964 token 的更新实测 forward 431.27 秒 + backward 1,242.96 秒（`docs/plan/008-vllm-backend-migration.md` 第 10.2 节）；本轮 19,093 token 在 876 秒内未完成，和该量级一致。这两个数字都不是 11-17 单步耗时。
 
 结论与边界：
 
 - 学习信号存在但不是普遍现象：6 条有效轨迹中 1 条明确修复、1 条保持通过；`P=0` 的 4 条总奖励仍为 0.15。不能把单条正修复称为泛化收益。
-- 60 分钟预算下，24.7 分钟等待 + 未完成的更新使“采样—更新—保存”无法同时完成。更新应按上一轮实测的约 29 分钟加保存余量规划，而不是只留 15 分钟。
+- 60 分钟预算下，24.7 分钟等待 + 未完成的更新使“采样—更新—保存”无法同时完成。更新应按 2026-11-15 实测的训练窗口约 29.26 分钟（含 learner 加载，属该 run，不是 11-17 单步）加保存余量规划，而不是只留 15 分钟。
 - `budget.json` 的 `consumed_seconds` 在 SIGTERM 后仍为 0，因为持久化只在正常收尾执行；续跑不能据此重新授予整份额度。
 - 证据：`results/gpu-short-20261116/summary.json`（逐轨迹 P/G/validity、audit、updates、buffer、adapter、耗时与显存）和 `rich3480-probe/`（同身份空补丁重跑结果），原始 run 目录在服务器 `/root/autodl-tmp/gemma4/runs/spo-short-20261116`。
+
+以上是 2026-11-16 会话的当时记录：该轮在 60 分钟硬截止时批次仍为 `RESERVED`，没有完成更新。`upd-0000` 于 2026-11-17 续跑完成并发布 v1；单步计时以第 9.1 节为准，本节的 876 秒是未完成的训练租约，不是一步的耗时。
 
 ## 7. 2026-11-16 无卡修链与下次 GPU 顺序
 
@@ -241,18 +243,18 @@ agent_pytest_collection_failure / agent_pytest_import_failure
 
 ### 7.5 下一次 GPU 的顺序
 
-1. 先用**原身份**完成冻结批次：保持服务器上的旧 `task_dependency_setup.py` 与旧 `extra_wheels` 不变，`--resume` 运行 `spo-short-20261116`。已用真实账本验证 `recovery_discard_reason(upd-0000, checkpoint=None, tx, require_positive_signal=True) == None`，即会从 v0 重做整步而不是丢弃。预算处理：`budget.json` 已在补账中记为 `consumed=2851`（一次性操作，有 `budget.json.pre-20261116` 备份），**不要再手动重写**——续跑只用 `--additional-walltime-seconds` 显式追加额度，让单调写入者按实际消耗继续累加；此时原 allowance 2400 已不足，需再用 `--additional-walltime-seconds 3000` 之类显式追加（allowance 5400、remaining 2549，覆盖约 29 分钟更新加保存余量）。
+1. 先用**原身份**完成冻结批次：保持服务器上的旧 `task_dependency_setup.py` 与旧 `extra_wheels` 不变，`--resume` 运行 `spo-short-20261116`。已用真实账本验证 `recovery_discard_reason(upd-0000, checkpoint=None, tx, require_positive_signal=True) == None`，即会从 v0 重做整步而不是丢弃。预算处理：`budget.json` 已在补账中记为 `consumed=2851`（一次性操作，有 `budget.json.pre-20261116` 备份），**不要再手动重写**——续跑只用 `--additional-walltime-seconds` 显式追加额度，让单调写入者按实际消耗继续累加；此时原 allowance 2400 已不足，需再用 `--additional-walltime-seconds 3000` 之类显式追加。按 2026-11-15 的 29.26 分钟训练窗口估算，allowance 5400、remaining 2549 可覆盖更新加保存余量。11-17 实际执行时 allowance 最终为 11400、结束时消费 5901；实际单步为 23.43 分钟优化（含加载 24.23 分钟），264 秒只是发布回放，见 9.1。
 2. 旧批次保存/发布后，再同步新 helper，并把 `py`、`toml`、`fastapi-cli 0.0.32` 并入 `extra_wheels`。这会产生新的 judge 身份，旧 run 的 3 条 `BUFFERED` 轨迹不能混入新环境。
-3. 新身份下做同口径 v0/v1 对照（同一批题、同一验收身份），有稳定更新与修复改善证据后再扩大训练。
+3. 新身份下做同口径 v0/v1 对照（同一批题、同一验收身份），有稳定更新与修复改善证据后再扩大训练；实际改为固定 6 题池的 5 步连续训练，见 9.2。
 
-续跑命令（旧身份，未执行）：
+续跑命令（旧身份；2026-11-17 实际执行时 config 为 `configs/spo_gpu_short_60m.v2.toml`，见 9.1）：
 
 ```bash
 cd /root/gemma4/project
 export CUDA_VISIBLE_DEVICES=0,1 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
        TMPDIR=/root/autodl-tmp/gemma4/tmp
 /root/gemma4/envs/learner/bin/python -m training.run_spo \
-  --config configs/spo_gpu_short_60m.toml \
+  --config configs/spo_gpu_short_60m.v2.toml \
   --data-root /root/gemma4/official/competition \
   --model-path /autodl-fs/data \
   --run-dir /root/autodl-tmp/gemma4/runs/spo-short-20261116 \
@@ -260,7 +262,7 @@ export CUDA_VISIBLE_DEVICES=0,1 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
   --resume --additional-walltime-seconds 3000
 ```
 
-`--additional-walltime-seconds 3000` 只是示例：allowance 变为 5400 秒、扣除 2851 秒后 remaining 2549 秒，覆盖约 29 分钟更新加保存；实际额度由用户授权决定。续跑前 vLLM 必须已按主配置部署并处于 v0（run 的 genesis adapter 会重新载入）。**整个会话必须在 `scripts/session_supervisor.py` 下运行（见 8.4），预算从 vLLM 启动前开始计时。**
+`--additional-walltime-seconds 3000` 只是示例：allowance 变为 5400 秒、扣除 2851 秒后 remaining 2549 秒；29 分钟只是 2026-11-15 训练窗口（29.26 分钟，含加载）的规划参照，不属 11-17 单步。实际续跑把 allowance 追加到 11400、结束时消费 5901，单步 23.43 分钟优化（含加载 24.23 分钟），264 秒只是发布回放（见 9.1）；实际额度由用户授权决定。续跑前 vLLM 必须已按主配置部署并处于 v0（run 的 genesis adapter 会重新载入）。**整个会话必须在 `scripts/session_supervisor.py` 下运行（见 8.4），预算从 vLLM 启动前开始计时。**
 
 ### 7.6 边界
 
@@ -301,7 +303,7 @@ export CUDA_VISIBLE_DEVICES=0,1 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
 
 第三轮补齐（收尾条件与逃逸覆盖）：直属进程退出不再等于收尾——监督器在子进程被回收后继续监督整棵树（进程组 + cgroup 成员 + 快照后代），组内有存活者时硬截止前不返回，硬截止时走强杀路径并记 `hard_killed`（137），不再把 leader 的退出码当成功。Linux 下建独立 cgroup `spo-sup-<pid>`（v2 `cgroup.kill`，v1 逐成员杀），`setsid` 逃逸也一并清扫；无可写 cgroup 的平台（macOS、只读挂载的本机）降级为组杀 + ppid 链快照清扫并如实记录。独立复核：shell 在 TERM 后退出但后台 `sleep 60` 存活 → 监督器等到 4.0 秒强杀，exit 137，无残留；`setsid` + 忽略 TERM 的孙进程（leader 只活 1 秒）→ `tree_pids_at_child_exit` 非空而组为空，照样清扫，exit 137，无残留。已知残留：无 cgroup 平台上，在单个 50 ms 轮询内完成 fork + setsid + leader 退出的后代无法被快照关联（生产负载远超该窗口）。
 
-下次 GPU 会话必须在监督器内运行（示例，未执行）：
+下次 GPU 会话必须在监督器内运行（示例；2026-11-17 实际续跑按此形状执行，config 为 `configs/spo_gpu_short_60m.v2.toml`，见 9.1）：
 
 ```bash
 cat > /root/autodl-tmp/gemma4/logs/session-20261117.sh <<'SH'
@@ -311,7 +313,7 @@ cat > /root/autodl-tmp/gemma4/logs/session-20261117.sh <<'SH'
 VLLM=$!
 for i in $(seq 1 120); do curl -sf http://127.0.0.1:8000/health >/dev/null && break; sleep 5; done
 /root/gemma4/envs/learner/bin/python -m training.run_spo \
-  --config configs/spo_gpu_short_60m.toml \
+  --config configs/spo_gpu_short_60m.v2.toml \
   --data-root /root/gemma4/official/competition --model-path /autodl-fs/data \
   --run-dir /root/autodl-tmp/gemma4/runs/spo-short-20261116 \
   --backend-url http://127.0.0.1:8000 \
@@ -328,4 +330,72 @@ python scripts/session_supervisor.py \
   -- bash /root/autodl-tmp/gemma4/logs/session-20261117.sh
 ```
 
-预算示例：supervisor 3600 秒（含 vLLM 加载与 180 秒宽限），run allowance 5400、已消费 2851，remaining 2549，run 自身在约 +2849 秒停止，早于 supervisor 的 +3420 秒软停。注意软停按进程组发送，vLLM 也会收到 TERM；若此时更新尚未完成，可能停在可续跑的 EXPORTED/REGISTERED 状态而不是发布，因此正常运行应让 run 自身先于软停结束，supervisor 只作硬截止兜底。
+以上是 11-16 的计划示例：supervisor 3600 秒（含 vLLM 加载与 180 秒宽限），run allowance 5400、已消费 2851，remaining 2549。11-17 实际最后一次续跑的 supervisor 预算为 2400 秒，264.85 秒后 exit 0；该 264 秒只回放 `EXPORTED` → `REGISTERED` → `ACTIVATED` → `CONSUMED`，没有 optimizer step，不能当作一步的训练耗时。注意软停按进程组发送，vLLM 也会收到 TERM；若此时更新尚未完成，可能停在可续跑的 EXPORTED/REGISTERED 状态而不是发布，因此正常运行应让 run 自身先于软停结束，supervisor 只作硬截止兜底。
+
+## 9. 2026-11-17 冻结批次完成与下一阶段设计
+
+### 9.1 2026-11-17 冻结批次完成
+
+2026-11-16 会话在 60 分钟硬截止时把 19,093 action tokens 的 `upd-0000` 留在 `RESERVED`（第 6 节），2026-11-17 用原 run、原 judge 身份续跑完成。账本最终状态：
+
+| 项 | 结果 |
+| --- | --- |
+| update | `upd-0000`：`RESERVED` → `LEARNING` → `OPTIMIZED` → `EXPORTED` → `REGISTERED` → `ACTIVATED` → `CONSUMED`，`optimizer_cursor=1` |
+| checkpoint | `spo_trainer_state.pt`，11.6 GB（11,640,386,877 bytes） |
+| adapter | v1 位于 `adapters/versions/00000001-ba11bdc9827bc24c`：parent v0、rank 128、`optimizer_step=1` |
+| 预算 | 结束时 consumed 5901 / allowance 11400 秒；11-16 采样会话已消费 2851 秒 |
+| 运行方式 | `configs/spo_gpu_short_60m.v2.toml`，`--resume --additional-walltime-seconds 3000` |
+
+计时口径（`results/gpu-short-20261116/resume_summary.json`）：
+
+| 阶段 | 时长 | 说明 |
+| --- | ---: | --- |
+| 优化步（训练租约内） | 1,406 秒 = **23.43 分钟** | forward + backward + optimizer + checkpoint + 导出；其中 forward 336.5 秒、backward 1,029.7 秒、optimizer 0.09 秒、checkpoint 22.1 秒（含 state 导出 7.0 秒、落盘 15.1 秒） |
+| 含模型加载 | 1,454 秒 = **24.23 分钟** | resume 启动到 `OPTIMIZED` |
+| 最后一次续跑 | 264.85 秒 = **4.4 分钟** | **只回放发布**：`EXPORTED` → `REGISTERED` → `ACTIVATED` → `CONSUMED`，无 optimizer step |
+| 2026-11-16 采样会话 | 2,851 秒 | 60 分钟硬截止被杀，批次仍 `RESERVED`（第 6 节） |
+| 2026-11-15 pilot（不同 run） | 训练窗口 29.26 分钟；冻结到租约 12.84 分钟 | `docs/plan/008-vllm-backend-migration.md` 第 10.2 节；不能套用到 11-17 步 |
+
+264 秒不是单步耗时，4.4 分钟不能代表“更新完成”。11-17 一步的真实成本是 23.43 分钟优化（含加载 24.23 分钟）；29.26/12.84 只属 2026-11-15 的 pilot run，不能用来描述 11-17 的续跑。
+
+三个失败与处理：
+
+1. **checkpoint 写入 ENOSPC**：写到 9.74 GiB 时磁盘只剩 9.8 G，异步 checkpoint 写失败（`unexpected pos ...`），该次 attempt 未留下 durable step。处理：把已被取代的 `vllm-pilot-20261113g` run 的 900 行 metrics 备份到本地后删除该 run，并清理 11-15 之前的 sandbox，再重试。
+2. **发布拷贝 ENOSPC**：优化与 checkpoint 已完成后，发布阶段复制 adapter 时再次空间不足。处理：继续释放同一批 run/sandbox 空间后重试发布。
+3. **恢复一致性检查拒绝**：checkpoint 已完成一步、serving 仍是 genesis 时，`_verify_resume_consistency` 报 “trainer checkpoint claims completed steps but serving is still genesis”。`39cae48b` 改为只允许**恰好一个** `OPTIMIZED`/`EXPORTED`/`REGISTERED` 在途 update，且其 id 与 checkpoint 的 active update 相同、`completed == CONSUMED + 1`；其余情况仍 fail closed。
+
+这只证明真实优化步与 v1 发布成立；v0/v1 的配对修复比较尚未执行，能力提升仍未测量。证据：`results/gpu-short-20261116/resume_summary.json`（由服务器 ledger、registry、metrics、trainer 事务、budget 与会话 JSON 只读重建）；服务器 run 目录为 `/root/autodl-tmp/gemma4/runs/spo-short-20261116`。
+
+### 9.2 下一阶段：5 步连续训练
+
+目标是把单步快照推进到连续 5 步，观察同一固定题池在 step 3 与 step 5 的官方 verdict 变化。
+
+| 项 | 设定 |
+| --- | --- |
+| run | 新目录，不复用 `spo-short-20261116`；新 judge 身份 |
+| 配置 | `configs/spo_v3_5step_20261117.toml` |
+| 批次上限 | `max_batches=5` |
+| 固定题池 | `fastapi_14258`、`requests_7205`、`requests_7315`、`rich_3782`、`rich_4070`、`rich_4076` |
+| 奖励 | v3（`official_differential_spo_v3`） |
+| LoRA | rank 64 / alpha 128（见下方磁盘约束） |
+| 会话预算 | 6 小时，由 `scripts/session_supervisor.py` 硬截止 |
+| 单步成本 | 约 24 分钟优化，再加采样、验收与排空 |
+
+磁盘约束（实测，决定 rank）：`/root/autodl-tmp` 为 50 GB，其中官方数据约 21 GB、运行时环境约 11 GB 不能移走。rank 128 的 trainer checkpoint 为 10.8 GiB，写入采用“同尺寸临时文件 + 原子改名”，单次重写峰值约 21.6 GiB，再加每个 adapter 约 1.8 GiB 与发布时的临时副本，超出可腾出的约 16–18 GB。rank 64 把 checkpoint 降到约 5.4 GiB、adapter 降到约 0.9 GiB，5 步可在清理旧 run 的 checkpoint/暂存副本后装下（旧 run 的 v0/v1 adapter 与账本保留）。因此本轮 5 步 run **不与 rank 128 的 v1 比容量**，只做 run 内 step 3 与 step 5 的同题趋势。清理项：`spo-short-20261116` 的 11.6 GB checkpoint 与 `staging-genesis`/`staging-v1`（该 run 已 `CONSUMED`、学习率计划结束）、以及 2026-10-30 的旧代码/实验压缩包。
+
+换新 run 的原因：`training/task_dependency_setup.py` 与 `extra_wheels` 都会变化（第 7.5 节第 2 条），judge environment hash 随之改变；旧 run 的 3 条 `BUFFERED` 轨迹不能混入新环境。新 run 从 v0 开始，单步 run 的 v1（`adapters/versions/00000001-ba11bdc9827bc24c`）只保留为独立参照点。
+
+比较方法：
+
+- 同一固定 6 题池、同一 judge 身份，在 step 3 与 step 5 各取一次逐题官方 verdict（成功/失败、resolved、validity），比较同题是否从 fail 转 pass。
+- 这是 **in-sample trend**：题池同时参与训练，step 5 的改善不能称泛化结果；只能说明“在这 6 题上继续训练是否带来更多官方通过”。
+- 单步 run 的 v1 属于旧 judge 身份，不能与 5 步 run 的 verdict 直接合并统计；它只提供“单步之后这 6 题是什么样”的参照。
+- 6 题样本以逐题 verdict 为主，不报聚合修复率。
+
+已知混杂因素：
+
+- 采样方差：每步只有 2–3 条轨迹，step 3 与 step 5 的候选补丁可能不同。
+- 依赖失败的题可能被排除（如 11-16 的安装失败），固定池实际可比题数可能少于 6。
+- 因此 step 3 → step 5 的变化只能作为趋势，不作为因果或泛化结论。
+
+预算：5 步优化合计约 2 小时（按 24 分钟/步），其余约 4 小时用于采样、验收、排空和重试；6 小时会话预算从 vLLM 启动前开始计时（8.4），run 自身应先于 supervisor 软停结束。
