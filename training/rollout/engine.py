@@ -22,6 +22,10 @@ _ZERO_VALIDITY_VERDICTS = frozenset({
 })
 
 
+class TaskIdentityError(ValueError):
+    """A verdict or report does not carry the exact dispatched TaskKey."""
+
+
 def _field(value: Any, name: str, default: Any = None) -> Any:
     if isinstance(value, Mapping):
         return value.get(name, default)
@@ -175,16 +179,35 @@ class RolloutEngine:
         absent -- and only when ``fallback_allowed`` says so; a present
         ``task_id`` must then still match the dispatched task.  A complete
         verdict and every candidate/baseline report must carry the exact
-        TaskKey: no ``task_id`` fallback applies to them.
+        TaskKey: no ``task_id`` fallback applies to them.  A present but
+        non-mapping identity is a malformed TaskKey and is rejected as
+        ``task_key_invalid``; it is never reinterpreted as a task id.
         """
         if value is None:
             if not fallback_allowed:
-                raise ValueError(f"{label} TaskKey missing; the dispatched task/judge identity is required")
+                raise TaskIdentityError(
+                    f"{label} TaskKey missing; the dispatched task/judge identity is required")
             if fallback_task_id is not None and fallback_task_id != expected.task_id:
-                raise ValueError(f"{label} task_id differs from the dispatched task/judge identity")
+                raise TaskIdentityError(
+                    f"{label} task_id differs from the dispatched task/judge identity")
             return
-        if JudgeTaskKey.from_dict(value) != expected:
-            raise ValueError(f"{label} TaskKey differs from the dispatched task/judge identity")
+        # A present identity is never reinterpreted as a task-id fallback.  A
+        # bare string is a malformed TaskKey, not an absent one, so reject it
+        # with the identity error instead of leaking a TypeError from the
+        # low-level validator.
+        if isinstance(value, JudgeTaskKey):
+            key = value
+        elif isinstance(value, Mapping):
+            try:
+                key = JudgeTaskKey.from_dict(value)
+            except (TypeError, ValueError) as error:
+                raise TaskIdentityError(f"{label} TaskKey invalid: {error}") from error
+        else:
+            raise TaskIdentityError(
+                f"{label} TaskKey must be a TaskKey or mapping, got {type(value).__name__}")
+        if key != expected:
+            raise TaskIdentityError(
+                f"{label} TaskKey differs from the dispatched task/judge identity")
 
     def _bundle(
         self,
@@ -247,10 +270,17 @@ class RolloutEngine:
         if artifacts:
             candidate["artifact_hashes"] = artifacts
         if seal_error is not None:
+            # Preserve the official worker's failure cause (for example
+            # ContainerSetupError).  The seal error only says the trajectory
+            # never reached a verdict; replacing the setup error with it would
+            # hide the real reason the trajectory has no model calls.
+            official_error = raw.get("infrastructure_error")
+            if not isinstance(official_error, str) or not official_error.strip():
+                official_error = seal_error
             candidate.update({
                 "verification_complete": False,
                 "verdict_valid": False,
-                "infrastructure_error": seal_error,
+                "infrastructure_error": official_error,
             })
         metrics = _mapping(raw.get("resource_metrics"))
         metrics.update(_mapping(extra.get("resource_metrics")))
@@ -291,6 +321,31 @@ class RolloutEngine:
             if trajectory.status != "EXCLUDED":
                 self.ledger._put_trajectory(conn, replace(trajectory, status="EXCLUDED"))
             self.ledger._event(conn, "trajectory_excluded", trajectory_id, {"reason": reason})
+
+    @staticmethod
+    def _flatten_reason(value: object) -> str | None:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        return " ".join(value.split())
+
+    @classmethod
+    def _pre_verdict_reason(cls, trajectory: Trajectory, seal_error: str,
+                            raw: Mapping[str, Any]) -> str:
+        """Name the cause that stopped the trajectory before any verdict.
+
+        The official worker records setup/dependency failures in
+        ``infrastructure_error``; the seal error only states that the
+        trajectory has no trainable model calls.  Prefer the official cause so
+        an excluded zero-action trajectory does not look like a generic reward
+        failure.
+        """
+        cause = (
+            cls._flatten_reason(raw.get("infrastructure_error"))
+            or cls._flatten_reason(seal_error)
+            or "no official verdict"
+        )
+        label = "zero_action_trajectory_failure" if not trajectory.calls else "pre_verdict_failure"
+        return f"{label}: {cause}"
 
     def run(self, assignment: Any, worker_result: Any = None) -> Trajectory:
         trajectory_id = assignment.trajectory_id
@@ -347,13 +402,32 @@ class RolloutEngine:
                 if audit is not None and reward.eligible and seal_error is None:
                     self.ledger.record_reward_audit(
                         trajectory.trajectory_id, self._aggregate_audit(audit))
-                if seal_error is not None and reward.eligible:
-                    reward = replace(
-                        reward, total_reward=None, eligible=False, exclusion_reason=seal_error,
-                    )
-            except (ValueError, TypeError, KeyError, OSError) as error:
+                if seal_error is not None:
+                    reason = self._pre_verdict_reason(trajectory, seal_error, raw)
+                    if reward.eligible:
+                        reward = replace(
+                            reward, total_reward=None, eligible=False, exclusion_reason=reason,
+                        )
+                    elif reason not in (reward.exclusion_reason or ""):
+                        reward = replace(reward, exclusion_reason=(
+                            f"{reward.exclusion_reason};{reason}"
+                            if reward.exclusion_reason else reason))
+            except TaskIdentityError as error:
+                reason = f"task_key_invalid: {error}"
+                if seal_error is not None:
+                    reason = f"{reason};{self._pre_verdict_reason(trajectory, seal_error, raw)}"
                 reward = self._ineligible(
-                    f"verification_reward_{type(error).__name__}: {error}",
+                    reason,
+                    raw.get("success") if type(raw.get("success")) is bool else None,
+                )
+            except (ValueError, TypeError, KeyError, OSError) as error:
+                reason = f"verification_reward_{type(error).__name__}: {error}"
+                if seal_error is not None:
+                    # A reward-layer failure must not hide why the trajectory
+                    # never reached a verdict in the first place.
+                    reason = f"{reason};{self._pre_verdict_reason(trajectory, seal_error, raw)}"
+                reward = self._ineligible(
+                    reason,
                     raw.get("success") if type(raw.get("success")) is bool else None,
                 )
             if existing is None:

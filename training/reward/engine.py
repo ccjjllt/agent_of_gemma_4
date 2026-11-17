@@ -146,7 +146,9 @@ class RewardEngine:
             try:
                 baseline = self.baseline_store.get(key)
             except (FileNotFoundError, OSError, ValueError, TypeError) as error:
-                baseline_error = type(error).__name__
+                detail = " ".join(str(error).split())
+                baseline_error = (
+                    f"{type(error).__name__}: {detail}" if detail else type(error).__name__)
         if baseline is None:
             baseline = {
                 "verification_complete": False,
@@ -186,6 +188,18 @@ class RewardEngine:
             scales=self.scales,
             objective_version=self.objective_version,
         )
+        if baseline_error and not record["eligible"]:
+            # Keep the machine reasons, but name the actual baseline failure
+            # (missing cache, probe setup error, identity failure) instead of
+            # leaving only a generic `baseline_unavailable` code.  In v3 a
+            # failed candidate does not become a baseline verdict, so only
+            # annotate records whose reasons already name the baseline.
+            detail = f"baseline_unavailable_detail: {baseline_error}"
+            existing = record.get("exclusion_reason")
+            if not isinstance(existing, str) or not existing.strip():
+                record["exclusion_reason"] = detail
+            elif "baseline" in existing and detail not in existing:
+                record["exclusion_reason"] = f"{existing};{detail}"
         # Metric gaps only disable the efficiency auxiliary (handled inside
         # composite_reward); they never overturn official differential eligibility.
 

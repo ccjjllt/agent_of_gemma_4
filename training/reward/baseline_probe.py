@@ -31,6 +31,32 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _OFFICIAL_RUNTIME = PROJECT_ROOT / "training" / "official_runtime.py"
 
 
+def _require_task_identity(document: Mapping[str, Any], key: object, label: str) -> None:
+    """Reject a probe document without the exact dispatched task/judge key.
+
+    A probe that dies before verification (for example ContainerSetupError)
+    writes a failure verdict with no ``task_key``.  That is an unavailable
+    baseline, not a malformed identity: raise ``OSError`` with the official
+    failure cause so the reward engine can report ``baseline_unavailable``
+    instead of a low-level TypeError.
+    """
+    from .baseline import TaskKey
+
+    value = document.get("task_key")
+    if value is None:
+        detail = document.get("infrastructure_error")
+        detail = " ".join(detail.split()) if isinstance(detail, str) and detail.strip() else None
+        raise OSError(
+            f"empty-patch probe {label} has no TaskKey: "
+            f"{detail or 'probe produced no verification verdict'}")
+    if not isinstance(value, Mapping):
+        raise ValueError(
+            f"empty-patch probe {label} TaskKey must be a mapping, got {type(value).__name__}")
+    if TaskKey.from_dict(value) != key:
+        raise ValueError(
+            f"empty-patch probe {label} TaskKey differs from the requested task/judge identity")
+
+
 class EmptyPatchProbeRunner:
     """Execute the official empty-patch probe for one TaskKey."""
 
@@ -144,22 +170,31 @@ class EmptyPatchProbeRunner:
                 raise TimeoutError(
                     f"empty-patch probe exceeded {self.timeout_seconds}s") from error
             if process.returncode != 0:
-                raise OSError(f"empty-patch probe exited {process.returncode}")
+                failure = None
+                try:
+                    failed = json.loads(result_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    failed = None
+                if isinstance(failed, Mapping):
+                    failure = failed.get("infrastructure_error")
+                    failure = (" ".join(failure.split())
+                               if isinstance(failure, str) and failure.strip() else None)
+                raise OSError(
+                    f"empty-patch probe exited {process.returncode}"
+                    + (f": {failure}" if failure else ""))
             try:
                 document = json.loads(result_path.read_text(encoding="utf-8"))
             except (OSError, ValueError) as error:
                 raise OSError(f"empty-patch probe result unreadable: {error}") from error
             if not isinstance(document, dict):
                 raise ValueError("empty-patch probe result is not a verdict object")
-            if TaskKey.from_dict(document.get("task_key")) != key:
-                raise ValueError("empty-patch probe TaskKey differs from the requested task/judge identity")
+            _require_task_identity(document, key, "verdict")
             report = document.get("baseline_report")
             if not isinstance(report, Mapping) or not report.get("expected_universes"):
                 raise ValueError(
                     "empty-patch probe produced no usable baseline report: "
                     f"{document.get('infrastructure_error')}")
-            if TaskKey.from_dict(report.get("task_key")) != key:
-                raise ValueError("baseline report TaskKey differs from its probe verdict")
+            _require_task_identity(report, key, "baseline report")
             self._event("baseline_probe_completed", task_id=key.task_id,
                         elapsed_seconds=time.monotonic() - started)
             return dict(report)
