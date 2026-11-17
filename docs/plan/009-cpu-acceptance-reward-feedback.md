@@ -380,7 +380,7 @@ python scripts/session_supervisor.py \
 
 ### 9.3 rank 128 的磁盘约束（实测）
 
-checkpoint 只在固定路径上原子替换，**不会累积**；累积的是每步 1.94 GB（rank 128）的 adapter。rank 128 的 checkpoint 为 11,640,386,877 B（10.84 GiB），写入需要同尺寸临时文件，**单次峰值 21.7 GiB**。该实例数据盘 50 GB，已用 43.4 GB（官方数据 21 GB + 运行时 9 GB + 两个 run 12 GB），最大可回收到约 18.5 GB，仍小于 21.7 GiB，因此 rank 128 在当前磁盘上无法完成一次 checkpoint 写入（11-17 已真实出现过一次 ENOSPC 失败）。回到 rank 128 需要扩容数据盘到 ≥100 GB；不改磁盘只能继续 rank 64。
+checkpoint 只在固定路径上原子替换，**不会累积**；累积的是每步 1.94 GB（rank 128）的 adapter。rank 128 的 checkpoint 为 11,640,386,877 B（10.84 GiB），写入需要同尺寸临时文件，**单次峰值 21.7 GiB**。该实例数据盘 50 GB，已用 43.4 GB（官方数据 21 GB + 运行时 9 GB + 两个 run 12 GB），最大可回收到约 18.5 GB，仍小于 21.7 GiB，因此 rank 128 在当前磁盘上无法完成一次 checkpoint 写入（11-17 已真实出现过一次 ENOSPC 失败）。回到 rank 128 有两条路：扩容数据盘，或把 checkpoint 外置。2026-11-17 采用后者并经用户授权：`[run] checkpoint_dir` 把 `spo_trainer_state.pt` 放到 `/root/autodl-fs`（200 GB，实测写 147 MB/s，10.84 GiB 约 75 秒），run 目录只留 adapter 与账本；本地盘因此不再承担 21.7 GiB 的写入峰值。同时加入 `training/adapter/retention.py` 与 `[run] prune_finished_artifacts`：run 计划跑完（全部 update `CONSUMED`）后自动保留最终 adapter、删除中间版本与 checkpoint，删除前用 registry 的 SHA256 校验保留版本。
 
 ### 9.4 产物保留策略（2026-11-17 起）
 

@@ -71,6 +71,17 @@ def load_config(path: Path) -> dict:
     spo.pop("require_positive_signal", None)
     if type(cfg["adapter"].get("allow_resident_pair", False)) is not bool:
         raise ValueError("adapter.allow_resident_pair must be bool")
+    checkpoint_dir = cfg["run"].get("checkpoint_dir")
+    if checkpoint_dir is not None:
+        if not isinstance(checkpoint_dir, str) or not checkpoint_dir.strip():
+            raise ValueError("run.checkpoint_dir must be a nonempty path string")
+        resolved = Path(checkpoint_dir).expanduser()
+        if not resolved.is_dir():
+            raise ValueError(f"run.checkpoint_dir is not an existing directory: {resolved}")
+        if os.access(resolved, os.W_OK) is not True:
+            raise ValueError(f"run.checkpoint_dir is not writable: {resolved}")
+    if type(cfg["run"].get("prune_finished_artifacts", False)) is not bool:
+        raise ValueError("run.prune_finished_artifacts must be bool")
     from .reward.progress import SUPPORTED_OBJECTIVE_VERSIONS
     if cfg["rewards"].get("objective_version") not in SUPPORTED_OBJECTIVE_VERSIONS:
         raise ValueError("wrong rewards objective_version")
@@ -290,7 +301,20 @@ def discard_unoptimized_update(
     return base_state
 
 
-def _verify_resume_consistency(run_dir: Path, ledger: Any) -> dict[str, Any]:
+def _checkpoint_path(run_dir: Path, run_cfg: Mapping[str, Any]) -> Path:
+    """Trainer checkpoint file; may live outside the run dir.
+
+    The checkpoint is rewritten atomically (same-size temporary + rename), so
+    the run dir needs 2x its size free. When the data disk cannot hold that, a
+    config may point ``[run] checkpoint_dir`` at a larger volume.
+    """
+    directory = run_cfg.get("checkpoint_dir")
+    base = Path(str(directory)).expanduser() if directory else Path(run_dir)
+    return base / "spo_trainer_state.pt"
+
+
+def _verify_resume_consistency(run_dir: Path, ledger: Any, *,
+                               checkpoint_path: Path | None = None) -> dict[str, Any]:
     """Fail closed when a --resume run cannot continue the previous run.
 
     Checks the serving registry, the trainer checkpoint and the ledger
@@ -310,7 +334,7 @@ def _verify_resume_consistency(run_dir: Path, ledger: Any) -> dict[str, Any]:
     from .adapter.manager import AdapterManager
     adapters = AdapterManager(run_dir / "adapters")
     active = adapters.active
-    state_path = run_dir / "spo_trainer_state.pt"
+    state_path = Path(checkpoint_path) if checkpoint_path else run_dir / "spo_trainer_state.pt"
     if active is not None and active.version > 0 and not state_path.is_file():
         raise RuntimeError(
             f"serving adapter is v{active.version} but no trainer checkpoint "
@@ -909,9 +933,12 @@ def run_spo(args: argparse.Namespace) -> int:
     heartbeat.start()
     # P0-2a: a reused run_dir without --resume would silently serve an old
     # adapter while training a fresh LoRA. Fail closed before touching GPUs.
+    checkpoint_path = _checkpoint_path(run_dir, run)
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     _RUN_STATE_FILES = ("adapters/registry.json", "spo_stream.db",
-                        "spo_trainer_state.pt", "spo_trainer_tx.json", "budget.json", "judge_identity.json")
-    if not args.resume and any((run_dir / name).exists() for name in _RUN_STATE_FILES):
+                        "spo_trainer_tx.json", "budget.json", "judge_identity.json")
+    if not args.resume and (checkpoint_path.exists()
+                            or any((run_dir / name).exists() for name in _RUN_STATE_FILES)):
         raise RuntimeError(
             "run_dir already holds training state; start fresh in an empty "
             "directory or continue explicitly with --resume")
@@ -998,7 +1025,8 @@ def run_spo(args: argparse.Namespace) -> int:
         backend.adapter_validator = lambda manifest, directory: adapters.audit_lora_compatibility(
             manifest, model_config=model_path / "config.json", source=directory)
     if args.resume:
-        resume_summary = _verify_resume_consistency(run_dir, ledger)
+        resume_summary = _verify_resume_consistency(
+            run_dir, ledger, checkpoint_path=checkpoint_path)
         _emit(metrics_path, "spo_resume_verified", **resume_summary)
 
     policy_cfg = dict(cfg["policy"])
@@ -1094,7 +1122,7 @@ def run_spo(args: argparse.Namespace) -> int:
             scheduler, exec_manager, double_buffer,
             drain_timeout_seconds=float(run.get("barrier_drain_timeout_seconds", 600)),
             emit=lambda n, **f: _emit(metrics_path, n, **f))
-        trainer_state = run_dir / "spo_trainer_state.pt"
+        trainer_state = checkpoint_path
         trainer_tx_path = run_dir / "spo_trainer_tx.json"
         checkpoint_writer = CheckpointWriter(trainer_state, torch)
 
@@ -2020,6 +2048,31 @@ def run_spo(args: argparse.Namespace) -> int:
         ledger.close()
 
 
+def _prune_if_configured(args: argparse.Namespace) -> None:
+    """Drop process artifacts of a finished run when the config asks for it.
+
+    Only a run whose optimizer plan is complete and whose updates are all
+    CONSUMED reaches this point; a budget/timeout exit returns 75 first.
+    """
+    try:
+        cfg = load_config(Path(args.config))
+    except (OSError, ValueError, TypeError):
+        return
+    if not cfg["run"].get("prune_finished_artifacts"):
+        return
+    run_dir = Path(args.run_dir).expanduser()
+    checkpoint_path = _checkpoint_path(run_dir, cfg["run"])
+    try:
+        from .adapter.retention import prune_finished_run
+        record = prune_finished_run(run_dir, checkpoint_path=checkpoint_path)
+    except Exception as error:  # never turn a finished run into a failure
+        print(f"spo_prune_skipped: {type(error).__name__}: {error}", file=sys.stderr)
+        return
+    removed = record.get("total_bytes", 0)
+    print(f"spo_artifacts_pruned: {len(record.get('removed', []))} item(s), "
+          f"{removed / 1e9:.3f} GB reclaimed")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
@@ -2077,10 +2130,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.backend_url is None and not cfg["inference"].get("base_url"):
         parser.error("--backend-url is required for a training run")
     try:
-        return run_spo(args)
+        code = run_spo(args)
     except (ValueError, RuntimeError, TypeError, OSError) as error:
         print(f"spo_run_failed: {type(error).__name__}: {error}", file=sys.stderr)
         return 2
+    if code == 0:
+        _prune_if_configured(args)
+    return code
 
 
 if __name__ == "__main__":
