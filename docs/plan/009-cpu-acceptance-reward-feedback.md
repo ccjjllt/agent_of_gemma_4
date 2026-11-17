@@ -381,3 +381,16 @@ python scripts/session_supervisor.py \
 ### 9.3 rank 128 的磁盘约束（实测）
 
 checkpoint 只在固定路径上原子替换，**不会累积**；累积的是每步 1.94 GB（rank 128）的 adapter。rank 128 的 checkpoint 为 11,640,386,877 B（10.84 GiB），写入需要同尺寸临时文件，**单次峰值 21.7 GiB**。该实例数据盘 50 GB，已用 43.4 GB（官方数据 21 GB + 运行时 9 GB + 两个 run 12 GB），最大可回收到约 18.5 GB，仍小于 21.7 GiB，因此 rank 128 在当前磁盘上无法完成一次 checkpoint 写入（11-17 已真实出现过一次 ENOSPC 失败）。回到 rank 128 需要扩容数据盘到 ≥100 GB；不改磁盘只能继续 rank 64。
+
+### 9.4 产物保留策略（2026-11-17 起）
+
+已完成 run 只保留**最终 adapter + 账本/指标/身份文件**；中间 adapter 版本、trainer checkpoint、staging 与 workspaces/requests/endpoint 属于过程产物，收尾时删除。用 `scripts/prune_run_artifacts.py` 执行：
+
+```bash
+python scripts/prune_run_artifacts.py --run-dir <run> --keep <最终版本> --dry-run
+python scripts/prune_run_artifacts.py --run-dir <run> --keep <最终版本>
+```
+
+脚本的约束：只处理全部 update 均为 `CONSUMED` 的 run；永不删 active 版本或 `--keep` 指定的版本；删除前用 registry 里的 SHA256 校验待保留版本的权重；默认删除 checkpoint 与瞬态目录（`--keep-checkpoint` 可保留）；把删除清单写入 `pruned_artifacts.json`。registry 行**有意保留**，因此被清理的版本仍有 manifest 与血缘，只是没有权重文件——finished run 的 serving 与发布校验只读 active 版本。
+
+首次应用：`spo-short-20261116` 保留 v1（`ba11bdc9…`，已校验 SHA256 一致），删除 v0 genesis 与瞬态目录，回收 2.009 GB；数据盘可用从 16 GB 升到 18 GB。rank 128 仍需 ≥21.7 GiB 的 checkpoint 写入峰值，扩容后才可启动多步 run（见 9.3）。
