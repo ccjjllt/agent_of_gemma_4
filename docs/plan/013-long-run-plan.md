@@ -1,20 +1,18 @@
 # 013 长跑计划：rank 128 / v3 奖励 / 12 题公开池（2026-11-18）
 
-状态：**配置与计划已同步服务器；base/v3/v5 三次 `--plan-only` 与 12 题 `load_config` 已通过；未启动训练、未启动 GPU。本轮代码与配置随本次提交入库。**
-新配置为 `configs/spo_v3_long_rank128_20261118.toml`；`/root/gemma4/project`
-已同步该配置与 in-run retention/评估入口，checkpoint 目录
-`/root/autodl-fs/spo-checkpoints/spo-v3-long-r128-20261118` 已创建；尚未创建
-长训 run 目录，也没有提交任何 optimizer step。另新增
-`configs/spo_v3_continue_v5_rank128_20261118.toml`（从 v5 产出 v6…v10，未启动），
-见第 10 节。
+**当前决策（2026-11-18）：用户明确跳过独立评估，直接从保留的 v5 开始新阶段，
+以 8 小时总预算尽量完成更新。当前入口以第 10 节为准；下文 A/B/C 的六步、
+六小时和先评估要求是此前方案，不再作为本轮启动条件。**
+配置为 `configs/spo_v3_continue_v5_rank128_20261118.toml`：v5 起点、
+64 步上限/固定 LR 日程、27,600 s learner 上限、28,800 s 整场硬预算。
+64 步上限按用户最新要求设置，不表示 8 小时能完成 64 步。未启动 GPU 或训练。
 
 当前 5 步 run 的证据（`results/gpu-5step-r128-20261117/`、`docs/plan/009` 第 10 节）
 **既不能证明稳定提升，也不能证明没有提升或退化**：v5 从未被采样，v3/v4 共同 3 题
-的单次样本相同，v0/v4 共同 4 题的 P 相同，单题只有 1–2 条轨迹。因此本计划先补
-独立评估入口，再用同题重复采样判断 v3/v5 是否值得进入更广题池的长跑；不把
-“继续训练更久”当作默认结论。
+的单次样本相同，v0/v4 共同 4 题的 P 相同，单题只有 1–2 条轨迹。本轮按用户选择
+继续积累训练；跳过独立评估不改变这些证据边界，不将训练集表现称作泛化收益。
 
-## 0. 顺序与各阶段回答的问题
+## 0. 此前分阶段方案（已由第 10 节替代）
 
 | 阶段 | 问题 | GPU | 预算 | 退出条件 |
 | --- | --- | --- | ---: | --- |
@@ -22,8 +20,7 @@
 | B. 同六题 GPU 评估 | v5 与 base、v3 在同一批公开题、同一预算、3 次重复下有没有可复现的方向差异？ | 1 个短会话 | ~2–2.5 h | 54/54 条官方 verdict 完整；评估轨迹不回流训练 |
 | C. 广题池长跑 | 在 12 题公开池上连续 6 步能否稳定完成，并留下中间/最终 adapter 供后续评估？ | 1 个 6 h 会话 | 20,400 s run + 21,600 s supervisor | 6/6 步 `CONSUMED`、最终 adapter 与 v3 保留、无 ENOSPC、supervisor 无升级 |
 
-顺序不可交换：B 的评估入口和 A 的磁盘回收都未落地前，C 不应启动。C 启动后
-也不再把 B 的 6 题结果当作泛化证据。
+上述是此前的 A/B/C 安排；本轮跳过 B，使用第 10 节的 v5 续训配置。
 
 ## 1. 已核实的证据
 
@@ -697,38 +694,44 @@ SPO 每步发布一个不可变 adapter（rank 128 约 1.94 GB），导出器还
    RNG、KL cursor 全部从头开始，第一次 optimizer step 产出 v6。
 4. `_verify_resume_consistency` 用 `initial_version` 修正版本算术：
    `expected = initial + consumed (+1 pending)`，不再假设 genesis 0。
-5. 保留策略必须包含初始版本和最终版本，例如 5 步 continuation 用
-   `keep_adapter_versions = [5, 10]`。评估入口已支持任意版本（`--policy v10`
-   或 `--policy adapter`；报告用 `--arm v10=RUN_DIR`）。
+5. `keep_adapter_versions = [5, 10]` 保留初始 v5 和完成五次新更新后的 v10；
+   active、最近一版与仍有引用的版本也始终保留，因此实际最终版本不需要预先
+   写死。评估入口已支持任意版本，但本轮按用户选择不做独立评估。
 
-启动命令（未执行；需要 GPU 授权）：
+当前准备好的启动入口（未执行；实例仍无卡）：
 
 ```bash
-# 首次启动前：run dir 必须不存在，checkpoint 目录必须存在且可写
-mkdir -p /root/autodl-fs/spo-checkpoints/spo-v3-cont-v5-r128-20261118
-# vLLM 部署与 5 步 run 相同（dynamic LoRA、max-lora-rank 128、Level-2 sleep、
-# prefix cache、ninja 在 PATH），然后：
-cd /root/gemma4/project
-/root/gemma4/envs/learner/bin/python -m training.run_spo \
-  --config configs/spo_v3_continue_v5_rank128_20261118.toml \
-  --data-root /root/gemma4/official/competition \
-  --model-path /autodl-fs/data \
-  --run-dir /root/autodl-tmp/gemma4/runs/spo-v3-cont-v5-r128-20261118 \
-  --backend-url http://127.0.0.1:8000
+bash /root/autodl-tmp/gemma4/logs/session-20261118-cont-v5.sh
 ```
 
-外层仍用 `scripts/session_supervisor.py --budget-seconds 21600 --grace-seconds 180`；
-内部 `walltime_seconds=20400` 先停。若退出码 75，保留 checkpoint 并用同一配置
-`--resume` 续跑；不要改 `max_batches`（即 LR 日程总长度）。本次 5 步预算约
-3–4 h，6 h supervisor 留出 vLLM 加载与收尾余量。
+脚本源文件为 `scripts/session_continue_v5_20261118.sh`，会先通过现有
+`session_supervisor.py --budget-seconds 28800 --grace-seconds 180` 启动子进程，
+再拉起 vLLM 和 trainer；无需额外包一层旧的 6 小时 supervisor。总预算包含
+vLLM 加载与收尾，宽限期包含在 8 小时内。learner `walltime_seconds=27600`，
+`update_min_seconds=3000`：剩余时间不足以排空并完成更新时正常延期，不为了
+凑满时间开启很可能无法提交的一步。实际运行可能提前收尾。
 
-评估 continuation 的最终版本时，在同一入口用
-`--policy v10 --adapter-dir .../versions/00000010-<sha16>`，报告用
-`--arm v10=<eval-run-dir>`；入口不再硬编码 base/v3/v5。
+`max_batches=64` 是新阶段的累计上限和 LR 日程：第一步 5e-6，随后每次已应用
+更新按 `5e-6 × (64-k)/64` 减小；本会话未必达到末步，不能因到时退出就把 LR
+改到零。按旧六题实测与十二题规划余量粗估，8 小时约能完成 10–15 次新更新，
+最终版本约 v15–v20；只以真实 CONSUMED/发布记录计数，不承诺该范围。
 
 配置：`configs/spo_v3_continue_v5_rank128_20261118.toml`（未启动）。它沿用
-12 题公开池、rank 128、v3 奖励、每步 16,384 token、5 步、6 小时预算，
-checkpoint 放共享盘，首次更新从 v5 产出 v6。导入本身是一次性 CPU/磁盘工作；
-首次训练租约内加载 1.94 GB 权重会增加启动时间，之后由 trainer checkpoint
-恢复，不再重复导入。若源 adapter 或 `initial_adapter.json` 缺失，启动失败而
-不是静默从零开始。
+12 题公开池、rank 128、v3 奖励、每步 16,384 action token 目标，首次更新从
+v5 产出 v6；AdamW、scheduler、RNG 新建。checkpoint 放已获允许的共享目录
+`/root/autodl-fs/spo-checkpoints/spo-v3-cont-v5-r128-20261118`。本次准备时空闲：
+数据盘 14.60 GB，共享盘 150.27 GB；checkpoint 原子替换峰值约 23.28 GB，
+历史写入约 75–98 秒。相同文件系统的硬链接发布下，keep `[5,10]`、recent 1
+实测函数序列 v5→v21 峰值五个独立权重 inode（约 9.70 GB），其中源 v5 已经
+占用，新增权重峰值约 7.76 GB；另留请求/沙箱空间。跨卷或硬链接失败回退复制
+可能额外增加约 1.94 GB。
+
+预算结束返回 75 时保留 checkpoint，`prune_finished_artifacts` 不会删掉未完成
+64 步日程的恢复状态。以后增加预算时使用**同配置、同 run 的 `--resume`**，
+并显式追加额度；不改 `max_batches`，不重复创建本次新 run。当前启动脚本仅用于
+首次运行，发现 run 已存在就拒绝，避免把续跑误当新训。源 v5 和其原 run 不改。
+
+本轮还修复了首次更新前的恢复窗口：可信导入 v5 后，首批已 RESERVED、尚未
+优化/写 checkpoint 就因预算延期，允许从相同 v5 重新装载并完成该批；来源、
+冻结 policy 和零 cursor/事务必须一致。已优化或已提交的新步缺 checkpoint
+仍被拒绝。一次性 CPU 手动核对正常/危险状态通过，没有新增测试文件。

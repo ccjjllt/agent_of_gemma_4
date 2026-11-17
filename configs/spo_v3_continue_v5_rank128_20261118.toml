@@ -7,11 +7,15 @@
 # version and SHA256, and the import provenance is written to
 # initial_adapter.json. The 12-task public pool matches the broader long-run
 # plan; all tasks are trained on, so comparisons remain in-sample.
-# Budget: 5 updates, 20400 s run walltime, 21600 s external supervisor.
+# Budget: 8 h total, including vLLM startup and shutdown. The 64-update ceiling
+# prevents the old five-step cap from stopping this time-limited session early;
+# it is also the new optimizer's fixed linear LR horizon, not a throughput promise.
+# Stop at a completed update boundary when insufficient time remains, preserving
+# the checkpoint for a later explicitly budgeted --resume with the same horizon.
 # Checkpoint stays on the shared volume; adapters stay on the data disk.
 # in-run retention hardlinks the staged export into versions/ when both are on
 # the same filesystem, so one publish no longer needs a second full 1.94 GB
-# copy. Keep the imported v5 and the final v10 for later evaluation.
+# copy. Keep imported v5, intermediate v10 and the actual active/latest version.
 algorithm = "single_stream_spo"
 
 [policy]
@@ -32,11 +36,11 @@ logprob_chunk_size = 64
 seed = 3407
 
 [run]
-# Five updates is the planning maximum for this continuation after the same
-# 1.3x margin: 5 x 2,615.6 + 900 s startup + 600 s finish = 14,578 s, well
-# below the 20,400 s walltime. The final published version is v10.
-max_batches = 5
-walltime_seconds = 20400
+# The external supervisor owns 28,800 s from before vLLM launches. The learner
+# allows 27,600 s, leaving startup/shutdown room inside that total. Actual steps
+# depend on rollout/verification cost; do not change this LR horizon on resume.
+max_batches = 64
+walltime_seconds = 27600
 # Stop dispatching new rollouts with 15 min left: one 8 min task plus final
 # drain/finalize. Measured drain did not exceed this in the five-step run.
 update_reserve_seconds = 900
@@ -57,16 +61,15 @@ sigterm_grace_seconds = 60
 # run has fresh optimizer/LR state, not the source run's AdamW or schedule.
 init_adapter_dir = "/root/autodl-tmp/gemma4/runs/spo-v3-5step-r128-20261117/adapters/versions/00000005-2ce46040af3eed69"
 checkpoint_dir = "/root/autodl-fs/spo-checkpoints/spo-v3-cont-v5-r128-20261118"
-# At normal completion keep the imported v5 and the final v10, drop the
-# intermediate versions and the external checkpoint.
+# At all-64-step completion keep v5, v10 and the active final version. A normal
+# walltime exit (75) retains the trainer checkpoint and can resume this run.
 prune_finished_artifacts = true
 # Bound local adapter growth during the run. Published versions are ~1.94 GB
-# each. The imported v5 is the initial active version; keep it and the final
-# v10. The active version, the last keep_recent_adapters versions and pinned
-# versions are always retained. With same-filesystem hardlinked publication,
-# a five-step continuation peaks at five version/staging copies (~9.7 GB)
-# rather than six (~11.64 GB). Workspaces are tiny on this workload (3.7 MB
-# for 21 trajectories in the 2026-11-17 run).
+# each. Keep imported v5 and intermediate v10; active, recent and pinned versions
+# are also protected. Same-filesystem hardlinks keep the observed retention
+# sequence bounded at five independent weight inodes (~9.7 GB), of which v5
+# already exists: up to ~7.76 GB newly allocated weights, plus run artifacts.
+# A copy fallback can add another ~1.94 GB at publication.
 in_run_prune = true
 keep_adapter_versions = [5, 10]
 keep_recent_adapters = 1

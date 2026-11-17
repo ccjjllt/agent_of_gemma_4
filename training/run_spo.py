@@ -370,8 +370,8 @@ def _verify_resume_consistency(run_dir: Path, ledger: Any, *,
 
     Checks the serving registry, the trainer checkpoint and the ledger
     against each other before any GPU work:
-    - serving v>0 requires a trainer checkpoint (else LoRA restarts under a
-      trained policy);
+    - serving v>0 requires a trainer checkpoint, except an imported initial
+      adapter before its first update (including a deferred RESERVED batch);
     - checkpoint completed-steps must equal CONSUMED updates, or exceed them
       by exactly one when an update is still pending;
     - serving version equals CONSUMED updates, except one ACTIVATED pending
@@ -389,9 +389,36 @@ def _verify_resume_consistency(run_dir: Path, ledger: Any, *,
     active = adapters.active
     state_path = Path(checkpoint_path) if checkpoint_path else run_dir / "spo_trainer_state.pt"
     if active is not None and active.version > 0 and not state_path.is_file():
-        imported_zero_step = (initial_version > 0
-                              and active.version == initial_version
-                              and not ledger.list_updates())
+        from .checkpoint_io import read_transaction
+        initial = _read_initial_adapter(run_dir)
+        updates = ledger.list_updates()
+        reserved = updates[0] if len(updates) == 1 else None
+        # A budget deferral freezes the first batch before optimize_batch has
+        # written any checkpoint. It can safely load the imported LoRA again;
+        # no learned state exists yet. The provenance and frozen policy must
+        # agree, and a transaction must not claim an applied optimizer step.
+        imported_zero_step = (
+            initial_version > 0 and active.version == initial_version
+            and initial is not None and initial["version"] == initial_version
+            and initial["adapter_sha256"] == active.adapter_sha256
+            and (not updates or (
+                reserved is not None and reserved.phase == "RESERVED"
+                and reserved.optimizer_cursor == 0
+                and reserved.policy_before.version == active.version
+                and reserved.policy_before.sha256 == active.adapter_sha256)))
+        if imported_zero_step:
+            transaction = read_transaction(
+                run_dir / "spo_trainer_tx.json", checkpoint_path=state_path)
+            if transaction is not None:
+                imported_zero_step = (
+                    reserved is not None
+                    and transaction.get("update_id") == reserved.update_id
+                    and transaction.get("phase") == "LEARNING"
+                    and all(type(transaction.get(name)) is int
+                            and transaction[name] == 0 for name in (
+                                "optimizer_cursor", "completed_optimizer_steps", "offset"))
+                    and transaction.get("policy_before") == reserved.policy_before.to_dict()
+                    and transaction.get("adapter") is None)
         if not imported_zero_step:
             raise RuntimeError(
                 f"serving adapter is v{active.version} but no trainer checkpoint "
