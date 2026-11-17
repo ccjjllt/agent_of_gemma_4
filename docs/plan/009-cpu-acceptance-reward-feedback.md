@@ -366,59 +366,18 @@ python scripts/session_supervisor.py \
 
 这只证明真实优化步与 v1 发布成立；v0/v1 的配对修复比较尚未执行，能力提升仍未测量。证据：`results/gpu-short-20261116/resume_summary.json`（由服务器 ledger、registry、metrics、trainer 事务、budget 与会话 JSON 只读重建）；服务器 run 目录为 `/root/autodl-tmp/gemma4/runs/spo-short-20261116`。
 
-### 9.2 下一阶段：5 步连续训练
+### 9.2 下一阶段：多步连续训练（rank 128）
 
-目标是把单步快照推进到连续 5 步，观察同一固定题池在 step 3 与 step 5 的官方 verdict 变化。
+目标是把单步快照推进到连续多步，观察同一固定题池在后期步的官方 verdict 是否优于早期步。**容量必须沿用 rank 128 / alpha 256**：rank 64 的 checkpoint 与 adapter 虽然省盘，但容量减半，与既有 v1 不可比，不作为正式实验。
 
-| 项 | 设定 |
-| --- | --- |
-| run | 新目录，不复用 `spo-short-20261116`；新 judge 身份 |
-| 配置 | `configs/spo_v3_5step_20261117.toml` |
-| 批次上限 | `max_batches=5` |
-| 固定题池 | `fastapi_14258`、`requests_7205`、`requests_7315`、`rich_3782`、`rich_4070`、`rich_4076` |
-| 奖励 | v3（`official_differential_spo_v3`） |
-| LoRA | rank 64 / alpha 128（见下方磁盘约束） |
-| 会话预算 | 6 小时，由 `scripts/session_supervisor.py` 硬截止 |
-| 单步成本 | 约 24 分钟优化，再加采样、验收与排空 |
+前置条件只有一个：数据盘扩容。理由见 9.3（rank 128 单次 checkpoint 写入峰值 21.7 GiB，当前 50 GB 盘最大只能腾出约 18.5 GB）。扩容后按原有配置族新建 run（新 judge 身份），`max_batches` 即步数上限与学习率计划长度，一经启动不可改。
 
-磁盘约束（实测，决定 rank）：`/root/autodl-tmp` 为 50 GB，其中官方数据约 21 GB、运行时环境约 11 GB 不能移走。rank 128 的 trainer checkpoint 为 10.8 GiB，写入采用“同尺寸临时文件 + 原子改名”，单次重写峰值约 21.6 GiB，再加每个 adapter 约 1.8 GiB 与发布时的临时副本，超出可腾出的约 16–18 GB。rank 64 把 checkpoint 降到约 5.4 GiB、adapter 降到约 0.9 GiB，5 步可在清理旧 run 的 checkpoint/暂存副本后装下（旧 run 的 v0/v1 adapter 与账本保留）。因此本轮 5 步 run **不与 rank 128 的 v1 比容量**，只做 run 内 step 3 与 step 5 的同题趋势。清理项：`spo-short-20261116` 的 11.6 GB checkpoint 与 `staging-genesis`/`staging-v1`（该 run 已 `CONSUMED`、学习率计划结束）、以及 2026-10-30 的旧代码/实验压缩包。
+比较方法（与工具一致）：
 
-换新 run 的原因：`training/task_dependency_setup.py` 与 `extra_wheels` 都会变化（第 7.5 节第 2 条），judge environment hash 随之改变；旧 run 的 3 条 `BUFFERED` 轨迹不能混入新环境。新 run 从 v0 开始，单步 run 的 v1（`adapters/versions/00000001-ba11bdc9827bc24c`）只保留为独立参照点。
+- 同一固定题池、同一 judge 身份，按 `scripts/report_repair_trend.py --run-dir <副本> --compare A,B` 生成逐题 × 逐 step 表；step 取 `trajectories.behavior_version`，update 归属另列；缺证据显示 `-` 并计入 missing，不当作 0，也不做零差推断。
+- 若相邻两步同题覆盖不足，按“早期步对后期步”池化比较，并列出缺失的题与步。
+- 题池同时参与训练，结论是 **in-sample trend**，不是泛化结果；单步 run 的 v1（旧 judge 身份）只作独立参照。
 
-比较方法：
-
-- 同一固定 6 题池、同一 judge 身份，在 step 3 与 step 5 各取一次逐题官方 verdict（成功/失败、resolved、validity），比较同题是否从 fail 转 pass。
-- 用 `scripts/report_repair_trend.py --run-dir <run> --compare 3,5` 生成逐题 × 逐 step 表：step 取 `trajectories.behavior_version`（采样该轨迹时使用的策略版本），update 归属另列；缺证据显示 `-` 并计入 missing，不当作 0，也不做零差推断。若 step 3/5 的同题覆盖不足，另按“早期步（1–2）对后期步（4–5）”合并比较，并明确列出缺失的题与步。
-- 这是 **in-sample trend**：题池同时参与训练，step 5 的改善不能称泛化结果；只能说明“在这 6 题上继续训练是否带来更多官方通过”。
-- 单步 run 的 v1 属于旧 judge 身份，不能与 5 步 run 的 verdict 直接合并统计；它只提供“单步之后这 6 题是什么样”的参照。
-- 6 题样本以逐题 verdict 为主，不报聚合修复率。
-
-已知混杂因素：
-
-- 采样方差：每步只有 2–3 条轨迹，step 3 与 step 5 的候选补丁可能不同。
-- 依赖失败的题可能被排除（如 11-16 的安装失败），固定池实际可比题数可能少于 6。
-- 因此 step 3 → step 5 的变化只能作为趋势，不作为因果或泛化结论。
-
-预算：5 步优化合计约 2 小时（按 24 分钟/步），其余约 4 小时用于采样、验收、排空和重试；6 小时会话预算从 vLLM 启动前开始计时（8.4），run 自身应先于 supervisor 软停结束。
-
-### 9.3 2026-11-17 五步 run 的实跑与中止
-
-`configs/spo_v3_5step_20261117.toml`（rank 64，6 题固定池，`max_batches=5`）于 16:51 在监督器下启动，18:12 按用户要求软停（`interrupted_by=supervisor_sigterm`，exit 143，无强杀，两卡回到 0 MiB）。
-
-实际完成两步：
-
-| update | 阶段 | tokens | 起止 | 耗时 | 优势值 |
-| --- | --- | ---: | --- | ---: | --- |
-| `upd-0000` | CONSUMED (v0→v1) | 18,068 | 17:07:50 → 17:29:10 | 1,280 s | +0.2561 / −1.4002 / +0.8965 |
-| `upd-0001` | CONSUMED (v1→v2) | 18,952 | 17:29:22 → 17:54:00 | 1,478 s | −1.0185 / +0.9818 |
-| `upd-0002` | RESERVED（中止时） | 20,486 | 17:54:11 → — | — | −0.8277 / +1.7158 / +0.1045 |
-
-单步纯优化约 17 分钟（forward 322 s + backward 674 s + checkpoint 12 s），比 11-17 单步的 23.43 分钟更快：rank 64 的反向更省时，batch 也略小。checkpoint 5.82 GB（rank 64），adapter 每步 0.97 GB。
-
-中止后 CPU 只读续跑校验通过：`{'serving_version': 2, 'completed_optimizer_steps': 2, 'consumed_updates': 2, 'pending_updates': 1}`，即 `--resume` 可从 v2 继续把 `upd-0002` 重做。
-
-**为什么没有第 3/5 步对照**：run 在第 3 步开始前被中止，且 v3/v5 采样窗口尚未出现，故 `--compare 3,5` 无数据。已完成的 2 步只作机制证据（真实优化步、优势值非零、新版依赖环境可用），不当作修复趋势结论。
-
-### 9.4 rank 128 的磁盘约束（实测）
+### 9.3 rank 128 的磁盘约束（实测）
 
 checkpoint 只在固定路径上原子替换，**不会累积**；累积的是每步 1.94 GB（rank 128）的 adapter。rank 128 的 checkpoint 为 11,640,386,877 B（10.84 GiB），写入需要同尺寸临时文件，**单次峰值 21.7 GiB**。该实例数据盘 50 GB，已用 43.4 GB（官方数据 21 GB + 运行时 9 GB + 两个 run 12 GB），最大可回收到约 18.5 GB，仍小于 21.7 GiB，因此 rank 128 在当前磁盘上无法完成一次 checkpoint 写入（11-17 已真实出现过一次 ENOSPC 失败）。回到 rank 128 需要扩容数据盘到 ≥100 GB；不改磁盘只能继续 rank 64。
