@@ -400,3 +400,25 @@ python scripts/session_supervisor.py \
 - 因此 step 3 → step 5 的变化只能作为趋势，不作为因果或泛化结论。
 
 预算：5 步优化合计约 2 小时（按 24 分钟/步），其余约 4 小时用于采样、验收、排空和重试；6 小时会话预算从 vLLM 启动前开始计时（8.4），run 自身应先于 supervisor 软停结束。
+
+### 9.3 2026-11-17 五步 run 的实跑与中止
+
+`configs/spo_v3_5step_20261117.toml`（rank 64，6 题固定池，`max_batches=5`）于 16:51 在监督器下启动，18:12 按用户要求软停（`interrupted_by=supervisor_sigterm`，exit 143，无强杀，两卡回到 0 MiB）。
+
+实际完成两步：
+
+| update | 阶段 | tokens | 起止 | 耗时 | 优势值 |
+| --- | --- | ---: | --- | ---: | --- |
+| `upd-0000` | CONSUMED (v0→v1) | 18,068 | 17:07:50 → 17:29:10 | 1,280 s | +0.2561 / −1.4002 / +0.8965 |
+| `upd-0001` | CONSUMED (v1→v2) | 18,952 | 17:29:22 → 17:54:00 | 1,478 s | −1.0185 / +0.9818 |
+| `upd-0002` | RESERVED（中止时） | 20,486 | 17:54:11 → — | — | −0.8277 / +1.7158 / +0.1045 |
+
+单步纯优化约 17 分钟（forward 322 s + backward 674 s + checkpoint 12 s），比 11-17 单步的 23.43 分钟更快：rank 64 的反向更省时，batch 也略小。checkpoint 5.82 GB（rank 64），adapter 每步 0.97 GB。
+
+中止后 CPU 只读续跑校验通过：`{'serving_version': 2, 'completed_optimizer_steps': 2, 'consumed_updates': 2, 'pending_updates': 1}`，即 `--resume` 可从 v2 继续把 `upd-0002` 重做。
+
+**为什么没有第 3/5 步对照**：run 在第 3 步开始前被中止，且 v3/v5 采样窗口尚未出现，故 `--compare 3,5` 无数据。已完成的 2 步只作机制证据（真实优化步、优势值非零、新版依赖环境可用），不当作修复趋势结论。
+
+### 9.4 rank 128 的磁盘约束（实测）
+
+checkpoint 只在固定路径上原子替换，**不会累积**；累积的是每步 1.94 GB（rank 128）的 adapter。rank 128 的 checkpoint 为 11,640,386,877 B（10.84 GiB），写入需要同尺寸临时文件，**单次峰值 21.7 GiB**。该实例数据盘 50 GB，已用 43.4 GB（官方数据 21 GB + 运行时 9 GB + 两个 run 12 GB），最大可回收到约 18.5 GB，仍小于 21.7 GiB，因此 rank 128 在当前磁盘上无法完成一次 checkpoint 写入（11-17 已真实出现过一次 ENOSPC 失败）。回到 rank 128 需要扩容数据盘到 ≥100 GB；不改磁盘只能继续 rank 64。
