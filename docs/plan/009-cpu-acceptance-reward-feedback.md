@@ -394,3 +394,53 @@ python scripts/prune_run_artifacts.py --run-dir <run> --keep <最终版本>
 脚本的约束：只处理全部 update 均为 `CONSUMED` 的 run；永不删 active 版本或 `--keep` 指定的版本；删除前用 registry 里的 SHA256 校验待保留版本的权重；默认删除 checkpoint 与瞬态目录（`--keep-checkpoint` 可保留）；把删除清单写入 `pruned_artifacts.json`。registry 行**有意保留**，因此被清理的版本仍有 manifest 与血缘，只是没有权重文件——finished run 的 serving 与发布校验只读 active 版本。
 
 首次应用：`spo-short-20261116` 保留 v1（`ba11bdc9…`，已校验 SHA256 一致），删除 v0 genesis 与瞬态目录，回收 2.009 GB；数据盘可用从 16 GB 升到 18 GB。rank 128 仍需 ≥21.7 GiB 的 checkpoint 写入峰值，扩容后才可启动多步 run（见 9.3）。
+
+## 10. 2026-11-17 rank-128 五步 run 与修复趋势结论
+
+### 10.1 运行与产物
+
+`configs/spo_v3_5step_rank128_20261117.toml`：rank 128 / alpha 256、v3 奖励、`max_batches=5`、`walltime_seconds=20400`、固定 6 题公开池（`fastapi_14258`、`requests_7205`、`requests_7315`、`rich_3782`、`rich_4070`、`rich_4076`）。checkpoint 外置到 `/root/autodl-fs`（本地盘只有 50 GB，rank-128 的原子重写峰值 21.7 GiB 放不下），run 目录只留 adapter 与账本。19:28 在 `scripts/session_supervisor.py`（21600 s / grace 180 s）下启动，22:08 全部完成，run 退出码 0，supervisor `exited`、无升级。
+
+五步实测（账本 + `spo_update_timing`）：
+
+| update | tokens | 起止 | 墙钟 | forward | backward | checkpoint 写 | 优势值 |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | --- |
+| `upd-0000` | 22,913 | 19:43:14 → 20:16:46 | 2,012 s | 471.8 s | 1,247.3 s | 89.7 s | +0.846 / −0.807 / −0.807 / +1.496 |
+| `upd-0001` | 19,770 | 20:16:58 → 20:40:34 | 1,415 s | 233.9 s | 693.6 s | 77.3 s | −1.014 / +0.986 |
+| `upd-0002` | 18,763 | 20:40:45 → 21:08:21 | 1,656 s | 242.6 s | 704.2 s | 75.6 s | +1.026 / −1.311 / −0.465 / +0.846 |
+| `upd-0003` | 21,815 | 21:08:32 → 21:37:18 | 1,726 s | 286.0 s | 869.3 s | 75.5 s | −0.409 / +2.145 / −0.498 |
+| `upd-0004` | 19,614 | 21:37:29 → 22:07:54 | 1,824 s | 279.2 s | 810.2 s | 97.5 s | −0.840 / −0.857 / +1.595 / +0.315 |
+
+五步合计 2 小时 40 分。checkpoint 写共享盘 75–98 s（本地盘同尺寸约 15 s，但本地盘装不下）。run 结束后 `prune_finished_run` 保留 v3 与 v5、删除 v0/v1/v2/v4、checkpoint 与瞬态目录，回收 19.517 GB（本地盘 7 GB → 14 GB 可用，共享盘 checkpoint 归零）。
+
+### 10.2 同口径修复对照
+
+采样分布（`behavior_version`）：v0 9 条、v1 3 条、v2 1 条、v3 4 条、v4 4 条；21 条轨迹全部有完整官方 verdict（P/resolved/validity 覆盖 21/21）。
+
+**v3（第 3 步后策略）对 v4（第 4 步后策略）**，共同任务 3 题：
+
+| task | N_L | N_R | resolved_L | resolved_R | Δresolved | P_L | P_R | ΔP |
+| --- | ---: | ---: | --- | --- | ---: | ---: | ---: | ---: |
+| `fastapi_14258` | 1 | 1 | 0/1 | 0/1 | 0 | 0.000 | 0.000 | 0 |
+| `requests_7205` | 1 | 1 | 1/1 | 1/1 | 0 | 1.000 | 1.000 | 0 |
+| `requests_7315` | 1 | 1 | 1/1 | 1/1 | 0 | 0.000 | 0.000 | 0 |
+
+**v0（基座）对 v4**，共同任务 4 题：
+
+| task | N_L | N_R | resolved_L | resolved_R | Δresolved | P_L | P_R | ΔP |
+| --- | ---: | ---: | --- | --- | ---: | ---: | ---: | ---: |
+| `fastapi_14258` | 2 | 1 | 0/2 | 0/1 | 0 | 0.000 | 0.000 | 0 |
+| `requests_7205` | 2 | 1 | 1/2 | 1/1 | +0.5（分母效应） | 1.000 | 1.000 | 0 |
+| `requests_7315` | 2 | 1 | 2/2 | 1/1 | 0 | 0.000 | 0.000 | 0 |
+| `rich_4076` | 1 | 1 | 0/1 | 0/1 | 0 | 0.000 | 0.000 | 0 |
+
+结论：**五步训练在这 6 题上没有产生任何官方 verdict 变化**——没有一道题从 fail 转 pass 或从 pass 转 fail；`requests_7205` 的 +0.5 只是 1/2 变成 1/1 的分母变化，P 始终为 1.000。`requests_7315` 在所有采样里都是 `resolved=True` 但 `P=0.0`，属于该题既有的判定特征，不是训练带来的改变。
+
+### 10.3 边界与未测项
+
+- **v5 从未被采样**：采样发生在每步训练之前，run 在完成第 5 步后退出，因此不存在 `behavior_version=5` 的轨迹。严格的"第 3 步 vs 第 5 步"在本 run 结构上不可测，最接近的同口径对照是 v3 vs v4（3 题）与 v0 vs v4（4 题）。
+- 每步每题只有 1–2 条轨迹，所有 Δ 都是单样本；`report_repair_trend.py` 对每条比较都打印了 N<2 警告。这些结果不能当作趋势强度，只能说明"没有观察到通过/失败翻转"。
+- 题池同时参与训练，属 in-sample；不构成泛化结论。
+- 若要测 v5 自身，需要额外的只做 rollout+裁判的评测入口（把 v5 adapter 加载进 vLLM 跑同一批题），本轮未实现。
+
+证据：`results/gpu-5step-r128-20261117/`（`steps.json`、`report-compare-3v4.txt`、`report-compare-0v4.txt`、`report-at-step3.txt`），服务器 run 目录与账本保留。代码指纹：`training/run_spo.py` `04c90557…`、`training/adapter/retention.py` `0994e75d…`、`task_dependency_setup.py` `9a05542a…`、`configs/spo_v3_5step_rank128_20261117.toml` `f18d9721…`、`scripts/session_supervisor.py` `1a9988cf…`。
