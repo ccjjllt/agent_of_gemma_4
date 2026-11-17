@@ -60,6 +60,7 @@ from .reward.baseline_probe import EmptyPatchProbeRunner
 from .reward.engine import RewardEngine
 from .reward.junit_bridge import task_key_for
 from .reward.progress import SUPPORTED_OBJECTIVE_VERSIONS
+from .rollout.engine import RolloutEngine
 from .rollout.gateway import validate_sampling
 from .rollout.policy_version import AdapterManifest, sha256_file
 from .rollout.request_manager import RequestManager
@@ -73,8 +74,7 @@ from .trajectory.schema import BehaviorAdapter, RewardRecord, TaskKey
 
 EVAL_SCHEMA = "gemma.adapter_eval.v1"
 EVAL_EVENT = "eval_sample"
-POLICY_VERSIONS = {"base": 0, "v3": 3, "v5": 5}
-POLICY_LABELS = {"base": "base(v0)", "v3": "v3", "v5": "v5"}
+POLICY_LABEL = re.compile(r"v?(\d+)\Z")
 BASE_BEHAVIOR_MARKER = "served_base_model_no_lora"
 # A clearly marked behavior sentinel, not an adapter hash and not the deleted
 # zero-initialized genesis adapter.  Version 0 plus this digest identifies the
@@ -240,26 +240,25 @@ class AdapterEvidence:
         }
 
 
-def validate_adapter_dir(path: Path, policy: Mapping[str, Any],
-                         label: str) -> AdapterEvidence:
+def validate_adapter_dir(path: Path, policy: Mapping[str, Any], *,
+                         expected_version: int | None = None) -> AdapterEvidence:
     """Read-only manifest/SHA/config validation; the source run is never opened.
 
     It intentionally does not construct ``AdapterManager``: a finished source
     run can have a registry that lists pruned intermediate versions, while the
-    requested v3/v5 directories remain valid.  The manifest and weights are the
-    authority here, and ``VLLMBackend.load_adapter`` re-verifies the digest when
-    the server loads the original path.
+    requested version directories remain valid.  The manifest and weights are
+    the authority here, and ``VLLMBackend.load_adapter`` re-verifies the digest
+    when the server loads the original path.  Any published version is allowed;
+    ``expected_version`` only pins a user-supplied ``--policy vN`` label.
     """
-    if label not in POLICY_VERSIONS or label == "base":
-        raise ValueError("an adapter evaluation requires --policy v3 or v5")
     directory = path.expanduser().resolve(strict=True)
     if not directory.is_dir():
         raise ValueError(f"adapter path is not a directory: {directory}")
     manifest_path = directory / "manifest.json"
     manifest = AdapterManifest.read(manifest_path)
-    if manifest.version != POLICY_VERSIONS[label]:
+    if expected_version is not None and manifest.version != expected_version:
         raise ValueError(
-            f"--policy {label} requires adapter version {POLICY_VERSIONS[label]}, "
+            f"--policy requests adapter version {expected_version}, "
             f"found {manifest.version}")
     if manifest.rank != int(policy["lora_rank"]) or manifest.alpha != int(policy["lora_alpha"]):
         raise ValueError("adapter rank/alpha differ from policy.lora_rank/lora_alpha")
@@ -296,7 +295,7 @@ def validate_adapter_dir(path: Path, policy: Mapping[str, Any],
     if adapter_config.get("bias") not in (None, "none"):
         raise ValueError("adapter must not train biases")
     return AdapterEvidence(
-        label=label,
+        label=f"v{manifest.version}",
         directory=directory,
         manifest_path=manifest_path,
         manifest_sha256=sha256_file(manifest_path),
@@ -582,21 +581,29 @@ def preflight(args: argparse.Namespace) -> Preflight:
     if not baseline_dir.is_absolute():
         raise ValueError("--baseline-dir must be an absolute path")
 
-    label = args.policy
-    if label not in POLICY_VERSIONS:
-        raise ValueError("--policy must be base, v3 or v5")
+    requested = str(args.policy).strip()
+    requested_version: int | None = None
+    if requested != "base" and requested != "adapter":
+        match = POLICY_LABEL.fullmatch(requested)
+        if match is None:
+            raise ValueError("--policy must be base, adapter, vN or N")
+        requested_version = int(match.group(1))
     adapter: AdapterEvidence | None = None
-    if label == "base":
+    if requested == "base":
         if args.adapter_dir:
             raise ValueError("base evaluation must not receive --adapter-dir")
+        label = "base"
         version = 0
         behavior = BehaviorAdapter(version, BASE_BEHAVIOR_SHA256)
         policy_kind = "base_served_model_no_lora"
     else:
         if not args.adapter_dir:
-            raise ValueError(f"--policy {label} requires --adapter-dir")
-        adapter = validate_adapter_dir(Path(args.adapter_dir), config["policy"], label)
+            raise ValueError(f"--policy {requested} requires --adapter-dir")
+        adapter = validate_adapter_dir(
+            Path(args.adapter_dir), config["policy"],
+            expected_version=requested_version)
         version = adapter.version
+        label = f"v{version}"
         behavior = adapter.behavior
         policy_kind = "adapter"
 
@@ -1668,7 +1675,7 @@ class PolicyReport:
 
 def _load_policy_report(run_dir: Path, label: str) -> PolicyReport:
     run_dir = run_dir.expanduser()
-    display = POLICY_LABELS.get(label, label)
+    display = "base(v0)" if label == "base" else label
     db_path = run_dir / "spo_stream.db"
     if not db_path.is_file():
         return PolicyReport(label, display, run_dir, None, (), 0, (), (),
@@ -1875,28 +1882,29 @@ def _print_report(reports: Sequence[PolicyReport], reference: Path | None) -> in
                   f"{'-' if rate is None else format(rate, '.3f'):>7}  "
                   f"{_p_text(p_values, n):>15}")
     print()
-    print("DELTAS (complete samples; '-' means missing, never zero)")
-    delta_header = (f"{'task':<20}  {'v3-base res':>12}  {'v3-base P':>11}  "
-                    f"{'v5-base res':>12}  {'v5-base P':>11}  "
-                    f"{'v5-v3 res':>10}  {'v5-v3 P':>9}")
-    print(delta_header)
-    print("-" * len(delta_header))
-    for task in tasks:
-        cells = []
-        for left, right in (("v3", "base"), ("v5", "base"), ("v5", "v3")):
-            lstat = stats.get((task, left), (0, [], [], 0))
-            rstat = stats.get((task, right), (0, [], [], 0))
-            if not ident_ok:
-                cells.extend(["-", "-"] if (left, right) == ("v3", "base")
-                             else ["-", "-"])
-                continue
-            lr, lp = _rate(lstat[1]), _mean(lstat[2])
-            rr, rp = _rate(rstat[1]), _mean(rstat[2])
-            cells.extend([_delta_text(_delta(lr, rr)), _delta_text(_delta(lp, rp))])
-        # v5-base then v5-v3 ordering above; place v3-base, v5-base, v5-v3.
-        print(f"{task:<20}  {cells[0]:>12}  {cells[1]:>11}  {cells[2]:>12}  "
-              f"{cells[3]:>11}  {cells[4]:>10}  {cells[5]:>9}")
-    print()
+    reference_report = next((report for report in present if report.label == "base"),
+                            present[0] if present else None)
+    if ident_ok and reference_report is not None:
+        print(f"DELTAS vs {reference_report.display} (right - left; "
+              "'-' means missing, never zero)")
+        delta_header = (f"{'task':<20}  {'arm':<10}  {'d_res':>8}  {'d_P':>8}")
+        print(delta_header)
+        print("-" * len(delta_header))
+        for task in tasks:
+            reference = stats.get((task, reference_report.label), (0, [], [], 0))
+            ref_rate, ref_p = _rate(reference[1]), _mean(reference[2])
+            for report in present:
+                if report.label == reference_report.label:
+                    continue
+                current = stats.get((task, report.label), (0, [], [], 0))
+                rate, p_value = _rate(current[1]), _mean(current[2])
+                print(f"{task:<20}  {report.display:<10}  "
+                      f"{_delta_text(_delta(rate, ref_rate)):>8}  "
+                      f"{_delta_text(_delta(p_value, ref_p)):>8}")
+        print()
+    elif not ident_ok:
+        print("DELTAS suppressed: judge identities are missing or differ.")
+        print()
     for task in tasks:
         for report in reports:
             n, resolved, p_values, p_missing = stats.get(
@@ -1927,9 +1935,10 @@ def _print_report(reports: Sequence[PolicyReport], reference: Path | None) -> in
         print(f"ATTEMPTS {report.display}: total={attempts} complete={complete} "
               f"incomplete/excluded={excluded}")
     print()
-    print("LIMITS: the six tasks are also used in training (in-sample); three repeats "
-          "are not a significance test; base(v0) is not the training genesis adapter; "
-          "P is unavailable when the empty-patch baseline is missing and is printed as '-'.")
+    print("LIMITS: the evaluated public tasks are also used in training (in-sample); "
+          "three repeats are not a significance test; base(v0) is the unadapted served "
+          "model, not a training genesis adapter; P is unavailable when the empty-patch "
+          "baseline is missing and is printed as '-'.")
     return 0
 
 
@@ -1949,10 +1958,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--submission-dir", type=Path,
                         help="official sample_submission directory")
     parser.add_argument("--run-dir", type=Path, help="new eval run directory")
-    parser.add_argument("--policy", choices=("base", "v3", "v5"),
-                        help="one policy per invocation")
+    parser.add_argument("--policy",
+                        help="base, adapter, or an explicit vN/N (one policy per invocation)")
     parser.add_argument("--adapter-dir", type=Path,
-                        help="existing v3/v5 adapter version directory (read-only)")
+                        help="existing published adapter version directory (read-only)")
     parser.add_argument("--baseline-dir", type=Path,
                         help="shared empty-patch baseline cache (default: <run parent>/baselines)")
     parser.add_argument("--backend-url", help="vLLM OpenAI base URL")
@@ -1964,9 +1973,11 @@ def _parser() -> argparse.ArgumentParser:
                         help="resume an interrupted eval run (skips complete pairs)")
     parser.add_argument("--report", action="store_true",
                         help="print the per-task report from existing eval run dirs")
-    parser.add_argument("--base-run", type=Path, help="base eval run dir for --report")
-    parser.add_argument("--v3-run", type=Path, help="v3 eval run dir for --report")
-    parser.add_argument("--v5-run", type=Path, help="v5 eval run dir for --report")
+    parser.add_argument("--arm", action="append", default=[], metavar="LABEL=RUN_DIR",
+                        help="report arm, repeatable (e.g. --arm v6=/path/to/eval-v6)")
+    parser.add_argument("--base-run", type=Path, help="alias for --arm base=RUN_DIR")
+    parser.add_argument("--v3-run", type=Path, help="alias for --arm v3=RUN_DIR")
+    parser.add_argument("--v5-run", type=Path, help="alias for --arm v5=RUN_DIR")
     parser.add_argument("--repeats", type=int,
                         help="repeats per task (study default/configured: 3)")
     parser.add_argument("--max-workers", type=int,
@@ -1990,27 +2001,34 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
     if args.report:
-        if not any((args.base_run, args.v3_run, args.v5_run)):
-            parser.error("--report requires at least one of --base-run/--v3-run/--v5-run")
-        reports = [
-            _load_policy_report(args.base_run, "base") if args.base_run else
-            PolicyReport("base", POLICY_LABELS["base"], Path("-"), None, (), 3, (), (),
-                         "run not supplied"),
-            _load_policy_report(args.v3_run, "v3") if args.v3_run else
-            PolicyReport("v3", POLICY_LABELS["v3"], Path("-"), None, (), 3, (), (),
-                         "run not supplied"),
-            _load_policy_report(args.v5_run, "v5") if args.v5_run else
-            PolicyReport("v5", POLICY_LABELS["v5"], Path("-"), None, (), 3, (), (),
-                         "run not supplied"),
-        ]
+        arms: list[tuple[str, Path]] = []
+        for label, path in (("base", args.base_run), ("v3", args.v3_run),
+                            ("v5", args.v5_run)):
+            if path is not None:
+                arms.append((label, path))
+        for spec in args.arm:
+            if "=" not in spec:
+                parser.error(f"--arm must be LABEL=RUN_DIR, got {spec!r}")
+            label, raw_path = spec.split("=", 1)
+            label = label.strip()
+            if not label or not _SAFE_LABEL.fullmatch(label):
+                parser.error(f"unsafe report arm label: {label!r}")
+            arms.append((label, Path(raw_path)))
+        if not arms:
+            parser.error("--report requires at least one --arm LABEL=RUN_DIR "
+                         "(or the base/v3/v5 aliases)")
+        labels = [label for label, _ in arms]
+        if len(set(labels)) != len(labels):
+            parser.error("duplicate report arm label")
+        reports = [_load_policy_report(path, label) for label, path in arms]
         return _print_report(reports, args.reference_run_dir)
     for name in ("config", "data_root", "run_dir", "policy"):
         if getattr(args, name) is None:
             parser.error(f"--{name.replace('_', '-')} is required")
-    if args.policy == "base" and args.adapter_dir:
-        parser.error("--adapter-dir is only valid for v3/v5")
-    if args.policy in ("v3", "v5") and not args.adapter_dir:
-        parser.error("--adapter-dir is required for v3/v5")
+    if str(args.policy).strip() == "base" and args.adapter_dir:
+        parser.error("--adapter-dir is not valid for the base policy")
+    if str(args.policy).strip() != "base" and not args.adapter_dir:
+        parser.error("--adapter-dir is required for an adapter policy")
     try:
         return run_eval(args)
     except (ValueError, RuntimeError, OSError) as error:
